@@ -74,15 +74,16 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
         score += 8
         reasons.append("Product image supplied")
 
-    if deal.is_price_verified:
-        score += 35
-        reasons.append("Price checked")
+    if deal.asin or deal.sku or deal.upc:
+        score += 12
+        reasons.append("Product identifier present")
 
-    if deal.is_link_verified:
-        score += 20
-        reasons.append("Link checked")
+    availability = (deal.availability_message or "").lower()
+    if "add-to-cart observed" in availability or "checkout price observed" in availability:
+        score += 25
+        reasons.append("Cart or checkout signal observed")
 
-    if deal.requires_business_account:
+    if "may require business account" in availability or any("business" in flag.lower() for flag in deal.risk_flags):
         score += 12
         reasons.append("Business-account deal")
 
@@ -121,7 +122,6 @@ def weak_signal_hits(deal: NormalizedDeal) -> list[str]:
             deal.availability_message or "",
             *deal.risk_flags,
             *deal.alert_tags,
-            *deal.verification_notes,
         ]
         if value
     )

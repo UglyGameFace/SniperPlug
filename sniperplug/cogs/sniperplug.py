@@ -179,6 +179,14 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             fulfillment_type="Merchant Fulfilled",
             condition="Renewed",
             availability_message="Offer may not appear for every account.",
+            verification_status="demo",
+            is_price_verified=False,
+            is_link_verified=False,
+            is_image_verified=False,
+            verification_notes=[
+                "Test alert uses demo data only.",
+                "Future provider alerts must set real verification flags.",
+            ],
         )
         deal = apply_risk_flags(deal)
         route_decision = choose_primary_route(deal)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 
 from sniperplug.models.deal import NormalizedDeal
+from sniperplug.services.verification import compact_verification_summary
 
 
 SHORT_DISCLAIMER = "Verify final checkout price, seller, condition, shipping, and returns."
@@ -51,9 +52,13 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
         f"**Now:** {money(deal.current_price)}\n"
         f"**Typical:** {money(deal.typical_price)}\n"
         f"**Save:** {money(deal.savings_amount)} ({percent(deal.discount_percent)})\n"
-        f"**Risk:** {deal.risk_level.title()}"
+        f"**Status:** {deal.verification_status.replace('_', ' ').title()}"
     )
     embed.add_field(name="Deal Snapshot", value=price_line, inline=False)
+
+    proof = compact_verification_summary(deal)
+    if proof:
+        embed.add_field(name="Proof", value=proof, inline=False)
 
     seller_bits: list[str] = []
     if deal.retailer:
@@ -117,6 +122,9 @@ def build_compact_flags(deal: NormalizedDeal, *, has_exact_image: bool) -> list[
 
     if not has_exact_image:
         flags.append("Exact product image not available")
+
+    if deal.requires_business_account:
+        flags.append("May require business account")
 
     if deal.fulfilled_by_amazon is False:
         flags.append("Merchant fulfilled")

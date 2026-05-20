@@ -9,8 +9,8 @@ DEFAULT_ROUTE = "default"
 PRICE_GLITCH_ROUTE = "price_glitch"
 HOT_DEALS_ROUTE = "hot_deals"
 AMAZON_ROUTE = "amazon"
-HIGH_RISK_ROUTE = "high_risk"
-REVIEW_ROUTE = "review"
+YMMV_ROUTE = "ymmv"
+STAFF_REVIEW_ROUTE = "staff_review"
 DEAD_REPORTS_ROUTE = "dead_reports"
 
 ALERT_ROUTES: tuple[str, ...] = (
@@ -18,8 +18,8 @@ ALERT_ROUTES: tuple[str, ...] = (
     PRICE_GLITCH_ROUTE,
     HOT_DEALS_ROUTE,
     AMAZON_ROUTE,
-    HIGH_RISK_ROUTE,
-    REVIEW_ROUTE,
+    YMMV_ROUTE,
+    STAFF_REVIEW_ROUTE,
     DEAD_REPORTS_ROUTE,
 )
 
@@ -27,19 +27,19 @@ ROUTE_LABELS: dict[str, str] = {
     DEFAULT_ROUTE: "Default Deals",
     PRICE_GLITCH_ROUTE: "Price Glitches",
     HOT_DEALS_ROUTE: "Hot Deals",
-    AMAZON_ROUTE: "Amazon",
-    HIGH_RISK_ROUTE: "High Risk",
-    REVIEW_ROUTE: "Review Queue",
+    AMAZON_ROUTE: "Amazon Deals",
+    YMMV_ROUTE: "YMMV Deals",
+    STAFF_REVIEW_ROUTE: "Staff Review",
     DEAD_REPORTS_ROUTE: "Dead Deal Reports",
 }
 
 ROUTE_DESCRIPTIONS: dict[str, str] = {
     DEFAULT_ROUTE: "Fallback channel for normal alerts and anything not routed elsewhere.",
-    PRICE_GLITCH_ROUTE: "Likely price errors, extreme discounts, and fast-moving glitches.",
+    PRICE_GLITCH_ROUTE: "Possible price errors, extreme discounts, and fast-moving glitches.",
     HOT_DEALS_ROUTE: "Strong discounts that are not necessarily glitches.",
-    AMAZON_ROUTE: "Amazon-specific alerts and YMMV Amazon offers.",
-    HIGH_RISK_ROUTE: "Merchant-fulfilled, third-party, renewed/used, or risky alerts.",
-    REVIEW_ROUTE: "Private/staff review lane for incomplete or questionable alerts.",
+    AMAZON_ROUTE: "Amazon-specific alerts.",
+    YMMV_ROUTE: "Deals that may vary by account, ZIP, Prime status, seller, or final checkout.",
+    STAFF_REVIEW_ROUTE: "Private staff lane for deals that need manual review before public posting.",
     DEAD_REPORTS_ROUTE: "Future route for dead deal reports and cleanup signals.",
 }
 
@@ -52,16 +52,19 @@ class RouteDecision:
 
 def choose_primary_route(deal: NormalizedDeal) -> RouteDecision:
     """
-    Choose one primary public route for a deal.
+    Choose one primary route for a deal.
 
-    This keeps SniperPlug from spamming the same alert into every matching channel.
-    Priority is intentional: urgent glitches beat retailer/category routing.
+    SniperPlug avoids fear-based public buckets. Deals that need extra caution are
+    routed as YMMV or Staff Review instead of being called risky.
     """
     if deal.risk_level.lower() == "high":
-        return RouteDecision(HIGH_RISK_ROUTE, "high risk alert")
+        return RouteDecision(STAFF_REVIEW_ROUTE, "staff review before public posting")
 
     if deal.is_possible_price_error:
         return RouteDecision(PRICE_GLITCH_ROUTE, "possible price glitch")
+
+    if deal.is_ymmv:
+        return RouteDecision(YMMV_ROUTE, "may vary by account or checkout")
 
     if deal.retailer.lower() == "amazon":
         return RouteDecision(AMAZON_ROUTE, "Amazon alert")

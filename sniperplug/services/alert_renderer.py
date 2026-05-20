@@ -10,9 +10,9 @@ AMAZON_DISCLAIMER = (
     "Amazon deals can be account-specific, ZIP-based, Prime-only, seller-specific, "
     "canceled, gone, or different by checkout."
 )
-REQUIRED_IMAGE_ERROR = (
-    "SniperPlug alerts require an exact product image from the deal provider. "
-    "Do not post alerts with missing, placeholder, guessed, or category images."
+IMAGE_NOT_VERIFIED_WARNING = (
+    "No exact product image was returned. No placeholder or guessed image was used. "
+    "Verify the product page before checkout."
 )
 
 
@@ -29,9 +29,11 @@ def percent(value: float | None) -> str:
 
 
 def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
-    require_exact_product_image(deal)
-
+    has_exact_image = has_product_image(deal)
     title_prefix = " • ".join(deal.alert_tags) if deal.alert_tags else "🔎 Deal Alert"
+
+    if not has_exact_image:
+        title_prefix = f"{title_prefix} • ⚠️ Image Not Verified"
 
     embed = discord.Embed(
         title=title_prefix,
@@ -40,9 +42,10 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
         url=deal.product_url,
     )
 
-    # SniperPlug intentionally uses the provider-supplied product image directly.
-    # No placeholders, category art, or guessed replacements are allowed.
-    embed.set_image(url=deal.image_url)
+    # Use only the provider-supplied product image. Never replace missing images
+    # with placeholders, category art, guessed images, or random search results.
+    if has_exact_image:
+        embed.set_image(url=deal.image_url)
 
     price_line = (
         f"**Now:** {money(deal.current_price)}\n"
@@ -67,12 +70,14 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
     if seller_bits:
         embed.add_field(name="Store / Seller", value="\n".join(seller_bits[:4]), inline=False)
 
-    compact_flags = build_compact_flags(deal)
+    compact_flags = build_compact_flags(deal, has_exact_image=has_exact_image)
     if compact_flags:
         embed.add_field(name="Why flagged", value="\n".join(f"• {flag}" for flag in compact_flags[:5]), inline=False)
 
-    warning = AMAZON_DISCLAIMER if deal.retailer.lower() == "amazon" else SHORT_DISCLAIMER
-    embed.add_field(name="SniperPlug warning", value=warning, inline=False)
+    warning_parts = [AMAZON_DISCLAIMER if deal.retailer.lower() == "amazon" else SHORT_DISCLAIMER]
+    if not has_exact_image:
+        warning_parts.append(IMAGE_NOT_VERIFIED_WARNING)
+    embed.add_field(name="SniperPlug warning", value="\n".join(warning_parts), inline=False)
 
     identifiers: list[str] = []
     if deal.asin:
@@ -88,19 +93,17 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
     return embed
 
 
-def require_exact_product_image(deal: NormalizedDeal) -> None:
+def has_product_image(deal: NormalizedDeal) -> bool:
     """
-    Prevent SniperPlug from posting cheap-looking or misleading no-image alerts.
+    True only when the provider supplied a product image URL.
 
-    Provider integrations must pass the exact product image returned by the source
-    API/listing. Missing images should be handled upstream by skipping or holding
-    the deal for review, not by using placeholders or guessed images.
+    Missing images are allowed for verified deals, but SniperPlug must never fill
+    the gap with placeholders, category art, guessed images, or random search results.
     """
-    if not deal.image_url or not deal.image_url.strip():
-        raise ValueError(REQUIRED_IMAGE_ERROR)
+    return bool(deal.image_url and deal.image_url.strip())
 
 
-def build_compact_flags(deal: NormalizedDeal) -> list[str]:
+def build_compact_flags(deal: NormalizedDeal, *, has_exact_image: bool) -> list[str]:
     flags: list[str] = []
 
     if deal.discount_percent is not None:
@@ -111,6 +114,9 @@ def build_compact_flags(deal: NormalizedDeal) -> list[str]:
 
     if deal.is_ymmv:
         flags.append("YMMV: may not appear for everyone")
+
+    if not has_exact_image:
+        flags.append("Exact product image not available")
 
     if deal.fulfilled_by_amazon is False:
         flags.append("Merchant fulfilled")

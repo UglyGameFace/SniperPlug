@@ -7,6 +7,7 @@ from typing import Any
 import aiosqlite
 
 from sniperplug.models.deal import NormalizedDeal, utc_now_iso
+from sniperplug.services.routing import DEFAULT_ROUTE
 
 
 class Database:
@@ -44,6 +45,15 @@ class Database:
                 min_discount_percent REAL NOT NULL DEFAULT 40,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS guild_alert_channels (
+                guild_id INTEGER NOT NULL,
+                route TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, route)
             );
 
             CREATE TABLE IF NOT EXISTS deals (
@@ -92,6 +102,7 @@ class Database:
                 PRIMARY KEY (guild_id, user_id, deal_id)
             );
 
+            CREATE INDEX IF NOT EXISTS idx_guild_alert_channels_guild ON guild_alert_channels(guild_id);
             CREATE INDEX IF NOT EXISTS idx_deals_retailer ON deals(retailer);
             CREATE INDEX IF NOT EXISTS idx_deals_discount ON deals(discount_percent);
             CREATE INDEX IF NOT EXISTS idx_deals_last_checked ON deals(last_checked_at);
@@ -112,9 +123,14 @@ class Database:
             """,
             (guild_id, channel_id, now, now),
         )
+        await self.set_alert_route(guild_id, DEFAULT_ROUTE, channel_id, commit=False)
         await conn.commit()
 
     async def get_guild_deal_channel(self, guild_id: int) -> int | None:
+        default_route = await self.get_alert_route(guild_id, DEFAULT_ROUTE)
+        if default_route:
+            return default_route
+
         conn = self.require_conn()
         cursor = await conn.execute(
             "SELECT deals_channel_id FROM guild_settings WHERE guild_id = ?",
@@ -122,6 +138,46 @@ class Database:
         )
         row = await cursor.fetchone()
         return int(row["deals_channel_id"]) if row and row["deals_channel_id"] else None
+
+    async def set_alert_route(self, guild_id: int, route: str, channel_id: int, *, commit: bool = True) -> None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        await conn.execute(
+            """
+            INSERT INTO guild_alert_channels (guild_id, route, channel_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, route) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                updated_at = excluded.updated_at
+            """,
+            (guild_id, route, channel_id, now, now),
+        )
+        if commit:
+            await conn.commit()
+
+    async def get_alert_route(self, guild_id: int, route: str) -> int | None:
+        conn = self.require_conn()
+        cursor = await conn.execute(
+            "SELECT channel_id FROM guild_alert_channels WHERE guild_id = ? AND route = ?",
+            (guild_id, route),
+        )
+        row = await cursor.fetchone()
+        return int(row["channel_id"]) if row else None
+
+    async def get_all_alert_routes(self, guild_id: int) -> dict[str, int]:
+        conn = self.require_conn()
+        cursor = await conn.execute(
+            "SELECT route, channel_id FROM guild_alert_channels WHERE guild_id = ? ORDER BY route",
+            (guild_id,),
+        )
+        rows = await cursor.fetchall()
+        return {str(row["route"]): int(row["channel_id"]) for row in rows}
+
+    async def resolve_alert_channel(self, guild_id: int, route: str) -> int | None:
+        direct = await self.get_alert_route(guild_id, route)
+        if direct:
+            return direct
+        return await self.get_guild_deal_channel(guild_id)
 
     async def upsert_deal(self, deal: NormalizedDeal) -> None:
         conn = self.require_conn()
@@ -235,6 +291,7 @@ class Database:
 
         return {
             "deals_channel_id": settings["deals_channel_id"] if settings else None,
+            "alert_routes": await self.get_all_alert_routes(guild_id),
             "deals_count": deals_count,
             "dead_reports_count": reports_count,
         }

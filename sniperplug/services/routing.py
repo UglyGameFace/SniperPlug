@@ -9,6 +9,7 @@ DEFAULT_ROUTE = "default"
 PRICE_GLITCH_ROUTE = "price_glitch"
 HOT_DEALS_ROUTE = "hot_deals"
 AMAZON_ROUTE = "amazon"
+BUSINESS_ROUTE = "business"
 YMMV_ROUTE = "ymmv"
 STAFF_REVIEW_ROUTE = "staff_review"
 DEAD_REPORTS_ROUTE = "dead_reports"
@@ -18,6 +19,7 @@ ALERT_ROUTES: tuple[str, ...] = (
     PRICE_GLITCH_ROUTE,
     HOT_DEALS_ROUTE,
     AMAZON_ROUTE,
+    BUSINESS_ROUTE,
     YMMV_ROUTE,
     STAFF_REVIEW_ROUTE,
     DEAD_REPORTS_ROUTE,
@@ -28,6 +30,7 @@ ROUTE_LABELS: dict[str, str] = {
     PRICE_GLITCH_ROUTE: "Price Glitches",
     HOT_DEALS_ROUTE: "Hot Deals",
     AMAZON_ROUTE: "Amazon Deals",
+    BUSINESS_ROUTE: "Business Deals",
     YMMV_ROUTE: "YMMV Deals",
     STAFF_REVIEW_ROUTE: "Staff Review",
     DEAD_REPORTS_ROUTE: "Dead Deal Reports",
@@ -38,6 +41,7 @@ ROUTE_DESCRIPTIONS: dict[str, str] = {
     PRICE_GLITCH_ROUTE: "Possible price errors, extreme discounts, and fast-moving glitches.",
     HOT_DEALS_ROUTE: "Strong discounts that are not necessarily glitches.",
     AMAZON_ROUTE: "Amazon-specific alerts.",
+    BUSINESS_ROUTE: "Business-account offers, bulk pricing, and B2B checkout deals that may require a business account.",
     YMMV_ROUTE: "Deals that may vary by account, ZIP, Prime status, seller, or final checkout.",
     STAFF_REVIEW_ROUTE: "Private staff lane for deals that need manual review before public posting.",
     DEAD_REPORTS_ROUTE: "Future route for dead deal reports and cleanup signals.",
@@ -63,6 +67,9 @@ def choose_primary_route(deal: NormalizedDeal) -> RouteDecision:
     if deal.is_possible_price_error:
         return RouteDecision(PRICE_GLITCH_ROUTE, "possible price glitch")
 
+    if is_business_deal(deal):
+        return RouteDecision(BUSINESS_ROUTE, "business account or bulk-pricing deal")
+
     if deal.is_ymmv:
         return RouteDecision(YMMV_ROUTE, "may vary by account or checkout")
 
@@ -73,6 +80,30 @@ def choose_primary_route(deal: NormalizedDeal) -> RouteDecision:
         return RouteDecision(HOT_DEALS_ROUTE, "hot deal discount")
 
     return RouteDecision(DEFAULT_ROUTE, "default fallback")
+
+
+def is_business_deal(deal: NormalizedDeal) -> bool:
+    text = " ".join(
+        item.lower()
+        for item in [
+            deal.source,
+            deal.title,
+            deal.availability_message or "",
+            *deal.alert_tags,
+            *deal.risk_flags,
+        ]
+        if item
+    )
+    business_terms = (
+        "amazon business",
+        "business account",
+        "business-only",
+        "business only",
+        "b2b",
+        "bulk pricing",
+        "quantity discount",
+    )
+    return any(term in text for term in business_terms)
 
 
 def is_valid_route(route: str) -> bool:

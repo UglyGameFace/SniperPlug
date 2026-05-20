@@ -10,6 +10,10 @@ AMAZON_DISCLAIMER = (
     "Amazon deals can be account-specific, ZIP-based, Prime-only, seller-specific, "
     "canceled, gone, or different by checkout."
 )
+REQUIRED_IMAGE_ERROR = (
+    "SniperPlug alerts require an exact product image from the deal provider. "
+    "Do not post alerts with missing, placeholder, guessed, or category images."
+)
 
 
 def money(value: float | None) -> str:
@@ -25,6 +29,8 @@ def percent(value: float | None) -> str:
 
 
 def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
+    require_exact_product_image(deal)
+
     title_prefix = " • ".join(deal.alert_tags) if deal.alert_tags else "🔎 Deal Alert"
 
     embed = discord.Embed(
@@ -34,8 +40,9 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
         url=deal.product_url,
     )
 
-    if deal.image_url:
-        embed.set_image(url=deal.image_url)
+    # SniperPlug intentionally uses the provider-supplied product image directly.
+    # No placeholders, category art, or guessed replacements are allowed.
+    embed.set_image(url=deal.image_url)
 
     price_line = (
         f"**Now:** {money(deal.current_price)}\n"
@@ -79,6 +86,18 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
 
     embed.set_footer(text=f"SniperPlug • Confidence {deal.confidence_score}/100 • {SHORT_DISCLAIMER}")
     return embed
+
+
+def require_exact_product_image(deal: NormalizedDeal) -> None:
+    """
+    Prevent SniperPlug from posting cheap-looking or misleading no-image alerts.
+
+    Provider integrations must pass the exact product image returned by the source
+    API/listing. Missing images should be handled upstream by skipping or holding
+    the deal for review, not by using placeholders or guessed images.
+    """
+    if not deal.image_url or not deal.image_url.strip():
+        raise ValueError(REQUIRED_IMAGE_ERROR)
 
 
 def build_compact_flags(deal: NormalizedDeal) -> list[str]:

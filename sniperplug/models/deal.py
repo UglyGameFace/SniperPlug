@@ -39,6 +39,16 @@ class NormalizedDeal:
     risk_level: str = "low"
     confidence_score: int = 50
 
+    # Verification fields are provider-fed trust signals. They should only be
+    # set to True when a real provider or checkout/link check actually performed
+    # that validation. The renderer labels unknown values conservatively.
+    verification_status: str = "candidate"
+    is_price_verified: bool = False
+    is_link_verified: bool = False
+    is_image_verified: bool = False
+    requires_business_account: bool = False
+    verification_notes: list[str] = field(default_factory=list)
+
     risk_flags: list[str] = field(default_factory=list)
     alert_tags: list[str] = field(default_factory=list)
 

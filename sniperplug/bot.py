@@ -9,6 +9,7 @@ from sniperplug.config import Settings
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.registry import provider_registry
+from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.storage.db import Database
 
 
@@ -28,6 +29,7 @@ class SniperPlugBot(commands.Bot):
         await self.db.init()
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
+        provider_registry.register(WalmartProvider(configured=False))
 
         await self.add_cog(SniperPlugCog(self))
 

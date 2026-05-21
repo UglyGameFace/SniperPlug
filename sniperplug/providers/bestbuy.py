@@ -7,6 +7,7 @@ from sniperplug.providers.base import (
     ProviderHealth,
     ProviderScanRequest,
     ProviderScanResult,
+    ProviderStatus,
 )
 
 
@@ -14,8 +15,8 @@ class BestBuyProvider(DealProvider):
     """Best Buy Products API adapter skeleton.
 
     This provider is intentionally disabled unless a BESTBUY_API_KEY is supplied.
-    The first implementation only adds configuration/healthcheck safety. Live
-    product scanning should be added after API access is approved and tested.
+    Even with a key, it remains staged until live scanning is implemented and
+    tested against approved API access.
     """
 
     provider_key = "bestbuy"
@@ -37,13 +38,15 @@ class BestBuyProvider(DealProvider):
             return ProviderHealth(
                 provider_key=self.provider_key,
                 ok=False,
+                status=ProviderStatus.DISABLED,
                 message="Disabled: BESTBUY_API_KEY is not configured.",
             )
 
         return ProviderHealth(
             provider_key=self.provider_key,
-            ok=True,
-            message="Configured. Live scan implementation is not enabled yet.",
+            ok=False,
+            status=ProviderStatus.STAGED,
+            message="Staged: BESTBUY_API_KEY is configured, but live scanning is not implemented yet.",
         )
 
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
@@ -58,7 +61,7 @@ class BestBuyProvider(DealProvider):
             provider_key=self.provider_key,
             candidates=tuple(self._demo_candidates(request)),
             warnings=(
-                "Best Buy live API scanning is not implemented yet. Returned no live retailer data.",
+                "Best Buy provider is staged only. Live API scanning is not implemented yet.",
             ),
         )
 

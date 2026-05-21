@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Sequence
+
+from sniperplug.models.candidate import SourceCandidate
+
+
+class ProviderCapability(str, Enum):
+    PRODUCT_LOOKUP = "product_lookup"
+    CATEGORY_SCAN = "category_scan"
+    PRICE_HISTORY = "price_history"
+    OFFER_CHECK = "offer_check"
+    CART_CHECK = "cart_check"
+    IMAGE_LOOKUP = "image_lookup"
+    BUSINESS_PRICING = "business_pricing"
+    MEMBER_PRICING = "member_pricing"
+
+
+@dataclass(frozen=True)
+class ProviderHealth:
+    provider_key: str
+    ok: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class ProviderScanRequest:
+    """Input for provider scans.
+
+    Providers should only use fields they truly support. Unsupported fields must
+    be ignored safely, not guessed into fake behavior.
+    """
+    source_key: str
+    category: str | None = None
+    query: str | None = None
+    product_ids: tuple[str, ...] = ()
+    max_results: int = 25
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProviderScanResult:
+    provider_key: str
+    candidates: tuple[SourceCandidate, ...]
+    warnings: tuple[str, ...] = ()
+
+
+class DealProvider(ABC):
+    """Base class for all source-first providers.
+
+    Provider rules:
+    - Return SourceCandidate objects only.
+    - Do not post Discord alerts directly.
+    - Do not use placeholder images.
+    - Do not guess product IDs.
+    - Do not create candidates from social chatter alone.
+    - If a field is unknown, leave it None and add a warning/signal.
+    """
+
+    provider_key: str
+    display_name: str
+    capabilities: frozenset[ProviderCapability]
+
+    @abstractmethod
+    async def healthcheck(self) -> ProviderHealth:
+        """Return whether this provider is configured and reachable."""
+
+    @abstractmethod
+    async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
+        """Scan a source/category/query and return source-found candidates."""
+
+    def supports(self, capability: ProviderCapability) -> bool:
+        return capability in self.capabilities
+
+
+def provider_supports_all(provider: DealProvider, capabilities: Sequence[ProviderCapability]) -> bool:
+    return all(provider.supports(capability) for capability in capabilities)

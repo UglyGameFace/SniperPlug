@@ -14,8 +14,9 @@ def verification_badges(deal: NormalizedDeal) -> list[str]:
     """
     Build honest user-facing proof badges.
 
-    These labels must not overclaim. A badge only says something was checked when
-    the deal object explicitly says a provider or checker verified it.
+    Public alerts should not look like scary debug output. We only show positive
+    checks when something was actually verified, and we clearly label demo data.
+    Unknown checks are omitted instead of shown as alarming "unchecked" badges.
     """
     badges: list[str] = []
 
@@ -29,24 +30,20 @@ def verification_badges(deal: NormalizedDeal) -> list[str]:
     elif status == DEMO or deal.source == "manual_test":
         badges.append("🧪 Demo Data")
     else:
-        badges.append("🔎 Candidate")
+        badges.append("🔎 Source Candidate")
 
     if deal.is_price_verified:
         badges.append("💵 Price Checked")
-    else:
-        badges.append("💵 Price Unchecked")
 
     if deal.is_link_verified:
         badges.append("🔗 Link Checked")
-    else:
-        badges.append("🔗 Link Unchecked")
 
     if deal.image_url and deal.is_image_verified:
         badges.append("🖼️ Image Verified")
     elif deal.image_url:
         badges.append("🖼️ Image Supplied")
     else:
-        badges.append("⚠️ Image Not Verified")
+        badges.append("⚠️ No Product Image")
 
     if deal.requires_business_account:
         badges.append("🏢 Business Account")
@@ -59,15 +56,25 @@ def verification_badges(deal: NormalizedDeal) -> list[str]:
 
 def compact_verification_summary(deal: NormalizedDeal) -> str:
     badges = verification_badges(deal)
-    notes = [note for note in deal.verification_notes if note.strip()]
+    notes = [clean_note(note) for note in deal.verification_notes if note.strip()]
+    notes = [note for note in notes if note]
 
     lines = [" • ".join(badges[:4])]
     if len(badges) > 4:
         lines.append(" • ".join(badges[4:8]))
     if notes:
-        lines.extend(f"• {note}" for note in notes[:3])
+        lines.extend(f"• {note}" for note in notes[:2])
 
     return "\n".join(lines)
+
+
+def clean_note(note: str) -> str:
+    # Keep public notes readable. Technical scoring/debug details are rendered in
+    # dedicated staff/test fields instead of mixed into Proof.
+    lowered = note.lower()
+    if "anomaly score:" in lowered:
+        return ""
+    return note.strip()
 
 
 def unique_keep_order(items: list[str]) -> list[str]:

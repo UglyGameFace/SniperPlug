@@ -7,6 +7,8 @@ from discord.ext import commands
 
 from sniperplug.config import Settings
 from sniperplug.cogs.sniperplug import SniperPlugCog
+from sniperplug.providers.bestbuy import BestBuyProvider
+from sniperplug.providers.registry import provider_registry
 from sniperplug.storage.db import Database
 
 
@@ -24,6 +26,8 @@ class SniperPlugBot(commands.Bot):
     async def setup_hook(self) -> None:
         await self.db.connect()
         await self.db.init()
+
+        provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
 
         await self.add_cog(SniperPlugCog(self))
 

@@ -5,6 +5,7 @@ from enum import Enum
 
 from sniperplug.providers.base import ProviderScanRequest
 from sniperplug.services.snipe_planner import SnipePlan, build_default_snipe_batch
+from sniperplug.services.watchlist_seeds import best_seed_for_category, seeded_terms
 
 
 class MonitorMode(str, Enum):
@@ -46,6 +47,9 @@ class MonitorTarget:
     upcs: tuple[str, ...] = ()
     verification_required: VerificationRequirement = VerificationRequirement.PRICE_AND_LINK
     route_hint: str | None = None
+    seed_label: str | None = None
+    min_normal_value: float | None = None
+    near_zero_trigger_price: float | None = None
     last_seen_price: float | None = None
     last_alerted_price: float | None = None
     last_seen_at: str | None = None
@@ -91,6 +95,9 @@ class MonitorTarget:
             "mode": self.mode.value,
             "verification_required": self.verification_required.value,
             "route_hint": self.route_hint or "",
+            "seed_label": self.seed_label or "",
+            "min_normal_value": str(self.min_normal_value or ""),
+            "near_zero_trigger_price": str(self.near_zero_trigger_price or ""),
         }
 
 
@@ -122,6 +129,7 @@ def build_default_monitor_control_plane(limit_targets: int = 24) -> MonitorContr
 
 
 def build_target_from_plan(plan: SnipePlan) -> MonitorTarget:
+    seed = best_seed_for_category(plan.category_key)
     return MonitorTarget(
         monitor_id=f"{plan.source_key}:{plan.category_key}",
         source_key=plan.source_key,
@@ -133,12 +141,15 @@ def build_target_from_plan(plan: SnipePlan) -> MonitorTarget:
         mode=mode_for_plan(plan),
         cadence_seconds=plan.cadence_seconds,
         cooldown_seconds=cooldown_for_priority(plan.priority),
-        watch_terms=plan.queries,
+        watch_terms=seeded_terms(plan.category_key, plan.queries)[:16],
         product_ids=(),
-        skus=(),
-        upcs=(),
+        skus=seed.skus if seed else (),
+        upcs=seed.upcs if seed else (),
         verification_required=verification_for_category(plan.category_key),
         route_hint=route_hint_for_category(plan.category_key),
+        seed_label=seed.label if seed else None,
+        min_normal_value=seed.min_normal_value if seed else None,
+        near_zero_trigger_price=seed.near_zero_trigger_price if seed else None,
     )
 
 

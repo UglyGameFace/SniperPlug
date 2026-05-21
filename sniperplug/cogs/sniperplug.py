@@ -367,9 +367,10 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             ephemeral=True,
         )
 
-    @app_commands.command(name="scan_test", description="Run demo source-found candidates through the SniperPlug sniper pipeline.")
+    @app_commands.command(name="scan_test", description="Preview demo source candidates. Set post_alerts true to post demo alerts.")
+    @app_commands.describe(post_alerts="Post demo alerts into configured route channels. Defaults to private preview only.")
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def scan_test(self, interaction: discord.Interaction) -> None:
+    async def scan_test(self, interaction: discord.Interaction, post_alerts: bool = False) -> None:
         if not interaction.guild_id or not interaction.guild:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
@@ -379,6 +380,32 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         candidates = self._demo_source_candidates()
         decisions = [evaluate_candidate(candidate) for candidate in candidates]
         decisions = sorted(decisions, key=lambda decision: decision.anomaly.score, reverse=True)
+
+        if not post_alerts:
+            embed = discord.Embed(
+                title="SniperPlug Scan Test Preview",
+                description=(
+                    "Private preview only. No public alerts were posted. "
+                    "Run with `post_alerts:true` only when you intentionally want demo alerts in the configured channels."
+                ),
+                color=discord.Color.orange(),
+            )
+            for decision in decisions[:5]:
+                deal = decision.deal
+                embed.add_field(
+                    name=deal.title[:256],
+                    value=(
+                        f"Retailer: `{deal.retailer}`\n"
+                        f"Now: `{deal.current_price}` • Typical: `{deal.typical_price}`\n"
+                        f"Score: **{decision.anomaly.score}/250** • {friendly_score_level(decision.anomaly.level)}\n"
+                        f"Route: **{route_label(decision.route.route)}**\n"
+                        f"Would public alert: **{'Yes' if decision.should_alert else 'No'}**"
+                    ),
+                    inline=False,
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
         posted = 0
         skipped: list[str] = []

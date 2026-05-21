@@ -7,7 +7,7 @@ from discord.ext import commands
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
 from sniperplug.services.alert_renderer import DealActionView, build_deal_embed
-from sniperplug.services.candidate_pipeline import CandidateDecision, evaluate_candidate
+from sniperplug.services.candidate_pipeline import evaluate_candidate
 from sniperplug.services.risk_flags import apply_risk_flags
 from sniperplug.services.routing import (
     ALERT_ROUTES,
@@ -253,10 +253,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             deal.is_price_verified = False
             deal.is_link_verified = False
             deal.is_image_verified = False
-            deal.verification_notes = [
-                "Demo source-candidate only. No retailer API or checkout call was made.",
-                f"Anomaly score: {decision.anomaly.score}/250 ({decision.anomaly.level}).",
-            ]
+            deal.verification_notes = ["Demo source-candidate only. No retailer API or checkout call was made."]
             deal = apply_risk_flags(deal)
 
             channel_id = await self.bot.db.resolve_alert_channel(interaction.guild_id, decision.route.route)
@@ -275,17 +272,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             embed.add_field(
                 name="Sniper Score",
                 value=(
-                    f"**{decision.anomaly.score}/250** • {decision.anomaly.level.title()}\n"
-                    + "\n".join(f"• {reason}" for reason in decision.reasons[:5])
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="Pipeline Decision",
-                value=(
-                    f"Route: **{route_label(decision.route.route)}**\n"
-                    f"Public alert: **{'Yes' if decision.should_alert else 'No'}**\n"
-                    f"Hold for review: **{'Yes' if decision.hold_for_review else 'No'}**"
+                    f"**{decision.anomaly.score}/250** • {friendly_score_level(decision.anomaly.level)}\n"
+                    + "\n".join(f"• {reason}" for reason in decision.reasons[:4])
                 ),
                 inline=False,
             )
@@ -315,7 +303,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 product_id_type="sku",
                 stock_status="In Stock",
                 can_add_to_cart=True,
-                signals=["Demo: source page showed near-zero price", "Demo: add-to-cart observed"],
+                signals=["Source page showed near-zero price", "Add-to-cart observed"],
             ),
             SourceCandidate(
                 source_key="samsung",
@@ -329,7 +317,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 stock_status="Available",
                 can_add_to_cart=True,
                 is_checkout_price=True,
-                signals=["Demo: checkout price much lower than product value"],
+                signals=["Checkout price much lower than product value"],
             ),
             SourceCandidate(
                 source_key="nike",
@@ -343,7 +331,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 stock_status="Limited sizes",
                 can_add_to_cart=True,
                 is_member_only=True,
-                signals=["Demo: member-only pricing may vary"],
+                signals=["Member-only pricing may vary"],
             ),
             SourceCandidate(
                 source_key="autozone",
@@ -356,7 +344,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 product_id_type="sku",
                 stock_status="Available",
                 can_add_to_cart=True,
-                signals=["Demo: bulk auto fluid price anomaly"],
+                signals=["Bulk auto fluid price anomaly"],
             ),
             SourceCandidate(
                 source_key="macys",
@@ -369,7 +357,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 product_id_type="sku",
                 stock_status="Available",
                 can_add_to_cart=None,
-                signals=["Demo: jewelry price appears below expected value"],
+                signals=["Jewelry price appears below expected value"],
             ),
         ]
 
@@ -430,3 +418,14 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+
+def friendly_score_level(level: str) -> str:
+    labels = {
+        "nuclear": "Extreme",
+        "urgent": "Urgent",
+        "strong": "Strong",
+        "watch": "Watch",
+        "ignore": "Low",
+    }
+    return labels.get(level, level.title())

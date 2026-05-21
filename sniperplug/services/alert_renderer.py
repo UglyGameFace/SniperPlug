@@ -11,10 +11,7 @@ AMAZON_DISCLAIMER = (
     "Amazon deals can be account-specific, ZIP-based, Prime-only, seller-specific, "
     "canceled, gone, or different by checkout."
 )
-IMAGE_NOT_VERIFIED_WARNING = (
-    "No exact product image was returned. No placeholder or guessed image was used. "
-    "Verify the product page before checkout."
-)
+IMAGE_NOT_VERIFIED_WARNING = "No product image was available. No placeholder or guessed image was used."
 
 
 def money(value: float | None) -> str:
@@ -33,9 +30,6 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
     has_exact_image = has_product_image(deal)
     title_prefix = " • ".join(deal.alert_tags) if deal.alert_tags else "🔎 Deal Alert"
 
-    if not has_exact_image:
-        title_prefix = f"{title_prefix} • ⚠️ Image Not Verified"
-
     embed = discord.Embed(
         title=title_prefix,
         description=f"**{deal.title}**",
@@ -51,8 +45,7 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
     price_line = (
         f"**Now:** {money(deal.current_price)}\n"
         f"**Typical:** {money(deal.typical_price)}\n"
-        f"**Save:** {money(deal.savings_amount)} ({percent(deal.discount_percent)})\n"
-        f"**Status:** {deal.verification_status.replace('_', ' ').title()}"
+        f"**Save:** {money(deal.savings_amount)} ({percent(deal.discount_percent)})"
     )
     embed.add_field(name="Deal Snapshot", value=price_line, inline=False)
 
@@ -77,12 +70,12 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
 
     compact_flags = build_compact_flags(deal, has_exact_image=has_exact_image)
     if compact_flags:
-        embed.add_field(name="Why flagged", value="\n".join(f"• {flag}" for flag in compact_flags[:5]), inline=False)
+        embed.add_field(name="Why it matters", value="\n".join(f"• {flag}" for flag in compact_flags[:4]), inline=False)
 
     warning_parts = [AMAZON_DISCLAIMER if deal.retailer.lower() == "amazon" else SHORT_DISCLAIMER]
     if not has_exact_image:
         warning_parts.append(IMAGE_NOT_VERIFIED_WARNING)
-    embed.add_field(name="SniperPlug warning", value="\n".join(warning_parts), inline=False)
+    embed.add_field(name="Heads up", value="\n".join(warning_parts), inline=False)
 
     identifiers: list[str] = []
     if deal.asin:
@@ -118,10 +111,10 @@ def build_compact_flags(deal: NormalizedDeal, *, has_exact_image: bool) -> list[
         flags.append("Possible price error or fast-moving glitch")
 
     if deal.is_ymmv:
-        flags.append("YMMV: may not appear for everyone")
+        flags.append("May not appear for everyone")
 
     if not has_exact_image:
-        flags.append("Exact product image not available")
+        flags.append("No product image available")
 
     if deal.requires_business_account:
         flags.append("May require business account")

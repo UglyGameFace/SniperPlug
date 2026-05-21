@@ -4,8 +4,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
 from sniperplug.services.alert_renderer import DealActionView, build_deal_embed
+from sniperplug.services.candidate_pipeline import CandidateDecision, evaluate_candidate
 from sniperplug.services.risk_flags import apply_risk_flags
 from sniperplug.services.routing import (
     ALERT_ROUTES,
@@ -230,6 +232,147 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             ephemeral=True,
         )
 
+    @app_commands.command(name="scan_test", description="Run demo source-found candidates through the SniperPlug sniper pipeline.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def scan_test(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild_id or not interaction.guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        candidates = self._demo_source_candidates()
+        decisions = [evaluate_candidate(candidate) for candidate in candidates]
+        decisions = sorted(decisions, key=lambda decision: decision.anomaly.score, reverse=True)
+
+        posted = 0
+        skipped: list[str] = []
+        for decision in decisions[:5]:
+            deal = decision.deal
+            deal.verification_status = "demo"
+            deal.is_price_verified = False
+            deal.is_link_verified = False
+            deal.is_image_verified = False
+            deal.verification_notes = [
+                "Demo source-candidate only. No retailer API or checkout call was made.",
+                f"Anomaly score: {decision.anomaly.score}/250 ({decision.anomaly.level}).",
+            ]
+            deal = apply_risk_flags(deal)
+
+            channel_id = await self.bot.db.resolve_alert_channel(interaction.guild_id, decision.route.route)
+            channel = await self._resolve_text_channel(interaction.guild, channel_id, interaction.channel)
+            if channel is None:
+                skipped.append(f"{deal.title}: no valid channel")
+                continue
+
+            missing = self._missing_bot_perms(interaction.guild, channel)
+            if missing:
+                skipped.append(f"{deal.title}: missing perms in #{channel.name}")
+                continue
+
+            await self.bot.db.upsert_deal(deal)
+            embed = build_deal_embed(deal)
+            embed.add_field(
+                name="Sniper Score",
+                value=(
+                    f"**{decision.anomaly.score}/250** • {decision.anomaly.level.title()}\n"
+                    + "\n".join(f"• {reason}" for reason in decision.reasons[:5])
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Pipeline Decision",
+                value=(
+                    f"Route: **{route_label(decision.route.route)}**\n"
+                    f"Public alert: **{'Yes' if decision.should_alert else 'No'}**\n"
+                    f"Hold for review: **{'Yes' if decision.hold_for_review else 'No'}**"
+                ),
+                inline=False,
+            )
+            view = DealActionView(self.bot.db, deal)
+
+            try:
+                await channel.send(embed=embed, view=view)
+                posted += 1
+            except discord.Forbidden:
+                skipped.append(f"{deal.title}: Discord 403 in #{channel.name}")
+
+        summary = f"Ran **{len(candidates)}** demo source candidates through SniperPlug. Posted **{posted}** demo alerts."
+        if skipped:
+            summary += "\n\nSkipped:\n" + "\n".join(f"• {item}" for item in skipped[:5])
+        await interaction.followup.send(summary, ephemeral=True)
+
+    def _demo_source_candidates(self) -> list[SourceCandidate]:
+        return [
+            SourceCandidate(
+                source_key="msi_store",
+                retailer="MSI Store",
+                title="GeForce RTX 5080 16G INSPIRE 3X OC Black Starter Kit",
+                product_url="https://us-store.msi.com/",
+                current_price=0.00,
+                typical_price=9999.00,
+                product_id="RTX5080-DEMO",
+                product_id_type="sku",
+                stock_status="In Stock",
+                can_add_to_cart=True,
+                signals=["Demo: source page showed near-zero price", "Demo: add-to-cart observed"],
+            ),
+            SourceCandidate(
+                source_key="samsung",
+                retailer="Samsung",
+                title="Samsung 77 inch OLED TV brand-direct checkout price drop",
+                product_url="https://www.samsung.com/us/",
+                current_price=99.00,
+                typical_price=2499.99,
+                product_id="SAMSUNG-OLED-DEMO",
+                product_id_type="sku",
+                stock_status="Available",
+                can_add_to_cart=True,
+                is_checkout_price=True,
+                signals=["Demo: checkout price much lower than product value"],
+            ),
+            SourceCandidate(
+                source_key="nike",
+                retailer="Nike",
+                title="Nike Air Jordan sneaker member price error",
+                product_url="https://www.nike.com/",
+                current_price=0.01,
+                typical_price=180.00,
+                product_id="NIKE-JORDAN-DEMO",
+                product_id_type="sku",
+                stock_status="Limited sizes",
+                can_add_to_cart=True,
+                is_member_only=True,
+                signals=["Demo: member-only pricing may vary"],
+            ),
+            SourceCandidate(
+                source_key="autozone",
+                retailer="AutoZone",
+                title="Mobil 1 full synthetic motor oil case pack",
+                product_url="https://www.autozone.com/",
+                current_price=5.00,
+                typical_price=72.00,
+                product_id="OIL-CASE-DEMO",
+                product_id_type="sku",
+                stock_status="Available",
+                can_add_to_cart=True,
+                signals=["Demo: bulk auto fluid price anomaly"],
+            ),
+            SourceCandidate(
+                source_key="macys",
+                retailer="Macy's",
+                title="14k gold chain jewelry clearance price anomaly",
+                product_url="https://www.macys.com/",
+                current_price=49.99,
+                typical_price=799.99,
+                product_id="GOLD-CHAIN-DEMO",
+                product_id_type="sku",
+                stock_status="Available",
+                can_add_to_cart=None,
+                signals=["Demo: jewelry price appears below expected value"],
+            ),
+        ]
+
     async def _resolve_text_channel(
         self,
         guild: discord.Guild,
@@ -271,6 +414,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     @setup.error
     @set_channel.error
     @test_alert.error
+    @scan_test.error
     async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             message = "You need **Manage Server** permission to use this SniperPlug admin command."

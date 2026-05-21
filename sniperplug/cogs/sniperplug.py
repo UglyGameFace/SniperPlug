@@ -10,6 +10,7 @@ from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.alert_renderer import DealActionView, build_deal_embed
 from sniperplug.services.candidate_pipeline import evaluate_candidate
+from sniperplug.services.monitor_control import MonitorMode, build_default_monitor_control_plane
 from sniperplug.services.risk_flags import apply_risk_flags
 from sniperplug.services.routing import (
     ALERT_ROUTES,
@@ -292,6 +293,41 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="monitor_plan", description="Show live monitor targets without scanning retailers.")
+    @app_commands.describe(source_key="Optional source filter, like amazon, best_buy, walmart, msi_store, nike.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def monitor_plan(self, interaction: discord.Interaction, source_key: str | None = None) -> None:
+        control_plane = build_default_monitor_control_plane(limit_targets=24)
+        targets = control_plane.targets if not source_key else control_plane.by_source(source_key)
+
+        embed = discord.Embed(
+            title="SniperPlug Monitor Plan",
+            description=(
+                "Control-plane preview only. This does not scan retailers, call APIs, "
+                "or post public alerts. Generated monitors default to Staff Review."
+            ),
+            color=discord.Color.orange(),
+        )
+
+        if not targets:
+            embed.add_field(name="No monitor targets", value="No targets matched that filter.", inline=False)
+        else:
+            for target in targets[:12]:
+                terms = ", ".join(target.watch_terms[:4]) or "None"
+                embed.add_field(
+                    name=f"{monitor_mode_label(target.mode)} • {target.source_name} + {target.category_label}",
+                    value=(
+                        f"Monitor: `{target.monitor_id}`\n"
+                        f"Priority: **{target.priority}** • Cadence: **{target.cadence_seconds}s** • Cooldown: **{target.cooldown_seconds}s**\n"
+                        f"Proof required: `{target.verification_required.value}`\n"
+                        f"Route hint: `{target.route_hint or 'none'}`\n"
+                        f"Watch terms: `{terms}`"
+                    ),
+                    inline=False,
+                )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="test_alert", description="Post a realistic SniperPlug test deal alert.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def test_alert(self, interaction: discord.Interaction) -> None:
@@ -368,9 +404,17 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         )
 
     @app_commands.command(name="scan_test", description="Preview demo source candidates. Set post_alerts true to post demo alerts.")
-    @app_commands.describe(post_alerts="Post demo alerts into configured route channels. Defaults to private preview only.")
+    @app_commands.describe(
+        post_alerts="Post demo alerts. Defaults to private preview only.",
+        test_channel="Optional test channel to receive all demo alerts instead of route channels.",
+    )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def scan_test(self, interaction: discord.Interaction, post_alerts: bool = False) -> None:
+    async def scan_test(
+        self,
+        interaction: discord.Interaction,
+        post_alerts: bool = False,
+        test_channel: discord.TextChannel | None = None,
+    ) -> None:
         if not interaction.guild_id or not interaction.guild:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
@@ -386,7 +430,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 title="SniperPlug Scan Test Preview",
                 description=(
                     "Private preview only. No public alerts were posted. "
-                    "Run with `post_alerts:true` only when you intentionally want demo alerts in the configured channels."
+                    "Run with `post_alerts:true` only when you intentionally want demo alerts. "
+                    "Use `test_channel` to keep demo alerts out of real deal channels."
                 ),
                 color=discord.Color.orange(),
             )
@@ -407,6 +452,15 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
+        if test_channel is not None:
+            missing = self._missing_bot_perms(interaction.guild, test_channel)
+            if missing:
+                await interaction.followup.send(
+                    self._missing_permissions_message(test_channel, missing),
+                    ephemeral=True,
+                )
+                return
+
         posted = 0
         skipped: list[str] = []
         for decision in decisions[:5]:
@@ -418,8 +472,12 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             deal.verification_notes = ["Demo source-candidate only. No retailer API or checkout call was made."]
             deal = apply_risk_flags(deal)
 
-            channel_id = await self.bot.db.resolve_alert_channel(interaction.guild_id, decision.route.route)
-            channel = await self._resolve_text_channel(interaction.guild, channel_id, interaction.channel)
+            if test_channel is not None:
+                channel = test_channel
+            else:
+                channel_id = await self.bot.db.resolve_alert_channel(interaction.guild_id, decision.route.route)
+                channel = await self._resolve_text_channel(interaction.guild, channel_id, interaction.channel)
+
             if channel is None:
                 skipped.append(f"{deal.title}: no valid channel")
                 continue
@@ -447,7 +505,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             except discord.Forbidden:
                 skipped.append(f"{deal.title}: Discord 403 in #{channel.name}")
 
-        summary = f"Ran **{len(candidates)}** demo source candidates through SniperPlug. Posted **{posted}** demo alerts."
+        destination = test_channel.mention if test_channel else "configured route channels"
+        summary = f"Ran **{len(candidates)}** demo source candidates through SniperPlug. Posted **{posted}** demo alerts to {destination}."
         if skipped:
             summary += "\n\nSkipped:\n" + "\n".join(f"• {item}" for item in skipped[:5])
         await interaction.followup.send(summary, ephemeral=True)
@@ -566,6 +625,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     @test_alert.error
     @scan_test.error
     @snipe_plan.error
+    @monitor_plan.error
     @providers.error
     @provider_scan.error
     async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -604,3 +664,12 @@ def provider_status_label(status: ProviderStatus) -> str:
         ProviderStatus.ERROR: "⚠️ Error",
     }
     return labels.get(status, "⚠️ Unknown")
+
+
+def monitor_mode_label(mode: MonitorMode) -> str:
+    labels = {
+        MonitorMode.PREVIEW_ONLY: "🔎 Preview",
+        MonitorMode.STAFF_REVIEW: "🛠️ Staff Review",
+        MonitorMode.PUBLIC_ALLOWED: "📣 Public Allowed",
+    }
+    return labels.get(mode, mode.value)

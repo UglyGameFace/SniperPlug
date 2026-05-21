@@ -6,7 +6,7 @@ from discord.ext import commands
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
-from sniperplug.providers.base import ProviderScanRequest
+from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.alert_renderer import DealActionView, build_deal_embed
 from sniperplug.services.candidate_pipeline import evaluate_candidate
@@ -180,9 +180,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             )
         else:
             for health in healthchecks:
-                status = "✅ Ready" if health.ok else "⏸️ Disabled"
                 embed.add_field(
-                    name=f"{status} • {health.provider_key}",
+                    name=f"{provider_status_label(health.status)} • {health.provider_key}",
                     value=health.message,
                     inline=False,
                 )
@@ -216,9 +215,9 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             return
 
         health = await provider.healthcheck()
-        if not health.ok:
+        if health.status != ProviderStatus.READY:
             await interaction.followup.send(
-                f"`{provider.provider_key}` is not ready: {health.message}",
+                f"`{provider.provider_key}` is not ready for live scans: {health.message}",
                 ephemeral=True,
             )
             return
@@ -568,3 +567,13 @@ def friendly_score_level(level: str) -> str:
         "ignore": "Low",
     }
     return labels.get(level, level.title())
+
+
+def provider_status_label(status: ProviderStatus) -> str:
+    labels = {
+        ProviderStatus.READY: "✅ Ready",
+        ProviderStatus.STAGED: "🟡 Staged",
+        ProviderStatus.DISABLED: "⏸️ Disabled",
+        ProviderStatus.ERROR: "⚠️ Error",
+    }
+    return labels.get(status, "⚠️ Unknown")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sniperplug.providers.base import DealProvider, ProviderHealth
+from sniperplug.providers.base import DealProvider, ProviderHealth, ProviderStatus
 
 
 @dataclass
@@ -33,6 +33,7 @@ class ProviderRegistry:
                     ProviderHealth(
                         provider_key=provider.provider_key,
                         ok=False,
+                        status=ProviderStatus.ERROR,
                         message=f"Healthcheck failed: {exc}",
                     )
                 )

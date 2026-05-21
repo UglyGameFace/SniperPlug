@@ -19,11 +19,19 @@ class ProviderCapability(str, Enum):
     MEMBER_PRICING = "member_pricing"
 
 
+class ProviderStatus(str, Enum):
+    DISABLED = "disabled"
+    STAGED = "staged"
+    READY = "ready"
+    ERROR = "error"
+
+
 @dataclass(frozen=True)
 class ProviderHealth:
     provider_key: str
     ok: bool
     message: str
+    status: ProviderStatus = ProviderStatus.ERROR
 
 
 @dataclass(frozen=True)

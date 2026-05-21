@@ -17,6 +17,7 @@ from sniperplug.services.routing import (
     is_valid_route,
     route_label,
 )
+from sniperplug.services.snipe_planner import build_default_snipe_batch
 
 
 REQUIRED_CHANNEL_PERMS = {
@@ -154,6 +155,31 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         )
         embed.add_field(name="Deals stored", value=str(stats["deals_count"]), inline=True)
         embed.add_field(name="Dead reports", value=str(stats["dead_reports_count"]), inline=True)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="snipe_plan", description="Show SniperPlug's current source-first scan priorities.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def snipe_plan(self, interaction: discord.Interaction) -> None:
+        batch = build_default_snipe_batch(limit_sources=12, limit_categories=10)
+        top_plans = batch.plans[:12]
+
+        embed = discord.Embed(
+            title="SniperPlug Snipe Plan",
+            description="Source-first priorities for future providers. This command does not scan sites or make API calls.",
+            color=discord.Color.orange(),
+        )
+        for plan in top_plans:
+            query_preview = ", ".join(plan.queries[:4])
+            embed.add_field(
+                name=f"{plan.source_name} + {plan.category_label}",
+                value=(
+                    f"Priority: **{plan.priority}** • Cadence target: **{plan.cadence_seconds}s**\n"
+                    f"Watch terms: `{query_preview}`\n"
+                    f"{plan.reason}"
+                ),
+                inline=False,
+            )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -403,6 +429,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     @set_channel.error
     @test_alert.error
     @scan_test.error
+    @snipe_plan.error
     async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             message = "You need **Manage Server** permission to use this SniperPlug admin command."

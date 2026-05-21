@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
 from sniperplug.services.anomaly_score import AnomalyScore, score_deal_anomaly
+from sniperplug.services.risk_flags import apply_risk_flags
 from sniperplug.services.routing import RouteDecision, choose_primary_route
 
 
@@ -29,7 +30,7 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
     This function is intentionally provider-agnostic. Providers find candidates;
     the pipeline scores, routes, and decides what happens next.
     """
-    deal = candidate.to_normalized_deal()
+    deal = apply_risk_flags(candidate.to_normalized_deal())
     anomaly = score_deal_anomaly(deal)
     route = choose_primary_route(deal)
 
@@ -48,6 +49,7 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
         reasons.append("Review: missing current price")
 
     if candidate.can_add_to_cart is False and anomaly.level in {"urgent", "nuclear"}:
+        should_alert = False
         hold_for_review = True
         reasons.append("Review: urgent anomaly but add-to-cart was not confirmed")
 

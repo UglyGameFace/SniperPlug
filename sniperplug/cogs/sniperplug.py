@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
+from sniperplug.providers.registry import provider_registry
 from sniperplug.services.alert_renderer import DealActionView, build_deal_embed
 from sniperplug.services.candidate_pipeline import evaluate_candidate
 from sniperplug.services.risk_flags import apply_risk_flags
@@ -157,6 +158,35 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         embed.add_field(name="Dead reports", value=str(stats["dead_reports_count"]), inline=True)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="providers", description="Show SniperPlug provider health and configuration state.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def providers(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        healthchecks = await provider_registry.healthchecks()
+        embed = discord.Embed(
+            title="SniperPlug Providers",
+            description="Provider health only. This command does not scan retailers or make deal alerts.",
+            color=discord.Color.orange(),
+        )
+
+        if not healthchecks:
+            embed.add_field(
+                name="No providers registered",
+                value="No provider adapters are loaded yet.",
+                inline=False,
+            )
+        else:
+            for health in healthchecks:
+                status = "✅ Ready" if health.ok else "⏸️ Disabled"
+                embed.add_field(
+                    name=f"{status} • {health.provider_key}",
+                    value=health.message,
+                    inline=False,
+                )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="snipe_plan", description="Show SniperPlug's current source-first scan priorities.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -430,6 +460,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     @test_alert.error
     @scan_test.error
     @snipe_plan.error
+    @providers.error
     async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             message = "You need **Manage Server** permission to use this SniperPlug admin command."

@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
+from sniperplug.providers.base import ProviderScanRequest
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.alert_renderer import DealActionView, build_deal_embed
 from sniperplug.services.candidate_pipeline import evaluate_candidate
@@ -183,6 +184,85 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 embed.add_field(
                     name=f"{status} • {health.provider_key}",
                     value=health.message,
+                    inline=False,
+                )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="provider_scan", description="Run a provider scan safely without posting public alerts.")
+    @app_commands.describe(
+        provider_key="Provider key, like bestbuy.",
+        query="Optional search query for providers that support keyword scans.",
+        category="Optional category key, like gpus or sneakers.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def provider_scan(
+        self,
+        interaction: discord.Interaction,
+        provider_key: str,
+        query: str | None = None,
+        category: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        normalized_provider_key = provider_key.strip().lower()
+        provider = provider_registry.get(normalized_provider_key)
+        if provider is None:
+            available = ", ".join(provider_registry.list_keys()) or "none"
+            await interaction.followup.send(
+                f"Provider `{normalized_provider_key}` is not registered. Available providers: `{available}`.",
+                ephemeral=True,
+            )
+            return
+
+        health = await provider.healthcheck()
+        if not health.ok:
+            await interaction.followup.send(
+                f"`{provider.provider_key}` is not ready: {health.message}",
+                ephemeral=True,
+            )
+            return
+
+        request = ProviderScanRequest(
+            source_key=provider.provider_key,
+            query=query.strip() if query else None,
+            category=category.strip().lower() if category else None,
+            max_results=10,
+            metadata={"requested_by": str(interaction.user.id)},
+        )
+        result = await provider.scan(request)
+
+        embed = discord.Embed(
+            title=f"SniperPlug Provider Scan: {provider.display_name}",
+            description="Safe scan preview only. This command does not post public alerts.",
+            color=discord.Color.orange(),
+        )
+
+        if result.warnings:
+            embed.add_field(
+                name="Warnings",
+                value="\n".join(f"• {warning}" for warning in result.warnings[:5]),
+                inline=False,
+            )
+
+        if not result.candidates:
+            embed.add_field(
+                name="Candidates",
+                value="No candidates returned.",
+                inline=False,
+            )
+        else:
+            for candidate in result.candidates[:5]:
+                decision = evaluate_candidate(candidate)
+                embed.add_field(
+                    name=candidate.title[:256],
+                    value=(
+                        f"Retailer: `{candidate.retailer}`\n"
+                        f"Price: `{candidate.current_price}` • Typical: `{candidate.typical_price}`\n"
+                        f"Score: **{decision.anomaly.score}/250** • {friendly_score_level(decision.anomaly.level)}\n"
+                        f"Route: **{route_label(decision.route.route)}**\n"
+                        f"Public alert if enabled: **{'Yes' if decision.should_alert else 'No'}**"
+                    ),
                     inline=False,
                 )
 
@@ -461,6 +541,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     @scan_test.error
     @snipe_plan.error
     @providers.error
+    @provider_scan.error
     async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             message = "You need **Manage Server** permission to use this SniperPlug admin command."

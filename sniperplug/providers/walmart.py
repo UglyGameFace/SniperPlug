@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -60,7 +61,7 @@ class WalmartProvider(DealProvider):
 
     def __init__(self, config: WalmartAffiliateConfig | None = None, configured: bool | None = None):
         if config is None:
-            config = WalmartAffiliateConfig(enabled=bool(configured))
+            config = walmart_config_from_env(fallback_enabled=bool(configured))
         self.config = config
 
     async def healthcheck(self) -> ProviderHealth:
@@ -81,11 +82,12 @@ class WalmartProvider(DealProvider):
                 message=f"Missing Walmart config: {', '.join(missing)}.",
             )
 
+        suffix = " Affiliate tracking enabled." if self.config.publisher_id else " Direct Walmart links only until Impact Publisher ID is added."
         return ProviderHealth(
             provider_key=self.provider_key,
             ok=True,
             status=ProviderStatus.READY,
-            message="Ready: Walmart Affiliate API credentials are configured.",
+            message="Ready: Walmart Affiliate API credentials are configured." + suffix,
         )
 
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
@@ -101,6 +103,8 @@ class WalmartProvider(DealProvider):
             )
 
         warnings: list[str] = []
+        if not self.config.publisher_id:
+            warnings.append("WALMART_PUBLISHER_ID is blank; using direct Walmart links for personal deal hunting.")
         candidates: list[SourceCandidate] = []
 
         queries = [request.query] if request.query else []
@@ -193,12 +197,19 @@ class WalmartProvider(DealProvider):
 
     def _candidate_from_item(self, item: dict, request: ProviderScanRequest) -> SourceCandidate | None:
         title = str(item.get("name") or "").strip()
-        product_url = str(item.get("productTrackingUrl") or "").strip()
+        raw_tracking_url = str(item.get("productTrackingUrl") or "").strip()
         item_id = item.get("itemId")
+        direct_product_url = _direct_walmart_url(item_id)
+        product_url = raw_tracking_url or direct_product_url
+
+        signals = self._item_signals(item)
+        if product_url and "|PUBID|" in product_url and direct_product_url:
+            product_url = direct_product_url
+            signals.append("tracking link unavailable; direct Walmart link used")
+
         if not title or not product_url:
             return None
 
-        signals = self._item_signals(item)
         category_path = str(item.get("categoryPath") or "").strip()
         if category_path:
             signals.append(f"Walmart category: {category_path}")
@@ -258,6 +269,24 @@ class WalmartProvider(DealProvider):
 
 class WalmartProviderError(RuntimeError):
     pass
+
+
+def walmart_config_from_env(fallback_enabled: bool = False) -> WalmartAffiliateConfig:
+    enabled_text = os.getenv("WALMART_PROVIDER_ENABLED", "").strip().lower()
+    enabled = fallback_enabled if not enabled_text else enabled_text in {"1", "true", "yes", "on"}
+    return WalmartAffiliateConfig(
+        consumer_id=os.getenv("WALMART_CONSUMER_ID", "").strip() or None,
+        key_version=os.getenv("WALMART_KEY_VERSION", "1").strip() or "1",
+        private_key_b64=os.getenv("WALMART_PRIVATE_KEY_B64", "").strip() or None,
+        publisher_id=os.getenv("WALMART_PUBLISHER_ID", "").strip() or None,
+        enabled=enabled,
+    )
+
+
+def _direct_walmart_url(item_id) -> str:
+    if item_id is None or item_id == "":
+        return ""
+    return f"https://www.walmart.com/ip/{item_id}"
 
 
 def _float_or_none(value) -> float | None:

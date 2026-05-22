@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -21,10 +23,80 @@ SORT_CHOICES = [
     app_commands.Choice(name="New", value="new"),
 ]
 
+BEGINNER_FALLBACK_DISCOUNTS = (50, 30, 10, 0)
+PRESET_FALLBACK_DISCOUNTS = (60, 40, 25, 10)
+
+
+@dataclass(frozen=True)
+class HuntPreset:
+    key: str
+    label: str
+    emoji: str
+    description: str
+    queries: tuple[str, ...]
+    min_discount: int = 50
+
+
+HUNT_PRESETS: dict[str, HuntPreset] = {
+    "glitch": HuntPreset(
+        key="glitch",
+        label="Glitch Hunt",
+        emoji="🚨",
+        description="High-risk/high-reward markdown hunting across popular deal categories.",
+        queries=("gaming monitor", "4k tv", "lego", "air fryer", "clearance"),
+        min_discount=70,
+    ),
+    "tech": HuntPreset(
+        key="tech",
+        label="Tech & Gaming",
+        emoji="🎮",
+        description="Monitors, TVs, earbuds, storage, keyboards, gaming gear.",
+        queries=("gaming monitor", "4k tv", "wireless earbuds", "ssd", "gaming headset"),
+        min_discount=45,
+    ),
+    "essentials": HuntPreset(
+        key="essentials",
+        label="Daily Essentials",
+        emoji="🧼",
+        description="Detergent, cleaning, paper goods, toiletries, everyday restocks.",
+        queries=("laundry detergent", "paper towels", "toilet paper", "cleaning supplies", "razor"),
+        min_discount=25,
+    ),
+    "home": HuntPreset(
+        key="home",
+        label="Home & Kitchen",
+        emoji="🏠",
+        description="Small appliances, kitchen, furniture, patio, storage.",
+        queries=("air fryer", "coffee maker", "vacuum", "patio furniture", "storage cabinet"),
+        min_discount=35,
+    ),
+    "toys": HuntPreset(
+        key="toys",
+        label="Toys & Gifts",
+        emoji="🧸",
+        description="LEGO, games, collectibles, outdoor toys, kid gifts.",
+        queries=("lego", "toys clearance", "board game", "pokemon", "outdoor toy"),
+        min_discount=35,
+    ),
+    "auto_tools": HuntPreset(
+        key="auto_tools",
+        label="Auto & Tools",
+        emoji="🛠️",
+        description="Car care, oil, tools, garage, DIY finds.",
+        queries=("motor oil", "tire inflator", "socket set", "car wash", "tool set"),
+        min_discount=30,
+    ),
+}
+
 
 class DealScannerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @app_commands.command(name="hunt", description="Tap a category and let SniperPlug hunt deals for you.")
+    async def hunt(self, interaction: discord.Interaction) -> None:
+        embed = build_hunt_menu_embed()
+        await interaction.response.send_message(embed=embed, view=HuntPresetMenuView(), ephemeral=True)
 
     @app_commands.command(name="deals", description="Find deals the easy way. Just type what you want.")
     @app_commands.describe(search="What are you shopping for? Example: monitor, lego, tide, patio set, air fryer.")
@@ -110,25 +182,32 @@ class DealScannerCog(commands.Cog):
             order_value=order_value,
             requested_by=str(interaction.user.id),
         )
-        cards = build_walmart_cards(result, min_discount=min_discount, alerts_only=alerts_only)
+
+        if simple_mode:
+            cards, shown_discount = cards_with_fallback(result, min_discount, alerts_only, BEGINNER_FALLBACK_DISCOUNTS)
+        else:
+            cards = build_walmart_cards(result, min_discount=min_discount, alerts_only=alerts_only)
+            shown_discount = min_discount
+
         summary = build_scan_summary(
             result,
             query=query,
-            min_discount=min_discount,
+            requested_min_discount=min_discount,
+            shown_min_discount=shown_discount,
             alerts_only=alerts_only,
             simple_mode=simple_mode,
         )
 
         if not cards:
             summary.add_field(
-                name="No strong matches here",
+                name="Nothing useful found yet",
                 value=no_match_help(query=query, min_discount=min_discount, page=page, simple_mode=simple_mode),
                 inline=False,
             )
             view = DealSearchControlView(
                 query=query,
                 page=page,
-                min_discount=min_discount,
+                min_discount=max(0, shown_discount),
                 max_results=max_results,
                 sort_value=sort_value,
                 order_value=order_value,
@@ -142,7 +221,7 @@ class DealScannerCog(commands.Cog):
         view = DealSearchControlView(
             query=query,
             page=page,
-            min_discount=min_discount,
+            min_discount=max(0, shown_discount),
             max_results=max_results,
             sort_value=sort_value,
             order_value=order_value,
@@ -152,6 +231,14 @@ class DealScannerCog(commands.Cog):
             has_next_page=result.has_next_page,
         )
         await interaction.followup.send(embeds=embeds, view=view, ephemeral=True)
+
+    @hunt.error
+    async def hunt_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = f"Deal hunt hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
     @deals.error
     async def deals_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -174,10 +261,78 @@ class DealScannerCog(commands.Cog):
 
 
 class DealCard:
-    def __init__(self, embed: discord.Embed, url: str, label: str):
+    def __init__(self, embed: discord.Embed, url: str, label: str, score: int = 0, discount: float = 0.0):
         self.embed = embed
         self.url = url
         self.label = label
+        self.score = score
+        self.discount = discount
+
+
+class HuntPresetMenuView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.add_item(HuntPresetButton(HUNT_PRESETS["glitch"], row=0))
+        self.add_item(HuntPresetButton(HUNT_PRESETS["tech"], row=0))
+        self.add_item(HuntPresetButton(HUNT_PRESETS["essentials"], row=0))
+        self.add_item(HuntPresetButton(HUNT_PRESETS["home"], row=1))
+        self.add_item(HuntPresetButton(HUNT_PRESETS["toys"], row=1))
+        self.add_item(HuntPresetButton(HUNT_PRESETS["auto_tools"], row=1))
+
+
+class HuntPresetButton(discord.ui.Button):
+    def __init__(self, preset: HuntPreset, row: int):
+        super().__init__(
+            label=preset.label,
+            emoji=preset.emoji,
+            style=discord.ButtonStyle.primary,
+            row=row,
+            custom_id=f"hunt_preset:{preset.key}",
+        )
+        self.preset = preset
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        health_error = await provider_health_error_message()
+        if health_error:
+            await interaction.followup.send(health_error, ephemeral=True)
+            return
+
+        cards, pages_checked, products_checked, warnings, shown_discount = await run_preset_hunt(
+            preset=self.preset,
+            requested_by=str(interaction.user.id),
+        )
+        summary = build_preset_hunt_summary(
+            preset=self.preset,
+            pages_checked=pages_checked,
+            products_checked=products_checked,
+            found_count=len(cards),
+            warnings=tuple(warnings),
+            shown_discount=shown_discount,
+        )
+        if not cards:
+            summary.add_field(
+                name="Nothing useful found yet",
+                value=(
+                    "I checked multiple smart searches and still could not prove a useful markdown.\n"
+                    "Try another category, or use `/deals search:` with a specific item like `oled tv`, `lego`, `detergent`, or `ssd`."
+                ),
+                inline=False,
+            )
+            await interaction.followup.send(embed=summary, view=HuntPresetMenuView(), ephemeral=True)
+            return
+
+        embeds = [summary] + [card.embed for card in cards[:5]]
+        await interaction.followup.send(embeds=embeds, view=PresetResultView(cards[:5]), ephemeral=True)
+
+
+class PresetResultView(discord.ui.View):
+    def __init__(self, cards: list[DealCard]):
+        super().__init__(timeout=300)
+        for idx, card in enumerate(cards, start=1):
+            self.add_item(discord.ui.Button(label=f"View Deal {idx}", style=discord.ButtonStyle.link, url=card.url))
+        self.add_item(discord.ui.Button(label="Run /hunt again for more categories", style=discord.ButtonStyle.secondary, disabled=True, row=1))
 
 
 class DealSearchControlView(discord.ui.View):
@@ -212,11 +367,11 @@ class DealSearchControlView(discord.ui.View):
     async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self._rerun(interaction, page=self.page + 1, min_discount=self.min_discount)
 
-    @discord.ui.button(label="80%+ Only", emoji="🔥", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Hunt 80%+", emoji="🔥", style=discord.ButtonStyle.secondary, row=1)
     async def huge_discounts(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._rerun(interaction, page=1, min_discount=80)
+        await self._hunt_pages(interaction, min_discount=80, max_pages=5)
 
-    @discord.ui.button(label="Show More", emoji="🔎", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="More Matches", emoji="🔎", style=discord.ButtonStyle.secondary, row=1)
     async def show_more(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self._rerun(interaction, page=self.page, min_discount=max(0, self.min_discount - 20))
 
@@ -230,29 +385,137 @@ class DealSearchControlView(discord.ui.View):
             order_value=self.order_value,
             requested_by=str(interaction.user.id),
         )
-        cards = build_walmart_cards(result, min_discount=min_discount, alerts_only=self.alerts_only)
+        if self.simple_mode:
+            cards, shown_discount = cards_with_fallback(result, min_discount, self.alerts_only, BEGINNER_FALLBACK_DISCOUNTS)
+        else:
+            cards = build_walmart_cards(result, min_discount=min_discount, alerts_only=self.alerts_only)
+            shown_discount = min_discount
+
         summary = build_scan_summary(
             result,
             query=self.query,
-            min_discount=min_discount,
+            requested_min_discount=min_discount,
+            shown_min_discount=shown_discount,
             alerts_only=self.alerts_only,
             simple_mode=self.simple_mode,
         )
         if not cards:
             summary.add_field(
-                name="No strong matches here",
+                name="Nothing useful found yet",
                 value=no_match_help(query=self.query, min_discount=min_discount, page=page, simple_mode=self.simple_mode),
                 inline=False,
             )
-            await interaction.followup.send(embed=summary, view=self._copy_for(page, min_discount, [], result.has_next_page), ephemeral=True)
+            await interaction.followup.send(embed=summary, view=self._copy_for(page, shown_discount, [], result.has_next_page), ephemeral=True)
             return
 
         embeds = [summary] + [card.embed for card in cards[:5]]
         await interaction.followup.send(
             embeds=embeds,
-            view=self._copy_for(page, min_discount, cards[:5], result.has_next_page),
+            view=self._copy_for(page, shown_discount, cards[:5], result.has_next_page),
             ephemeral=True,
         )
+
+    async def _hunt_pages(self, interaction: discord.Interaction, min_discount: int, max_pages: int) -> None:
+        await interaction.response.defer(ephemeral=True)
+        all_candidates: list[SourceCandidate] = []
+        warnings: list[str] = []
+        pages_checked = 0
+        total_results: int | None = None
+        has_next_page = False
+
+        for page in range(1, 1 + max_pages):
+            result = await run_walmart_scan(
+                query=self.query,
+                page=page,
+                max_results=25,
+                sort_value=self.sort_value,
+                order_value=self.order_value,
+                requested_by=str(interaction.user.id),
+            )
+            pages_checked += 1
+            all_candidates.extend(result.candidates)
+            warnings.extend(w for w in result.warnings if w not in warnings)
+            total_results = result.total_results if result.total_results is not None else total_results
+            has_next_page = result.has_next_page
+
+            aggregate = ProviderScanResult(
+                provider_key=result.provider_key,
+                candidates=tuple(dedupe_candidates(all_candidates)),
+                warnings=tuple(warnings),
+                total_results=total_results,
+                page=page,
+                page_size=25,
+                start_index=1,
+                has_next_page=has_next_page,
+            )
+            cards = build_walmart_cards(aggregate, min_discount=min_discount, alerts_only=self.alerts_only)
+            if cards:
+                cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
+                summary = build_hunt_summary(
+                    query=self.query,
+                    min_discount=min_discount,
+                    pages_checked=pages_checked,
+                    candidates_checked=len(all_candidates),
+                    total_results=total_results,
+                    found_count=len(cards),
+                    warnings=tuple(warnings),
+                    simple_mode=self.simple_mode,
+                )
+                embeds = [summary] + [card.embed for card in cards[:5]]
+                await interaction.followup.send(
+                    embeds=embeds,
+                    view=self._copy_for(page, min_discount, cards[:5], has_next_page),
+                    ephemeral=True,
+                )
+                return
+
+            if not result.has_next_page:
+                break
+
+        aggregate = ProviderScanResult(
+            provider_key="walmart",
+            candidates=tuple(dedupe_candidates(all_candidates)),
+            warnings=tuple(warnings),
+            total_results=total_results,
+            page=1,
+            page_size=len(all_candidates),
+            start_index=1,
+            has_next_page=has_next_page,
+        )
+        fallback_cards, shown_discount = cards_with_fallback(aggregate, 50, self.alerts_only, (50, 30, 10))
+        summary = build_hunt_summary(
+            query=self.query,
+            min_discount=min_discount,
+            pages_checked=pages_checked,
+            candidates_checked=len(all_candidates),
+            total_results=total_results,
+            found_count=len(fallback_cards),
+            warnings=tuple(warnings),
+            simple_mode=self.simple_mode,
+        )
+        if fallback_cards:
+            summary.add_field(
+                name="No 80%+ found — showing closest matches",
+                value=f"I did not find a true 80%+ markdown, so I’m showing the best **{shown_discount}%+** matches instead.",
+                inline=False,
+            )
+            embeds = [summary] + [card.embed for card in fallback_cards[:5]]
+            await interaction.followup.send(
+                embeds=embeds,
+                view=self._copy_for(self.page, shown_discount, fallback_cards[:5], has_next_page),
+                ephemeral=True,
+            )
+            return
+
+        summary.add_field(
+            name="No useful markdowns found yet",
+            value=(
+                f"I checked **{len(all_candidates)} products across {pages_checked} page(s)** and could not prove a strong markdown.\n"
+                "Try another search like `iphone case`, `iphone charger`, `oled tv`, `clearance toy`, or run `/hunt` and tap a category."
+            ),
+            inline=False,
+        )
+        await interaction.followup.send(embed=summary, view=self._copy_for(self.page, min_discount, [], has_next_page), ephemeral=True)
 
     def _copy_for(self, page: int, min_discount: int, cards: list[DealCard], has_next_page: bool) -> DealSearchControlView:
         return DealSearchControlView(
@@ -267,6 +530,16 @@ class DealSearchControlView(discord.ui.View):
             cards=cards,
             has_next_page=has_next_page,
         )
+
+
+async def provider_health_error_message() -> str | None:
+    provider = provider_registry.get("walmart")
+    if provider is None:
+        return "Walmart search is not connected yet."
+    health = await provider.healthcheck()
+    if health.status != ProviderStatus.READY:
+        return "Deal search is not ready yet. Staff needs to finish the Walmart connection first."
+    return None
 
 
 async def run_walmart_scan(
@@ -293,10 +566,128 @@ async def run_walmart_scan(
     return await provider.scan(request)
 
 
+async def run_preset_hunt(preset: HuntPreset, requested_by: str) -> tuple[list[DealCard], int, int, list[str], int]:
+    all_candidates: list[SourceCandidate] = []
+    warnings: list[str] = []
+    pages_checked = 0
+
+    for query in preset.queries[:5]:
+        result = await run_walmart_scan(
+            query=query,
+            page=1,
+            max_results=12,
+            sort_value=None,
+            order_value=None,
+            requested_by=requested_by,
+        )
+        pages_checked += 1
+        all_candidates.extend(result.candidates)
+        warnings.extend(w for w in result.warnings if w not in warnings)
+
+    aggregate = ProviderScanResult(
+        provider_key="walmart",
+        candidates=tuple(dedupe_candidates(all_candidates)),
+        warnings=tuple(warnings),
+        page=1,
+        page_size=len(all_candidates),
+        start_index=1,
+        has_next_page=True,
+    )
+    fallback_chain = tuple(x for x in (preset.min_discount, *PRESET_FALLBACK_DISCOUNTS) if x <= preset.min_discount)
+    cards, shown_discount = cards_with_fallback(aggregate, preset.min_discount, alerts_only=False, fallback_discounts=fallback_chain)
+    cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
+    return cards, pages_checked, len(all_candidates), warnings, shown_discount
+
+
+def cards_with_fallback(
+    result: ProviderScanResult,
+    requested_min_discount: int,
+    alerts_only: bool,
+    fallback_discounts: tuple[int, ...],
+) -> tuple[list[DealCard], int]:
+    thresholds: list[int] = [requested_min_discount]
+    thresholds.extend(x for x in fallback_discounts if x < requested_min_discount and x not in thresholds)
+    thresholds = sorted(set(thresholds), reverse=True)
+    for threshold in thresholds:
+        cards = build_walmart_cards(result, min_discount=threshold, alerts_only=alerts_only)
+        if cards:
+            cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
+            return cards, threshold
+    return [], requested_min_discount
+
+
+def dedupe_candidates(candidates: list[SourceCandidate]) -> list[SourceCandidate]:
+    seen: set[str] = set()
+    unique: list[SourceCandidate] = []
+    for candidate in candidates:
+        key = candidate.product_id or candidate.product_url or candidate.title
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def build_hunt_menu_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="🔌 SniperPlug Deal Hunt",
+        description=(
+            "Pick a category. SniperPlug searches smart terms behind the scenes and shows the best available deals.\n"
+            "If no huge markdown exists, it automatically relaxes the filter instead of wasting your time with empty pages."
+        ),
+        color=discord.Color.orange(),
+    )
+    for preset in HUNT_PRESETS.values():
+        embed.add_field(
+            name=f"{preset.emoji} {preset.label}",
+            value=f"{preset.description}\nStarts at **{preset.min_discount}%+ off**, then relaxes if needed.",
+            inline=True,
+        )
+    embed.set_footer(text="Beginner mode: no provider names, no page numbers, no commands to memorize.")
+    return embed
+
+
+def build_preset_hunt_summary(
+    preset: HuntPreset,
+    pages_checked: int,
+    products_checked: int,
+    found_count: int,
+    warnings: tuple[str, ...],
+    shown_discount: int,
+) -> discord.Embed:
+    relaxed = shown_discount < preset.min_discount
+    embed = discord.Embed(
+        title=f"{preset.emoji} {preset.label} Hunt Results",
+        description=(
+            f"Checked: **{products_checked} products** from **{pages_checked} smart searches**\n"
+            f"Target: **{preset.min_discount}%+ off**\n"
+            f"Showing: **{shown_discount}%+ off**{' best available matches' if relaxed else ''}\n"
+            f"Found: **{found_count} candidate(s)**"
+        ),
+        color=discord.Color.red() if found_count and shown_discount >= 60 else discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Searches used",
+        value=", ".join(f"`{query}`" for query in preset.queries[:5]),
+        inline=False,
+    )
+    if relaxed and found_count:
+        embed.add_field(
+            name="Filter relaxed automatically",
+            value="No stronger markdowns were found, so SniperPlug showed the best proven deals instead of an empty result.",
+            inline=False,
+        )
+    if warnings:
+        embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
+    embed.set_footer(text="Preset hunts are broad. Use /deals search:your item for something specific.")
+    return embed
+
+
 def build_scan_summary(
     result: ProviderScanResult,
     query: str,
-    min_discount: int,
+    requested_min_discount: int,
+    shown_min_discount: int,
     alerts_only: bool,
     simple_mode: bool,
 ) -> discord.Embed:
@@ -304,28 +695,67 @@ def build_scan_summary(
     page_size = result.page_size or len(result.candidates) or 1
     start = result.start_index or ((result.page - 1) * page_size + 1)
     end = start + max(len(result.candidates) - 1, 0)
-    next_text = "Tap **Next Page**" if result.has_next_page else "Not reported"
+    next_text = "Tap Next Page" if result.has_next_page else "Not reported"
     title = "🔌 SniperPlug Deal Finder" if simple_mode else "🛒 Walmart Deal Scanner"
+    relaxed = shown_min_discount < requested_min_discount
 
     embed = discord.Embed(
         title=title,
         description=(
             f"Searching: **{query}**\n"
-            f"Showing: **{min_discount}%+ off**{' • alerts only' if alerts_only else ''}\n"
+            f"Target: **{requested_min_discount}%+ off**{' • alerts only' if alerts_only else ''}\n"
+            f"Showing: **{shown_min_discount}%+ off**{' best available matches' if relaxed else ''}\n"
             f"Page: **{result.page}** • Results checked: **{start}-{end}** of **{total}**\n"
             f"More results: **{next_text}**"
         ),
         color=discord.Color.orange(),
     )
+    if relaxed:
+        embed.add_field(
+            name="Filter relaxed automatically",
+            value="No stronger markdowns were found on this page, so SniperPlug showed the best proven deals instead of an empty result.",
+            inline=False,
+        )
     if simple_mode:
         embed.add_field(
-            name="How to use this",
-            value="Tap **View Deal** to check the retailer. Tap **Next Page**, **80%+ Only**, or **Show More** to refine without typing another command.",
+            name="How this search works",
+            value=(
+                "I search Walmart for your words, check returned products, then compare the current price against Walmart's returned regular/MSRP price. "
+                "If Walmart does not return a real reference price, I cannot prove a huge discount from that item yet."
+            ),
             inline=False,
         )
     if result.warnings:
         embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in result.warnings[:3]), inline=False)
     embed.set_footer(text="Prices can revert. Recheck before posting or buying. In-store stock needs a local stock check.")
+    return embed
+
+
+def build_hunt_summary(
+    query: str,
+    min_discount: int,
+    pages_checked: int,
+    candidates_checked: int,
+    total_results: int | None,
+    found_count: int,
+    warnings: tuple[str, ...],
+    simple_mode: bool,
+) -> discord.Embed:
+    total = f"{total_results:,}" if total_results is not None else "unknown"
+    title = "🔥 80%+ Hunt Results" if simple_mode else "🔥 Advanced 80%+ Walmart Hunt"
+    embed = discord.Embed(
+        title=title,
+        description=(
+            f"Searching: **{query}**\n"
+            f"Target: **{min_discount}%+ off**\n"
+            f"Checked: **{candidates_checked} products across {pages_checked} page(s)** out of **{total}** possible results\n"
+            f"Found: **{found_count} candidate(s)**"
+        ),
+        color=discord.Color.red() if found_count else discord.Color.orange(),
+    )
+    if warnings:
+        embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
+    embed.set_footer(text="80%+ hunt scans multiple result pages automatically. Still recheck checkout price before posting or buying.")
     return embed
 
 
@@ -340,7 +770,15 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
         if alerts_only and not decision.should_alert:
             continue
         embed = build_deal_card_embed(candidate, deal, decision, discount)
-        cards.append(DealCard(embed=embed, url=deal.product_url, label=short_button_label(deal.title)))
+        cards.append(
+            DealCard(
+                embed=embed,
+                url=deal.product_url,
+                label=short_button_label(deal.title),
+                score=decision.anomaly.score,
+                discount=discount,
+            )
+        )
     return cards
 
 
@@ -378,8 +816,8 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
 def no_match_help(query: str, min_discount: int, page: int, simple_mode: bool) -> str:
     if simple_mode:
         return (
-            "No stress — that page just did not have a strong enough discount.\n"
-            "Tap **Next Page** to keep searching, **Show More** to lower the discount filter, or **80%+ Only** for glitch-style hunting."
+            "I checked the returned products and could not prove a useful markdown yet.\n"
+            "Try **Next Page**, **Hunt 80%+**, or a tighter search like `iphone case`, `oled tv`, `lego`, `detergent`, or `ssd`."
         )
     return (
         "Try one of these next:\n"

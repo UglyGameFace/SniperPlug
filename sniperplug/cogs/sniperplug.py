@@ -233,39 +233,35 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         result = await provider.scan(request)
 
         embed = discord.Embed(
-            title=f"SniperPlug Provider Scan: {provider.display_name}",
-            description="Safe scan preview only. This command does not post public alerts.",
+            title=f"🧪 {provider.display_name} Deal Scan Preview",
+            description="Private preview only — no public alerts posted.",
             color=discord.Color.orange(),
         )
 
         if result.warnings:
             embed.add_field(
-                name="Warnings",
-                value="\n".join(f"• {warning}" for warning in result.warnings[:5]),
+                name="⚠️ Notes",
+                value="\n".join(f"• {warning}" for warning in result.warnings[:4]),
                 inline=False,
             )
 
         if not result.candidates:
             embed.add_field(
-                name="Candidates",
+                name="🔍 Results",
                 value="No candidates returned.",
                 inline=False,
             )
         else:
             for candidate in result.candidates[:5]:
                 decision = evaluate_candidate(candidate)
+                deal = decision.deal
                 embed.add_field(
-                    name=candidate.title[:256],
-                    value=(
-                        f"Retailer: `{candidate.retailer}`\n"
-                        f"Price: `{candidate.current_price}` • Typical: `{candidate.typical_price}`\n"
-                        f"Score: **{decision.anomaly.score}/250** • {friendly_score_level(decision.anomaly.level)}\n"
-                        f"Route: **{route_label(decision.route.route)}**\n"
-                        f"Public alert if enabled: **{'Yes' if decision.should_alert else 'No'}**"
-                    ),
+                    name=deal_preview_title(deal),
+                    value=deal_preview_value(candidate, decision),
                     inline=False,
                 )
 
+        embed.set_footer(text="SniperPlug preview • verify checkout price, stock, shipping, and account eligibility before posting")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="snipe_plan", description="Show SniperPlug's current source-first scan priorities.")
@@ -438,14 +434,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             for decision in decisions[:5]:
                 deal = decision.deal
                 embed.add_field(
-                    name=deal.title[:256],
-                    value=(
-                        f"Retailer: `{deal.retailer}`\n"
-                        f"Now: `{deal.current_price}` • Typical: `{deal.typical_price}`\n"
-                        f"Score: **{decision.anomaly.score}/250** • {friendly_score_level(decision.anomaly.level)}\n"
-                        f"Route: **{route_label(decision.route.route)}**\n"
-                        f"Would public alert: **{'Yes' if decision.should_alert else 'No'}**"
-                    ),
+                    name=deal_preview_title(deal),
+                    value=deal_preview_value_from_deal(deal, decision),
                     inline=False,
                 )
 
@@ -643,6 +633,88 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+
+def deal_preview_title(deal: NormalizedDeal) -> str:
+    discount = discount_percent(deal.current_price, deal.typical_price)
+    prefix = "🚨" if deal.is_possible_price_error else deal_heat_emoji(discount, deal.current_price)
+    discount_text = f" {discount:.0f}% OFF •" if discount is not None else ""
+    return f"{prefix}{discount_text} {deal.title}"[:256]
+
+
+def deal_preview_value(candidate: SourceCandidate, decision) -> str:
+    return deal_preview_value_from_deal(decision.deal, decision, candidate)
+
+
+def deal_preview_value_from_deal(deal: NormalizedDeal, decision, candidate: SourceCandidate | None = None) -> str:
+    price_line = format_price_line(deal.current_price, deal.typical_price)
+    stock_line = candidate_stock_line(candidate, deal)
+    score_line = f"⭐ **{friendly_score_level(decision.anomaly.level)}** • `{decision.anomaly.score}/250` • {route_label(decision.route.route)}"
+    alert_line = "📣 Would alert: **Yes**" if decision.should_alert else "🛑 Would alert: **No**"
+    link_line = f"🔗 [View deal]({deal.product_url})" if deal.product_url else "🔗 Link unavailable"
+
+    notes = []
+    if deal.alert_tags:
+        notes.append(" ".join(deal.alert_tags[:3]))
+    if decision.anomaly.reasons:
+        notes.append("💡 " + decision.anomaly.reasons[0])
+
+    value = f"{price_line}\n{score_line}\n{stock_line}\n{alert_line}\n{link_line}"
+    if notes:
+        value += "\n" + "\n".join(notes[:2])
+    return value[:1024]
+
+
+def format_price_line(current_price: float | None, typical_price: float | None) -> str:
+    current = money(current_price)
+    typical = money(typical_price)
+    discount = discount_percent(current_price, typical_price)
+    if discount is None:
+        return f"💰 **{current}**"
+    savings = (typical_price or 0) - (current_price or 0)
+    return f"💰 **{current}** ~~{typical}~~ • **{discount:.0f}% OFF** • Save `{money(savings)}`"
+
+
+def candidate_stock_line(candidate: SourceCandidate | None, deal: NormalizedDeal) -> str:
+    stock = None
+    add_to_cart = None
+    if candidate:
+        stock = candidate.stock_status
+        add_to_cart = candidate.can_add_to_cart
+    stock = stock or deal.availability_message
+
+    pieces = []
+    if stock:
+        pieces.append(f"📦 {stock[:120]}")
+    if add_to_cart is True:
+        pieces.append("🛒 Add-to-cart seen")
+    elif add_to_cart is False:
+        pieces.append("🛒 Cart not confirmed")
+    return " • ".join(pieces) if pieces else "📦 Stock not confirmed"
+
+
+def discount_percent(current_price: float | None, typical_price: float | None) -> float | None:
+    if current_price is None or not typical_price or typical_price <= 0:
+        return None
+    return max(0.0, (typical_price - current_price) / typical_price * 100)
+
+
+def money(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def deal_heat_emoji(discount: float | None, current_price: float | None) -> str:
+    if current_price is not None and current_price <= 1:
+        return "🚨"
+    if discount is not None and discount >= 80:
+        return "🔥"
+    if discount is not None and discount >= 50:
+        return "💎"
+    if discount is not None and discount >= 30:
+        return "✅"
+    return "🔎"
 
 
 def friendly_score_level(level: str) -> str:

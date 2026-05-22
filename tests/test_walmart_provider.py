@@ -79,3 +79,34 @@ def test_pubid_placeholder_falls_back_to_direct_walmart_link():
     assert candidate is not None
     assert candidate.product_url == "https://www.walmart.com/ip/516833054"
     assert "tracking link unavailable; direct Walmart link used" in candidate.signals
+
+
+def test_walmart_search_uses_page_and_price_sort(monkeypatch):
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    captured = {}
+
+    def fake_request_json(url):
+        captured["url"] = url
+        return {"items": [], "totalResults": 80, "start": 11}
+
+    monkeypatch.setattr(provider, "_request_json", fake_request_json)
+
+    payload = provider._search(
+        query="monitor",
+        request=ProviderScanRequest(
+            source_key="walmart",
+            query="monitor",
+            max_results=10,
+            page=2,
+            sort="price",
+            order="ascending",
+        ),
+        page_size=10,
+    )
+
+    assert payload["totalResults"] == 80
+    assert "query=monitor" in captured["url"]
+    assert "numItems=10" in captured["url"]
+    assert "start=11" in captured["url"]
+    assert "sort=price" in captured["url"]
+    assert "order=ascending" in captured["url"]

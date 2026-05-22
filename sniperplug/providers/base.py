@@ -46,6 +46,9 @@ class ProviderScanRequest:
     query: str | None = None
     product_ids: tuple[str, ...] = ()
     max_results: int = 25
+    page: int = 1
+    sort: str | None = None
+    order: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
 
 
@@ -54,6 +57,12 @@ class ProviderScanResult:
     provider_key: str
     candidates: tuple[SourceCandidate, ...]
     warnings: tuple[str, ...] = ()
+    total_results: int | None = None
+    page: int = 1
+    page_size: int | None = None
+    start_index: int | None = None
+    has_next_page: bool = False
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 class DealProvider(ABC):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -120,7 +121,7 @@ class WalmartProvider(DealProvider):
             if not query:
                 continue
             try:
-                payload = self._search(query=query, request=request, page_size=page_size)
+                payload = await asyncio.to_thread(self._search, query=query, request=request, page_size=page_size)
             except WalmartProviderError as exc:
                 warnings.append(str(exc))
                 continue

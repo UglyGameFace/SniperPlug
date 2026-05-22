@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sniperplug.models.deal import NormalizedDeal
+from sniperplug.services.deal_intent import assess_deal_intent
 from sniperplug.services.opportunity_watchlist import category_for_title
 
 
@@ -90,6 +91,13 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
     if deal.is_ymmv:
         score += 8
         reasons.append("YMMV deal")
+
+    intent = assess_deal_intent(deal)
+    if intent.score_boost:
+        score += intent.score_boost
+        reasons.append(f"Intent: {intent.primary_intent}")
+    if intent.staff_review_recommended:
+        reasons.append("Staff review recommended before public blast")
 
     weak_hits = weak_signal_hits(deal)
     if weak_hits and score >= 80:

@@ -20,6 +20,13 @@ class NormalizedDeal:
     discount_percent: float | None = None
     savings_amount: float | None = None
 
+    pre_coupon_price: float | None = None
+    coupon_savings: float | None = None
+    coupon_percent: float | None = None
+    coupon_terms: list[str] = field(default_factory=list)
+    coupon_stack_detected: bool = False
+    is_subscribe_save: bool = False
+
     source: str = "manual_test"
     marketplace: str = "US"
     image_url: str | None = None
@@ -39,9 +46,6 @@ class NormalizedDeal:
     risk_level: str = "low"
     confidence_score: int = 50
 
-    # Verification fields are provider-fed trust signals. They should only be
-    # set to True when a real provider or checkout/link check actually performed
-    # that validation. The renderer labels unknown values conservatively.
     verification_status: str = "candidate"
     is_price_verified: bool = False
     is_link_verified: bool = False
@@ -61,6 +65,15 @@ class NormalizedDeal:
         if self.current_price is not None and self.typical_price:
             self.savings_amount = round(max(self.typical_price - self.current_price, 0), 2)
             self.discount_percent = round((self.savings_amount / self.typical_price) * 100, 2)
+
+        if self.pre_coupon_price is not None and self.current_price is not None:
+            self.coupon_savings = round(max(self.pre_coupon_price - self.current_price, 0), 2)
+            if self.pre_coupon_price > 0 and self.coupon_savings:
+                self.coupon_percent = round((self.coupon_savings / self.pre_coupon_price) * 100, 2)
+
+        if self.coupon_terms:
+            lowered_terms = {term.lower() for term in self.coupon_terms}
+            self.coupon_stack_detected = len(self.coupon_terms) >= 2 or "subscribe and save" in lowered_terms
 
     def to_dict(self) -> dict:
         return asdict(self)

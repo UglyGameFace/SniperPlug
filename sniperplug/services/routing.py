@@ -7,6 +7,7 @@ from sniperplug.models.deal import NormalizedDeal
 
 DEFAULT_ROUTE = "default"
 PRICE_GLITCH_ROUTE = "price_glitch"
+COUPON_STACK_ROUTE = "coupon_stack"
 HOT_DEALS_ROUTE = "hot_deals"
 AMAZON_ROUTE = "amazon"
 BUSINESS_ROUTE = "business"
@@ -17,6 +18,7 @@ DEAD_REPORTS_ROUTE = "dead_reports"
 ALERT_ROUTES: tuple[str, ...] = (
     DEFAULT_ROUTE,
     PRICE_GLITCH_ROUTE,
+    COUPON_STACK_ROUTE,
     HOT_DEALS_ROUTE,
     AMAZON_ROUTE,
     BUSINESS_ROUTE,
@@ -28,6 +30,7 @@ ALERT_ROUTES: tuple[str, ...] = (
 ROUTE_LABELS: dict[str, str] = {
     DEFAULT_ROUTE: "Default Deals",
     PRICE_GLITCH_ROUTE: "Price Glitches",
+    COUPON_STACK_ROUTE: "Coupon Stacks",
     HOT_DEALS_ROUTE: "Hot Deals",
     AMAZON_ROUTE: "Amazon Deals",
     BUSINESS_ROUTE: "Business Deals",
@@ -38,7 +41,8 @@ ROUTE_LABELS: dict[str, str] = {
 
 ROUTE_DESCRIPTIONS: dict[str, str] = {
     DEFAULT_ROUTE: "Fallback channel for normal alerts and anything not routed elsewhere.",
-    PRICE_GLITCH_ROUTE: "Possible price errors, extreme discounts, and fast-moving glitches.",
+    PRICE_GLITCH_ROUTE: "Possible price errors, extreme discounts, and fast-moving glitches with trustworthy price proof.",
+    COUPON_STACK_ROUTE: "Coupon deals, clippable coupons, Subscribe & Save stacks, and checkout coupon glitches.",
     HOT_DEALS_ROUTE: "Strong discounts that are not necessarily glitches.",
     AMAZON_ROUTE: "Amazon-specific alerts.",
     BUSINESS_ROUTE: "Business-account offers, bulk pricing, and B2B checkout deals that may require a business account.",
@@ -61,8 +65,14 @@ def choose_primary_route(deal: NormalizedDeal) -> RouteDecision:
     SniperPlug avoids fear-based public buckets. Deals that need extra caution are
     routed as YMMV or Staff Review instead of being called risky.
     """
+    if _has_untrusted_discount_reference(deal):
+        return RouteDecision(STAFF_REVIEW_ROUTE, "discount reference needs manual recheck")
+
     if deal.risk_level.lower() == "high":
         return RouteDecision(STAFF_REVIEW_ROUTE, "staff review before public posting")
+
+    if deal.coupon_stack_detected or deal.coupon_terms or deal.coupon_savings:
+        return RouteDecision(COUPON_STACK_ROUTE, "coupon or coupon stack observed")
 
     if deal.is_possible_price_error:
         return RouteDecision(PRICE_GLITCH_ROUTE, "possible price glitch")
@@ -104,6 +114,15 @@ def is_business_deal(deal: NormalizedDeal) -> bool:
         "quantity discount",
     )
     return any(term in text for term in business_terms)
+
+
+def _has_untrusted_discount_reference(deal: NormalizedDeal) -> bool:
+    return any(
+        "ignored suspicious" in flag.lower()
+        or "reference price looked mismatched" in flag.lower()
+        or "reference price needs recheck" in flag.lower()
+        for flag in deal.risk_flags
+    )
 
 
 def is_valid_route(route: str) -> bool:

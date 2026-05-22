@@ -212,9 +212,9 @@ class DealSearchControlView(discord.ui.View):
     async def next_page(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self._rerun(interaction, page=self.page + 1, min_discount=self.min_discount)
 
-    @discord.ui.button(label="80%+ Only", emoji="🔥", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Hunt 80%+", emoji="🔥", style=discord.ButtonStyle.secondary, row=1)
     async def huge_discounts(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._rerun(interaction, page=1, min_discount=80)
+        await self._hunt_pages(interaction, min_discount=80, max_pages=5)
 
     @discord.ui.button(label="Show More", emoji="🔎", style=discord.ButtonStyle.secondary, row=1)
     async def show_more(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -253,6 +253,86 @@ class DealSearchControlView(discord.ui.View):
             view=self._copy_for(page, min_discount, cards[:5], result.has_next_page),
             ephemeral=True,
         )
+
+    async def _hunt_pages(self, interaction: discord.Interaction, min_discount: int, max_pages: int) -> None:
+        await interaction.response.defer(ephemeral=True)
+        all_candidates: list[SourceCandidate] = []
+        warnings: list[str] = []
+        pages_checked = 0
+        total_results: int | None = None
+        has_next_page = False
+
+        start_page = 1
+        for page in range(start_page, start_page + max_pages):
+            result = await run_walmart_scan(
+                query=self.query,
+                page=page,
+                max_results=25,
+                sort_value=self.sort_value,
+                order_value=self.order_value,
+                requested_by=str(interaction.user.id),
+            )
+            pages_checked += 1
+            all_candidates.extend(result.candidates)
+            warnings.extend(w for w in result.warnings if w not in warnings)
+            total_results = result.total_results if result.total_results is not None else total_results
+            has_next_page = result.has_next_page
+
+            cards = build_walmart_cards(
+                ProviderScanResult(
+                    provider_key=result.provider_key,
+                    candidates=tuple(all_candidates),
+                    warnings=tuple(warnings),
+                    total_results=total_results,
+                    page=page,
+                    page_size=25,
+                    start_index=1,
+                    has_next_page=has_next_page,
+                ),
+                min_discount=min_discount,
+                alerts_only=self.alerts_only,
+            )
+            if cards:
+                summary = build_hunt_summary(
+                    query=self.query,
+                    min_discount=min_discount,
+                    pages_checked=pages_checked,
+                    candidates_checked=len(all_candidates),
+                    total_results=total_results,
+                    found_count=len(cards),
+                    warnings=tuple(warnings),
+                    simple_mode=self.simple_mode,
+                )
+                embeds = [summary] + [card.embed for card in cards[:5]]
+                await interaction.followup.send(
+                    embeds=embeds,
+                    view=self._copy_for(page, min_discount, cards[:5], has_next_page),
+                    ephemeral=True,
+                )
+                return
+
+            if not result.has_next_page:
+                break
+
+        summary = build_hunt_summary(
+            query=self.query,
+            min_discount=min_discount,
+            pages_checked=pages_checked,
+            candidates_checked=len(all_candidates),
+            total_results=total_results,
+            found_count=0,
+            warnings=tuple(warnings),
+            simple_mode=self.simple_mode,
+        )
+        summary.add_field(
+            name="No 80%+ finds yet",
+            value=(
+                f"I checked **{len(all_candidates)} products across {pages_checked} page(s)** and did not find a true {min_discount}%+ markdown.\n"
+                "Try **Show More** for normal deals, **Next Page** to keep going manually, or search a tighter term like `iphone case`, `iphone charger`, `oled tv`, `clearance toy`."
+            ),
+            inline=False,
+        )
+        await interaction.followup.send(embed=summary, view=self._copy_for(self.page, min_discount, [], has_next_page), ephemeral=True)
 
     def _copy_for(self, page: int, min_discount: int, cards: list[DealCard], has_next_page: bool) -> DealSearchControlView:
         return DealSearchControlView(
@@ -304,7 +384,7 @@ def build_scan_summary(
     page_size = result.page_size or len(result.candidates) or 1
     start = result.start_index or ((result.page - 1) * page_size + 1)
     end = start + max(len(result.candidates) - 1, 0)
-    next_text = "Tap **Next Page**" if result.has_next_page else "Not reported"
+    next_text = "Tap Next Page" if result.has_next_page else "Not reported"
     title = "🔌 SniperPlug Deal Finder" if simple_mode else "🛒 Walmart Deal Scanner"
 
     embed = discord.Embed(
@@ -319,13 +399,44 @@ def build_scan_summary(
     )
     if simple_mode:
         embed.add_field(
-            name="How to use this",
-            value="Tap **View Deal** to check the retailer. Tap **Next Page**, **80%+ Only**, or **Show More** to refine without typing another command.",
+            name="How this search works",
+            value=(
+                "I search Walmart for your words, check returned products, then compare the current price against Walmart's returned regular/MSRP price. "
+                "If Walmart does not return a real reference price, I cannot prove a huge discount from that item yet."
+            ),
             inline=False,
         )
     if result.warnings:
         embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in result.warnings[:3]), inline=False)
     embed.set_footer(text="Prices can revert. Recheck before posting or buying. In-store stock needs a local stock check.")
+    return embed
+
+
+def build_hunt_summary(
+    query: str,
+    min_discount: int,
+    pages_checked: int,
+    candidates_checked: int,
+    total_results: int | None,
+    found_count: int,
+    warnings: tuple[str, ...],
+    simple_mode: bool,
+) -> discord.Embed:
+    total = f"{total_results:,}" if total_results is not None else "unknown"
+    title = "🔥 80%+ Hunt Results" if simple_mode else "🔥 Advanced 80%+ Walmart Hunt"
+    embed = discord.Embed(
+        title=title,
+        description=(
+            f"Searching: **{query}**\n"
+            f"Target: **{min_discount}%+ off**\n"
+            f"Checked: **{candidates_checked} products across {pages_checked} page(s)** out of **{total}** possible results\n"
+            f"Found: **{found_count} candidate(s)**"
+        ),
+        color=discord.Color.red() if found_count else discord.Color.orange(),
+    )
+    if warnings:
+        embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
+    embed.set_footer(text="80%+ hunt scans multiple result pages automatically. Still recheck checkout price before posting or buying.")
     return embed
 
 
@@ -378,8 +489,8 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
 def no_match_help(query: str, min_discount: int, page: int, simple_mode: bool) -> str:
     if simple_mode:
         return (
-            "No stress — that page just did not have a strong enough discount.\n"
-            "Tap **Next Page** to keep searching, **Show More** to lower the discount filter, or **80%+ Only** for glitch-style hunting."
+            "That page did not have a proven discount high enough for this filter.\n"
+            "Tap **Hunt 80%+** to scan several pages automatically, **Show More** to lower the discount filter, or **Next Page** to keep browsing."
         )
     return (
         "Try one of these next:\n"

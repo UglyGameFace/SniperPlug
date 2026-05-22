@@ -110,3 +110,42 @@ def test_walmart_search_uses_page_and_price_sort(monkeypatch):
     assert "start=11" in captured["url"]
     assert "sort=price" in captured["url"]
     assert "order=ascending" in captured["url"]
+
+
+def test_walmart_ignores_suspicious_essential_reference_price():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 5164570594,
+        "name": "Cottonelle Ultra Clean Toilet Paper, Strong Toilet Tissue, 6 Mega Rolls",
+        "salePrice": 6.98,
+        "msrp": 115.14,
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=5164570594",
+        "stock": "Available",
+        "availableOnline": True,
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="toilet paper"))
+
+    assert candidate is not None
+    assert candidate.current_price == 6.98
+    assert candidate.typical_price is None
+    assert any("ignored suspicious Walmart msrp reference price" in signal for signal in candidate.signals)
+
+
+def test_walmart_keeps_reasonable_reference_price_for_electronics():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 12345,
+        "name": "Gaming Monitor 27 inch 144Hz",
+        "salePrice": 99.0,
+        "msrp": 179.99,
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=12345",
+        "stock": "Available",
+        "availableOnline": True,
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="monitor"))
+
+    assert candidate is not None
+    assert candidate.typical_price == 179.99
+    assert "Walmart reference price source: msrp" in candidate.signals

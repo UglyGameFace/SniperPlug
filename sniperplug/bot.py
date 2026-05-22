@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 
 from sniperplug.config import Settings
+from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
 from sniperplug.cogs.deal_scanner import DealScannerCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.providers.bestbuy import BestBuyProvider
@@ -34,6 +35,7 @@ class SniperPlugBot(commands.Bot):
 
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(DealScannerCog(self))
+        await self.add_cog(AutoDiscoveryCog(self))
 
         if self.settings.dev_guild_id:
             guild = discord.Object(id=self.settings.dev_guild_id)

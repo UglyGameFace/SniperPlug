@@ -12,6 +12,11 @@ class Settings:
     database_path: str = "./data/sniperplug.sqlite3"
     dev_guild_id: int | None = None
     bestbuy_api_key: str | None = None
+    walmart_consumer_id: str | None = None
+    walmart_key_version: str | None = None
+    walmart_private_key_b64: str | None = None
+    walmart_publisher_id: str | None = None
+    walmart_provider_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -26,9 +31,20 @@ class Settings:
 
         bestbuy_api_key = os.getenv("BESTBUY_API_KEY", "").strip() or None
 
+        walmart_consumer_id = os.getenv("WALMART_CONSUMER_ID", "").strip() or None
+        walmart_key_version = os.getenv("WALMART_KEY_VERSION", "1").strip() or "1"
+        walmart_private_key_b64 = os.getenv("WALMART_PRIVATE_KEY_B64", "").strip() or None
+        walmart_publisher_id = os.getenv("WALMART_PUBLISHER_ID", "").strip() or None
+        walmart_provider_enabled = os.getenv("WALMART_PROVIDER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
         return cls(
             discord_token=token,
             database_path=os.getenv("DATABASE_PATH", "./data/sniperplug.sqlite3").strip(),
             dev_guild_id=dev_guild_id,
             bestbuy_api_key=bestbuy_api_key,
+            walmart_consumer_id=walmart_consumer_id,
+            walmart_key_version=walmart_key_version,
+            walmart_private_key_b64=walmart_private_key_b64,
+            walmart_publisher_id=walmart_publisher_id,
+            walmart_provider_enabled=walmart_provider_enabled,
         )

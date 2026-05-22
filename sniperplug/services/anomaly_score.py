@@ -33,13 +33,14 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
     """
     score = 0
     reasons: list[str] = []
+    suspicious_reference = has_suspicious_reference(deal)
 
     category = category_for_title(deal.title)
     if category:
         score += category.demand_level // 2
         reasons.append(f"High-demand category: {category.label}")
 
-        if deal.discount_percent is not None and deal.discount_percent >= category.min_discount_percent:
+        if not suspicious_reference and deal.discount_percent is not None and deal.discount_percent >= category.min_discount_percent:
             score += 45
             reasons.append(f"Discount beats {category.label} threshold")
 
@@ -51,11 +52,16 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
     if deal.current_price is not None and deal.current_price <= 1:
         score += 80
         reasons.append("Extreme near-zero price")
-    elif deal.current_price is not None and deal.current_price <= 10 and (deal.typical_price or 0) >= 100:
+    elif (
+        not suspicious_reference
+        and deal.current_price is not None
+        and deal.current_price <= 10
+        and (deal.typical_price or 0) >= 100
+    ):
         score += 55
         reasons.append("Very low price for normally expensive item")
 
-    if deal.typical_price and deal.current_price is not None:
+    if not suspicious_reference and deal.typical_price and deal.current_price is not None:
         ratio = deal.current_price / deal.typical_price
         if ratio <= 0.1:
             score += 70
@@ -66,6 +72,24 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
         elif ratio <= 0.5:
             score += 25
             reasons.append("50%+ below typical price")
+    elif suspicious_reference:
+        reasons.append("Reference price ignored because it looked mismatched")
+
+    if deal.coupon_terms:
+        score += 35
+        reasons.append("Coupon observed")
+    if deal.coupon_stack_detected:
+        score += 35
+        reasons.append("Coupon stack observed")
+    if deal.is_subscribe_save:
+        score += 15
+        reasons.append("Subscribe & Save involved")
+    if deal.coupon_savings is not None and deal.coupon_savings >= 2:
+        score += min(30, int(deal.coupon_savings * 4))
+        reasons.append("Coupon savings observed")
+    if deal.coupon_percent is not None and deal.coupon_percent >= 20:
+        score += 20
+        reasons.append("20%+ coupon impact observed")
 
     if deal.product_url:
         score += 10
@@ -120,6 +144,15 @@ def score_level(score: int) -> str:
     if score >= 60:
         return "watch"
     return "ignore"
+
+
+def has_suspicious_reference(deal: NormalizedDeal) -> bool:
+    return any(
+        "ignored suspicious" in flag.lower()
+        or "reference price looked mismatched" in flag.lower()
+        or "reference price needs recheck" in flag.lower()
+        for flag in deal.risk_flags
+    )
 
 
 def weak_signal_hits(deal: NormalizedDeal) -> list[str]:

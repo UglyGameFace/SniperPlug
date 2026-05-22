@@ -239,6 +239,11 @@ class WalmartProvider(DealProvider):
         if not title or not product_url:
             return None
 
+        current_price = _float_or_none(item.get("salePrice"))
+        typical_price, reference_signal = _trusted_reference_price(item=item, title=title, current_price=current_price)
+        if reference_signal:
+            signals.append(reference_signal)
+
         category_path = str(item.get("categoryPath") or "").strip()
         if category_path:
             signals.append(f"Walmart category: {category_path}")
@@ -248,8 +253,8 @@ class WalmartProvider(DealProvider):
             retailer="Walmart",
             title=title,
             product_url=product_url,
-            current_price=_float_or_none(item.get("salePrice")),
-            typical_price=_float_or_none(item.get("msrp")) or _float_or_none(item.get("listPrice")),
+            current_price=current_price,
+            typical_price=typical_price,
             image_url=str(item.get("largeImage") or item.get("mediumImage") or item.get("thumbnailImage") or "") or None,
             product_id=str(item_id) if item_id is not None else None,
             product_id_type="sku" if item_id is not None else None,
@@ -316,6 +321,99 @@ def _direct_walmart_url(item_id) -> str:
     if item_id is None or item_id == "":
         return ""
     return f"https://www.walmart.com/ip/{item_id}"
+
+
+def _trusted_reference_price(item: dict, title: str, current_price: float | None) -> tuple[float | None, str | None]:
+    """Return a safe comparison price for Walmart results.
+
+    Walmart search can return MSRP/list values that belong to a different option
+    or pack size than the selected offer. That made normal items look like fake
+    90%+ price errors, such as a 6-roll paper product compared against a large
+    multipack/reference value. Prefer being quiet over screaming a false glitch.
+    """
+    references = [
+        ("msrp", _float_or_none(item.get("msrp"))),
+        ("listPrice", _float_or_none(item.get("listPrice"))),
+    ]
+    references.extend(_best_marketplace_reference_prices(item))
+
+    if current_price is None or current_price <= 0:
+        return _first_positive_reference(references), None
+
+    for source, value in references:
+        if value is None or value <= current_price:
+            continue
+        if _reference_price_looks_suspicious(title=title, current_price=current_price, reference_price=value):
+            return None, f"ignored suspicious Walmart {source} reference price: ${value:,.2f}"
+        return value, f"Walmart reference price source: {source}"
+
+    return None, None
+
+
+def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | None]]:
+    best_marketplace = item.get("bestMarketplacePrice")
+    if not isinstance(best_marketplace, dict):
+        return []
+    return [
+        ("bestMarketplacePrice.price", _float_or_none(best_marketplace.get("price"))),
+    ]
+
+
+def _first_positive_reference(references: list[tuple[str, float | None]]) -> float | None:
+    for _, value in references:
+        if value and value > 0:
+            return value
+    return None
+
+
+def _reference_price_looks_suspicious(title: str, current_price: float, reference_price: float) -> bool:
+    ratio = reference_price / current_price
+    if ratio <= 1:
+        return True
+
+    # Essentials and consumables often have size/quantity variants. Walmart can
+    # return a reference from the wrong size, which creates fake 80-95% alerts.
+    if _is_size_sensitive_essential(title):
+        if ratio >= 8:
+            return True
+        if current_price <= 15 and reference_price >= 75:
+            return True
+
+    # Normal low-cost items should almost never compare against a triple-digit
+    # reference unless checkout/local proof exists, which this API result lacks.
+    if current_price <= 10 and reference_price >= 150:
+        return True
+
+    return False
+
+
+def _is_size_sensitive_essential(title: str) -> bool:
+    text = title.lower()
+    keywords = (
+        "toilet paper",
+        "toilet tissue",
+        "bath tissue",
+        "paper towel",
+        "paper towels",
+        "tissue",
+        "napkin",
+        "detergent",
+        "laundry",
+        "trash bag",
+        "dish soap",
+        "cleaner",
+        "wipes",
+        "diaper",
+        "razor",
+        "disposable",
+        "shampoo",
+        "conditioner",
+        "body wash",
+        "soap",
+        "toothpaste",
+        "toothbrush",
+    )
+    return any(keyword in text for keyword in keywords)
 
 
 def _float_or_none(value) -> float | None:

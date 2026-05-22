@@ -49,6 +49,7 @@ class WalmartProvider(DealProvider):
     display_name = "Walmart"
     search_url = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/search"
     taxonomy_url = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/taxonomy"
+    allowed_sorts = {"relevance", "price", "title", "bestseller", "customerRating", "new"}
     capabilities = frozenset(
         {
             ProviderCapability.PRODUCT_LOOKUP,
@@ -100,12 +101,18 @@ class WalmartProvider(DealProvider):
                 provider_key=self.provider_key,
                 candidates=(),
                 warnings=("Walmart scan skipped: query or product_ids required.",),
+                page=request.page,
+                page_size=request.max_results,
             )
 
         warnings: list[str] = []
         if not self.config.publisher_id:
             warnings.append("WALMART_PUBLISHER_ID is blank; using direct Walmart links for personal deal hunting.")
+
         candidates: list[SourceCandidate] = []
+        total_results: int | None = None
+        start_index: int | None = None
+        page_size = max(1, min(request.max_results, 25))
 
         queries = [request.query] if request.query else []
         queries.extend(request.product_ids)
@@ -113,24 +120,46 @@ class WalmartProvider(DealProvider):
             if not query:
                 continue
             try:
-                payload = self._search(query=query, max_results=request.max_results)
+                payload = self._search(query=query, request=request, page_size=page_size)
             except WalmartProviderError as exc:
                 warnings.append(str(exc))
                 continue
             candidates.extend(self._candidates_from_payload(payload, request=request))
+            total_results = _int_or_none(payload.get("totalResults")) or total_results
+            start_index = _int_or_none(payload.get("start")) or start_index
+
+        if total_results is not None and start_index is not None:
+            has_next_page = start_index + page_size <= min(total_results, 1000)
+        else:
+            has_next_page = len(candidates) >= page_size
 
         return ProviderScanResult(
             provider_key=self.provider_key,
             candidates=tuple(candidates),
             warnings=tuple(warnings),
+            total_results=total_results,
+            page=max(1, request.page),
+            page_size=page_size,
+            start_index=start_index,
+            has_next_page=has_next_page,
+            metadata={"query": request.query or "", "sort": request.sort or "relevance"},
         )
 
-    def _search(self, query: str, max_results: int) -> dict:
+    def _search(self, query: str, request: ProviderScanRequest, page_size: int) -> dict:
+        page = max(1, request.page)
+        start = ((page - 1) * page_size) + 1
         params = {
             "query": query,
-            "numItems": str(max(1, min(max_results, 25))),
+            "numItems": str(page_size),
+            "start": str(start),
             "responseGroup": "full",
         }
+        if request.sort:
+            sort = request.sort.strip()
+            if sort in self.allowed_sorts:
+                params["sort"] = sort
+                if sort == "price" and request.order in {"ascending", "descending"}:
+                    params["order"] = request.order
         if self.config.publisher_id:
             params["publisherId"] = self.config.publisher_id
 
@@ -294,5 +323,14 @@ def _float_or_none(value) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None

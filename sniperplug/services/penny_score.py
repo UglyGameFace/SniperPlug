@@ -49,6 +49,12 @@ PENNY_FRIENDLY_CATEGORIES = (
 
 
 def score_penny_candidate(candidate: SourceCandidate, *, has_store_id: bool = False, has_seed: bool = False) -> PennyScore:
+    """Score a Home Depot penny/clearance lead.
+
+    `has_store_id` is kept for compatibility, but callers should treat it as a
+    local anchor flag. A ZIP-only SerpApi search is still local proof and should
+    not be punished like a totally unanchored broad search.
+    """
     score = 0
     reasons: list[str] = []
 
@@ -70,10 +76,10 @@ def score_penny_candidate(candidate: SourceCandidate, *, has_store_id: bool = Fa
         reasons.append("Saved in clearance seed bank: +10")
     if has_store_id:
         score += 10
-        reasons.append("Store-specific search: +10")
+        reasons.append("Local store/ZIP search: +10")
     else:
         score -= 30
-        reasons.append("No store_id supplied: -30")
+        reasons.append("No store_id or ZIP supplied: -30")
 
     if candidate.sku or candidate.product_id or candidate.upc:
         score += 10

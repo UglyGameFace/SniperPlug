@@ -100,20 +100,20 @@ class HomeDepotSearchCog(commands.Cog):
         summary = discord.Embed(
             title="🏚️ Home Depot Penny Hunt" if penny_mode else "🏚️ Home Depot Search",
             description=(
-                f"Query: **{query}**\n"
+                f"Searching: **{query}**\n"
                 f"Store: `{store_id or 'n/a'}` • ZIP: `{zip_code or 'n/a'}` • Page: `{page}`\n"
                 f"SerpApi used: **{quota_after.monthly_used}/{quota_after.monthly_limit} monthly safe budget** • "
                 f"**{quota_after.daily_used}/{quota_after.daily_limit} today**\n"
-                "SerpApi results are **not** in-store scan confirmation. Route strong candidates to staff review."
+                "Showing SniperPlug-style cards. These are **verification candidates**, not confirmed in-store penny deals."
             ),
             color=discord.Color.orange(),
         )
         if broad_warning:
-            summary.add_field(name="Quota warning", value=broad_warning, inline=False)
+            summary.add_field(name="⚠️ Quota warning", value=broad_warning, inline=False)
         if result.warnings:
-            summary.add_field(name="Provider notes", value="\n".join(result.warnings[:3]), inline=False)
+            summary.add_field(name="⚠️ Provider notes", value="\n".join(result.warnings[:3]), inline=False)
         if not cards:
-            summary.add_field(name="No candidates", value="No products came back from this search. Try a tighter query or another store/ZIP.", inline=False)
+            summary.add_field(name="Nothing useful found yet", value="No products came back from this search. Try a tighter query or another store/ZIP.", inline=False)
             await interaction.followup.send(embed=summary, ephemeral=True)
             return
 
@@ -126,31 +126,145 @@ def build_home_depot_cards(candidates: tuple[SourceCandidate, ...], *, has_store
         penny = score_penny_candidate(candidate, has_store_id=has_store_id)
         if penny_mode and penny.score < 25:
             continue
-        embed = discord.Embed(
-            title=f"{_money(candidate.current_price)} • {candidate.title[:75]}",
-            url=candidate.product_url,
-            color=discord.Color.red() if penny.score >= 60 else discord.Color.orange(),
-        )
-        if candidate.image_url:
-            embed.set_thumbnail(url=candidate.image_url)
-        embed.add_field(name="Penny score", value=f"**{penny.score}/100**\n`{penny.level}`", inline=True)
-        embed.add_field(name="IDs", value=f"SKU/Product: `{candidate.sku or candidate.product_id or 'n/a'}`", inline=True)
-        if candidate.stock_status:
-            embed.add_field(name="Availability", value=candidate.stock_status[:300], inline=False)
-        if candidate.signals:
-            embed.add_field(name="Signals", value="\n".join(f"• {signal}" for signal in candidate.signals[:5]), inline=False)
-        if penny.reasons:
-            embed.add_field(name="Score reasons", value="\n".join(f"• {reason}" for reason in penny.reasons[:5]), inline=False)
-        embed.set_footer(text="Not confirmed until in-store scan/register proof. Save promising leads with /seed_clearance.")
+        embed = build_home_depot_deal_card(candidate, penny.score, penny.level, penny.reasons)
         scored.append((penny.score, embed))
     scored.sort(key=lambda item: item[0], reverse=True)
     return [embed for _, embed in scored]
 
 
-def _money(value: float | None) -> str:
+def build_home_depot_deal_card(candidate: SourceCandidate, penny_score: int, penny_level: str, reasons: tuple[str, ...]) -> discord.Embed:
+    title = f"{home_depot_heat_emoji(candidate.current_price, penny_score)} {home_depot_label(penny_score)} • {trim_title(candidate.title, 72)}"
+    embed = discord.Embed(title=title, url=candidate.product_url, color=home_depot_color(penny_score))
+    if candidate.image_url:
+        embed.set_thumbnail(url=candidate.image_url)
+
+    embed.add_field(name="💰 Price", value=home_depot_price_block(candidate.current_price), inline=False)
+    embed.add_field(
+        name="📊 Sniper Read",
+        value=(
+            f"**{friendly_penny_level(penny_level)}** • `{penny_score}/100`\n"
+            "Route: **Staff Review**\n"
+            "Would alert: **No**"
+        ),
+        inline=True,
+    )
+    embed.add_field(name="📦 Stock", value=home_depot_stock_block(candidate), inline=True)
+    embed.add_field(name="🟢 Liveness", value=home_depot_liveness_block(candidate.current_price, penny_score), inline=False)
+
+    proof_lines = home_depot_proof_lines(candidate, reasons)
+    if proof_lines:
+        embed.add_field(name="🔎 Why it showed up", value="\n".join(proof_lines[:5]), inline=False)
+
+    footer_bits = [f"SKU: {candidate.sku or candidate.product_id or 'n/a'}"]
+    if candidate.upc:
+        footer_bits.append(f"UPC: {candidate.upc}")
+    footer_bits.append("SerpApi candidate")
+    footer_bits.append("Verify in store before posting")
+    embed.set_footer(text=" • ".join(footer_bits))
+    return embed
+
+
+def home_depot_price_block(current_price: float | None) -> str:
+    if current_price is None:
+        return "Current price unavailable\nNo Home Depot reference price returned."
+    ending = price_ending(current_price)
+    ending_line = f"\nEnding: **.{ending}**" if ending else ""
+    return f"**{money(current_price)}**\nWas/typical: **Not returned**\nSave: **Unknown**{ending_line}"
+
+
+def home_depot_stock_block(candidate: SourceCandidate) -> str:
+    lines: list[str] = []
+    if candidate.stock_status:
+        lines.append(candidate.stock_status[:120])
+    for signal in candidate.signals:
+        if signal.startswith("store_id:") or signal.startswith("zip:"):
+            lines.append(signal)
+    return "\n".join(lines) if lines else "Local stock not confirmed"
+
+
+def home_depot_liveness_block(current_price: float | None, penny_score: int) -> str:
+    if current_price is not None and price_ending(current_price) == "01":
+        return "🚨 **Possible penny candidate.** SerpApi is not register proof; verify with in-store scan/register before posting."
+    if penny_score >= 80:
+        return "🔥 **High-priority verification candidate.** Do not public-alert until in-store proof confirms it."
+    if penny_score >= 60:
+        return "💎 **Strong clearance candidate.** Send to staff review and verify locally."
+    if penny_score >= 30:
+        return "✅ **Clearance watch.** Useful lead, but not a confirmed glitch or penny deal."
+    return "⚪ **Weak lead.** Keep private unless more proof is found."
+
+
+def home_depot_proof_lines(candidate: SourceCandidate, reasons: tuple[str, ...]) -> list[str]:
+    lines: list[str] = []
+    for reason in reasons[:3]:
+        lines.append(f"• {reason}")
+    for signal in candidate.signals[:3]:
+        if len(lines) >= 5:
+            break
+        lines.append(f"• {signal}")
+    if not lines:
+        lines.append("• Home Depot product link returned by SerpApi")
+    return lines
+
+
+def home_depot_heat_emoji(current_price: float | None, penny_score: int) -> str:
+    if current_price is not None and price_ending(current_price) == "01":
+        return "🚨"
+    if penny_score >= 80:
+        return "🚨"
+    if penny_score >= 60:
+        return "🔥"
+    if penny_score >= 30:
+        return "💎"
+    return "✅"
+
+
+def home_depot_label(penny_score: int) -> str:
+    if penny_score >= 80:
+        return "HIGH-PRIORITY VERIFY"
+    if penny_score >= 60:
+        return "STRONG CLEARANCE LEAD"
+    if penny_score >= 30:
+        return "CLEARANCE WATCH"
+    return "HOME DEPOT LEAD"
+
+
+def home_depot_color(penny_score: int) -> discord.Color:
+    if penny_score >= 80:
+        return discord.Color.red()
+    if penny_score >= 60:
+        return discord.Color.orange()
+    return discord.Color.gold()
+
+
+def friendly_penny_level(level: str) -> str:
+    labels = {
+        "high_priority_in_store_verification": "High-priority verify",
+        "strong_penny_candidate": "Strong penny candidate",
+        "clearance_watch": "Clearance watch",
+        "weak_lead": "Weak lead",
+    }
+    return labels.get(level, level.replace("_", " ").title())
+
+
+def money(value: float | None) -> str:
     if value is None:
-        return "No price"
+        return "N/A"
     return f"${value:,.2f}"
+
+
+def price_ending(price: float | None) -> str | None:
+    if price is None:
+        return None
+    cents = int(round((price - int(price)) * 100))
+    if cents < 0 or cents > 99:
+        return None
+    return f"{cents:02d}"
+
+
+def trim_title(title: str, limit: int) -> str:
+    cleaned = " ".join(title.split())
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
 
 
 def _broad_query_warning(query: str) -> str | None:

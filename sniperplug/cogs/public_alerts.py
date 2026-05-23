@@ -4,7 +4,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from sniperplug.services.public_posting import format_retailers, normalize_retailer_key, parse_retailer_list
+from sniperplug.services.public_posting import (
+    SUPPORTED_RETAILERS,
+    format_retailers,
+    normalize_retailer_key,
+    parse_retailer_list,
+    retailer_credit_note,
+)
 
 
 class PublicAlertsCog(commands.Cog):
@@ -64,27 +70,94 @@ class PublicAlertsCog(commands.Cog):
             return
         await ensure_public_alert_table(self.bot.db)
         config = await get_public_alert_config(self.bot.db, interaction.guild_id)
+        await ensure_retailer_auto_scan_table(self.bot.db)
+        auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         await interaction.followup.send(
             embed=public_alert_status_embed(
                 enabled=config["enabled"],
                 retailers=config["retailers"],
                 channel_id=config["channel_id"],
+                auto_scan=auto_scan,
             ),
             ephemeral=True,
         )
 
+    @app_commands.command(name="retailer_autoscan", description="Toggle which stores SniperPlug may scan automatically to protect API credits.")
+    @app_commands.describe(
+        retailer="Store to toggle: walmart, home_depot, bestbuy, amazon.",
+        enabled="Allow this store in automatic multi-store scans. Manual commands still work.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def retailer_autoscan(self, interaction: discord.Interaction, retailer: str, enabled: bool) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which retailer auto-scan setting to update.", ephemeral=True)
+            return
+        key = normalize_retailer_key(retailer)
+        if key not in SUPPORTED_RETAILERS:
+            await interaction.followup.send(
+                f"Unknown retailer `{retailer}`. Supported: {format_retailers(tuple(sorted(SUPPORTED_RETAILERS)))}",
+                ephemeral=True,
+            )
+            return
+        await set_retailer_auto_scan(self.bot.db, interaction.guild_id, key, enabled)
+        settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
+        embed = retailer_auto_scan_embed(settings)
+        embed.add_field(name="Updated", value=f"`{key}` auto-scan is now **{'on' if enabled else 'off'}**.\n{retailer_credit_note(key)}", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
-def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | None) -> discord.Embed:
+    @app_commands.command(name="retailer_autoscan_status", description="Show which stores are allowed in automatic multi-store scans.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def retailer_autoscan_status(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which settings to show.", ephemeral=True)
+            return
+        settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
+        await interaction.followup.send(embed=retailer_auto_scan_embed(settings), ephemeral=True)
+
+
+def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | None, auto_scan: dict[str, bool] | None = None) -> discord.Embed:
     embed = discord.Embed(
         title="📣 Public Alert Settings",
         description="Public posting only applies to verified alertable deals. Weak proof and staff-review candidates stay private.",
         color=discord.Color.green() if enabled else discord.Color.dark_gold(),
     )
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
-    embed.add_field(name="Stores", value=format_retailers(retailers), inline=True)
+    embed.add_field(name="Public stores", value=format_retailers(retailers), inline=True)
     embed.add_field(name="Channel", value=f"<#{channel_id}>" if channel_id else "not set", inline=True)
+    if auto_scan is not None:
+        embed.add_field(name="Auto-scan stores", value=format_auto_scan_status(auto_scan), inline=False)
+    embed.add_field(
+        name="Credit safety",
+        value="Public posting and auto-scanning are separate. A store can be allowed for public posting while still blocked from automatic scans that spend credits.",
+        inline=False,
+    )
     embed.set_footer(text="More stores can be added later without changing the command format.")
     return embed
+
+
+def retailer_auto_scan_embed(settings: dict[str, bool]) -> discord.Embed:
+    embed = discord.Embed(
+        title="🧭 Retailer Auto-Scan Settings",
+        description="Controls which stores SniperPlug may include in automatic multi-store scans. Manual store-specific commands still work even when auto-scan is off.",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(name="Stores", value=format_auto_scan_status(settings), inline=False)
+    embed.add_field(
+        name="Why this exists",
+        value="This protects free tiers and paid/limited APIs. Turn on only the stores you intentionally want SniperPlug to pull automatically.",
+        inline=False,
+    )
+    return embed
+
+
+def format_auto_scan_status(settings: dict[str, bool]) -> str:
+    rows = []
+    for retailer in sorted(SUPPORTED_RETAILERS):
+        enabled = settings.get(retailer, False)
+        rows.append(f"{'✅' if enabled else '⛔'} `{retailer}`")
+    return "\n".join(rows)
 
 
 async def ensure_public_alert_table(db) -> None:
@@ -98,6 +171,23 @@ async def ensure_public_alert_table(db) -> None:
             channel_id INTEGER,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        )
+        """
+    )
+    await conn.commit()
+
+
+async def ensure_retailer_auto_scan_table(db) -> None:
+    conn = db.require_conn()
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS guild_retailer_auto_scan_settings (
+            guild_id INTEGER NOT NULL,
+            retailer TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (guild_id, retailer)
         )
         """
     )
@@ -150,3 +240,39 @@ async def set_public_alert_config(db, *, guild_id: int, enabled: bool, retailers
         (guild_id, int(enabled), json.dumps(list(retailers)), channel_id, now, now),
     )
     await conn.commit()
+
+
+async def set_retailer_auto_scan(db, guild_id: int, retailer: str, enabled: bool) -> None:
+    from sniperplug.models.deal import utc_now_iso
+
+    await ensure_retailer_auto_scan_table(db)
+    conn = db.require_conn()
+    now = utc_now_iso()
+    key = normalize_retailer_key(retailer)
+    await conn.execute(
+        """
+        INSERT INTO guild_retailer_auto_scan_settings (guild_id, retailer, enabled, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(guild_id, retailer) DO UPDATE SET
+            enabled = excluded.enabled,
+            updated_at = excluded.updated_at
+        """,
+        (guild_id, key, int(enabled), now, now),
+    )
+    await conn.commit()
+
+
+async def list_retailer_auto_scan_settings(db, guild_id: int) -> dict[str, bool]:
+    await ensure_retailer_auto_scan_table(db)
+    conn = db.require_conn()
+    cursor = await conn.execute(
+        "SELECT retailer, enabled FROM guild_retailer_auto_scan_settings WHERE guild_id = ?",
+        (guild_id,),
+    )
+    rows = await cursor.fetchall()
+    settings = {retailer: False for retailer in SUPPORTED_RETAILERS}
+    for row in rows:
+        key = normalize_retailer_key(row["retailer"])
+        if key in SUPPORTED_RETAILERS:
+            settings[key] = bool(row["enabled"])
+    return settings

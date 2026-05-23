@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-import discord
-
 from sniperplug.services.public_posting import normalize_retailer_key
 
 
@@ -31,6 +29,8 @@ async def maybe_post_public_deal_cards(
     guild_id: int | None,
     cards: list[Any],
     source_label: str,
+    fallback_retailer: str | None = None,
+    min_alert_score: int = 90,
 ) -> PublicPostResult:
     """Post alertable deal cards to the configured public channel.
 
@@ -58,6 +58,7 @@ async def maybe_post_public_deal_cards(
     if not hasattr(channel, "send"):
         return PublicPostResult(errors=("configured public alert channel is not sendable",))
 
+    fallback_key = normalize_retailer_key(fallback_retailer)
     allowed_retailers = set(config["retailers"])
     posted = 0
     skipped_duplicate = 0
@@ -66,11 +67,14 @@ async def maybe_post_public_deal_cards(
     errors: list[str] = []
 
     for card in cards:
-        retailer = normalize_retailer_key(getattr(card, "retailer", None))
+        retailer = normalize_retailer_key(getattr(card, "retailer", None)) or fallback_key
         if retailer not in allowed_retailers:
             skipped_wrong_retailer += 1
             continue
-        if not bool(getattr(card, "should_alert", False)):
+        should_alert = getattr(card, "should_alert", None)
+        if should_alert is None:
+            should_alert = int(getattr(card, "score", 0) or 0) >= min_alert_score
+        if not bool(should_alert):
             skipped_not_alertable += 1
             continue
         deal_key = getattr(card, "public_post_key", None) or public_post_key(
@@ -80,6 +84,8 @@ async def maybe_post_public_deal_cards(
             selected_offer_id=getattr(card, "selected_offer_id", None),
             sku=getattr(card, "sku", None),
             upc=getattr(card, "upc", None),
+            score=getattr(card, "score", None),
+            discount=getattr(card, "discount", None),
         )
         reserved = await reserve_public_deal_post(db, guild_id=guild_id, retailer=retailer, deal_key=deal_key, source_label=source_label)
         if not reserved:
@@ -113,13 +119,20 @@ def public_post_key(
     selected_offer_id: str | None = None,
     sku: str | None = None,
     upc: str | None = None,
+    score: int | None = None,
+    discount: float | None = None,
 ) -> str:
-    key_parts = [
-        normalize_retailer_key(retailer),
-        selected_offer_id or sku or upc or canonical_url_key(url),
-        price_key(current_price),
-    ]
-    return ":".join(str(part) for part in key_parts if part)
+    # Prefer product/offer + exact price. When exact price is not stored on the
+    # card yet, include discount/score so a future lower-price result can still
+    # make a new public post instead of being suppressed forever by URL only.
+    identity = selected_offer_id or sku or upc or canonical_url_key(url)
+    if current_price is not None:
+        price_part = price_key(current_price)
+    elif discount is not None:
+        price_part = f"discount:{float(discount):.2f}:score:{int(score or 0)}"
+    else:
+        price_part = "price:unknown"
+    return ":".join((normalize_retailer_key(retailer), identity, price_part))
 
 
 def price_key(value: float | None) -> str:

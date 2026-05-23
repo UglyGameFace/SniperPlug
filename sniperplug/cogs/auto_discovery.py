@@ -109,6 +109,7 @@ class AutoDiscoveryCog(commands.Cog):
             guild_id=interaction.guild_id,
             cards=shown_cards,
             source_label="discover",
+            fallback_retailer=AUTO_DISCOVERY_RETAILER,
         )
 
         embed = discord.Embed(

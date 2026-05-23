@@ -152,6 +152,48 @@ def test_walmart_keeps_reasonable_reference_price_for_electronics():
     assert "Walmart reference price source: msrp" in candidate.signals
 
 
+def test_walmart_reads_nested_current_and_was_prices():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 24680,
+        "name": "Gaming Keyboard RGB",
+        "priceInfo": {
+            "currentPrice": {"price": 24.99},
+            "wasPrice": {"price": 79.99},
+        },
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=24680",
+        "stock": "Available",
+        "availableOnline": True,
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="keyboard"))
+
+    assert candidate is not None
+    assert candidate.current_price == 24.99
+    assert candidate.typical_price == 79.99
+    assert "Walmart current price source: priceInfo.currentPrice" in candidate.signals
+    assert "Walmart reference price source: priceInfo.wasPrice" in candidate.signals
+
+
+def test_walmart_parses_price_strings_with_symbols():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 24681,
+        "name": "Soundbar",
+        "price": "$49.99",
+        "wasPrice": "$129.99",
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=24681",
+        "stock": "Available",
+        "availableOnline": True,
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="soundbar"))
+
+    assert candidate is not None
+    assert candidate.current_price == 49.99
+    assert candidate.typical_price == 129.99
+
+
 def test_walmart_flags_parent_ps5_title_when_priced_variant_is_xbox():
     provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
     item = {

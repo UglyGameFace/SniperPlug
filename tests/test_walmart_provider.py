@@ -179,6 +179,48 @@ def test_walmart_flags_parent_ps5_title_when_priced_variant_is_xbox():
     assert decision.hold_for_review is True
 
 
+def test_walmart_does_not_false_flag_parent_title_that_mentions_both_platforms():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 9003,
+        "name": "HyperX Cloud Gaming Headset for PS5 and Xbox",
+        "salePrice": 39.99,
+        "msrp": 79.99,
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=9003",
+        "stock": "Available",
+        "availableOnline": True,
+        "variantAttributes": {"platform": "Xbox", "color": "Black"},
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="gaming headset"))
+    assert candidate is not None
+    assert candidate.platform == "Xbox"
+    assert candidate.option_mismatch_warning is None
+
+
+def test_walmart_extracts_selected_variant_from_product_variants():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 9004,
+        "name": "Gaming Headset",
+        "salePrice": 29.99,
+        "msrp": 89.99,
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=9004",
+        "stock": "Available",
+        "availableOnline": True,
+        "productVariants": [
+            {"itemId": "9003", "platform": "PS5", "color": "White"},
+            {"itemId": "9004", "platform": "Xbox", "color": "Black"},
+        ],
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="gaming headset"))
+    assert candidate is not None
+    assert candidate.platform == "Xbox"
+    assert candidate.color == "Black"
+    assert candidate.variant_label == "Xbox / Black"
+
+
 def test_walmart_flags_pack_size_mismatch_for_staff_review():
     provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
     item = {

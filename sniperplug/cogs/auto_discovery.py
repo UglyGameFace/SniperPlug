@@ -12,6 +12,7 @@ from sniperplug.cogs.deal_scanner import (
     run_preset_hunt,
 )
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
+from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
 DISCORD_EMBED_MESSAGE_LIMIT = 6000
 SAFE_EMBED_MESSAGE_LIMIT = 5200
@@ -102,6 +103,13 @@ class AutoDiscoveryCog(commands.Cog):
 
         all_cards = dedupe_cards(all_cards)
         all_cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
+        shown_cards = all_cards[:5]
+        public_result = await maybe_post_public_deal_cards(
+            bot=self.bot,
+            guild_id=interaction.guild_id,
+            cards=shown_cards,
+            source_label="discover",
+        )
 
         embed = discord.Embed(
             title="🤖 SniperPlug Auto Discovery",
@@ -126,15 +134,25 @@ class AutoDiscoveryCog(commands.Cog):
             ),
             inline=False,
         )
+        if public_result.any_activity:
+            embed.add_field(
+                name="📣 Public posting",
+                value=(
+                    f"Posted: **{public_result.posted}**\n"
+                    f"Duplicate blocked: **{public_result.skipped_duplicate}**\n"
+                    f"Not alertable/private review: **{public_result.skipped_not_alertable}**"
+                ),
+                inline=False,
+            )
         if warnings:
             embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
         embed.set_footer(text="Auto Discovery does not guess discounts. Weak proof stays review-only instead of fake public alerts.")
 
-        if not all_cards:
+        if not shown_cards:
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        await send_discovery_results(interaction, summary=embed, cards=all_cards[:5])
+        await send_discovery_results(interaction, summary=embed, cards=shown_cards)
 
     @discover.error
     async def discover_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -201,7 +219,7 @@ def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:
     seen: set[str] = set()
     unique: list[DealCard] = []
     for card in cards:
-        key = card.url or card.label
+        key = getattr(card, "public_post_key", None) or card.url or card.label
         if key in seen:
             continue
         seen.add(key)

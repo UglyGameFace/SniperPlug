@@ -11,9 +11,11 @@ from sniperplug.cogs.deal_scanner import (
     provider_health_error_message,
     run_preset_hunt,
 )
+from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 
 DISCORD_EMBED_MESSAGE_LIMIT = 6000
 SAFE_EMBED_MESSAGE_LIMIT = 5200
+AUTO_DISCOVERY_RETAILER = "walmart"
 
 
 class AutoDiscoveryCog(commands.Cog):
@@ -27,15 +29,52 @@ class AutoDiscoveryCog(commands.Cog):
     async def discover(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use `/discover` in a server so SniperPlug can honor that server's auto-scan settings.", ephemeral=True)
+            return
+
         health_error = await provider_health_error_message()
         if health_error:
             await interaction.followup.send(health_error, ephemeral=True)
             return
 
+        allowed, gate_reason, gate_settings = await auto_scan_allowed(
+            self.bot.db,
+            interaction.guild_id,
+            AUTO_DISCOVERY_RETAILER,
+            scan_key="discover:all_presets",
+        )
+        if not allowed:
+            embed = discord.Embed(
+                title="🛑 Auto Discovery blocked by credit safety",
+                description=(
+                    f"SniperPlug did **not** call `{AUTO_DISCOVERY_RETAILER}`.\n\n"
+                    f"Reason: {gate_reason}\n\n"
+                    "Manual store-specific commands still work. Turn on auto-scan only for stores you intentionally want pulled automatically."
+                ),
+                color=discord.Color.dark_gold(),
+            )
+            embed.add_field(
+                name="Current setting",
+                value=(
+                    f"Enabled: **{'yes' if gate_settings.get('enabled') else 'no'}**\n"
+                    f"Interval: **every {gate_settings.get('interval_hours')}h**\n"
+                    f"Daily limit: **{gate_settings.get('daily_limit')}/day**"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Enable example",
+                value="`/retailer_autoscan retailer:walmart enabled:true interval_hours:4 daily_limit:25`",
+                inline=False,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         all_cards: list[DealCard] = []
         total_pages_checked = 0
         total_products_checked = 0
-        warnings: list[str] = []
+        warnings: list[str] = [gate_reason]
         category_notes: list[str] = []
 
         for preset in HUNT_PRESETS.values():
@@ -54,13 +93,20 @@ class AutoDiscoveryCog(commands.Cog):
             else:
                 category_notes.append(f"{preset.emoji} **{preset.label}**: no useful matches right now")
 
+        await record_auto_scan_run(
+            self.bot.db,
+            interaction.guild_id,
+            AUTO_DISCOVERY_RETAILER,
+            scan_key="discover:all_presets",
+        )
+
         all_cards = dedupe_cards(all_cards)
         all_cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
 
         embed = discord.Embed(
             title="🤖 SniperPlug Auto Discovery",
             description=(
-                "I searched the main deal categories for you. No product names, pages, or filters needed.\n\n"
+                "I searched the enabled automatic deal source for you. No product names, pages, or filters needed.\n\n"
                 f"Checked: **{total_products_checked} products** across **{total_pages_checked} smart searches**\n"
                 f"Found: **{len(all_cards)} candidate(s)**"
             ),
@@ -69,6 +115,15 @@ class AutoDiscoveryCog(commands.Cog):
         embed.add_field(
             name="Category results",
             value="\n".join(category_notes[:8]) or "No category results yet.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Auto-scan budget",
+            value=(
+                f"Retailer: `{AUTO_DISCOVERY_RETAILER}`\n"
+                f"Interval: **every {gate_settings.get('interval_hours')}h**\n"
+                f"Daily limit: **{gate_settings.get('daily_limit')}/day**"
+            ),
             inline=False,
         )
         if warnings:

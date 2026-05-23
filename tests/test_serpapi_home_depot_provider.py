@@ -91,3 +91,78 @@ def test_serpapi_home_depot_reads_nested_price_fields():
 
     assert len(candidates) == 1
     assert candidates[0].current_price == 24.03
+
+
+def test_serpapi_home_depot_extracts_was_typical_price_from_top_level_fields():
+    provider = SerpApiHomeDepotProvider(SerpApiHomeDepotConfig(api_key="fake"))
+    payload = {
+        "products": [
+            {
+                "title": "Collette 48 in. Vanity",
+                "product_id": "327191749",
+                "link": "https://www.homedepot.com/p/327191749",
+                "price": "$1,139.00",
+                "was_price": "$1,899.00",
+            }
+        ]
+    }
+
+    candidates = provider._candidates_from_payload(
+        payload,
+        ProviderScanRequest(source_key="home_depot_serpapi", query="vanity"),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].current_price == 1139.0
+    assert candidates[0].typical_price == 1899.0
+    assert any("was/typical price returned" in signal for signal in candidates[0].signals)
+
+
+def test_serpapi_home_depot_extracts_was_typical_price_from_nested_offer_fields():
+    provider = SerpApiHomeDepotProvider(SerpApiHomeDepotConfig(api_key="fake"))
+    payload = {
+        "products": [
+            {
+                "title": "Special Buy Vanity",
+                "product_id": "555",
+                "link": "https://www.homedepot.com/p/555",
+                "primary_offer": {
+                    "price": "$499.00",
+                    "original_price": "$799.00",
+                },
+            }
+        ]
+    }
+
+    candidates = provider._candidates_from_payload(
+        payload,
+        ProviderScanRequest(source_key="home_depot_serpapi", query="vanity"),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].current_price == 499.0
+    assert candidates[0].typical_price == 799.0
+
+
+def test_serpapi_home_depot_ignores_typical_price_lower_than_current_price():
+    provider = SerpApiHomeDepotProvider(SerpApiHomeDepotConfig(api_key="fake"))
+    payload = {
+        "products": [
+            {
+                "title": "Normal Item",
+                "product_id": "777",
+                "link": "https://www.homedepot.com/p/777",
+                "price": "$100.00",
+                "was_price": "$90.00",
+            }
+        ]
+    }
+
+    candidates = provider._candidates_from_payload(
+        payload,
+        ProviderScanRequest(source_key="home_depot_serpapi", query="normal"),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].current_price == 100.0
+    assert candidates[0].typical_price is None

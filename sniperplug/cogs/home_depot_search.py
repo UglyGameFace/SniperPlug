@@ -219,13 +219,24 @@ def build_home_depot_deal_card(
         inline=True,
     )
     embed.add_field(name="📦 Stock", value=home_depot_stock_block(candidate), inline=True)
+
+    proof_block = home_depot_product_proof_block(candidate)
+    if proof_block:
+        embed.add_field(name="🧾 Product Proof", value=proof_block, inline=False)
+
+    fulfillment_block = home_depot_fulfillment_block(candidate)
+    if fulfillment_block:
+        embed.add_field(name="🚚 Fulfillment", value=fulfillment_block, inline=False)
+
     embed.add_field(name="🟢 Liveness", value=home_depot_liveness_block(candidate.current_price, penny_score, raw_fallback=raw_fallback), inline=False)
 
     proof_lines = home_depot_proof_lines(candidate, reasons)
     if proof_lines:
-        embed.add_field(name="🔎 Why it showed up", value="\n".join(proof_lines[:5]), inline=False)
+        embed.add_field(name="🔎 Why it showed up", value="\n".join(proof_lines[:6]), inline=False)
 
     footer_bits = [f"SKU: {candidate.sku or candidate.product_id or 'n/a'}"]
+    if candidate.model:
+        footer_bits.append(f"Model: {candidate.model}")
     if candidate.upc:
         footer_bits.append(f"UPC: {candidate.upc}")
     footer_bits.append("SerpApi candidate")
@@ -236,19 +247,58 @@ def build_home_depot_deal_card(
 
 def home_depot_price_block(candidate: SourceCandidate) -> str:
     current_price = candidate.current_price
+    attrs = candidate.variant_attributes or {}
     if current_price is None:
         return "Current price unavailable\nNo Home Depot reference price returned."
     ending = price_ending(current_price)
     ending_line = f"\nEnding: **.{ending}**" if ending else ""
+    badge_line = f"\nBadge: **{attrs['price_badge']}**" if attrs.get("price_badge") else ""
     if candidate.typical_price and candidate.typical_price > current_price:
         savings = candidate.typical_price - current_price
         discount = (savings / candidate.typical_price) * 100
         return (
             f"**{money(current_price)}**\n"
             f"Was/typical: **{money(candidate.typical_price)}**\n"
-            f"Save: **{money(savings)} ({discount:.0f}%)**{ending_line}"
+            f"Save: **{money(savings)} ({discount:.0f}%)**{ending_line}{badge_line}"
         )
-    return f"**{money(current_price)}**\nWas/typical: **Not returned**\nSave: **Unknown**{ending_line}"
+    savings_text = attrs.get("price_saving")
+    percent_text = attrs.get("percentage_off")
+    if savings_text or percent_text:
+        return (
+            f"**{money(current_price)}**\n"
+            "Was/typical: **Not returned**\n"
+            f"Home Depot says save: **{savings_text or 'n/a'} {f'({percent_text})' if percent_text else ''}**{ending_line}{badge_line}"
+        )
+    return f"**{money(current_price)}**\nWas/typical: **Not returned**\nSave: **Unknown**{ending_line}{badge_line}"
+
+
+def home_depot_product_proof_block(candidate: SourceCandidate) -> str | None:
+    attrs = candidate.variant_attributes or {}
+    lines: list[str] = []
+    for key, label in (
+        ("brand", "Brand"),
+        ("model_number", "Model"),
+        ("rating", "Rating"),
+        ("reviews", "Reviews"),
+        ("badges", "Badges"),
+        ("collection", "Collection"),
+    ):
+        value = attrs.get(key)
+        if value:
+            lines.append(f"{label}: **{value}**")
+    if candidate.can_add_to_cart is not None:
+        lines.append(f"Add-to-cart: **{'seen' if candidate.can_add_to_cart else 'not seen'}**")
+    return "\n".join(lines[:7]) if lines else None
+
+
+def home_depot_fulfillment_block(candidate: SourceCandidate) -> str | None:
+    attrs = candidate.variant_attributes or {}
+    lines = []
+    for key in ("pickup", "delivery", "general_stock", "general_stock_status", "store_stock", "store_stock_status"):
+        value = attrs.get(key)
+        if value:
+            lines.append(f"{key.replace('_', ' ').title()}: **{value}**")
+    return "\n".join(lines[:6]) if lines else None
 
 
 def home_depot_stock_block(candidate: SourceCandidate) -> str:
@@ -277,10 +327,19 @@ def home_depot_liveness_block(current_price: float | None, penny_score: int, *, 
 
 def home_depot_proof_lines(candidate: SourceCandidate, reasons: tuple[str, ...]) -> list[str]:
     lines: list[str] = []
+    attrs = candidate.variant_attributes or {}
     for reason in reasons[:3]:
         lines.append(f"• {reason}")
-    for signal in candidate.signals[:3]:
-        if len(lines) >= 5:
+    for key, label in (
+        ("price_badge", "badge"),
+        ("price_saving", "savings"),
+        ("percentage_off", "percent off"),
+    ):
+        value = attrs.get(key)
+        if value and len(lines) < 6:
+            lines.append(f"• Home Depot {label}: {value}")
+    for signal in candidate.signals[:4]:
+        if len(lines) >= 6:
             break
         lines.append(f"• {signal}")
     if not lines:

@@ -44,6 +44,10 @@ class SourceCandidate:
     parent_title: str | None = None
     option_mismatch_warning: str | None = None
 
+    seller_name: str | None = None
+    fulfillment_type: str | None = None
+    condition: str | None = None
+
     stock_status: str | None = None
     can_add_to_cart: bool | None = None
     is_business_offer: bool = False
@@ -77,6 +81,12 @@ class SourceCandidate:
             availability_bits.append("Add-to-cart observed")
         elif self.can_add_to_cart is False:
             availability_bits.append("Add-to-cart not confirmed")
+        if self.seller_name:
+            availability_bits.append(f"Seller: {self.seller_name}")
+        if self.fulfillment_type:
+            availability_bits.append(f"Fulfillment: {self.fulfillment_type}")
+        if self.condition:
+            availability_bits.append(f"Condition: {self.condition}")
         if self.is_business_offer:
             availability_bits.append("May require business account")
         if self.is_member_only:
@@ -104,6 +114,9 @@ class SourceCandidate:
             model=self.model,
             parent_title=self.parent_title,
             option_mismatch_warning=self.option_mismatch_warning,
+            seller_name=self.seller_name,
+            fulfillment_type=self.fulfillment_type,
+            condition=self.condition,
             availability_message="; ".join(availability_bits) if availability_bits else None,
         )
         deal.recalculate_prices()
@@ -115,6 +128,12 @@ class SourceCandidate:
             deal.verification_notes.append(f"Variant attributes: {attrs}")
         if self.selected_offer_id:
             deal.verification_notes.append(f"Selected offer ID: {self.selected_offer_id}")
+        if self.seller_name:
+            deal.verification_notes.append(f"Selected offer seller: {self.seller_name}")
+        if self.fulfillment_type:
+            deal.verification_notes.append(f"Selected offer fulfillment: {self.fulfillment_type}")
+        if self.condition:
+            deal.verification_notes.append(f"Selected offer condition: {self.condition}")
         if self.parent_title and self.parent_title != self.title:
             deal.verification_notes.append(f"Parent listing title: {self.parent_title}")
         if self.option_mismatch_warning:

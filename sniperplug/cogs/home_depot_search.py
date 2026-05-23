@@ -11,11 +11,13 @@ from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
+from sniperplug.services.safe_links import product_link_choices
 
 
 @dataclass(frozen=True)
 class HomeDepotCardBatch:
     embeds: list[discord.Embed]
+    candidates: list[SourceCandidate]
     returned_count: int
     shown_count: int
     filtered_count: int
@@ -131,6 +133,12 @@ class HomeDepotSearchCog(commands.Cog):
                 value="SerpApi returned products, but none passed the penny threshold. Showing raw low-score results anyway so the credit is not wasted.",
                 inline=False,
             )
+        if batch.candidates:
+            summary.add_field(
+                name="Link choices",
+                value="Use **Open App/Web** if your phone/tablet supports the retailer app. Use **Browser Search** if the app handoff breaks or your device is unsupported.",
+                inline=False,
+            )
         if cleaned_zip_code and not cleaned_store_id:
             summary.add_field(
                 name="ZIP used as local anchor",
@@ -156,15 +164,36 @@ class HomeDepotSearchCog(commands.Cog):
             await interaction.followup.send(embed=summary, ephemeral=True)
             return
 
-        await interaction.followup.send(embeds=[summary] + batch.embeds[:5], ephemeral=True)
+        await interaction.followup.send(
+            embeds=[summary] + batch.embeds[:5],
+            view=HomeDepotResultView(batch.candidates[:5]),
+            ephemeral=True,
+        )
 
 
 def build_home_depot_cards(candidates: tuple[SourceCandidate, ...], *, has_store_id: bool, penny_mode: bool) -> list[discord.Embed]:
     return build_home_depot_card_batch(candidates, has_local_anchor=has_store_id, penny_mode=penny_mode).embeds
 
 
+class HomeDepotResultView(discord.ui.View):
+    def __init__(self, candidates: list[SourceCandidate]):
+        super().__init__(timeout=300)
+        for idx, candidate in enumerate(candidates, start=1):
+            choices = product_link_choices(
+                retailer=candidate.retailer,
+                product_url=candidate.product_url,
+                title=candidate.title,
+                product_id=candidate.product_id,
+                sku=candidate.sku,
+                asin=candidate.product_id if candidate.product_id_type == "asin" else None,
+            )
+            row = min(4, (idx - 1) // 2)
+            for choice in choices[:2]:
+                self.add_item(discord.ui.Button(label=f"{idx} {choice.label}", style=discord.ButtonStyle.link, url=choice.url, row=row))
+
+
 def build_home_depot_card_batch(candidates: tuple[SourceCandidate, ...], *, has_local_anchor: bool, penny_mode: bool) -> HomeDepotCardBatch:
-    scored: list[tuple[int, discord.Embed]] = []
+    scored: list[tuple[int, discord.Embed, SourceCandidate]] = []
     filtered_count = 0
     for candidate in candidates:
         penny = score_penny_candidate(candidate, has_store_id=has_local_anchor)
@@ -172,7 +201,7 @@ def build_home_depot_card_batch(candidates: tuple[SourceCandidate, ...], *, has_
             filtered_count += 1
             continue
         embed = build_home_depot_deal_card(candidate, penny.score, penny.level, penny.reasons, raw_fallback=False)
-        scored.append((penny.score, embed))
+        scored.append((penny.score, embed, candidate))
 
     used_raw_fallback = False
     if penny_mode and not scored and candidates:
@@ -181,12 +210,14 @@ def build_home_depot_card_batch(candidates: tuple[SourceCandidate, ...], *, has_
         for candidate in candidates:
             penny = score_penny_candidate(candidate, has_store_id=has_local_anchor)
             embed = build_home_depot_deal_card(candidate, penny.score, penny.level, penny.reasons, raw_fallback=True)
-            scored.append((penny.score, embed))
+            scored.append((penny.score, embed, candidate))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    embeds = [embed for _, embed in scored]
+    embeds = [embed for _, embed, _ in scored]
+    shown_candidates = [candidate for _, _, candidate in scored]
     return HomeDepotCardBatch(
         embeds=embeds,
+        candidates=shown_candidates,
         returned_count=len(candidates),
         shown_count=min(len(embeds), 5),
         filtered_count=filtered_count if penny_mode else 0,

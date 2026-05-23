@@ -11,6 +11,7 @@ from sniperplug.models.deal import NormalizedDeal
 from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.candidate_pipeline import evaluate_candidate
+from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.routing import route_label
 from sniperplug.services.safe_links import LinkChoice, product_link_choices
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
@@ -96,8 +97,17 @@ class DealScannerCog(commands.Cog):
         cards, shown_discount = cards_with_fallback(result, min_discount, alerts_only, BEGINNER_FALLBACK_DISCOUNTS) if simple_mode else (build_walmart_cards(result, min_discount, alerts_only), min_discount)
         summary = build_scan_summary(result, query, min_discount, shown_discount, alerts_only, simple_mode)
         if cards:
+            shown_cards = cards[:5]
+            public_result = await maybe_post_public_deal_cards(
+                bot=self.bot,
+                guild_id=interaction.guild_id,
+                cards=shown_cards,
+                source_label="deals" if simple_mode else "walmart_scan",
+                fallback_retailer="walmart",
+            )
             summary.add_field(name="Product links", value="Each product card now includes its own **App/Web** and **Browser Search** links so users do not have to match numbered buttons at the bottom.", inline=False)
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in cards[:5]], view=DealSearchControlView(query, page, max(0, shown_discount), max_results, sort_value, order_value, alerts_only, simple_mode, cards[:5], result.has_next_page), ephemeral=True)
+            add_public_posting_field(summary, public_result)
+            await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], view=DealSearchControlView(query, page, max(0, shown_discount), max_results, sort_value, order_value, alerts_only, simple_mode, shown_cards, result.has_next_page), ephemeral=True)
             return
         summary.add_field(name="Nothing useful found yet", value=no_match_help(query, min_discount, page, simple_mode), inline=False)
         await interaction.followup.send(embed=summary, view=DealSearchControlView(query, page, max(0, shown_discount), max_results, sort_value, order_value, alerts_only, simple_mode), ephemeral=True)
@@ -153,7 +163,16 @@ class HuntPresetButton(discord.ui.Button):
                 summary.add_field(name="Nothing useful found yet", value="I checked multiple smart searches and still could not prove a useful markdown.\nTry another category, or use `/deals search:` with a specific item like `oled tv`, `lego`, `detergent`, or `ssd`.", inline=False)
                 await interaction.followup.send(embed=summary, view=HuntPresetMenuView(), ephemeral=True)
                 return
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in cards[:5]], view=PresetResultView(cards[:5]), ephemeral=True)
+            shown_cards = cards[:5]
+            public_result = await maybe_post_public_deal_cards(
+                bot=interaction.client,
+                guild_id=interaction.guild_id,
+                cards=shown_cards,
+                source_label=f"hunt:{self.preset.key}",
+                fallback_retailer="walmart",
+            )
+            add_public_posting_field(summary, public_result)
+            await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], view=PresetResultView(shown_cards), ephemeral=True)
         finally:
             await scan_operation_locks.release(lock_key)
 
@@ -200,8 +219,17 @@ class DealSearchControlView(discord.ui.View):
             cards, shown_discount = cards_with_fallback(result, min_discount, self.alerts_only, BEGINNER_FALLBACK_DISCOUNTS) if self.simple_mode else (build_walmart_cards(result, min_discount, self.alerts_only), min_discount)
             summary = build_scan_summary(result, self.query, min_discount, shown_discount, self.alerts_only, self.simple_mode)
             if cards:
+                shown_cards = cards[:5]
+                public_result = await maybe_post_public_deal_cards(
+                    bot=interaction.client,
+                    guild_id=interaction.guild_id,
+                    cards=shown_cards,
+                    source_label="deal_rerun",
+                    fallback_retailer="walmart",
+                )
                 summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
-                await interaction.followup.send(embeds=[summary] + [card.embed for card in cards[:5]], view=self._copy_for(page, shown_discount, cards[:5], result.has_next_page), ephemeral=True)
+                add_public_posting_field(summary, public_result)
+                await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], view=self._copy_for(page, shown_discount, shown_cards, result.has_next_page), ephemeral=True)
             else:
                 summary.add_field(name="Nothing useful found yet", value=no_match_help(self.query, min_discount, page, self.simple_mode), inline=False)
                 await interaction.followup.send(embed=summary, view=self._copy_for(page, shown_discount, [], result.has_next_page), ephemeral=True)
@@ -229,9 +257,18 @@ class DealSearchControlView(discord.ui.View):
                 cards = build_walmart_cards(aggregate, min_discount=min_discount, alerts_only=self.alerts_only)
                 if cards:
                     cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
+                    shown_cards = cards[:5]
                     summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, len(cards), tuple(warnings), self.simple_mode)
+                    public_result = await maybe_post_public_deal_cards(
+                        bot=interaction.client,
+                        guild_id=interaction.guild_id,
+                        cards=shown_cards,
+                        source_label="hunt_pages",
+                        fallback_retailer="walmart",
+                    )
                     summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
-                    await interaction.followup.send(embeds=[summary] + [card.embed for card in cards[:5]], view=self._copy_for(page, min_discount, cards[:5], has_next_page), ephemeral=True)
+                    add_public_posting_field(summary, public_result)
+                    await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], view=self._copy_for(page, min_discount, shown_cards, has_next_page), ephemeral=True)
                     return
                 if not result.has_next_page:
                     break
@@ -239,9 +276,18 @@ class DealSearchControlView(discord.ui.View):
             fallback_cards, shown_discount = cards_with_fallback(aggregate, 50, self.alerts_only, (50, 30, 10))
             summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, len(fallback_cards), tuple(warnings), self.simple_mode)
             if fallback_cards:
+                shown_cards = fallback_cards[:5]
+                public_result = await maybe_post_public_deal_cards(
+                    bot=interaction.client,
+                    guild_id=interaction.guild_id,
+                    cards=shown_cards,
+                    source_label="hunt_pages_fallback",
+                    fallback_retailer="walmart",
+                )
                 summary.add_field(name="No 80%+ found — showing closest matches", value=f"I did not find a true 80%+ markdown, so I’m showing the best **{shown_discount}%+** matches instead.", inline=False)
                 summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
-                await interaction.followup.send(embeds=[summary] + [card.embed for card in fallback_cards[:5]], view=self._copy_for(self.page, shown_discount, fallback_cards[:5], has_next_page), ephemeral=True)
+                add_public_posting_field(summary, public_result)
+                await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], view=self._copy_for(self.page, shown_discount, shown_cards, has_next_page), ephemeral=True)
                 return
             summary.add_field(name="No useful markdowns found yet", value=f"I checked **{len(all_candidates)} products across {pages_checked} page(s)** and could not prove a strong markdown.\nTry another search like `iphone case`, `iphone charger`, `oled tv`, `clearance toy`, or run `/hunt` and tap a category.", inline=False)
             await interaction.followup.send(embed=summary, view=self._copy_for(self.page, min_discount, [], has_next_page), ephemeral=True)
@@ -250,6 +296,20 @@ class DealSearchControlView(discord.ui.View):
 
     def _copy_for(self, page: int, min_discount: int, cards: list[DealCard], has_next_page: bool) -> DealSearchControlView:
         return DealSearchControlView(self.query, page, min_discount, self.max_results, self.sort_value, self.order_value, self.alerts_only, self.simple_mode, cards, has_next_page)
+
+
+def add_public_posting_field(embed: discord.Embed, public_result) -> None:
+    if not getattr(public_result, "any_activity", False):
+        return
+    embed.add_field(
+        name="📣 Public posting",
+        value=(
+            f"Posted: **{public_result.posted}**\n"
+            f"Duplicate blocked: **{public_result.skipped_duplicate}**\n"
+            f"Not alertable/private review: **{public_result.skipped_not_alertable}**"
+        ),
+        inline=False,
+    )
 
 
 def add_deal_link_buttons(view: discord.ui.View, cards: list[DealCard]) -> None:
@@ -373,7 +433,16 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
         if alerts_only and not decision.should_alert:
             continue
         choices = product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, asin=deal.asin)
-        cards.append(DealCard(embed=build_deal_card_embed(candidate, deal, decision, discount, choices), url=deal.product_url, label=short_button_label(deal.title), score=decision.anomaly.score, discount=discount, link_choices=choices))
+        card = DealCard(embed=build_deal_card_embed(candidate, deal, decision, discount, choices), url=deal.product_url, label=short_button_label(deal.title), score=decision.anomaly.score, discount=discount, link_choices=choices)
+        # Runtime attributes keep the dataclass backward compatible while giving
+        # the public posting pipeline exact proof for retailer/dedupe/alertability.
+        card.retailer = deal.retailer
+        card.should_alert = decision.should_alert
+        card.current_price = deal.current_price
+        card.selected_offer_id = deal.selected_offer_id
+        card.sku = deal.sku
+        card.upc = deal.upc
+        cards.append(card)
     return cards
 
 
@@ -574,6 +643,7 @@ def proof_lines_for(candidate: SourceCandidate, decision) -> list[str]:
         if signal.startswith("Walmart current price source")
         or signal.startswith("Walmart reference price source")
         or signal.startswith("selected option")
+        or signal.startswith("condition")
         or signal.startswith("max order quantity")
         or signal.startswith("offer type")
         or signal in {"rollback", "clearance", "special buy", "marketplace seller", "bundle"}

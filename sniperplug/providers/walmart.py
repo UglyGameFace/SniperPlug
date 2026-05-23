@@ -169,6 +169,13 @@ class WalmartProvider(DealProvider):
         if not title or not product_url:
             return None
 
+        selected_offer = _selected_offer_proof(item)
+        seller_name = selected_offer.get("seller_name")
+        fulfillment_type = selected_offer.get("fulfillment_type")
+        condition = selected_offer.get("condition")
+        for signal in _seller_signals(seller_name=seller_name, fulfillment_type=fulfillment_type, condition=condition):
+            signals.append(signal)
+
         current_price, current_price_signal = _trusted_current_price(item)
         if current_price_signal:
             signals.append(current_price_signal)
@@ -177,7 +184,7 @@ class WalmartProvider(DealProvider):
             signals.append(reference_signal)
 
         variant = extract_variant_proof(item, title)
-        proof_attrs = _walmart_proof_attributes(item, variant.attributes)
+        proof_attrs = _walmart_proof_attributes(item, variant.attributes, selected_offer)
         if variant.warning:
             signals.append(variant.warning)
         elif variant.label:
@@ -208,6 +215,9 @@ class WalmartProvider(DealProvider):
             model=proof_attrs.get("model") or proof_attrs.get("modelNumber"),
             parent_title=title if proof_attrs else None,
             option_mismatch_warning=variant.warning,
+            seller_name=seller_name,
+            fulfillment_type=fulfillment_type,
+            condition=condition,
             stock_status=str(item.get("stock") or "") or None,
             can_add_to_cart=bool(item.get("availableOnline")) if "availableOnline" in item else None,
             is_business_offer=False,
@@ -340,7 +350,69 @@ def _first_trusted_reference(references: list[tuple[str, float | None]], *, titl
     return None, None
 
 
-def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str]) -> dict[str, str]:
+def _selected_offer_proof(item: dict[str, Any]) -> dict[str, str | None]:
+    seller_name = _clean_string(
+        item.get("sellerName")
+        or item.get("sellerDisplayName")
+        or item.get("seller")
+        or _nested_value(item, "sellerInfo", "sellerName")
+        or _nested_value(item, "sellerInfo", "name")
+        or _nested_value(item, "seller", "name")
+    )
+    seller_id = _clean_string(
+        item.get("sellerId")
+        or item.get("sellerID")
+        or _nested_value(item, "sellerInfo", "sellerId")
+        or _nested_value(item, "seller", "id")
+    )
+    fulfillment_type = _clean_string(
+        item.get("fulfillmentType")
+        or item.get("fulfillment")
+        or item.get("fulfillmentBadge")
+        or _nested_value(item, "fulfillmentSummary", "fulfillment")
+        or _nested_value(item, "fulfillmentSummary", "fulfillmentType")
+    )
+    condition = _clean_string(item.get("condition") or item.get("conditionType") or _nested_value(item, "condition", "type"))
+    is_walmart_seller = _is_walmart_seller(seller_name=seller_name, seller_id=seller_id, item=item)
+    return {
+        "seller_name": seller_name or ("Walmart" if is_walmart_seller else None),
+        "seller_id": seller_id,
+        "fulfillment_type": fulfillment_type,
+        "condition": condition,
+        "is_walmart_seller": "yes" if is_walmart_seller else "no" if seller_name or seller_id or item.get("marketplace") is True else None,
+    }
+
+
+def _seller_signals(*, seller_name: str | None, fulfillment_type: str | None, condition: str | None) -> list[str]:
+    signals: list[str] = []
+    if seller_name:
+        signals.append(f"selected offer seller: {seller_name}")
+        if not _seller_name_is_walmart(seller_name):
+            signals.append("selected offer may be third-party seller")
+    if fulfillment_type:
+        signals.append(f"fulfillment: {fulfillment_type}")
+    if condition:
+        signals.append(f"condition: {condition}")
+    return signals
+
+
+def _is_walmart_seller(*, seller_name: str | None, seller_id: str | None, item: dict[str, Any]) -> bool:
+    if _seller_name_is_walmart(seller_name):
+        return True
+    if seller_id and seller_id.strip().upper() in {"0", "F55CDC31AB754BB68FE0B39041159D63", "WALMART"}:
+        return True
+    if item.get("marketplace") is False and not seller_name:
+        return True
+    return False
+
+
+def _seller_name_is_walmart(seller_name: str | None) -> bool:
+    if not seller_name:
+        return False
+    return seller_name.strip().lower() in {"walmart", "walmart.com", "walmart stores, inc.", "walmart stores inc"}
+
+
+def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str], selected_offer: dict[str, str | None] | None = None) -> dict[str, str]:
     attrs: dict[str, str] = dict(variant_attrs)
     for key, label in (
         ("brandName", "brand"),
@@ -360,6 +432,11 @@ def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str
         value = _clean_string(item.get(key))
         if value and label not in attrs:
             attrs[label] = value
+    if selected_offer:
+        for key, label in (("seller_name", "seller"), ("seller_id", "sellerId"), ("fulfillment_type", "fulfillment"), ("condition", "condition"), ("is_walmart_seller", "walmartSeller")):
+            value = selected_offer.get(key)
+            if value:
+                attrs[label] = value
     for key in ("rollback", "clearance", "specialBuy", "marketplace", "bundle", "availableOnline", "shipToStore", "freeShipToStore", "twoThreeDayShipping"):
         if key in item:
             attrs[key] = "yes" if item.get(key) is True else "no"
@@ -397,12 +474,17 @@ def _clean_string(value: Any) -> str | None:
     return str(value).strip() or None
 
 
-def _nested_price(item: dict, *path: str) -> float | None:
+def _nested_value(item: dict[str, Any], *path: str) -> Any:
     value: Any = item
     for key in path:
         if not isinstance(value, dict):
             return None
         value = value.get(key)
+    return value
+
+
+def _nested_price(item: dict, *path: str) -> float | None:
+    value = _nested_value(item, *path)
     return _price_from_value(value)
 
 

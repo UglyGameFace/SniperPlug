@@ -1,4 +1,4 @@
-from sniperplug.cogs.home_depot_search import build_home_depot_cards
+from sniperplug.cogs.home_depot_search import build_home_depot_cards, home_depot_price_block
 from sniperplug.models.candidate import SourceCandidate
 
 
@@ -27,3 +27,39 @@ def test_home_depot_card_uses_sniperplug_deal_format():
     assert "🔎 Why it showed up" in field_names
     assert "SKU: 1001234567" in embed.footer.text
     assert "Verify in store before posting" in embed.footer.text
+
+
+def test_home_depot_penny_mode_does_not_hide_weak_paid_results():
+    candidate = SourceCandidate(
+        source_key="home_depot_serpapi",
+        retailer="Home Depot",
+        title="Normal Vanity",
+        product_url="https://example.com",
+        current_price=1139.00,
+        product_id="327191749",
+        sku="327191749",
+        signals=["zip: 06610"],
+    )
+
+    cards = build_home_depot_cards((candidate,), has_store_id=False, penny_mode=True)
+
+    assert len(cards) == 1
+    assert "HOME DEPOT LEAD" in cards[0].title
+
+
+def test_home_depot_price_block_shows_typical_price_and_savings():
+    candidate = SourceCandidate(
+        source_key="home_depot_serpapi",
+        retailer="Home Depot",
+        title="Special Buy Vanity",
+        product_url="https://example.com",
+        current_price=1139.00,
+        typical_price=1899.00,
+    )
+
+    price_block = home_depot_price_block(candidate)
+
+    assert "$1,139.00" in price_block
+    assert "$1,899.00" in price_block
+    assert "$760.00" in price_block
+    assert "40%" in price_block

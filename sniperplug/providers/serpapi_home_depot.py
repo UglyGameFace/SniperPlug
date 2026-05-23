@@ -142,6 +142,7 @@ class SerpApiHomeDepotProvider(DealProvider):
 
         price = _price_from_item(item)
         typical_price = _typical_price_from_item(item, current_price=price)
+        attrs = _variant_attributes_from_item(item)
         signals = ["SerpApi Home Depot search result; not an in-store scan confirmation"]
         if normalized_from_api_host:
             signals.append("product link normalized to Home Depot public URL")
@@ -151,6 +152,12 @@ class SerpApiHomeDepotProvider(DealProvider):
             signals.append("Home Depot was/typical price not returned by SerpApi")
         else:
             signals.append("Home Depot was/typical price returned by SerpApi")
+        if attrs.get("price_saving"):
+            signals.append(f"Home Depot saving: {attrs['price_saving']}")
+        if attrs.get("percentage_off"):
+            signals.append(f"Home Depot percent off: {attrs['percentage_off']}")
+        if attrs.get("price_badge"):
+            signals.append(f"Home Depot badge: {attrs['price_badge']}")
         if request.metadata.get("store_id"):
             signals.append(f"store_id: {request.metadata['store_id']}")
         if request.metadata.get("zip_code") or request.metadata.get("delivery_zip"):
@@ -170,13 +177,15 @@ class SerpApiHomeDepotProvider(DealProvider):
             product_url=product_url,
             current_price=price,
             typical_price=typical_price,
-            image_url=_clean_str(item.get("thumbnail") or item.get("image")),
+            image_url=_image_url_from_item(item),
             product_id=product_id,
             product_id_type="sku" if product_id else None,
             sku=product_id,
+            model=attrs.get("model_number"),
+            variant_attributes=attrs,
             stock_status=availability,
-            can_add_to_cart=None,
-            signals=signals[:8],
+            can_add_to_cart=_bool_or_none(item.get("add_to_cart")),
+            signals=signals[:12],
         )
 
 
@@ -255,6 +264,8 @@ def _price_from_item(item: dict[str, Any]) -> float | None:
 
 def _typical_price_from_item(item: dict[str, Any], current_price: float | None) -> float | None:
     keys = (
+        "price_was",
+        "priceWas",
         "original_price",
         "originalPrice",
         "was_price",
@@ -295,6 +306,8 @@ def _nested_typical_price(value: Any, current_price: float | None) -> float | No
     if not isinstance(value, dict):
         return None
     for key in (
+        "price_was",
+        "priceWas",
         "original_price",
         "originalPrice",
         "was_price",
@@ -327,6 +340,109 @@ def _is_valid_typical_price(value: float | None, current_price: float | None) ->
     return value > current_price
 
 
+def _variant_attributes_from_item(item: dict[str, Any]) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    mapping = {
+        "brand": "brand",
+        "model_number": "model_number",
+        "modelNumber": "model_number",
+        "unit": "unit",
+        "price_badge": "price_badge",
+        "priceBadge": "price_badge",
+        "percentage_off": "percentage_off",
+        "percent_off": "percentage_off",
+        "percentOff": "percentage_off",
+        "favorite": "favorite_count",
+        "favorites": "favorite_count",
+        "rating": "rating",
+        "reviews": "reviews",
+        "price_saving": "price_saving",
+        "priceSaving": "price_saving",
+        "collection": "collection",
+    }
+    for raw_key, attr_key in mapping.items():
+        value = _clean_str(item.get(raw_key))
+        if value:
+            attrs[attr_key] = value
+
+    badges = item.get("badges")
+    if isinstance(badges, list):
+        cleaned_badges = [str(badge).strip() for badge in badges if str(badge).strip()]
+        if cleaned_badges:
+            attrs["badges"] = ", ".join(cleaned_badges[:5])
+
+    delivery_text = _fulfillment_text(item.get("delivery"), prefix="Delivery")
+    if delivery_text:
+        attrs["delivery"] = delivery_text
+    pickup_text = _fulfillment_text(item.get("pickup"), prefix="Pickup")
+    if pickup_text:
+        attrs["pickup"] = pickup_text
+
+    stock_information = item.get("stock_information")
+    if isinstance(stock_information, dict):
+        for raw_key, attr_key in (
+            ("general_stock", "general_stock"),
+            ("general_stock_status", "general_stock_status"),
+            ("store_stock", "store_stock"),
+            ("store_stock_status", "store_stock_status"),
+        ):
+            value = _clean_str(stock_information.get(raw_key))
+            if value:
+                attrs[attr_key] = value
+
+    for raw_key, attr_key in (
+        ("add_to_cart", "add_to_cart"),
+        ("buy_online_pay_in_store", "buy_online_pay_in_store"),
+        ("check_nearby_stores", "check_nearby_stores"),
+    ):
+        value = _bool_or_none(item.get(raw_key))
+        if value is not None:
+            attrs[attr_key] = "yes" if value else "no"
+
+    return attrs
+
+
+def _fulfillment_text(value: Any, prefix: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        positive: list[str] = []
+        negative: list[str] = []
+        for key, raw in value.items():
+            parsed = _bool_or_none(raw)
+            label = key.replace("_", " ")
+            if parsed is True:
+                positive.append(label)
+            elif parsed is False and key in {"out_of_stock", "not_available_for_delivery"}:
+                negative.append(f"not {label}")
+        if positive:
+            return f"{prefix}: " + ", ".join(positive[:4])
+        if negative:
+            return f"{prefix}: " + ", ".join(negative[:2])
+    return None
+
+
+def _image_url_from_item(item: dict[str, Any]) -> str | None:
+    direct = _clean_str(item.get("thumbnail") or item.get("image"))
+    if direct:
+        return direct
+    thumbnails = item.get("thumbnails")
+    if isinstance(thumbnails, list):
+        for entry in thumbnails:
+            if isinstance(entry, list):
+                for nested in entry:
+                    candidate = _clean_str(nested)
+                    if candidate:
+                        return candidate
+            else:
+                candidate = _clean_str(entry)
+                if candidate:
+                    return candidate
+    return None
+
+
 def _price_from_value(value: Any) -> float | None:
     if value is None:
         return None
@@ -357,6 +473,18 @@ def _price_from_value(value: Any) -> float | None:
 
 
 def _availability_text(item: dict[str, Any]) -> str | None:
+    stock_information = item.get("stock_information")
+    if isinstance(stock_information, dict):
+        store_status = _clean_str(stock_information.get("store_stock_status"))
+        store_qty = _clean_str(stock_information.get("store_stock"))
+        general_status = _clean_str(stock_information.get("general_stock_status"))
+        if store_status and store_qty:
+            return f"Store stock: {store_qty} ({store_status})"
+        if store_status:
+            return f"Store stock: {store_status}"
+        if general_status:
+            return f"General stock: {general_status}"
+
     for key in ("availability", "stock", "store_stock", "general_stock"):
         value = item.get(key)
         if isinstance(value, dict):
@@ -365,6 +493,20 @@ def _availability_text(item: dict[str, Any]) -> str | None:
                 return str(text)
         elif value:
             return str(value)
+    return None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "yes", "1", "available"}:
+            return True
+        if text in {"false", "no", "0", "unavailable"}:
+            return False
     return None
 
 

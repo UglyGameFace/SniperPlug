@@ -96,7 +96,7 @@ class DealScannerCog(commands.Cog):
         cards, shown_discount = cards_with_fallback(result, min_discount, alerts_only, BEGINNER_FALLBACK_DISCOUNTS) if simple_mode else (build_walmart_cards(result, min_discount, alerts_only), min_discount)
         summary = build_scan_summary(result, query, min_discount, shown_discount, alerts_only, simple_mode)
         if cards:
-            summary.add_field(name="Link choices", value="Use **App/Web** when your device supports the retailer app. Use **Browser Search** if the app handoff breaks or you want a plain browser fallback.", inline=False)
+            summary.add_field(name="Product links", value="Each product card now includes its own **App/Web** and **Browser Search** links so users do not have to match numbered buttons at the bottom.", inline=False)
             await interaction.followup.send(embeds=[summary] + [card.embed for card in cards[:5]], view=DealSearchControlView(query, page, max(0, shown_discount), max_results, sort_value, order_value, alerts_only, simple_mode, cards[:5], result.has_next_page), ephemeral=True)
             return
         summary.add_field(name="Nothing useful found yet", value=no_match_help(query, min_discount, page, simple_mode), inline=False)
@@ -200,7 +200,7 @@ class DealSearchControlView(discord.ui.View):
             cards, shown_discount = cards_with_fallback(result, min_discount, self.alerts_only, BEGINNER_FALLBACK_DISCOUNTS) if self.simple_mode else (build_walmart_cards(result, min_discount, self.alerts_only), min_discount)
             summary = build_scan_summary(result, self.query, min_discount, shown_discount, self.alerts_only, self.simple_mode)
             if cards:
-                summary.add_field(name="Link choices", value="Use **App/Web** for normal app/browser opening. Use **Browser Search** when the app handoff breaks.", inline=False)
+                summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
                 await interaction.followup.send(embeds=[summary] + [card.embed for card in cards[:5]], view=self._copy_for(page, shown_discount, cards[:5], result.has_next_page), ephemeral=True)
             else:
                 summary.add_field(name="Nothing useful found yet", value=no_match_help(self.query, min_discount, page, self.simple_mode), inline=False)
@@ -230,7 +230,7 @@ class DealSearchControlView(discord.ui.View):
                 if cards:
                     cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
                     summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, len(cards), tuple(warnings), self.simple_mode)
-                    summary.add_field(name="Link choices", value="Use **App/Web** for normal app/browser opening. Use **Browser Search** when the app handoff breaks.", inline=False)
+                    summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
                     await interaction.followup.send(embeds=[summary] + [card.embed for card in cards[:5]], view=self._copy_for(page, min_discount, cards[:5], has_next_page), ephemeral=True)
                     return
                 if not result.has_next_page:
@@ -240,7 +240,7 @@ class DealSearchControlView(discord.ui.View):
             summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, len(fallback_cards), tuple(warnings), self.simple_mode)
             if fallback_cards:
                 summary.add_field(name="No 80%+ found — showing closest matches", value=f"I did not find a true 80%+ markdown, so I’m showing the best **{shown_discount}%+** matches instead.", inline=False)
-                summary.add_field(name="Link choices", value="Use **App/Web** for normal app/browser opening. Use **Browser Search** when the app handoff breaks.", inline=False)
+                summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
                 await interaction.followup.send(embeds=[summary] + [card.embed for card in fallback_cards[:5]], view=self._copy_for(self.page, shown_discount, fallback_cards[:5], has_next_page), ephemeral=True)
                 return
             summary.add_field(name="No useful markdowns found yet", value=f"I checked **{len(all_candidates)} products across {pages_checked} page(s)** and could not prove a strong markdown.\nTry another search like `iphone case`, `iphone charger`, `oled tv`, `clearance toy`, or run `/hunt` and tap a category.", inline=False)
@@ -253,12 +253,8 @@ class DealSearchControlView(discord.ui.View):
 
 
 def add_deal_link_buttons(view: discord.ui.View, cards: list[DealCard]) -> None:
-    for idx, card in enumerate(cards[:5], start=1):
-        choices = card.link_choices or (LinkChoice("App/Web", card.url),)
-        row = idx - 1
-        for choice in choices[:2]:
-            label = choice.label.replace("Open ", "")
-            view.add_item(discord.ui.Button(label=f"{idx} {label}", style=discord.ButtonStyle.link, url=choice.url, row=row))
+    """Product links are rendered inside each card, not as numbered bottom buttons."""
+    return None
 
 
 async def provider_health_error_message() -> str | None:
@@ -331,7 +327,7 @@ def build_preset_hunt_summary(preset: HuntPreset, pages_checked: int, products_c
     if relaxed and found_count:
         embed.add_field(name="Filter relaxed automatically", value="No stronger markdowns were found, so SniperPlug showed the best proven deals instead of an empty result.", inline=False)
     if found_count:
-        embed.add_field(name="Link choices", value="Use **App/Web** when the retailer app works for your device. Use **Browser Search** if app handoff breaks.", inline=False)
+        embed.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
     if warnings:
         embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
     embed.set_footer(text="Preset hunts are broad. Use /deals search:your item for something specific.")
@@ -377,16 +373,19 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
         if alerts_only and not decision.should_alert:
             continue
         choices = product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, asin=deal.asin)
-        cards.append(DealCard(embed=build_deal_card_embed(candidate, deal, decision, discount), url=deal.product_url, label=short_button_label(deal.title), score=decision.anomaly.score, discount=discount, link_choices=choices))
+        cards.append(DealCard(embed=build_deal_card_embed(candidate, deal, decision, discount, choices), url=deal.product_url, label=short_button_label(deal.title), score=decision.anomaly.score, discount=discount, link_choices=choices))
     return cards
 
 
-def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, decision, discount: float) -> discord.Embed:
+def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, decision, discount: float, link_choices: tuple[LinkChoice, ...] = ()) -> discord.Embed:
     score = decision.anomaly.score
     embed = discord.Embed(title=f"{heat_emoji(discount, deal.current_price)} {discount:.0f}% OFF • {trim_title(deal.title, 72)}", url=deal.product_url, color=embed_color(discount, score))
     if deal.image_url:
         embed.set_thumbnail(url=deal.image_url)
     embed.add_field(name="💰 Price", value=price_block(deal.current_price, deal.typical_price), inline=False)
+    link_block = product_link_block(link_choices, fallback_url=deal.product_url)
+    if link_block:
+        embed.add_field(name="🔗 Product links", value=link_block, inline=False)
     embed.add_field(name="📊 Sniper Read", value=f"**{friendly_score_level(decision.anomaly.level)}** • `{score}/250`\nRoute: **{route_label(decision.route.route)}**\nWould alert: **{'Yes' if decision.should_alert else 'No'}**", inline=True)
     embed.add_field(name="📦 Stock", value=stock_block(candidate, deal), inline=True)
     option_lines = selected_option_lines(deal)
@@ -394,13 +393,13 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
         embed.add_field(name="🎯 Selected option", value="\n".join(option_lines), inline=False)
     proof_block = product_proof_block(deal)
     if proof_block:
-        embed.add_field(name="🧾 Walmart API Proof", value=proof_block, inline=False)
+        embed.add_field(name="🧾 Product Proof", value=proof_block, inline=False)
     fulfillment_block = fulfillment_proof_block(candidate, deal)
     if fulfillment_block:
         embed.add_field(name="🚚 Fulfillment", value=fulfillment_block, inline=False)
     flag_block = walmart_flag_block(deal)
     if flag_block:
-        embed.add_field(name="🏷️ Walmart Flags", value=flag_block, inline=False)
+        embed.add_field(name="🏷️ Deal Flags", value=flag_block, inline=False)
     if deal.option_mismatch_warning:
         embed.add_field(name="⚠️ Variant warning", value=deal.option_mismatch_warning, inline=False)
     embed.add_field(name="🟢 Liveness", value=liveness_block(deal, discount), inline=False)
@@ -416,6 +415,15 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
     footer_bits.append("Recheck before posting")
     embed.set_footer(text=" • ".join(footer_bits))
     return embed
+
+
+def product_link_block(link_choices: tuple[LinkChoice, ...], *, fallback_url: str) -> str:
+    choices = link_choices or (LinkChoice("App/Web", fallback_url),)
+    lines: list[str] = []
+    for choice in choices[:2]:
+        label = choice.label.replace("Open ", "").strip() or "Open"
+        lines.append(f"[{label}]({choice.url})")
+    return " • ".join(lines)
 
 
 def selected_option_lines(deal: NormalizedDeal) -> list[str]:

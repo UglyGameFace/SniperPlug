@@ -60,7 +60,7 @@ class WalmartProvider(DealProvider):
         if not health.ok:
             return ProviderScanResult(provider_key=self.provider_key, candidates=(), warnings=(health.message,))
         if not request.query and not request.product_ids:
-            return ProviderScanResult(provider_key=self.provider_key, candidates=(), warnings=("Walmart scan skipped: query or product_ids required."), page=request.page, page_size=request.max_results)
+            return ProviderScanResult(provider_key=self.provider_key, candidates=(), warnings=("Walmart scan skipped: query or product_ids required.",), page=request.page, page_size=request.max_results)
 
         warnings: list[str] = []
         if not self.config.publisher_id:

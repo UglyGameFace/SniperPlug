@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
+from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
@@ -90,12 +90,15 @@ class HomeDepotSearchCog(commands.Cog):
                 },
             )
         )
-        quota_after = serpapi_quota_guard.record(interaction.user.id, cost=1)
 
-        if result.warnings and not result.candidates:
+        scan_failed = _scan_failed_before_success(result)
+        quota_after = quota if scan_failed else serpapi_quota_guard.record(interaction.user.id, cost=1)
+
+        if scan_failed:
             await interaction.followup.send("\n".join(result.warnings), ephemeral=True)
             return
 
+        raw_count = len(result.candidates)
         cards = build_home_depot_cards(result.candidates, has_store_id=bool(store_id), penny_mode=penny_mode)
         summary = discord.Embed(
             title="🏚️ Home Depot Penny Hunt" if penny_mode else "🏚️ Home Depot Search",
@@ -104,16 +107,34 @@ class HomeDepotSearchCog(commands.Cog):
                 f"Store: `{store_id or 'n/a'}` • ZIP: `{zip_code or 'n/a'}` • Page: `{page}`\n"
                 f"SerpApi used: **{quota_after.monthly_used}/{quota_after.monthly_limit} monthly safe budget** • "
                 f"**{quota_after.daily_used}/{quota_after.daily_limit} today**\n"
+                f"Raw products parsed: **{raw_count}**\n"
                 "Showing SniperPlug-style cards. These are **verification candidates**, not confirmed in-store penny deals."
             ),
             color=discord.Color.orange(),
         )
         if broad_warning:
             summary.add_field(name="⚠️ Quota warning", value=broad_warning, inline=False)
+        if penny_mode and not store_id:
+            summary.add_field(
+                name="⚠️ Store ID recommended",
+                value="Penny/local clearance scoring is much weaker without a specific Home Depot store ID. ZIP alone can still return shippable/area results, but it is not store proof.",
+                inline=False,
+            )
         if result.warnings:
             summary.add_field(name="⚠️ Provider notes", value="\n".join(result.warnings[:3]), inline=False)
+        if raw_count and not cards:
+            summary.add_field(
+                name="Weak results shown anyway",
+                value="Products came back, but none scored as strong penny candidates. SniperPlug will still show the best raw results so a paid SerpApi credit never looks like nothing happened.",
+                inline=False,
+            )
+            cards = build_home_depot_cards(result.candidates, has_store_id=bool(store_id), penny_mode=False)
         if not cards:
-            summary.add_field(name="Nothing useful found yet", value="No products came back from this search. Try a tighter query or another store/ZIP.", inline=False)
+            summary.add_field(
+                name="No products returned",
+                value="SerpApi returned 0 usable Home Depot products for this exact query/store/ZIP/page. Try adding `store_id`, broadening the query, or using `/home_depot_search` first.",
+                inline=False,
+            )
             await interaction.followup.send(embed=summary, ephemeral=True)
             return
 
@@ -124,8 +145,6 @@ def build_home_depot_cards(candidates: tuple[SourceCandidate, ...], *, has_store
     scored: list[tuple[int, discord.Embed]] = []
     for candidate in candidates:
         penny = score_penny_candidate(candidate, has_store_id=has_store_id)
-        if penny_mode and penny.score < 25:
-            continue
         embed = build_home_depot_deal_card(candidate, penny.score, penny.level, penny.reasons)
         scored.append((penny.score, embed))
     scored.sort(key=lambda item: item[0], reverse=True)
@@ -138,7 +157,7 @@ def build_home_depot_deal_card(candidate: SourceCandidate, penny_score: int, pen
     if candidate.image_url:
         embed.set_thumbnail(url=candidate.image_url)
 
-    embed.add_field(name="💰 Price", value=home_depot_price_block(candidate.current_price), inline=False)
+    embed.add_field(name="💰 Price", value=home_depot_price_block(candidate), inline=False)
     embed.add_field(
         name="📊 Sniper Read",
         value=(
@@ -153,9 +172,11 @@ def build_home_depot_deal_card(candidate: SourceCandidate, penny_score: int, pen
 
     proof_lines = home_depot_proof_lines(candidate, reasons)
     if proof_lines:
-        embed.add_field(name="🔎 Why it showed up", value="\n".join(proof_lines[:5]), inline=False)
+        embed.add_field(name="🔎 Why it showed up", value="\n".join(proof_lines[:6]), inline=False)
 
     footer_bits = [f"SKU: {candidate.sku or candidate.product_id or 'n/a'}"]
+    if candidate.model:
+        footer_bits.append(f"Model: {candidate.model}")
     if candidate.upc:
         footer_bits.append(f"UPC: {candidate.upc}")
     footer_bits.append("SerpApi candidate")
@@ -164,22 +185,38 @@ def build_home_depot_deal_card(candidate: SourceCandidate, penny_score: int, pen
     return embed
 
 
-def home_depot_price_block(current_price: float | None) -> str:
+def home_depot_price_block(candidate: SourceCandidate) -> str:
+    current_price = candidate.current_price
     if current_price is None:
         return "Current price unavailable\nNo Home Depot reference price returned."
     ending = price_ending(current_price)
     ending_line = f"\nEnding: **.{ending}**" if ending else ""
+    typical = candidate.typical_price
+    if typical and typical > current_price:
+        savings = typical - current_price
+        discount = round((savings / typical) * 100)
+        return f"**{money(current_price)}**\nWas/typical: ~~{money(typical)}~~\nSave: **{money(savings)} ({discount}%)**{ending_line}"
+    attrs = candidate.variant_attributes or {}
+    savings_text = attrs.get("price_saving") or attrs.get("percentage_off")
+    if savings_text:
+        return f"**{money(current_price)}**\nWas/typical: **Not returned**\nSavings signal: **{savings_text}**{ending_line}"
     return f"**{money(current_price)}**\nWas/typical: **Not returned**\nSave: **Unknown**{ending_line}"
 
 
 def home_depot_stock_block(candidate: SourceCandidate) -> str:
     lines: list[str] = []
+    attrs = candidate.variant_attributes or {}
     if candidate.stock_status:
         lines.append(candidate.stock_status[:120])
+    if candidate.can_add_to_cart is not None:
+        lines.append(f"Add-to-cart: {'seen' if candidate.can_add_to_cart else 'not seen'}")
+    for key in ("pickup", "delivery"):
+        if attrs.get(key):
+            lines.append(attrs[key][:120])
     for signal in candidate.signals:
         if signal.startswith("store_id:") or signal.startswith("zip:"):
             lines.append(signal)
-    return "\n".join(lines) if lines else "Local stock not confirmed"
+    return "\n".join(lines[:5]) if lines else "Local stock not confirmed"
 
 
 def home_depot_liveness_block(current_price: float | None, penny_score: int) -> str:
@@ -191,15 +228,28 @@ def home_depot_liveness_block(current_price: float | None, penny_score: int) -> 
         return "💎 **Strong clearance candidate.** Send to staff review and verify locally."
     if penny_score >= 30:
         return "✅ **Clearance watch.** Useful lead, but not a confirmed glitch or penny deal."
-    return "⚪ **Weak lead.** Keep private unless more proof is found."
+    return "⚪ **Weak lead.** Showing because a SerpApi credit was used; keep private unless more proof is found."
 
 
 def home_depot_proof_lines(candidate: SourceCandidate, reasons: tuple[str, ...]) -> list[str]:
     lines: list[str] = []
+    attrs = candidate.variant_attributes or {}
+    for attr_key, label in (
+        ("price_badge", "Badge"),
+        ("percentage_off", "Percent off"),
+        ("price_saving", "Savings"),
+        ("brand", "Brand"),
+        ("rating", "Rating"),
+        ("reviews", "Reviews"),
+    ):
+        if attrs.get(attr_key):
+            lines.append(f"• {label}: {attrs[attr_key]}")
     for reason in reasons[:3]:
+        if len(lines) >= 6:
+            break
         lines.append(f"• {reason}")
-    for signal in candidate.signals[:3]:
-        if len(lines) >= 5:
+    for signal in candidate.signals[:4]:
+        if len(lines) >= 6:
             break
         lines.append(f"• {signal}")
     if not lines:
@@ -265,6 +315,18 @@ def price_ending(price: float | None) -> str | None:
 def trim_title(title: str, limit: int) -> str:
     cleaned = " ".join(title.split())
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
+
+
+def _scan_failed_before_success(result: ProviderScanResult) -> bool:
+    if result.candidates:
+        return False
+    failure_prefixes = (
+        "SerpApi error",
+        "SerpApi HTTP",
+        "SerpApi network",
+        "SerpApi returned",
+    )
+    return any(warning.startswith(failure_prefixes) for warning in result.warnings)
 
 
 def _broad_query_warning(query: str) -> str | None:

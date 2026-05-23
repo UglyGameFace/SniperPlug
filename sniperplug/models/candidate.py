@@ -33,6 +33,16 @@ class SourceCandidate:
     sku: str | None = None
     upc: str | None = None
 
+    selected_offer_id: str | None = None
+    variant_label: str | None = None
+    variant_attributes: dict[str, str] = field(default_factory=dict)
+    pack_size: str | None = None
+    color: str | None = None
+    platform: str | None = None
+    model: str | None = None
+    parent_title: str | None = None
+    option_mismatch_warning: str | None = None
+
     stock_status: str | None = None
     can_add_to_cart: bool | None = None
     is_business_offer: bool = False
@@ -75,7 +85,7 @@ class SourceCandidate:
         deal.recalculate_prices()
 
         if self.is_business_offer:
-            deal.alert_tags.append("🏢 Business Deal")
+            deal.alert_tags.append("Business Deal")
             deal.risk_flags.append("May require business account")
 
         if self.is_member_only:

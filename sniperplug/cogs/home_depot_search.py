@@ -135,8 +135,8 @@ class HomeDepotSearchCog(commands.Cog):
             )
         if batch.candidates:
             summary.add_field(
-                name="Link choices",
-                value="Use **Open App/Web** if your phone/tablet supports the retailer app. Use **Browser Search** if the app handoff breaks or your device is unsupported.",
+                name="Product links",
+                value="Each product card includes its own **App/Web** and **Browser Search** links so users do not have to match numbered buttons at the bottom.",
                 inline=False,
             )
         if cleaned_zip_code and not cleaned_store_id:
@@ -178,18 +178,7 @@ def build_home_depot_cards(candidates: tuple[SourceCandidate, ...], *, has_store
 class HomeDepotResultView(discord.ui.View):
     def __init__(self, candidates: list[SourceCandidate]):
         super().__init__(timeout=300)
-        for idx, candidate in enumerate(candidates, start=1):
-            choices = product_link_choices(
-                retailer=candidate.retailer,
-                product_url=candidate.product_url,
-                title=candidate.title,
-                product_id=candidate.product_id,
-                sku=candidate.sku,
-                asin=candidate.product_id if candidate.product_id_type == "asin" else None,
-            )
-            row = min(4, (idx - 1) // 2)
-            for choice in choices[:2]:
-                self.add_item(discord.ui.Button(label=f"{idx} {choice.label}", style=discord.ButtonStyle.link, url=choice.url, row=row))
+        # Product links are rendered inside each card, not as numbered bottom buttons.
 
 
 def build_home_depot_card_batch(candidates: tuple[SourceCandidate, ...], *, has_local_anchor: bool, penny_mode: bool) -> HomeDepotCardBatch:
@@ -240,6 +229,7 @@ def build_home_depot_deal_card(
         embed.set_thumbnail(url=candidate.image_url)
 
     embed.add_field(name="💰 Price", value=home_depot_price_block(candidate), inline=False)
+    embed.add_field(name="🔗 Product links", value=home_depot_link_block(candidate), inline=False)
     embed.add_field(
         name="📊 Sniper Read",
         value=(
@@ -274,6 +264,22 @@ def build_home_depot_deal_card(
     footer_bits.append("Verify in store before posting")
     embed.set_footer(text=" • ".join(footer_bits))
     return embed
+
+
+def home_depot_link_block(candidate: SourceCandidate) -> str:
+    choices = product_link_choices(
+        retailer=candidate.retailer,
+        product_url=candidate.product_url,
+        title=candidate.title,
+        product_id=candidate.product_id,
+        sku=candidate.sku,
+        asin=candidate.product_id if candidate.product_id_type == "asin" else None,
+    )
+    lines = []
+    for choice in choices[:2]:
+        label = choice.label.replace("Open ", "").strip() or "Open"
+        lines.append(f"[{label}]({choice.url})")
+    return " • ".join(lines) if lines else f"[App/Web]({candidate.product_url})"
 
 
 def home_depot_price_block(candidate: SourceCandidate) -> str:

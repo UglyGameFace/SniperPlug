@@ -35,6 +35,16 @@ class NormalizedDeal:
     sku: str | None = None
     upc: str | None = None
 
+    selected_offer_id: str | None = None
+    variant_label: str | None = None
+    variant_attributes: dict[str, str] = field(default_factory=dict)
+    pack_size: str | None = None
+    color: str | None = None
+    platform: str | None = None
+    model: str | None = None
+    parent_title: str | None = None
+    option_mismatch_warning: str | None = None
+
     seller_name: str | None = None
     fulfilled_by_amazon: bool | None = None
     fulfillment_type: str | None = None

@@ -249,7 +249,7 @@ def home_depot_price_block(candidate: SourceCandidate) -> str:
     current_price = candidate.current_price
     attrs = candidate.variant_attributes or {}
     if current_price is None:
-        return "Current price unavailable\nNo Home Depot reference price returned."
+        return "Current price: **Unavailable**\nHome Depot/SerpApi did not return a current price for this result."
     ending = price_ending(current_price)
     ending_line = f"\nEnding: **.{ending}**" if ending else ""
     badge_line = f"\nBadge: **{attrs['price_badge']}**" if attrs.get("price_badge") else ""
@@ -266,10 +266,10 @@ def home_depot_price_block(candidate: SourceCandidate) -> str:
     if savings_text or percent_text:
         return (
             f"**{money(current_price)}**\n"
-            "Was/typical: **Not returned**\n"
-            f"Home Depot says save: **{savings_text or 'n/a'} {f'({percent_text})' if percent_text else ''}**{ending_line}{badge_line}"
+            "Was/typical: **Unavailable from SerpApi**\n"
+            f"Home Depot savings text: **{savings_text or 'n/a'} {f'({percent_text})' if percent_text else ''}**{ending_line}{badge_line}"
         )
-    return f"**{money(current_price)}**\nWas/typical: **Not returned**\nSave: **Unknown**{ending_line}{badge_line}"
+    return f"**{money(current_price)}**\nWas/typical: **Unavailable from SerpApi**\nSavings: **Not calculable from returned data**{ending_line}{badge_line}"
 
 
 def home_depot_product_proof_block(candidate: SourceCandidate) -> str | None:
@@ -320,8 +320,10 @@ def home_depot_liveness_block(current_price: float | None, penny_score: int, *, 
         return "🔥 **High-priority verification candidate.** Do not public-alert until in-store proof confirms it."
     if penny_score >= 60:
         return "💎 **Strong clearance candidate.** Send to staff review and verify locally."
-    if penny_score >= 30:
-        return "✅ **Clearance watch.** Useful lead, but not a confirmed glitch or penny deal."
+    if penny_score >= 40:
+        return "✅ **Clearance watch.** Has multiple clearance/deal signals, but still needs local verification."
+    if penny_score >= 20:
+        return "🟡 **Deal watch.** Possible useful deal, but not enough proof to call clearance or penny."
     return "⚪ **Weak lead.** Keep private unless more proof is found."
 
 
@@ -354,8 +356,10 @@ def home_depot_heat_emoji(current_price: float | None, penny_score: int) -> str:
         return "🚨"
     if penny_score >= 60:
         return "🔥"
-    if penny_score >= 30:
+    if penny_score >= 40:
         return "💎"
+    if penny_score >= 20:
+        return "🟡"
     return "✅"
 
 
@@ -364,8 +368,10 @@ def home_depot_label(penny_score: int) -> str:
         return "HIGH-PRIORITY VERIFY"
     if penny_score >= 60:
         return "STRONG CLEARANCE LEAD"
-    if penny_score >= 30:
+    if penny_score >= 40:
         return "CLEARANCE WATCH"
+    if penny_score >= 20:
+        return "DEAL WATCH"
     return "HOME DEPOT LEAD"
 
 
@@ -374,14 +380,18 @@ def home_depot_color(penny_score: int) -> discord.Color:
         return discord.Color.red()
     if penny_score >= 60:
         return discord.Color.orange()
-    return discord.Color.gold()
+    if penny_score >= 40:
+        return discord.Color.gold()
+    return discord.Color.light_grey()
 
 
 def friendly_penny_level(level: str) -> str:
     labels = {
         "high_priority_in_store_verification": "High-priority verify",
+        "strong_clearance_candidate": "Strong clearance candidate",
         "strong_penny_candidate": "Strong penny candidate",
         "clearance_watch": "Clearance watch",
+        "deal_watch": "Deal watch",
         "weak_lead": "Weak lead",
     }
     return labels.get(level, level.replace("_", " ").title())

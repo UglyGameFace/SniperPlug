@@ -23,7 +23,11 @@ def extract_variant_proof(item: dict[str, Any], title: str) -> VariantProof:
     for key in ("variantAttributes", "attributes", "selectedVariant", "swatches"):
         attributes.update(attributes_from_value(item.get(key)))
 
-    offer_id = clean_value(item.get("offerId") or item.get("usItemId") or item.get("itemId"))
+    selected_offer_id = clean_value(item.get("offerId") or item.get("usItemId") or item.get("itemId"))
+    variant_list_attrs, variant_offer_id = selected_variant_from_lists(item, selected_offer_id)
+    attributes.update(variant_list_attrs)
+    offer_id = selected_offer_id or variant_offer_id
+
     label = variant_label(attributes)
     warning = variant_warning(title=title, attributes=attributes)
 
@@ -34,10 +38,49 @@ def extract_variant_proof(item: dict[str, Any], title: str) -> VariantProof:
     return VariantProof(offer_id=offer_id, label=label, attributes=attributes, warning=warning)
 
 
+def selected_variant_from_lists(item: dict[str, Any], selected_offer_id: str | None) -> tuple[dict[str, str], str | None]:
+    for key in ("productVariants", "variants"):
+        value = item.get(key)
+        if not isinstance(value, list):
+            continue
+        selected = select_variant_entry(value, selected_offer_id)
+        if selected is None:
+            continue
+        offer_id = clean_value(selected.get("offerId") or selected.get("usItemId") or selected.get("itemId") or selected.get("id"))
+        attrs = attributes_from_value(selected)
+        attrs.update(attributes_from_value(selected.get("variantAttributes")))
+        attrs.update(attributes_from_value(selected.get("attributes")))
+        return attrs, offer_id
+    return {}, None
+
+
+def select_variant_entry(entries: list[Any], selected_offer_id: str | None) -> dict[str, Any] | None:
+    dict_entries = [entry for entry in entries if isinstance(entry, dict)]
+    if not dict_entries:
+        return None
+    if selected_offer_id:
+        for entry in dict_entries:
+            ids = {
+                clean_value(entry.get("offerId")),
+                clean_value(entry.get("usItemId")),
+                clean_value(entry.get("itemId")),
+                clean_value(entry.get("id")),
+            }
+            if selected_offer_id in ids:
+                return entry
+    selected_markers = ("selected", "isSelected", "default", "isDefault", "current", "isCurrent")
+    for entry in dict_entries:
+        if any(entry.get(marker) is True for marker in selected_markers):
+            return entry
+    return None
+
+
 def attributes_from_value(value: Any) -> dict[str, str]:
     attrs: dict[str, str] = {}
     if isinstance(value, dict):
         for key, raw in value.items():
+            if key in {"variants", "productVariants"}:
+                continue
             cleaned = clean_value(raw)
             if cleaned:
                 attrs[normalize_attr_name(str(key))] = cleaned
@@ -49,17 +92,27 @@ def attributes_from_value(value: Any) -> dict[str, str]:
                 cleaned = clean_value(raw)
                 if name and cleaned:
                     attrs[normalize_attr_name(name)] = cleaned
-    return attrs
+    return filter_variant_attributes(attrs)
+
+
+def filter_variant_attributes(attrs: dict[str, str]) -> dict[str, str]:
+    allowed = {"platform", "edition", "color", "size", "packSize", "model", "modelNumber"}
+    return {key: value for key, value in attrs.items() if key in allowed and value}
 
 
 def normalize_attr_name(name: str) -> str:
     lowered = name.strip().lower().replace(" ", "")
     aliases = {
+        "platform": "platform",
         "compatibleplatform": "platform",
         "gamingplatform": "platform",
+        "edition": "edition",
+        "color": "color",
         "colour": "color",
+        "size": "size",
         "packsize": "packSize",
         "count": "packSize",
+        "model": "model",
         "modelnumber": "modelNumber",
     }
     return aliases.get(lowered, name.strip())
@@ -77,10 +130,12 @@ def variant_label(attributes: dict[str, str]) -> str | None:
 def variant_warning(title: str, attributes: dict[str, str]) -> str | None:
     title_text = title.lower()
     platform = (attributes.get("platform") or "").lower()
-    if platform:
-        if mentions_playstation(title_text) and mentions_xbox(platform):
+    title_has_ps = mentions_playstation(title_text)
+    title_has_xbox = mentions_xbox(title_text)
+    if platform and title_has_ps != title_has_xbox:
+        if title_has_ps and mentions_xbox(platform):
             return "Selected option mismatch: parent listing mentions PS5 but priced variant is Xbox."
-        if mentions_xbox(title_text) and mentions_playstation(platform):
+        if title_has_xbox and mentions_playstation(platform):
             return "Selected option mismatch: parent listing mentions Xbox but priced variant is PlayStation."
 
     title_count = pack_count(title)
@@ -105,6 +160,8 @@ def pack_count(text: str) -> int | None:
 
 def clean_value(value: Any) -> str | None:
     if value is None or value == "":
+        return None
+    if isinstance(value, bool):
         return None
     if isinstance(value, (str, int, float)):
         return str(value).strip() or None

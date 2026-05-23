@@ -27,7 +27,15 @@ class HomeDepotProvider(DealProvider):
 
     provider_key = "home_depot"
     display_name = "Home Depot"
-    capabilities = frozenset({ProviderCapability.PRODUCT_LOOKUP, ProviderCapability.OFFER_CHECK})
+    capabilities = frozenset(
+        {
+            ProviderCapability.PRODUCT_LOOKUP,
+            ProviderCapability.OFFER_CHECK,
+            ProviderCapability.LOCAL_INVENTORY,
+            ProviderCapability.LOCAL_PRICE,
+            ProviderCapability.CLEARANCE_SIGNAL,
+        }
+    )
 
     def __init__(self, config: HomeDepotConfig | None = None) -> None:
         self.config = config or HomeDepotConfig()

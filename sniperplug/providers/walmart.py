@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from typing import Any
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -167,7 +168,9 @@ class WalmartProvider(DealProvider):
         if not title or not product_url:
             return None
 
-        current_price = _float_or_none(item.get("salePrice"))
+        current_price, current_price_signal = _trusted_current_price(item)
+        if current_price_signal:
+            signals.append(current_price_signal)
         typical_price, reference_signal = _trusted_reference_price(item=item, title=title, current_price=current_price)
         if reference_signal:
             signals.append(reference_signal)
@@ -206,7 +209,7 @@ class WalmartProvider(DealProvider):
             is_business_offer=False,
             is_member_only=False,
             is_checkout_price=False,
-            signals=signals[:8],
+            signals=signals[:10],
         )
 
     def _item_signals(self, item: dict) -> list[str]:
@@ -258,9 +261,26 @@ def _direct_walmart_url(item_id) -> str:
     return f"https://www.walmart.com/ip/{item_id}"
 
 
+def _trusted_current_price(item: dict) -> tuple[float | None, str | None]:
+    for source, value in _current_price_candidates(item):
+        if value is not None and value >= 0:
+            return value, f"Walmart current price source: {source}"
+    return None, "Walmart current price missing"
+
+
+def _current_price_candidates(item: dict) -> list[tuple[str, float | None]]:
+    return [
+        ("salePrice", _float_or_none(item.get("salePrice"))),
+        ("currentPrice", _price_from_value(item.get("currentPrice"))),
+        ("price", _price_from_value(item.get("price"))),
+        ("priceInfo.currentPrice", _nested_price(item, "priceInfo", "currentPrice")),
+        ("priceInfo.price", _nested_price(item, "priceInfo", "price")),
+        ("minPrice", _float_or_none(item.get("minPrice"))),
+    ]
+
+
 def _trusted_reference_price(item: dict, title: str, current_price: float | None) -> tuple[float | None, str | None]:
-    references = [("msrp", _float_or_none(item.get("msrp"))), ("listPrice", _float_or_none(item.get("listPrice")))]
-    references.extend(_best_marketplace_reference_prices(item))
+    references = _reference_price_candidates(item)
     if current_price is None or current_price <= 0:
         return _first_positive_reference(references), None
     for source, value in references:
@@ -270,6 +290,23 @@ def _trusted_reference_price(item: dict, title: str, current_price: float | None
             return None, f"ignored suspicious Walmart {source} reference price: ${value:,.2f}"
         return value, f"Walmart reference price source: {source}"
     return None, None
+
+
+def _reference_price_candidates(item: dict) -> list[tuple[str, float | None]]:
+    references = [
+        ("msrp", _float_or_none(item.get("msrp"))),
+        ("listPrice", _price_from_value(item.get("listPrice"))),
+        ("wasPrice", _price_from_value(item.get("wasPrice"))),
+        ("regularPrice", _price_from_value(item.get("regularPrice"))),
+        ("comparisonPrice", _price_from_value(item.get("comparisonPrice"))),
+        ("strikeThroughPrice", _price_from_value(item.get("strikeThroughPrice"))),
+        ("priceInfo.wasPrice", _nested_price(item, "priceInfo", "wasPrice")),
+        ("priceInfo.listPrice", _nested_price(item, "priceInfo", "listPrice")),
+        ("priceInfo.comparisonPrice", _nested_price(item, "priceInfo", "comparisonPrice")),
+        ("priceInfo.strikeThroughPrice", _nested_price(item, "priceInfo", "strikeThroughPrice")),
+    ]
+    references.extend(_best_marketplace_reference_prices(item))
+    return references
 
 
 def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | None]]:
@@ -284,6 +321,25 @@ def _first_positive_reference(references: list[tuple[str, float | None]]) -> flo
         if value and value > 0:
             return value
     return None
+
+
+def _nested_price(item: dict, *path: str) -> float | None:
+    value: Any = item
+    for key in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return _price_from_value(value)
+
+
+def _price_from_value(value: Any) -> float | None:
+    if isinstance(value, dict):
+        for key in ("price", "amount", "value", "displayValue"):
+            parsed = _float_or_none(value.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+    return _float_or_none(value)
 
 
 def _reference_price_looks_suspicious(title: str, current_price: float, reference_price: float) -> bool:
@@ -309,6 +365,8 @@ def _is_size_sensitive_essential(title: str) -> bool:
 def _float_or_none(value) -> float | None:
     if value is None or value == "":
         return None
+    if isinstance(value, str):
+        value = value.replace("$", "").replace(",", "").strip()
     try:
         return float(value)
     except (TypeError, ValueError):

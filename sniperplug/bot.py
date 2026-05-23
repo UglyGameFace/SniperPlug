@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from sniperplug.config import Settings
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
+from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_scanner import DealScannerCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
@@ -42,6 +43,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(DealScannerCog(self))
         await self.add_cog(LocalInventoryCog(self))
+        await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
 

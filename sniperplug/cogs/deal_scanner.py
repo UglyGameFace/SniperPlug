@@ -12,6 +12,7 @@ from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult, P
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.candidate_pipeline import evaluate_candidate
 from sniperplug.services.routing import route_label
+from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
 
 
 SORT_CHOICES = [
@@ -25,6 +26,7 @@ SORT_CHOICES = [
 
 BEGINNER_FALLBACK_DISCOUNTS = (50, 30, 10, 0)
 PRESET_FALLBACK_DISCOUNTS = (60, 40, 25, 10)
+DUPLICATE_SCAN_MESSAGE = "That scan is already running. I blocked the duplicate click so SniperPlug cannot double-post results."
 
 
 @dataclass(frozen=True)
@@ -292,39 +294,55 @@ class HuntPresetButton(discord.ui.Button):
         self.preset = preset
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-
-        health_error = await provider_health_error_message()
-        if health_error:
-            await interaction.followup.send(health_error, ephemeral=True)
+        lock_key = ScanLockKey(
+            guild_id=interaction.guild_id,
+            user_id=interaction.user.id,
+            action="hunt_preset",
+            preset=self.preset.key,
+            min_discount=self.preset.min_discount,
+        )
+        if not await acquire_scan_lock(
+            interaction=interaction,
+            lock_key=lock_key,
+            active_view=self.view,
+            working_message=f"⏳ Running **{self.preset.label}**. Buttons are locked so this cannot double-post...",
+        ):
             return
 
-        cards, pages_checked, products_checked, warnings, shown_discount = await run_preset_hunt(
-            preset=self.preset,
-            requested_by=str(interaction.user.id),
-        )
-        summary = build_preset_hunt_summary(
-            preset=self.preset,
-            pages_checked=pages_checked,
-            products_checked=products_checked,
-            found_count=len(cards),
-            warnings=tuple(warnings),
-            shown_discount=shown_discount,
-        )
-        if not cards:
-            summary.add_field(
-                name="Nothing useful found yet",
-                value=(
-                    "I checked multiple smart searches and still could not prove a useful markdown.\n"
-                    "Try another category, or use `/deals search:` with a specific item like `oled tv`, `lego`, `detergent`, or `ssd`."
-                ),
-                inline=False,
+        try:
+            health_error = await provider_health_error_message()
+            if health_error:
+                await interaction.followup.send(health_error, ephemeral=True)
+                return
+
+            cards, pages_checked, products_checked, warnings, shown_discount = await run_preset_hunt(
+                preset=self.preset,
+                requested_by=str(interaction.user.id),
             )
-            await interaction.followup.send(embed=summary, view=HuntPresetMenuView(), ephemeral=True)
-            return
+            summary = build_preset_hunt_summary(
+                preset=self.preset,
+                pages_checked=pages_checked,
+                products_checked=products_checked,
+                found_count=len(cards),
+                warnings=tuple(warnings),
+                shown_discount=shown_discount,
+            )
+            if not cards:
+                summary.add_field(
+                    name="Nothing useful found yet",
+                    value=(
+                        "I checked multiple smart searches and still could not prove a useful markdown.\n"
+                        "Try another category, or use `/deals search:` with a specific item like `oled tv`, `lego`, `detergent`, or `ssd`."
+                    ),
+                    inline=False,
+                )
+                await interaction.followup.send(embed=summary, view=HuntPresetMenuView(), ephemeral=True)
+                return
 
-        embeds = [summary] + [card.embed for card in cards[:5]]
-        await interaction.followup.send(embeds=embeds, view=PresetResultView(cards[:5]), ephemeral=True)
+            embeds = [summary] + [card.embed for card in cards[:5]]
+            await interaction.followup.send(embeds=embeds, view=PresetResultView(cards[:5]), ephemeral=True)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
 
 class PresetResultView(discord.ui.View):
@@ -376,146 +394,182 @@ class DealSearchControlView(discord.ui.View):
         await self._rerun(interaction, page=self.page, min_discount=max(0, self.min_discount - 20))
 
     async def _rerun(self, interaction: discord.Interaction, page: int, min_discount: int) -> None:
-        await interaction.response.defer(ephemeral=True)
-        result = await run_walmart_scan(
+        lock_key = ScanLockKey(
+            guild_id=interaction.guild_id,
+            user_id=interaction.user.id,
+            action="deal_rerun",
             query=self.query,
             page=page,
-            max_results=self.max_results,
-            sort_value=self.sort_value,
-            order_value=self.order_value,
-            requested_by=str(interaction.user.id),
+            min_discount=min_discount,
         )
-        if self.simple_mode:
-            cards, shown_discount = cards_with_fallback(result, min_discount, self.alerts_only, BEGINNER_FALLBACK_DISCOUNTS)
-        else:
-            cards = build_walmart_cards(result, min_discount=min_discount, alerts_only=self.alerts_only)
-            shown_discount = min_discount
-
-        summary = build_scan_summary(
-            result,
-            query=self.query,
-            requested_min_discount=min_discount,
-            shown_min_discount=shown_discount,
-            alerts_only=self.alerts_only,
-            simple_mode=self.simple_mode,
-        )
-        if not cards:
-            summary.add_field(
-                name="Nothing useful found yet",
-                value=no_match_help(query=self.query, min_discount=min_discount, page=page, simple_mode=self.simple_mode),
-                inline=False,
-            )
-            await interaction.followup.send(embed=summary, view=self._copy_for(page, shown_discount, [], result.has_next_page), ephemeral=True)
+        if not await acquire_scan_lock(
+            interaction=interaction,
+            lock_key=lock_key,
+            active_view=self,
+            working_message=f"⏳ Searching **{self.query}**. Buttons are locked so this cannot double-post...",
+        ):
             return
 
-        embeds = [summary] + [card.embed for card in cards[:5]]
-        await interaction.followup.send(
-            embeds=embeds,
-            view=self._copy_for(page, shown_discount, cards[:5], result.has_next_page),
-            ephemeral=True,
-        )
-
-    async def _hunt_pages(self, interaction: discord.Interaction, min_discount: int, max_pages: int) -> None:
-        await interaction.response.defer(ephemeral=True)
-        all_candidates: list[SourceCandidate] = []
-        warnings: list[str] = []
-        pages_checked = 0
-        total_results: int | None = None
-        has_next_page = False
-
-        for page in range(1, 1 + max_pages):
+        try:
             result = await run_walmart_scan(
                 query=self.query,
                 page=page,
-                max_results=25,
+                max_results=self.max_results,
                 sort_value=self.sort_value,
                 order_value=self.order_value,
                 requested_by=str(interaction.user.id),
             )
-            pages_checked += 1
-            all_candidates.extend(result.candidates)
-            warnings.extend(w for w in result.warnings if w not in warnings)
-            total_results = result.total_results if result.total_results is not None else total_results
-            has_next_page = result.has_next_page
+            if self.simple_mode:
+                cards, shown_discount = cards_with_fallback(result, min_discount, self.alerts_only, BEGINNER_FALLBACK_DISCOUNTS)
+            else:
+                cards = build_walmart_cards(result, min_discount=min_discount, alerts_only=self.alerts_only)
+                shown_discount = min_discount
+
+            summary = build_scan_summary(
+                result,
+                query=self.query,
+                requested_min_discount=min_discount,
+                shown_min_discount=shown_discount,
+                alerts_only=self.alerts_only,
+                simple_mode=self.simple_mode,
+            )
+            if not cards:
+                summary.add_field(
+                    name="Nothing useful found yet",
+                    value=no_match_help(query=self.query, min_discount=min_discount, page=page, simple_mode=self.simple_mode),
+                    inline=False,
+                )
+                await interaction.followup.send(embed=summary, view=self._copy_for(page, shown_discount, [], result.has_next_page), ephemeral=True)
+                return
+
+            embeds = [summary] + [card.embed for card in cards[:5]]
+            await interaction.followup.send(
+                embeds=embeds,
+                view=self._copy_for(page, shown_discount, cards[:5], result.has_next_page),
+                ephemeral=True,
+            )
+        finally:
+            await scan_operation_locks.release(lock_key)
+
+    async def _hunt_pages(self, interaction: discord.Interaction, min_discount: int, max_pages: int) -> None:
+        lock_key = ScanLockKey(
+            guild_id=interaction.guild_id,
+            user_id=interaction.user.id,
+            action="hunt_pages",
+            query=self.query,
+            page=self.page,
+            min_discount=min_discount,
+        )
+        if not await acquire_scan_lock(
+            interaction=interaction,
+            lock_key=lock_key,
+            active_view=self,
+            working_message=f"⏳ Hunting **{min_discount}%+** for **{self.query}**. Buttons are locked so this cannot double-post...",
+        ):
+            return
+
+        try:
+            all_candidates: list[SourceCandidate] = []
+            warnings: list[str] = []
+            pages_checked = 0
+            total_results: int | None = None
+            has_next_page = False
+
+            for page in range(1, 1 + max_pages):
+                result = await run_walmart_scan(
+                    query=self.query,
+                    page=page,
+                    max_results=25,
+                    sort_value=self.sort_value,
+                    order_value=self.order_value,
+                    requested_by=str(interaction.user.id),
+                )
+                pages_checked += 1
+                all_candidates.extend(result.candidates)
+                warnings.extend(w for w in result.warnings if w not in warnings)
+                total_results = result.total_results if result.total_results is not None else total_results
+                has_next_page = result.has_next_page
+
+                aggregate = ProviderScanResult(
+                    provider_key=result.provider_key,
+                    candidates=tuple(dedupe_candidates(all_candidates)),
+                    warnings=tuple(warnings),
+                    total_results=total_results,
+                    page=page,
+                    page_size=25,
+                    start_index=1,
+                    has_next_page=has_next_page,
+                )
+                cards = build_walmart_cards(aggregate, min_discount=min_discount, alerts_only=self.alerts_only)
+                if cards:
+                    cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
+                    summary = build_hunt_summary(
+                        query=self.query,
+                        min_discount=min_discount,
+                        pages_checked=pages_checked,
+                        candidates_checked=len(all_candidates),
+                        total_results=total_results,
+                        found_count=len(cards),
+                        warnings=tuple(warnings),
+                        simple_mode=self.simple_mode,
+                    )
+                    embeds = [summary] + [card.embed for card in cards[:5]]
+                    await interaction.followup.send(
+                        embeds=embeds,
+                        view=self._copy_for(page, min_discount, cards[:5], has_next_page),
+                        ephemeral=True,
+                    )
+                    return
+
+                if not result.has_next_page:
+                    break
 
             aggregate = ProviderScanResult(
-                provider_key=result.provider_key,
+                provider_key="walmart",
                 candidates=tuple(dedupe_candidates(all_candidates)),
                 warnings=tuple(warnings),
                 total_results=total_results,
-                page=page,
-                page_size=25,
+                page=1,
+                page_size=len(all_candidates),
                 start_index=1,
                 has_next_page=has_next_page,
             )
-            cards = build_walmart_cards(aggregate, min_discount=min_discount, alerts_only=self.alerts_only)
-            if cards:
-                cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
-                summary = build_hunt_summary(
-                    query=self.query,
-                    min_discount=min_discount,
-                    pages_checked=pages_checked,
-                    candidates_checked=len(all_candidates),
-                    total_results=total_results,
-                    found_count=len(cards),
-                    warnings=tuple(warnings),
-                    simple_mode=self.simple_mode,
+            fallback_cards, shown_discount = cards_with_fallback(aggregate, 50, self.alerts_only, (50, 30, 10))
+            summary = build_hunt_summary(
+                query=self.query,
+                min_discount=min_discount,
+                pages_checked=pages_checked,
+                candidates_checked=len(all_candidates),
+                total_results=total_results,
+                found_count=len(fallback_cards),
+                warnings=tuple(warnings),
+                simple_mode=self.simple_mode,
+            )
+            if fallback_cards:
+                summary.add_field(
+                    name="No 80%+ found — showing closest matches",
+                    value=f"I did not find a true 80%+ markdown, so I’m showing the best **{shown_discount}%+** matches instead.",
+                    inline=False,
                 )
-                embeds = [summary] + [card.embed for card in cards[:5]]
+                embeds = [summary] + [card.embed for card in fallback_cards[:5]]
                 await interaction.followup.send(
                     embeds=embeds,
-                    view=self._copy_for(page, min_discount, cards[:5], has_next_page),
+                    view=self._copy_for(self.page, shown_discount, fallback_cards[:5], has_next_page),
                     ephemeral=True,
                 )
                 return
 
-            if not result.has_next_page:
-                break
-
-        aggregate = ProviderScanResult(
-            provider_key="walmart",
-            candidates=tuple(dedupe_candidates(all_candidates)),
-            warnings=tuple(warnings),
-            total_results=total_results,
-            page=1,
-            page_size=len(all_candidates),
-            start_index=1,
-            has_next_page=has_next_page,
-        )
-        fallback_cards, shown_discount = cards_with_fallback(aggregate, 50, self.alerts_only, (50, 30, 10))
-        summary = build_hunt_summary(
-            query=self.query,
-            min_discount=min_discount,
-            pages_checked=pages_checked,
-            candidates_checked=len(all_candidates),
-            total_results=total_results,
-            found_count=len(fallback_cards),
-            warnings=tuple(warnings),
-            simple_mode=self.simple_mode,
-        )
-        if fallback_cards:
             summary.add_field(
-                name="No 80%+ found — showing closest matches",
-                value=f"I did not find a true 80%+ markdown, so I’m showing the best **{shown_discount}%+** matches instead.",
+                name="No useful markdowns found yet",
+                value=(
+                    f"I checked **{len(all_candidates)} products across {pages_checked} page(s)** and could not prove a strong markdown.\n"
+                    "Try another search like `iphone case`, `iphone charger`, `oled tv`, `clearance toy`, or run `/hunt` and tap a category."
+                ),
                 inline=False,
             )
-            embeds = [summary] + [card.embed for card in fallback_cards[:5]]
-            await interaction.followup.send(
-                embeds=embeds,
-                view=self._copy_for(self.page, shown_discount, fallback_cards[:5], has_next_page),
-                ephemeral=True,
-            )
-            return
-
-        summary.add_field(
-            name="No useful markdowns found yet",
-            value=(
-                f"I checked **{len(all_candidates)} products across {pages_checked} page(s)** and could not prove a strong markdown.\n"
-                "Try another search like `iphone case`, `iphone charger`, `oled tv`, `clearance toy`, or run `/hunt` and tap a category."
-            ),
-            inline=False,
-        )
-        await interaction.followup.send(embed=summary, view=self._copy_for(self.page, min_discount, [], has_next_page), ephemeral=True)
+            await interaction.followup.send(embed=summary, view=self._copy_for(self.page, min_discount, [], has_next_page), ephemeral=True)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
     def _copy_for(self, page: int, min_discount: int, cards: list[DealCard], has_next_page: bool) -> DealSearchControlView:
         return DealSearchControlView(
@@ -620,7 +674,7 @@ def dedupe_candidates(candidates: list[SourceCandidate]) -> list[SourceCandidate
     seen: set[str] = set()
     unique: list[SourceCandidate] = []
     for candidate in candidates:
-        key = candidate.product_id or candidate.product_url or candidate.title
+        key = candidate.selected_offer_id or candidate.product_id or candidate.upc or candidate.product_url or candidate.title
         if key in seen:
             continue
         seen.add(key)
@@ -800,17 +854,36 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
         inline=True,
     )
     embed.add_field(name="📦 Stock", value=stock_block(candidate), inline=True)
+
+    variant_lines = variant_proof_lines(deal)
+    if variant_lines:
+        embed.add_field(name="🎯 Selected option", value="\n".join(variant_lines), inline=False)
+    if deal.option_mismatch_warning:
+        embed.add_field(name="⚠️ Variant warning", value=deal.option_mismatch_warning, inline=False)
+
     embed.add_field(name="🟢 Liveness", value=liveness_block(deal, discount), inline=False)
 
     proof_lines = proof_lines_for(candidate, decision)
     if proof_lines:
         embed.add_field(name="🔎 Why it showed up", value="\n".join(proof_lines[:4]), inline=False)
 
-    if deal.sku or deal.upc:
-        embed.set_footer(text=f"SKU: {deal.sku or 'n/a'} • UPC: {deal.upc or 'n/a'} • Recheck before posting")
-    else:
-        embed.set_footer(text="Recheck before posting. Prices, stock, shipping, and account eligibility can change fast.")
+    footer_bits = [f"SKU: {deal.sku or 'n/a'}", f"UPC: {deal.upc or 'n/a'}"]
+    if deal.variant_label:
+        footer_bits.append(f"Variant: {deal.variant_label[:40]}")
+    footer_bits.append("Recheck before posting")
+    embed.set_footer(text=" • ".join(footer_bits))
     return embed
+
+
+def variant_proof_lines(deal: NormalizedDeal) -> list[str]:
+    lines: list[str] = []
+    if deal.variant_label:
+        lines.append(f"Selected: **{deal.variant_label}**")
+    for key, value in deal.variant_attributes.items():
+        lines.append(f"{key}: `{value}`")
+    if deal.selected_offer_id:
+        lines.append(f"Offer ID: `{deal.selected_offer_id}`")
+    return lines[:8]
 
 
 def no_match_help(query: str, min_discount: int, page: int, simple_mode: bool) -> str:
@@ -868,6 +941,8 @@ def stock_block(candidate: SourceCandidate) -> str:
 
 
 def liveness_block(deal: NormalizedDeal, discount: float) -> str:
+    if deal.option_mismatch_warning:
+        return "🛠️ **Staff review required.** The priced option may not match the parent listing."
     if discount >= 80:
         return "🔥 **High-value candidate.** Re-run scan before posting because price errors can revert fast."
     if discount >= 50:
@@ -928,3 +1003,48 @@ def trim_title(title: str, limit: int) -> str:
 
 def short_button_label(title: str) -> str:
     return trim_title(title, 32)
+
+
+async def acquire_scan_lock(
+    interaction: discord.Interaction,
+    lock_key: ScanLockKey,
+    active_view: discord.ui.View | None,
+    working_message: str,
+) -> bool:
+    if not await scan_operation_locks.acquire(lock_key):
+        if interaction.response.is_done():
+            await interaction.followup.send(DUPLICATE_SCAN_MESSAGE, ephemeral=True)
+        else:
+            await interaction.response.send_message(DUPLICATE_SCAN_MESSAGE, ephemeral=True)
+        return False
+
+    try:
+        await mark_interaction_working(interaction, active_view, working_message)
+    except Exception:
+        await scan_operation_locks.release(lock_key)
+        raise
+    return True
+
+
+async def mark_interaction_working(
+    interaction: discord.Interaction,
+    active_view: discord.ui.View | None,
+    working_message: str,
+) -> None:
+    disabled_view = disable_non_link_buttons(active_view)
+    if not interaction.response.is_done():
+        if getattr(interaction, "message", None) is not None:
+            await interaction.response.edit_message(content=working_message, view=disabled_view)
+        else:
+            await interaction.response.send_message(working_message, ephemeral=True)
+        return
+    await interaction.followup.send(working_message, ephemeral=True)
+
+
+def disable_non_link_buttons(view: discord.ui.View | None) -> discord.ui.View | None:
+    if view is None:
+        return None
+    for child in view.children:
+        if isinstance(child, discord.ui.Button) and child.style != discord.ButtonStyle.link:
+            child.disabled = True
+    return view

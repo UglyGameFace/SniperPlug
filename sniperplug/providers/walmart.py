@@ -14,14 +14,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.providers.base import (
-    DealProvider,
-    ProviderCapability,
-    ProviderHealth,
-    ProviderScanRequest,
-    ProviderScanResult,
-    ProviderStatus,
-)
+from sniperplug.providers.base import DealProvider, ProviderCapability, ProviderHealth, ProviderScanRequest, ProviderScanResult, ProviderStatus
+from sniperplug.services.variant_proof import extract_variant_proof
 
 
 @dataclass(frozen=True)
@@ -39,27 +33,12 @@ class WalmartAffiliateConfig:
 
 
 class WalmartProvider(DealProvider):
-    """Walmart Affiliate API adapter.
-
-    The provider stays disabled unless WALMART_PROVIDER_ENABLED is explicitly
-    enabled and signing credentials are configured. It returns SourceCandidate
-    objects only; it never posts alerts directly.
-    """
-
     provider_key = "walmart"
     display_name = "Walmart"
     search_url = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/search"
     taxonomy_url = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/taxonomy"
     allowed_sorts = {"relevance", "price", "title", "bestseller", "customerRating", "new"}
-    capabilities = frozenset(
-        {
-            ProviderCapability.PRODUCT_LOOKUP,
-            ProviderCapability.CATEGORY_SCAN,
-            ProviderCapability.IMAGE_LOOKUP,
-            ProviderCapability.OFFER_CHECK,
-            ProviderCapability.MEMBER_PRICING,
-        }
-    )
+    capabilities = frozenset({ProviderCapability.PRODUCT_LOOKUP, ProviderCapability.CATEGORY_SCAN, ProviderCapability.IMAGE_LOOKUP, ProviderCapability.OFFER_CHECK, ProviderCapability.MEMBER_PRICING})
 
     def __init__(self, config: WalmartAffiliateConfig | None = None, configured: bool | None = None):
         if config is None:
@@ -68,43 +47,19 @@ class WalmartProvider(DealProvider):
 
     async def healthcheck(self) -> ProviderHealth:
         if not self.config.enabled:
-            return ProviderHealth(
-                provider_key=self.provider_key,
-                ok=False,
-                status=ProviderStatus.DISABLED,
-                message="Disabled: set WALMART_PROVIDER_ENABLED=true after credentials are configured.",
-            )
-
+            return ProviderHealth(provider_key=self.provider_key, ok=False, status=ProviderStatus.DISABLED, message="Disabled: set WALMART_PROVIDER_ENABLED=true after credentials are configured.")
         missing = self._missing_config()
         if missing:
-            return ProviderHealth(
-                provider_key=self.provider_key,
-                ok=False,
-                status=ProviderStatus.ERROR,
-                message=f"Missing Walmart config: {', '.join(missing)}.",
-            )
-
+            return ProviderHealth(provider_key=self.provider_key, ok=False, status=ProviderStatus.ERROR, message=f"Missing Walmart config: {', '.join(missing)}.")
         suffix = " Affiliate tracking enabled." if self.config.publisher_id else " Direct Walmart links only until Impact Publisher ID is added."
-        return ProviderHealth(
-            provider_key=self.provider_key,
-            ok=True,
-            status=ProviderStatus.READY,
-            message="Ready: Walmart Affiliate API credentials are configured." + suffix,
-        )
+        return ProviderHealth(provider_key=self.provider_key, ok=True, status=ProviderStatus.READY, message="Ready: Walmart Affiliate API credentials are configured." + suffix)
 
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
         health = await self.healthcheck()
         if not health.ok:
             return ProviderScanResult(provider_key=self.provider_key, candidates=(), warnings=(health.message,))
-
         if not request.query and not request.product_ids:
-            return ProviderScanResult(
-                provider_key=self.provider_key,
-                candidates=(),
-                warnings=("Walmart scan skipped: query or product_ids required.",),
-                page=request.page,
-                page_size=request.max_results,
-            )
+            return ProviderScanResult(provider_key=self.provider_key, candidates=(), warnings=("Walmart scan skipped: query or product_ids required.",), page=request.page, page_size=request.max_results)
 
         warnings: list[str] = []
         if not self.config.publisher_id:
@@ -114,7 +69,6 @@ class WalmartProvider(DealProvider):
         total_results: int | None = None
         start_index: int | None = None
         page_size = max(1, min(request.max_results, 25))
-
         queries = [request.query] if request.query else []
         queries.extend(request.product_ids)
         for query in queries:
@@ -133,28 +87,12 @@ class WalmartProvider(DealProvider):
             has_next_page = start_index + page_size <= min(total_results, 1000)
         else:
             has_next_page = len(candidates) >= page_size
-
-        return ProviderScanResult(
-            provider_key=self.provider_key,
-            candidates=tuple(candidates),
-            warnings=tuple(warnings),
-            total_results=total_results,
-            page=max(1, request.page),
-            page_size=page_size,
-            start_index=start_index,
-            has_next_page=has_next_page,
-            metadata={"query": request.query or "", "sort": request.sort or "relevance"},
-        )
+        return ProviderScanResult(provider_key=self.provider_key, candidates=tuple(candidates), warnings=tuple(warnings), total_results=total_results, page=max(1, request.page), page_size=page_size, start_index=start_index, has_next_page=has_next_page, metadata={"query": request.query or "", "sort": request.sort or "relevance"})
 
     def _search(self, query: str, request: ProviderScanRequest, page_size: int) -> dict:
         page = max(1, request.page)
         start = ((page - 1) * page_size) + 1
-        params = {
-            "query": query,
-            "numItems": str(page_size),
-            "start": str(start),
-            "responseGroup": "full",
-        }
+        params = {"query": query, "numItems": str(page_size), "start": str(start), "responseGroup": "full"}
         if request.sort:
             sort = request.sort.strip()
             if sort in self.allowed_sorts:
@@ -163,7 +101,6 @@ class WalmartProvider(DealProvider):
                     params["order"] = request.order
         if self.config.publisher_id:
             params["publisherId"] = self.config.publisher_id
-
         url = f"{self.search_url}?{urllib.parse.urlencode(params)}"
         return self._request_json(url)
 
@@ -178,7 +115,6 @@ class WalmartProvider(DealProvider):
             raise WalmartProviderError(f"Walmart API HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
             raise WalmartProviderError(f"Walmart API network error: {exc.reason}") from exc
-
         try:
             decoded = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -194,13 +130,7 @@ class WalmartProvider(DealProvider):
         private_key = self._load_private_key()
         signature = private_key.sign(signature_payload, padding.PKCS1v15(), hashes.SHA256())
         signature_b64 = base64.b64encode(signature).decode("ascii")
-        return {
-            "Accept": "application/json",
-            "WM_CONSUMER.ID": self.config.consumer_id or "",
-            "WM_CONSUMER.INTIMESTAMP": timestamp_ms,
-            "WM_SEC.KEY_VERSION": key_version,
-            "WM_SEC.AUTH_SIGNATURE": signature_b64,
-        }
+        return {"Accept": "application/json", "WM_CONSUMER.ID": self.config.consumer_id or "", "WM_CONSUMER.INTIMESTAMP": timestamp_ms, "WM_SEC.KEY_VERSION": key_version, "WM_SEC.AUTH_SIGNATURE": signature_b64}
 
     def _load_private_key(self):
         if not self.config.private_key_b64:
@@ -208,14 +138,13 @@ class WalmartProvider(DealProvider):
         try:
             key_bytes = base64.b64decode(self.config.private_key_b64)
             return serialization.load_pem_private_key(key_bytes, password=None)
-        except Exception as exc:  # noqa: BLE001 - keep credential parsing failures user-actionable.
+        except Exception as exc:
             raise WalmartProviderError("Walmart private key could not be decoded. Recreate WALMART_PRIVATE_KEY_B64.") from exc
 
     def _candidates_from_payload(self, payload: dict, request: ProviderScanRequest) -> list[SourceCandidate]:
         items = payload.get("items")
         if not isinstance(items, list):
             return []
-
         candidates: list[SourceCandidate] = []
         for item in items:
             if not isinstance(item, dict):
@@ -231,12 +160,10 @@ class WalmartProvider(DealProvider):
         item_id = item.get("itemId")
         direct_product_url = _direct_walmart_url(item_id)
         product_url = raw_tracking_url or direct_product_url
-
         signals = self._item_signals(item)
         if product_url and "|PUBID|" in product_url and direct_product_url:
             product_url = direct_product_url
             signals.append("tracking link unavailable; direct Walmart link used")
-
         if not title or not product_url:
             return None
 
@@ -244,7 +171,11 @@ class WalmartProvider(DealProvider):
         typical_price, reference_signal = _trusted_reference_price(item=item, title=title, current_price=current_price)
         if reference_signal:
             signals.append(reference_signal)
-
+        variant = extract_variant_proof(item, title)
+        if variant.warning:
+            signals.append(variant.warning)
+        elif variant.label:
+            signals.append(f"selected option: {variant.label}")
         category_path = str(item.get("categoryPath") or "").strip()
         if category_path:
             signals.append(f"Walmart category: {category_path}")
@@ -261,6 +192,15 @@ class WalmartProvider(DealProvider):
             product_id_type="sku" if item_id is not None else None,
             sku=str(item_id) if item_id is not None else None,
             upc=str(item.get("upc")) if item.get("upc") else None,
+            selected_offer_id=variant.offer_id,
+            variant_label=variant.label,
+            variant_attributes=variant.attributes,
+            pack_size=variant.attributes.get("packSize") or variant.attributes.get("size"),
+            color=variant.attributes.get("color"),
+            platform=variant.attributes.get("platform"),
+            model=variant.attributes.get("model") or variant.attributes.get("modelNumber"),
+            parent_title=title if variant.attributes else None,
+            option_mismatch_warning=variant.warning,
             stock_status=str(item.get("stock") or "") or None,
             can_add_to_cart=bool(item.get("availableOnline")) if "availableOnline" in item else None,
             is_business_offer=False,
@@ -309,13 +249,7 @@ class WalmartProviderError(RuntimeError):
 def walmart_config_from_env(fallback_enabled: bool = False) -> WalmartAffiliateConfig:
     enabled_text = os.getenv("WALMART_PROVIDER_ENABLED", "").strip().lower()
     enabled = fallback_enabled if not enabled_text else enabled_text in {"1", "true", "yes", "on"}
-    return WalmartAffiliateConfig(
-        consumer_id=os.getenv("WALMART_CONSUMER_ID", "").strip() or None,
-        key_version=os.getenv("WALMART_KEY_VERSION", "1").strip() or "1",
-        private_key_b64=os.getenv("WALMART_PRIVATE_KEY_B64", "").strip() or None,
-        publisher_id=os.getenv("WALMART_PUBLISHER_ID", "").strip() or None,
-        enabled=enabled,
-    )
+    return WalmartAffiliateConfig(consumer_id=os.getenv("WALMART_CONSUMER_ID", "").strip() or None, key_version=os.getenv("WALMART_KEY_VERSION", "1").strip() or "1", private_key_b64=os.getenv("WALMART_PRIVATE_KEY_B64", "").strip() or None, publisher_id=os.getenv("WALMART_PUBLISHER_ID", "").strip() or None, enabled=enabled)
 
 
 def _direct_walmart_url(item_id) -> str:
@@ -325,29 +259,16 @@ def _direct_walmart_url(item_id) -> str:
 
 
 def _trusted_reference_price(item: dict, title: str, current_price: float | None) -> tuple[float | None, str | None]:
-    """Return a safe comparison price for Walmart results.
-
-    Walmart search can return MSRP/list values that belong to a different option
-    or pack size than the selected offer. That made normal items look like fake
-    90%+ price errors, such as a 6-roll paper product compared against a large
-    multipack/reference value. Prefer being quiet over screaming a false glitch.
-    """
-    references = [
-        ("msrp", _float_or_none(item.get("msrp"))),
-        ("listPrice", _float_or_none(item.get("listPrice"))),
-    ]
+    references = [("msrp", _float_or_none(item.get("msrp"))), ("listPrice", _float_or_none(item.get("listPrice")))]
     references.extend(_best_marketplace_reference_prices(item))
-
     if current_price is None or current_price <= 0:
         return _first_positive_reference(references), None
-
     for source, value in references:
         if value is None or value <= current_price:
             continue
         if _reference_price_looks_suspicious(title=title, current_price=current_price, reference_price=value):
             return None, f"ignored suspicious Walmart {source} reference price: ${value:,.2f}"
         return value, f"Walmart reference price source: {source}"
-
     return None, None
 
 
@@ -355,9 +276,7 @@ def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | No
     best_marketplace = item.get("bestMarketplacePrice")
     if not isinstance(best_marketplace, dict):
         return []
-    return [
-        ("bestMarketplacePrice.price", _float_or_none(best_marketplace.get("price"))),
-    ]
+    return [("bestMarketplacePrice.price", _float_or_none(best_marketplace.get("price")))]
 
 
 def _first_positive_reference(references: list[tuple[str, float | None]]) -> float | None:
@@ -371,49 +290,19 @@ def _reference_price_looks_suspicious(title: str, current_price: float, referenc
     ratio = reference_price / current_price
     if ratio <= 1:
         return True
-
-    # Essentials and consumables often have size/quantity variants. Walmart can
-    # return a reference from the wrong size, which creates fake 80-95% alerts.
     if _is_size_sensitive_essential(title):
         if ratio >= 8:
             return True
         if current_price <= 15 and reference_price >= 75:
             return True
-
-    # Normal low-cost items should almost never compare against a triple-digit
-    # reference unless checkout/local proof exists, which this API result lacks.
     if current_price <= 10 and reference_price >= 150:
         return True
-
     return False
 
 
 def _is_size_sensitive_essential(title: str) -> bool:
     text = title.lower()
-    keywords = (
-        "toilet paper",
-        "toilet tissue",
-        "bath tissue",
-        "paper towel",
-        "paper towels",
-        "tissue",
-        "napkin",
-        "detergent",
-        "laundry",
-        "trash bag",
-        "dish soap",
-        "cleaner",
-        "wipes",
-        "diaper",
-        "razor",
-        "disposable",
-        "shampoo",
-        "conditioner",
-        "body wash",
-        "soap",
-        "toothpaste",
-        "toothbrush",
-    )
+    keywords = ("toilet paper", "toilet tissue", "bath tissue", "paper towel", "paper towels", "tissue", "napkin", "detergent", "laundry", "trash bag", "dish soap", "cleaner", "wipes", "diaper", "razor", "disposable", "shampoo", "conditioner", "body wash", "soap", "toothpaste", "toothbrush")
     return any(keyword in text for keyword in keywords)
 
 

@@ -1,11 +1,12 @@
 from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider, walmart_config_from_env
+from sniperplug.services.candidate_pipeline import evaluate_candidate
+from sniperplug.services.routing import STAFF_REVIEW_ROUTE
 
 
 def test_walmart_provider_disabled_until_explicitly_enabled():
     provider = WalmartProvider(WalmartAffiliateConfig())
 
-    # async methods are simple enough to run through asyncio in project tests.
     import asyncio
 
     health = asyncio.run(provider.healthcheck())
@@ -149,3 +150,97 @@ def test_walmart_keeps_reasonable_reference_price_for_electronics():
     assert candidate is not None
     assert candidate.typical_price == 179.99
     assert "Walmart reference price source: msrp" in candidate.signals
+
+
+def test_walmart_flags_parent_ps5_title_when_priced_variant_is_xbox():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 9001,
+        "name": "HyperX Cloud Gaming Headset for PS5",
+        "salePrice": 19.99,
+        "msrp": 99.99,
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=9001",
+        "stock": "Available",
+        "availableOnline": True,
+        "variantAttributes": {"platform": "Xbox", "color": "Black"},
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="gaming headset"))
+    assert candidate is not None
+    assert candidate.platform == "Xbox"
+    assert candidate.variant_label == "Xbox / Black"
+    assert candidate.option_mismatch_warning is not None
+    assert "PS5" in candidate.option_mismatch_warning
+    assert "Xbox" in candidate.option_mismatch_warning
+
+    decision = evaluate_candidate(candidate)
+    assert decision.route.route == STAFF_REVIEW_ROUTE
+    assert decision.should_alert is False
+    assert decision.hold_for_review is True
+
+
+def test_walmart_does_not_false_flag_parent_title_that_mentions_both_platforms():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 9003,
+        "name": "HyperX Cloud Gaming Headset for PS5 and Xbox",
+        "salePrice": 39.99,
+        "msrp": 79.99,
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=9003",
+        "stock": "Available",
+        "availableOnline": True,
+        "variantAttributes": {"platform": "Xbox", "color": "Black"},
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="gaming headset"))
+    assert candidate is not None
+    assert candidate.platform == "Xbox"
+    assert candidate.option_mismatch_warning is None
+
+
+def test_walmart_extracts_selected_variant_from_product_variants():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 9004,
+        "name": "Gaming Headset",
+        "salePrice": 29.99,
+        "msrp": 89.99,
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=9004",
+        "stock": "Available",
+        "availableOnline": True,
+        "productVariants": [
+            {"itemId": "9003", "platform": "PS5", "color": "White"},
+            {"itemId": "9004", "platform": "Xbox", "color": "Black"},
+        ],
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="gaming headset"))
+    assert candidate is not None
+    assert candidate.platform == "Xbox"
+    assert candidate.color == "Black"
+    assert candidate.variant_label == "Xbox / Black"
+
+
+def test_walmart_flags_pack_size_mismatch_for_staff_review():
+    provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
+    item = {
+        "itemId": 9002,
+        "name": "Laundry Detergent 12 Pack",
+        "salePrice": 6.99,
+        "msrp": 79.99,
+        "productTrackingUrl": "https://goto.walmart.com/c/123/568844/9383?prodsku=9002",
+        "stock": "Available",
+        "availableOnline": True,
+        "variantAttributes": {"packSize": "2 pack"},
+    }
+
+    candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="detergent"))
+    assert candidate is not None
+    assert candidate.pack_size == "2 pack"
+    assert candidate.option_mismatch_warning is not None
+    assert "12 pack" in candidate.option_mismatch_warning
+    assert "2 pack" in candidate.option_mismatch_warning
+
+    decision = evaluate_candidate(candidate)
+    assert decision.route.route == STAFF_REVIEW_ROUTE
+    assert decision.should_alert is False

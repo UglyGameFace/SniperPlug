@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import aiosqlite
 
@@ -102,10 +103,30 @@ class Database:
                 PRIMARY KEY (guild_id, user_id, deal_id)
             );
 
+            CREATE TABLE IF NOT EXISTS clearance_seeds (
+                seed_id TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                created_by INTEGER NOT NULL,
+                retailer TEXT NOT NULL,
+                title TEXT NOT NULL,
+                sku TEXT,
+                upc TEXT,
+                product_url TEXT,
+                store_id TEXT,
+                zip_code TEXT,
+                observed_price REAL,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_guild_alert_channels_guild ON guild_alert_channels(guild_id);
             CREATE INDEX IF NOT EXISTS idx_deals_retailer ON deals(retailer);
             CREATE INDEX IF NOT EXISTS idx_deals_discount ON deals(discount_percent);
             CREATE INDEX IF NOT EXISTS idx_deals_last_checked ON deals(last_checked_at);
+            CREATE INDEX IF NOT EXISTS idx_clearance_seeds_guild_retailer ON clearance_seeds(guild_id, retailer);
+            CREATE INDEX IF NOT EXISTS idx_clearance_seeds_sku ON clearance_seeds(sku);
+            CREATE INDEX IF NOT EXISTS idx_clearance_seeds_upc ON clearance_seeds(upc);
             """
         )
         await conn.commit()
@@ -250,6 +271,78 @@ class Database:
             ),
         )
         await conn.commit()
+
+    async def add_clearance_seed(
+        self,
+        guild_id: int,
+        user_id: int,
+        retailer: str,
+        title: str,
+        sku: str | None = None,
+        upc: str | None = None,
+        product_url: str | None = None,
+        store_id: str | None = None,
+        zip_code: str | None = None,
+        observed_price: float | None = None,
+        notes: str | None = None,
+    ) -> str:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        seed_id = uuid4().hex
+        await conn.execute(
+            """
+            INSERT INTO clearance_seeds (
+                seed_id, guild_id, created_by, retailer, title, sku, upc,
+                product_url, store_id, zip_code, observed_price, notes,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                seed_id,
+                guild_id,
+                user_id,
+                retailer,
+                title,
+                sku,
+                upc,
+                product_url,
+                store_id,
+                zip_code,
+                observed_price,
+                notes,
+                now,
+                now,
+            ),
+        )
+        await conn.commit()
+        return seed_id
+
+    async def list_clearance_seeds(self, guild_id: int, retailer: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        conn = self.require_conn()
+        safe_limit = max(1, min(limit, 25))
+        if retailer:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM clearance_seeds
+                WHERE guild_id = ? AND retailer = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (guild_id, retailer, safe_limit),
+            )
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM clearance_seeds
+                WHERE guild_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (guild_id, safe_limit),
+            )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def save_deal(self, guild_id: int, user_id: int, deal_id: str) -> None:
         await self._insert_user_deal_event("saved_deals", guild_id, user_id, deal_id)

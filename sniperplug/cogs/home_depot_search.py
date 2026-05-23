@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -9,6 +11,15 @@ from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
+
+
+@dataclass(frozen=True)
+class HomeDepotCardBatch:
+    embeds: list[discord.Embed]
+    returned_count: int
+    shown_count: int
+    filtered_count: int
+    used_raw_fallback: bool
 
 
 class HomeDepotSearchCog(commands.Cog):
@@ -36,8 +47,8 @@ class HomeDepotSearchCog(commands.Cog):
     @app_commands.command(name="home_depot_penny_hunt", description="Manually hunt Home Depot penny/clearance candidates through SerpApi.")
     @app_commands.describe(
         query="Targeted query, like faucet, vanity, milwaukee, ryobi, ceiling fan.",
-        store_id="Recommended Home Depot store ID.",
-        zip_code="Recommended local ZIP.",
+        store_id="Optional Home Depot store ID. ZIP alone is enough for a local search.",
+        zip_code="Recommended local ZIP. Used as the local anchor when store ID is unknown.",
         page="Page to scan. Page 2+ uses another SerpApi credit.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -71,6 +82,9 @@ class HomeDepotSearchCog(commands.Cog):
             await interaction.followup.send(health.message, ephemeral=True)
             return
 
+        cleaned_store_id = (store_id or "").strip()
+        cleaned_zip_code = (zip_code or "").strip()
+        has_local_anchor = bool(cleaned_store_id or cleaned_zip_code)
         broad_warning = _broad_query_warning(query)
         quota = serpapi_quota_guard.check(interaction.user.id, cost=1)
         if not quota.allowed:
@@ -84,8 +98,8 @@ class HomeDepotSearchCog(commands.Cog):
                 page=page,
                 max_results=24,
                 metadata={
-                    "store_id": (store_id or "").strip(),
-                    "zip_code": (zip_code or "").strip(),
+                    "store_id": cleaned_store_id,
+                    "zip_code": cleaned_zip_code,
                     "requested_by": str(interaction.user.id),
                 },
             )
@@ -96,49 +110,105 @@ class HomeDepotSearchCog(commands.Cog):
             await interaction.followup.send("\n".join(result.warnings), ephemeral=True)
             return
 
-        cards = build_home_depot_cards(result.candidates, has_store_id=bool(store_id), penny_mode=penny_mode)
+        batch = build_home_depot_card_batch(result.candidates, has_local_anchor=has_local_anchor, penny_mode=penny_mode)
         summary = discord.Embed(
             title="🏚️ Home Depot Penny Hunt" if penny_mode else "🏚️ Home Depot Search",
             description=(
                 f"Searching: **{query}**\n"
-                f"Store: `{store_id or 'n/a'}` • ZIP: `{zip_code or 'n/a'}` • Page: `{page}`\n"
+                f"Store: `{cleaned_store_id or 'n/a'}` • ZIP: `{cleaned_zip_code or 'n/a'}` • Page: `{page}`\n"
                 f"SerpApi used: **{quota_after.monthly_used}/{quota_after.monthly_limit} monthly safe budget** • "
                 f"**{quota_after.daily_used}/{quota_after.daily_limit} today**\n"
-                "Showing SniperPlug-style cards. These are **verification candidates**, not confirmed in-store penny deals."
+                f"Products returned: **{batch.returned_count}** • Cards shown: **{batch.shown_count}**"
             ),
             color=discord.Color.orange(),
         )
+        if penny_mode:
+            summary.description += f" • Penny-filtered: **{batch.filtered_count}**"
+        summary.description += "\nThese are **verification candidates**, not confirmed in-store penny deals."
+        if batch.used_raw_fallback:
+            summary.add_field(
+                name="Credit protected",
+                value="SerpApi returned products, but none passed the penny threshold. Showing raw low-score results anyway so the credit is not wasted.",
+                inline=False,
+            )
+        if cleaned_zip_code and not cleaned_store_id:
+            summary.add_field(
+                name="ZIP used as local anchor",
+                value="No store ID needed. SniperPlug used the ZIP for local Home Depot search context; store-specific proof is still stronger when available.",
+                inline=False,
+            )
+        elif not has_local_anchor:
+            summary.add_field(
+                name="Local proof warning",
+                value="No ZIP or store ID was supplied, so scores are weaker and local stock proof is limited.",
+                inline=False,
+            )
         if broad_warning:
             summary.add_field(name="⚠️ Quota warning", value=broad_warning, inline=False)
         if result.warnings:
             summary.add_field(name="⚠️ Provider notes", value="\n".join(result.warnings[:3]), inline=False)
-        if not cards:
-            summary.add_field(name="Nothing useful found yet", value="No products came back from this search. Try a tighter query or another store/ZIP.", inline=False)
+        if not batch.embeds:
+            summary.add_field(
+                name="No products returned",
+                value="SerpApi did not return product cards for this query/location. Try a different query, ZIP, or page.",
+                inline=False,
+            )
             await interaction.followup.send(embed=summary, ephemeral=True)
             return
 
-        await interaction.followup.send(embeds=[summary] + cards[:5], ephemeral=True)
+        await interaction.followup.send(embeds=[summary] + batch.embeds[:5], ephemeral=True)
 
 
 def build_home_depot_cards(candidates: tuple[SourceCandidate, ...], *, has_store_id: bool, penny_mode: bool) -> list[discord.Embed]:
+    return build_home_depot_card_batch(candidates, has_local_anchor=has_store_id, penny_mode=penny_mode).embeds
+
+
+def build_home_depot_card_batch(candidates: tuple[SourceCandidate, ...], *, has_local_anchor: bool, penny_mode: bool) -> HomeDepotCardBatch:
     scored: list[tuple[int, discord.Embed]] = []
+    filtered_count = 0
     for candidate in candidates:
-        penny = score_penny_candidate(candidate, has_store_id=has_store_id)
+        penny = score_penny_candidate(candidate, has_store_id=has_local_anchor)
         if penny_mode and penny.score < 25:
+            filtered_count += 1
             continue
-        embed = build_home_depot_deal_card(candidate, penny.score, penny.level, penny.reasons)
+        embed = build_home_depot_deal_card(candidate, penny.score, penny.level, penny.reasons, raw_fallback=False)
         scored.append((penny.score, embed))
+
+    used_raw_fallback = False
+    if penny_mode and not scored and candidates:
+        used_raw_fallback = True
+        filtered_count = len(candidates)
+        for candidate in candidates:
+            penny = score_penny_candidate(candidate, has_store_id=has_local_anchor)
+            embed = build_home_depot_deal_card(candidate, penny.score, penny.level, penny.reasons, raw_fallback=True)
+            scored.append((penny.score, embed))
+
     scored.sort(key=lambda item: item[0], reverse=True)
-    return [embed for _, embed in scored]
+    embeds = [embed for _, embed in scored]
+    return HomeDepotCardBatch(
+        embeds=embeds,
+        returned_count=len(candidates),
+        shown_count=min(len(embeds), 5),
+        filtered_count=filtered_count if penny_mode else 0,
+        used_raw_fallback=used_raw_fallback,
+    )
 
 
-def build_home_depot_deal_card(candidate: SourceCandidate, penny_score: int, penny_level: str, reasons: tuple[str, ...]) -> discord.Embed:
-    title = f"{home_depot_heat_emoji(candidate.current_price, penny_score)} {home_depot_label(penny_score)} • {trim_title(candidate.title, 72)}"
+def build_home_depot_deal_card(
+    candidate: SourceCandidate,
+    penny_score: int,
+    penny_level: str,
+    reasons: tuple[str, ...],
+    *,
+    raw_fallback: bool = False,
+) -> discord.Embed:
+    label = "RAW SERPAPI RESULT" if raw_fallback else home_depot_label(penny_score)
+    title = f"{home_depot_heat_emoji(candidate.current_price, penny_score)} {label} • {trim_title(candidate.title, 72)}"
     embed = discord.Embed(title=title, url=candidate.product_url, color=home_depot_color(penny_score))
     if candidate.image_url:
         embed.set_thumbnail(url=candidate.image_url)
 
-    embed.add_field(name="💰 Price", value=home_depot_price_block(candidate.current_price), inline=False)
+    embed.add_field(name="💰 Price", value=home_depot_price_block(candidate), inline=False)
     embed.add_field(
         name="📊 Sniper Read",
         value=(
@@ -149,7 +219,7 @@ def build_home_depot_deal_card(candidate: SourceCandidate, penny_score: int, pen
         inline=True,
     )
     embed.add_field(name="📦 Stock", value=home_depot_stock_block(candidate), inline=True)
-    embed.add_field(name="🟢 Liveness", value=home_depot_liveness_block(candidate.current_price, penny_score), inline=False)
+    embed.add_field(name="🟢 Liveness", value=home_depot_liveness_block(candidate.current_price, penny_score, raw_fallback=raw_fallback), inline=False)
 
     proof_lines = home_depot_proof_lines(candidate, reasons)
     if proof_lines:
@@ -164,11 +234,20 @@ def build_home_depot_deal_card(candidate: SourceCandidate, penny_score: int, pen
     return embed
 
 
-def home_depot_price_block(current_price: float | None) -> str:
+def home_depot_price_block(candidate: SourceCandidate) -> str:
+    current_price = candidate.current_price
     if current_price is None:
         return "Current price unavailable\nNo Home Depot reference price returned."
     ending = price_ending(current_price)
     ending_line = f"\nEnding: **.{ending}**" if ending else ""
+    if candidate.typical_price and candidate.typical_price > current_price:
+        savings = candidate.typical_price - current_price
+        discount = (savings / candidate.typical_price) * 100
+        return (
+            f"**{money(current_price)}**\n"
+            f"Was/typical: **{money(candidate.typical_price)}**\n"
+            f"Save: **{money(savings)} ({discount:.0f}%)**{ending_line}"
+        )
     return f"**{money(current_price)}**\nWas/typical: **Not returned**\nSave: **Unknown**{ending_line}"
 
 
@@ -182,7 +261,9 @@ def home_depot_stock_block(candidate: SourceCandidate) -> str:
     return "\n".join(lines) if lines else "Local stock not confirmed"
 
 
-def home_depot_liveness_block(current_price: float | None, penny_score: int) -> str:
+def home_depot_liveness_block(current_price: float | None, penny_score: int, *, raw_fallback: bool = False) -> str:
+    if raw_fallback:
+        return "⚪ **Raw low-score result.** Shown because SerpApi returned products and SniperPlug will not hide paid-credit results."
     if current_price is not None and price_ending(current_price) == "01":
         return "🚨 **Possible penny candidate.** SerpApi is not register proof; verify with in-store scan/register before posting."
     if penny_score >= 80:

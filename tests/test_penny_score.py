@@ -19,6 +19,7 @@ def test_penny_score_high_priority_for_one_cent_local_candidate():
     assert score.score >= 80
     assert score.level == "high_priority_in_store_verification"
     assert any(".01" in reason for reason in score.reasons)
+    assert any("Local store/ZIP search" in reason for reason in score.reasons)
 
 
 def test_penny_score_penalizes_missing_store_and_price():
@@ -33,3 +34,4 @@ def test_penny_score_penalizes_missing_store_and_price():
 
     assert score.score < 30
     assert score.level == "weak_lead"
+    assert any("No store_id or ZIP" in reason for reason in score.reasons)

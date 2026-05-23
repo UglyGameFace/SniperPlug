@@ -166,3 +166,55 @@ def test_serpapi_home_depot_ignores_typical_price_lower_than_current_price():
     assert len(candidates) == 1
     assert candidates[0].current_price == 100.0
     assert candidates[0].typical_price is None
+
+
+def test_serpapi_home_depot_maps_advantage_fields_to_variant_attributes_and_signals():
+    provider = SerpApiHomeDepotProvider(SerpApiHomeDepotConfig(api_key="fake"))
+    payload = {
+        "products": [
+            {
+                "title": "Collette Vanity",
+                "product_id": "327191749",
+                "link": "https://www.homedepot.com/p/327191749",
+                "price": "$1,139.00",
+                "price_was": "$1,899.00",
+                "price_saving": "$760.00",
+                "percentage_off": "40%",
+                "price_badge": "Special Buy",
+                "brand": "Home Decorators Collection",
+                "model_number": "CL48CO-WH",
+                "rating": 4.1,
+                "reviews": 299,
+                "delivery": {"free_delivery": True, "scheduled_delivery": False},
+                "pickup": {"free_pickup": True},
+                "stock_information": {
+                    "store_stock": "3",
+                    "store_stock_status": "Limited Stock",
+                    "general_stock_status": "In Stock",
+                },
+                "add_to_cart": True,
+                "thumbnail": "https://example.com/vanity.jpg",
+            }
+        ]
+    }
+
+    candidates = provider._candidates_from_payload(
+        payload,
+        ProviderScanRequest(source_key="home_depot_serpapi", query="vanity"),
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.typical_price == 1899.0
+    assert candidate.image_url == "https://example.com/vanity.jpg"
+    assert candidate.model == "CL48CO-WH"
+    assert candidate.can_add_to_cart is True
+    assert candidate.stock_status == "Store stock: 3 (Limited Stock)"
+    assert candidate.variant_attributes["brand"] == "Home Decorators Collection"
+    assert candidate.variant_attributes["price_saving"] == "$760.00"
+    assert candidate.variant_attributes["percentage_off"] == "40%"
+    assert candidate.variant_attributes["price_badge"] == "Special Buy"
+    assert candidate.variant_attributes["delivery"] == "Delivery: free delivery"
+    assert candidate.variant_attributes["pickup"] == "Pickup: free pickup"
+    assert any("Home Depot saving: $760.00" in signal for signal in candidate.signals)
+    assert any("Home Depot badge: Special Buy" in signal for signal in candidate.signals)

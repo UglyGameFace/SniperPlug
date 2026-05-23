@@ -38,6 +38,19 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
     should_alert = anomaly.score >= MIN_PUBLIC_ALERT_SCORE
     hold_for_review = MIN_REVIEW_SCORE <= anomaly.score < MIN_PUBLIC_ALERT_SCORE
 
+    condition_label = lower_price_condition_label(deal.condition, deal.variant_attributes)
+    if condition_label:
+        deal.alert_tags.append("Lower-price condition offer")
+        deal.risk_flags.append(f"Condition-specific lower price: {condition_label}")
+        deal.verification_notes.append(f"Selected condition: {condition_label}")
+        if "selected condition" not in " ".join(reason.lower() for reason in reasons):
+            reasons.append(f"Selected condition offer: {condition_label}")
+        # Condition-specific prices can be real bangers, but they must not be
+        # mislabeled as brand-new retail. Keep them public-alertable only when
+        # the base score is strong enough and the condition is clearly shown.
+        if anomaly.score >= MIN_PUBLIC_ALERT_SCORE:
+            should_alert = True
+
     if not deal.product_url:
         should_alert = False
         hold_for_review = False
@@ -68,3 +81,36 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
         hold_for_review=hold_for_review,
         reasons=tuple(reasons[:10]),
     )
+
+
+def lower_price_condition_label(condition: str | None, attrs: dict[str, str]) -> str | None:
+    text = " ".join(
+        str(value)
+        for value in (
+            condition,
+            attrs.get("condition"),
+            attrs.get("offerCondition"),
+            attrs.get("conditionGroup"),
+            attrs.get("conditionLabel"),
+        )
+        if value
+    ).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    condition_terms = (
+        "open box",
+        "open-box",
+        "openbox",
+        "like new",
+        "likenew",
+        "excellent",
+        "certified refurbished",
+        "refurbished",
+        "renewed",
+        "used - like new",
+        "used like new",
+    )
+    if any(term in lowered for term in condition_terms):
+        return text
+    return None

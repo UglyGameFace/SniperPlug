@@ -11,6 +11,7 @@ from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_scanner import DealScannerCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
+from sniperplug.cogs.public_alerts import PublicAlertsCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
@@ -46,6 +47,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
+        await self.add_cog(PublicAlertsCog(self))
 
         if self.settings.dev_guild_id:
             guild = discord.Object(id=self.settings.dev_guild_id)

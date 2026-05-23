@@ -66,7 +66,7 @@ def choose_primary_route(deal: NormalizedDeal) -> RouteDecision:
     routed as YMMV or Staff Review instead of being called risky.
     """
     if _has_untrusted_discount_reference(deal):
-        return RouteDecision(STAFF_REVIEW_ROUTE, "discount reference needs manual recheck")
+        return RouteDecision(STAFF_REVIEW_ROUTE, "discount or variant proof needs manual recheck")
 
     if deal.risk_level.lower() == "high":
         return RouteDecision(STAFF_REVIEW_ROUTE, "staff review before public posting")
@@ -117,12 +117,16 @@ def is_business_deal(deal: NormalizedDeal) -> bool:
 
 
 def _has_untrusted_discount_reference(deal: NormalizedDeal) -> bool:
-    return any(
-        "ignored suspicious" in flag.lower()
-        or "reference price looked mismatched" in flag.lower()
-        or "reference price needs recheck" in flag.lower()
-        for flag in deal.risk_flags
+    unsafe_terms = (
+        "ignored suspicious",
+        "reference price looked mismatched",
+        "reference price needs recheck",
+        "selected option mismatch",
+        "selected variant not proven",
+        "variant price proof missing",
+        "priced variant",
     )
+    return any(any(term in flag.lower() for term in unsafe_terms) for flag in deal.risk_flags)
 
 
 def is_valid_route(route: str) -> bool:

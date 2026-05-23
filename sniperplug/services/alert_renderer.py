@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 
 from sniperplug.models.deal import NormalizedDeal
+from sniperplug.services.safe_links import product_link_choices
 from sniperplug.services.verification import compact_verification_summary
 
 
@@ -37,8 +38,6 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
         url=deal.product_url,
     )
 
-    # Use only the provider-supplied product image. Never replace missing images
-    # with placeholders, category art, guessed images, or random search results.
     if has_exact_image:
         embed.set_image(url=deal.image_url)
 
@@ -48,6 +47,10 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
         f"**Save:** {money(deal.savings_amount)} ({percent(deal.discount_percent)})"
     )
     embed.add_field(name="Deal Snapshot", value=price_line, inline=False)
+
+    link_block = deal_link_block(deal)
+    if link_block:
+        embed.add_field(name="Product links", value=link_block, inline=False)
 
     proof = compact_verification_summary(deal)
     if proof:
@@ -91,13 +94,25 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
     return embed
 
 
-def has_product_image(deal: NormalizedDeal) -> bool:
-    """
-    True only when the provider supplied a product image URL.
+def deal_link_block(deal: NormalizedDeal) -> str:
+    choices = product_link_choices(
+        retailer=deal.retailer,
+        product_url=deal.product_url,
+        title=deal.title,
+        product_id=deal.sku or deal.asin,
+        sku=deal.sku,
+        asin=deal.asin,
+    )
+    if not choices and deal.product_url:
+        return f"[Open product]({deal.product_url})"
+    lines = []
+    for choice in choices[:2]:
+        label = choice.label.replace("Open ", "")
+        lines.append(f"[{label}]({choice.url})")
+    return " • ".join(lines)
 
-    Missing images are allowed for verified deals, but SniperPlug must never fill
-    the gap with placeholders, category art, guessed images, or random search results.
-    """
+
+def has_product_image(deal: NormalizedDeal) -> bool:
     return bool(deal.image_url and deal.image_url.strip())
 
 
@@ -151,21 +166,6 @@ class DealActionView(discord.ui.View):
         super().__init__(timeout=3600)
         self.db = db
         self.deal = deal
-
-        existing_buttons = list(self.children)
-        self.clear_items()
-
-        self.add_item(
-            discord.ui.Button(
-                label="View Deal",
-                style=discord.ButtonStyle.link,
-                url=deal.product_url,
-                emoji="🛒",
-            )
-        )
-
-        for button in existing_buttons:
-            self.add_item(button)
 
     @discord.ui.button(label="Save", style=discord.ButtonStyle.secondary, emoji="🔖")
     async def save_deal(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

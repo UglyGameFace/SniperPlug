@@ -11,6 +11,12 @@ class SafeLinkResult:
     notes: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class LinkChoice:
+    label: str
+    url: str
+
+
 INTERNAL_OR_API_HOSTS = {
     "apionline.homedepot.com",
     "www.apionline.homedepot.com",
@@ -55,6 +61,44 @@ def normalize_product_url(
         return _normalize_target(raw_url, tcin=sku or product_id, notes=notes)
 
     return _normalize_generic(raw_url, notes=notes)
+
+
+def product_link_choices(*, retailer: str, product_url: str, title: str = "", product_id: str | None = None, sku: str | None = None, asin: str | None = None) -> tuple[LinkChoice, ...]:
+    """Return user-facing app/web choices for Discord URL buttons.
+
+    The normal public product URL lets Android/iOS open the retailer app when the
+    device supports it. The browser fallback goes through a search URL so users
+    on unsupported tablets can still get to the item without being trapped in a
+    broken app handoff.
+    """
+    safe = normalize_product_url(retailer=retailer, url=product_url, product_id=product_id, sku=sku, asin=asin).url
+    search = retailer_browser_search_url(retailer=retailer, title=title, product_id=product_id, sku=sku, asin=asin)
+    choices = [LinkChoice("Open App/Web", safe)]
+    if search and search != safe:
+        choices.append(LinkChoice("Browser Search", search))
+    return tuple(choices)
+
+
+def retailer_browser_search_url(*, retailer: str, title: str = "", product_id: str | None = None, sku: str | None = None, asin: str | None = None) -> str | None:
+    retailer_key = retailer.strip().lower()
+    identifier = asin or sku or product_id
+    if "amazon" in retailer_key and asin:
+        return f"https://www.google.com/search?q={urllib.parse.quote_plus(f'Amazon {asin}') }"
+    if "home depot" in retailer_key or "homedepot" in retailer_key:
+        query = f"Home Depot {identifier or title}".strip()
+        return f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}"
+    if "walmart" in retailer_key:
+        query = f"Walmart {identifier or title}".strip()
+        return f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}"
+    if "best buy" in retailer_key or "bestbuy" in retailer_key:
+        query = f"Best Buy {identifier or title}".strip()
+        return f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}"
+    if "target" in retailer_key:
+        query = f"Target {identifier or title}".strip()
+        return f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}"
+    if title or identifier:
+        return f"https://www.google.com/search?q={urllib.parse.quote_plus((retailer + ' ' + (identifier or title)).strip())}"
+    return None
 
 
 def _normalize_home_depot(raw_url: str, *, product_id: str | None, notes: list[str]) -> SafeLinkResult:

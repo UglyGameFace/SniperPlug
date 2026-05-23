@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -291,28 +292,32 @@ def _current_price_candidates(item: dict) -> list[tuple[str, float | None]]:
 def _trusted_reference_price(item: dict, title: str, current_price: float | None) -> tuple[float | None, str | None]:
     references = _reference_price_candidates(item)
     if current_price is None or current_price <= 0:
-        return _first_positive_reference(references), None
+        value, source = _first_trusted_reference(references, title=title, current_price=current_price)
+        return value, f"Walmart reference price source: {source}" if value and source else None
     for source, value in references:
         if value is None or value <= current_price:
             continue
-        if _reference_price_looks_suspicious(title=title, current_price=current_price, reference_price=value):
+        if _reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=value):
             return None, f"ignored suspicious Walmart {source} reference price: ${value:,.2f}"
         return value, f"Walmart reference price source: {source}"
     return None, None
 
 
 def _reference_price_candidates(item: dict) -> list[tuple[str, float | None]]:
+    # Trust explicit sale/reference fields first. MSRP is useful proof, but it is
+    # the noisiest value in Walmart Affiliate payloads and must never be allowed
+    # to manufacture fake 90%+ glitches by itself.
     references = [
-        ("msrp", _float_or_none(item.get("msrp"))),
-        ("listPrice", _price_from_value(item.get("listPrice"))),
         ("wasPrice", _price_from_value(item.get("wasPrice"))),
-        ("regularPrice", _price_from_value(item.get("regularPrice"))),
-        ("comparisonPrice", _price_from_value(item.get("comparisonPrice"))),
-        ("strikeThroughPrice", _price_from_value(item.get("strikeThroughPrice"))),
         ("priceInfo.wasPrice", _nested_price(item, "priceInfo", "wasPrice")),
-        ("priceInfo.listPrice", _nested_price(item, "priceInfo", "listPrice")),
-        ("priceInfo.comparisonPrice", _nested_price(item, "priceInfo", "comparisonPrice")),
+        ("regularPrice", _price_from_value(item.get("regularPrice"))),
+        ("strikeThroughPrice", _price_from_value(item.get("strikeThroughPrice"))),
         ("priceInfo.strikeThroughPrice", _nested_price(item, "priceInfo", "strikeThroughPrice")),
+        ("comparisonPrice", _price_from_value(item.get("comparisonPrice"))),
+        ("priceInfo.comparisonPrice", _nested_price(item, "priceInfo", "comparisonPrice")),
+        ("listPrice", _price_from_value(item.get("listPrice"))),
+        ("priceInfo.listPrice", _nested_price(item, "priceInfo", "listPrice")),
+        ("msrp", _float_or_none(item.get("msrp"))),
     ]
     references.extend(_best_marketplace_reference_prices(item))
     return references
@@ -325,11 +330,14 @@ def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | No
     return [("bestMarketplacePrice.price", _float_or_none(best_marketplace.get("price")))]
 
 
-def _first_positive_reference(references: list[tuple[str, float | None]]) -> float | None:
-    for _, value in references:
-        if value and value > 0:
-            return value
-    return None
+def _first_trusted_reference(references: list[tuple[str, float | None]], *, title: str, current_price: float | None) -> tuple[float | None, str | None]:
+    for source, value in references:
+        if not value or value <= 0:
+            continue
+        if current_price is not None and _reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=value):
+            continue
+        return value, source
+    return None, None
 
 
 def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str]) -> dict[str, str]:
@@ -365,14 +373,14 @@ def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str
 
 
 def _unit_size_from_title(title: str) -> str | None:
-    import re
-
     match = re.search(r"\b(\d+(?:\.\d+)?)\s*(fl\s*oz|fluid\s*ounce|oz|ounce|ounces|ct|count|lb|lbs|pack)\b", title, flags=re.IGNORECASE)
     if not match:
         return None
     amount, unit = match.groups()
-    unit = "oz" if unit.lower() in {"fl oz", "fluid ounce", "ounce", "ounces"} else unit
-    return f"{amount} {unit}"
+    normalized_unit = unit.lower().replace(" ", "")
+    if normalized_unit in {"floz", "fluidounce", "ounce", "ounces"}:
+        normalized_unit = "oz"
+    return f"{amount} {normalized_unit}"
 
 
 def _clean_string(value: Any) -> str | None:
@@ -408,24 +416,41 @@ def _price_from_value(value: Any) -> float | None:
     return _float_or_none(value)
 
 
-def _reference_price_looks_suspicious(title: str, current_price: float, reference_price: float) -> bool:
+def _reference_price_looks_suspicious(*, source: str, title: str, current_price: float, reference_price: float) -> bool:
     ratio = reference_price / current_price
     if ratio <= 1:
         return True
-    if _is_size_sensitive_essential(title):
+
+    source_key = source.lower()
+    title_text = title.lower()
+    explicit_sale_source = any(token in source_key for token in ("wasprice", "regularprice", "strikethrough", "comparisonprice"))
+    low_trust_source = "msrp" in source_key or "listprice" in source_key or "marketplace" in source_key
+
+    if low_trust_source and current_price <= 20 and ratio >= 5:
+        return True
+    if low_trust_source and _is_consumable_or_size_sensitive(title_text) and ratio >= 4:
+        return True
+    if _is_consumable_or_size_sensitive(title_text):
         if ratio >= 8:
             return True
-        if current_price <= 15 and reference_price >= 75:
+        if current_price <= 15 and reference_price >= 50 and not explicit_sale_source:
             return True
     if current_price <= 10 and reference_price >= 150:
+        return True
+    if ratio >= 20 and not explicit_sale_source:
         return True
     return False
 
 
-def _is_size_sensitive_essential(title: str) -> bool:
-    text = title.lower()
-    keywords = ("toilet paper", "toilet tissue", "bath tissue", "paper towel", "paper towels", "tissue", "napkin", "detergent", "laundry", "trash bag", "dish soap", "cleaner", "wipes", "diaper", "razor", "disposable", "shampoo", "conditioner", "body wash", "soap", "toothpaste", "toothbrush")
-    return any(keyword in text for keyword in keywords)
+def _is_consumable_or_size_sensitive(title: str) -> bool:
+    keywords = (
+        "toilet paper", "toilet tissue", "bath tissue", "paper towel", "paper towels", "tissue", "napkin",
+        "detergent", "laundry", "trash bag", "dish soap", "cleaner", "cleaning", "wipes", "diaper", "razor",
+        "disposable", "shampoo", "conditioner", "body wash", "soap", "toothpaste", "toothbrush", "deodorant",
+        "car wash", "wash", "wax", "turtle wax", "armor all", "meguiar", "chemical guys", "spray", "fluid",
+        "oz", "fl oz", "ounce", "count", "ct", "pack", "refill", "bottle", "jug", "gallon",
+    )
+    return any(keyword in title for keyword in keywords)
 
 
 def _float_or_none(value) -> float | None:

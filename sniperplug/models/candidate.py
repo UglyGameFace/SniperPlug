@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from sniperplug.models.deal import NormalizedDeal
+from sniperplug.services.safe_links import normalize_product_url
 
 
 def utc_now_iso() -> str:
@@ -53,6 +54,20 @@ class SourceCandidate:
     candidate_id: str = field(default_factory=lambda: uuid4().hex)
     first_seen_at: str = field(default_factory=utc_now_iso)
     last_checked_at: str = field(default_factory=utc_now_iso)
+
+    def __post_init__(self) -> None:
+        asin = self.product_id if self.product_id_type == "asin" else None
+        normalized = normalize_product_url(
+            retailer=self.retailer,
+            url=self.product_url,
+            product_id=self.product_id,
+            sku=self.sku,
+            asin=asin,
+        )
+        self.product_url = normalized.url
+        for note in normalized.notes:
+            if note not in self.signals:
+                self.signals.append(note)
 
     def to_normalized_deal(self) -> NormalizedDeal:
         availability_bits: list[str] = []

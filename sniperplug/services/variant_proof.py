@@ -101,7 +101,7 @@ def filter_variant_attributes(attrs: dict[str, str]) -> dict[str, str]:
 
 
 def normalize_attr_name(name: str) -> str:
-    lowered = name.strip().lower().replace(" ", "")
+    lowered = name.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
     aliases = {
         "platform": "platform",
         "compatibleplatform": "platform",
@@ -109,18 +109,28 @@ def normalize_attr_name(name: str) -> str:
         "edition": "edition",
         "color": "color",
         "colour": "color",
+        "actualcolor": "color",
         "size": "size",
+        "productsize": "size",
         "packsize": "packSize",
+        "pack": "packSize",
         "count": "packSize",
         "model": "model",
         "modelnumber": "modelNumber",
+        "manufacturerpartnumber": "modelNumber",
     }
     return aliases.get(lowered, name.strip())
 
 
 def variant_label(attributes: dict[str, str]) -> str | None:
+    """Build a customer-facing selected option label.
+
+    Model numbers are useful proof, but they are not option labels. Keeping them
+    out avoids ugly labels like "Multicolor / 100 oz / 50597" while still
+    preserving model proof in attributes/footer.
+    """
     parts = []
-    for key in ("platform", "edition", "color", "size", "packSize", "model", "modelNumber"):
+    for key in ("packSize", "size", "platform", "edition", "color"):
         value = attributes.get(key)
         if value and value not in parts:
             parts.append(value)

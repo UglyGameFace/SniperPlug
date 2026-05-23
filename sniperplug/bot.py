@@ -8,8 +8,10 @@ from discord.ext import commands
 from sniperplug.config import Settings
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
 from sniperplug.cogs.deal_scanner import DealScannerCog
+from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.providers.bestbuy import BestBuyProvider
+from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.storage.db import Database
@@ -32,9 +34,11 @@ class SniperPlugBot(commands.Bot):
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
         provider_registry.register(WalmartProvider(configured=False))
+        provider_registry.register(HomeDepotProvider())
 
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(DealScannerCog(self))
+        await self.add_cog(LocalInventoryCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
 
         if self.settings.dev_guild_id:

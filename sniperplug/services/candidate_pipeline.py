@@ -6,7 +6,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
 from sniperplug.services.anomaly_score import AnomalyScore, score_deal_anomaly
 from sniperplug.services.risk_flags import apply_risk_flags
-from sniperplug.services.routing import RouteDecision, choose_primary_route
+from sniperplug.services.routing import RouteDecision, STAFF_REVIEW_ROUTE, choose_primary_route
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,12 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
         should_alert = False
         hold_for_review = True
         reasons.append("Review: urgent anomaly but add-to-cart was not confirmed")
+
+    if getattr(candidate, "option_mismatch_warning", None) or getattr(deal, "option_mismatch_warning", None):
+        should_alert = False
+        hold_for_review = True
+        route = RouteDecision(STAFF_REVIEW_ROUTE, "selected variant or option needs manual review")
+        reasons.append("Review: selected option mismatch")
 
     return CandidateDecision(
         candidate=candidate,

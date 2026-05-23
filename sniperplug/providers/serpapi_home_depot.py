@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -134,15 +135,17 @@ class SerpApiHomeDepotProvider(DealProvider):
 
     def _candidate_from_item(self, item: dict[str, Any], request: ProviderScanRequest) -> SourceCandidate | None:
         title = _clean_str(item.get("title") or item.get("name"))
-        product_url = _clean_str(item.get("link") or item.get("product_link"))
         product_id = _clean_str(item.get("product_id") or item.get("productId") or item.get("item_id"))
-        if not product_url and product_id:
-            product_url = f"https://www.homedepot.com/p/{product_id}"
+        product_url, normalized_from_api_host = _home_depot_product_url(item, product_id)
         if not title or not product_url:
             return None
 
         price = _price_from_item(item)
         signals = ["SerpApi Home Depot search result; not an in-store scan confirmation"]
+        if normalized_from_api_host:
+            signals.append("product link normalized to Home Depot public URL")
+        if price is None:
+            signals.append("Home Depot current price not returned by SerpApi")
         if request.metadata.get("store_id"):
             signals.append(f"store_id: {request.metadata['store_id']}")
         if request.metadata.get("zip_code") or request.metadata.get("delivery_zip"):
@@ -187,9 +190,59 @@ def _warnings_from_payload(payload: dict) -> list[str]:
     return warnings
 
 
+def _home_depot_product_url(item: dict[str, Any], product_id: str | None) -> tuple[str | None, bool]:
+    candidates = [
+        item.get("product_page_url"),
+        item.get("product_link"),
+        item.get("link"),
+        item.get("url"),
+    ]
+    for candidate in candidates:
+        normalized, from_api_host = _normalize_home_depot_url(_clean_str(candidate))
+        if normalized:
+            return normalized, from_api_host
+    if product_id:
+        return f"https://www.homedepot.com/p/{product_id}", False
+    return None, False
+
+
+def _normalize_home_depot_url(raw_url: str | None) -> tuple[str | None, bool]:
+    if not raw_url:
+        return None, False
+    if raw_url.startswith("/p/"):
+        return f"https://www.homedepot.com{raw_url}", False
+
+    parsed = urllib.parse.urlparse(raw_url)
+    if not parsed.netloc:
+        return None, False
+
+    host = parsed.netloc.lower()
+    if host in {"apionline.homedepot.com", "www.apionline.homedepot.com"} and parsed.path.startswith("/p/"):
+        return urllib.parse.urlunparse(("https", "www.homedepot.com", parsed.path, "", parsed.query, "")), True
+    if host.endswith("homedepot.com") and parsed.path.startswith("/p/"):
+        return urllib.parse.urlunparse(("https", "www.homedepot.com", parsed.path, "", parsed.query, "")), False
+    return raw_url, False
+
+
 def _price_from_item(item: dict[str, Any]) -> float | None:
-    for key in ("price", "primary_offer", "price_from", "price_to"):
+    direct_keys = (
+        "price",
+        "primary_offer",
+        "price_from",
+        "price_to",
+        "current_price",
+        "sale_price",
+        "salePrice",
+        "store_price",
+        "storePrice",
+    )
+    for key in direct_keys:
         parsed = _price_from_value(item.get(key))
+        if parsed is not None:
+            return parsed
+
+    for nested_key in ("pricing", "price_info", "priceInfo", "offer", "offers"):
+        parsed = _price_from_value(item.get(nested_key))
         if parsed is not None:
             return parsed
     return None
@@ -199,15 +252,24 @@ def _price_from_value(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, dict):
-        for key in ("price", "amount", "value", "raw", "extracted_price"):
+        for key in ("price", "amount", "value", "raw", "extracted_price", "current", "current_price", "sale", "sale_price"):
             parsed = _price_from_value(value.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+    if isinstance(value, list):
+        for item in value:
+            parsed = _price_from_value(item)
             if parsed is not None:
                 return parsed
         return None
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
-        cleaned = value.replace("$", "").replace(",", "").strip()
+        match = re.search(r"\$?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?)", value)
+        if not match:
+            return None
+        cleaned = match.group(1).replace(",", "")
         try:
             return float(cleaned)
         except ValueError:

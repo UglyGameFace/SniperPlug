@@ -141,11 +141,16 @@ class SerpApiHomeDepotProvider(DealProvider):
             return None
 
         price = _price_from_item(item)
+        typical_price = _typical_price_from_item(item, current_price=price)
         signals = ["SerpApi Home Depot search result; not an in-store scan confirmation"]
         if normalized_from_api_host:
             signals.append("product link normalized to Home Depot public URL")
         if price is None:
             signals.append("Home Depot current price not returned by SerpApi")
+        if typical_price is None:
+            signals.append("Home Depot was/typical price not returned by SerpApi")
+        else:
+            signals.append("Home Depot was/typical price returned by SerpApi")
         if request.metadata.get("store_id"):
             signals.append(f"store_id: {request.metadata['store_id']}")
         if request.metadata.get("zip_code") or request.metadata.get("delivery_zip"):
@@ -164,7 +169,7 @@ class SerpApiHomeDepotProvider(DealProvider):
             title=title,
             product_url=product_url,
             current_price=price,
-            typical_price=None,
+            typical_price=typical_price,
             image_url=_clean_str(item.get("thumbnail") or item.get("image")),
             product_id=product_id,
             product_id_type="sku" if product_id else None,
@@ -246,6 +251,80 @@ def _price_from_item(item: dict[str, Any]) -> float | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _typical_price_from_item(item: dict[str, Any], current_price: float | None) -> float | None:
+    keys = (
+        "original_price",
+        "originalPrice",
+        "was_price",
+        "wasPrice",
+        "list_price",
+        "listPrice",
+        "regular_price",
+        "regularPrice",
+        "retail_price",
+        "retailPrice",
+        "strikethrough_price",
+        "strikeThroughPrice",
+        "comparison_price",
+        "comparisonPrice",
+        "msrp",
+    )
+    for key in keys:
+        parsed = _price_from_value(item.get(key))
+        if _is_valid_typical_price(parsed, current_price):
+            return parsed
+
+    for nested_key in ("pricing", "price_info", "priceInfo", "offer", "offers", "primary_offer"):
+        parsed = _nested_typical_price(item.get(nested_key), current_price)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _nested_typical_price(value: Any, current_price: float | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        for item in value:
+            parsed = _nested_typical_price(item, current_price)
+            if parsed is not None:
+                return parsed
+        return None
+    if not isinstance(value, dict):
+        return None
+    for key in (
+        "original_price",
+        "originalPrice",
+        "was_price",
+        "wasPrice",
+        "list_price",
+        "listPrice",
+        "regular_price",
+        "regularPrice",
+        "retail_price",
+        "retailPrice",
+        "strikethrough_price",
+        "strikeThroughPrice",
+        "comparison_price",
+        "comparisonPrice",
+        "msrp",
+        "before_price",
+        "beforePrice",
+    ):
+        parsed = _price_from_value(value.get(key))
+        if _is_valid_typical_price(parsed, current_price):
+            return parsed
+    return None
+
+
+def _is_valid_typical_price(value: float | None, current_price: float | None) -> bool:
+    if value is None or value <= 0:
+        return False
+    if current_price is None:
+        return True
+    return value > current_price
 
 
 def _price_from_value(value: Any) -> float | None:

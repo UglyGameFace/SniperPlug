@@ -12,6 +12,9 @@ from sniperplug.services.public_posting import (
     retailer_credit_note,
 )
 
+DEFAULT_AUTOSCAN_INTERVAL_HOURS = 6
+DEFAULT_AUTOSCAN_DAILY_LIMIT = 25
+
 
 class PublicAlertsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -86,9 +89,18 @@ class PublicAlertsCog(commands.Cog):
     @app_commands.describe(
         retailer="Store to toggle: walmart, home_depot, bestbuy, amazon.",
         enabled="Allow this store in automatic multi-store scans. Manual commands still work.",
+        interval_hours="Minimum hours between automatic scans for this store. Default keeps current value or 6.",
+        daily_limit="Max automatic scans per day for this store. Use 0 to block spending even if enabled.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def retailer_autoscan(self, interaction: discord.Interaction, retailer: str, enabled: bool) -> None:
+    async def retailer_autoscan(
+        self,
+        interaction: discord.Interaction,
+        retailer: str,
+        enabled: bool,
+        interval_hours: app_commands.Range[int, 1, 168] | None = None,
+        daily_limit: app_commands.Range[int, 0, 500] | None = None,
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is None:
             await interaction.followup.send("Use this in a server so I know which retailer auto-scan setting to update.", ephemeral=True)
@@ -100,10 +112,27 @@ class PublicAlertsCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        await set_retailer_auto_scan(self.bot.db, interaction.guild_id, key, enabled)
+        await set_retailer_auto_scan(
+            self.bot.db,
+            interaction.guild_id,
+            key,
+            enabled,
+            interval_hours=interval_hours,
+            daily_limit=daily_limit,
+        )
         settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         embed = retailer_auto_scan_embed(settings)
-        embed.add_field(name="Updated", value=f"`{key}` auto-scan is now **{'on' if enabled else 'off'}**.\n{retailer_credit_note(key)}", inline=False)
+        updated = settings[key]
+        embed.add_field(
+            name="Updated",
+            value=(
+                f"`{key}` auto-scan is now **{'on' if updated['enabled'] else 'off'}**.\n"
+                f"Interval: **every {updated['interval_hours']} hour(s)**\n"
+                f"Daily limit: **{updated['daily_limit']} automatic scan(s)**\n"
+                f"{retailer_credit_note(key)}"
+            ),
+            inline=False,
+        )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="retailer_autoscan_status", description="Show which stores are allowed in automatic multi-store scans.")
@@ -117,7 +146,7 @@ class PublicAlertsCog(commands.Cog):
         await interaction.followup.send(embed=retailer_auto_scan_embed(settings), ephemeral=True)
 
 
-def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | None, auto_scan: dict[str, bool] | None = None) -> discord.Embed:
+def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | None, auto_scan: dict[str, dict] | None = None) -> discord.Embed:
     embed = discord.Embed(
         title="📣 Public Alert Settings",
         description="Public posting only applies to verified alertable deals. Weak proof and staff-review candidates stay private.",
@@ -137,7 +166,7 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
     return embed
 
 
-def retailer_auto_scan_embed(settings: dict[str, bool]) -> discord.Embed:
+def retailer_auto_scan_embed(settings: dict[str, dict]) -> discord.Embed:
     embed = discord.Embed(
         title="🧭 Retailer Auto-Scan Settings",
         description="Controls which stores SniperPlug may include in automatic multi-store scans. Manual store-specific commands still work even when auto-scan is off.",
@@ -146,18 +175,30 @@ def retailer_auto_scan_embed(settings: dict[str, bool]) -> discord.Embed:
     embed.add_field(name="Stores", value=format_auto_scan_status(settings), inline=False)
     embed.add_field(
         name="Why this exists",
-        value="This protects free tiers and paid/limited APIs. Turn on only the stores you intentionally want SniperPlug to pull automatically.",
+        value="This protects free tiers and paid/limited APIs. Turn on only the stores you intentionally want SniperPlug to pull automatically, then set intervals and daily limits to cap credit usage.",
         inline=False,
     )
     return embed
 
 
-def format_auto_scan_status(settings: dict[str, bool]) -> str:
+def format_auto_scan_status(settings: dict[str, dict]) -> str:
     rows = []
     for retailer in sorted(SUPPORTED_RETAILERS):
-        enabled = settings.get(retailer, False)
-        rows.append(f"{'✅' if enabled else '⛔'} `{retailer}`")
+        config = settings.get(retailer, default_auto_scan_config(retailer))
+        enabled = bool(config.get("enabled"))
+        interval_hours = int(config.get("interval_hours") or DEFAULT_AUTOSCAN_INTERVAL_HOURS)
+        daily_limit = int(config.get("daily_limit") if config.get("daily_limit") is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)
+        rows.append(f"{'✅' if enabled else '⛔'} `{retailer}` • every {interval_hours}h • max {daily_limit}/day")
     return "\n".join(rows)
+
+
+def default_auto_scan_config(retailer: str) -> dict:
+    return {
+        "retailer": normalize_retailer_key(retailer),
+        "enabled": False,
+        "interval_hours": DEFAULT_AUTOSCAN_INTERVAL_HOURS,
+        "daily_limit": DEFAULT_AUTOSCAN_DAILY_LIMIT,
+    }
 
 
 async def ensure_public_alert_table(db) -> None:
@@ -185,13 +226,25 @@ async def ensure_retailer_auto_scan_table(db) -> None:
             guild_id INTEGER NOT NULL,
             retailer TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 0,
+            interval_hours INTEGER NOT NULL DEFAULT 6,
+            daily_limit INTEGER NOT NULL DEFAULT 25,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (guild_id, retailer)
         )
         """
     )
+    await maybe_add_column(conn, "guild_retailer_auto_scan_settings", "interval_hours", "INTEGER NOT NULL DEFAULT 6")
+    await maybe_add_column(conn, "guild_retailer_auto_scan_settings", "daily_limit", "INTEGER NOT NULL DEFAULT 25")
     await conn.commit()
+
+
+async def maybe_add_column(conn, table: str, column: str, definition: str) -> None:
+    try:
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    except Exception as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
 
 
 async def get_public_alert_config(db, guild_id: int) -> dict:
@@ -242,37 +295,55 @@ async def set_public_alert_config(db, *, guild_id: int, enabled: bool, retailers
     await conn.commit()
 
 
-async def set_retailer_auto_scan(db, guild_id: int, retailer: str, enabled: bool) -> None:
+async def set_retailer_auto_scan(
+    db,
+    guild_id: int,
+    retailer: str,
+    enabled: bool,
+    *,
+    interval_hours: int | None = None,
+    daily_limit: int | None = None,
+) -> None:
     from sniperplug.models.deal import utc_now_iso
 
     await ensure_retailer_auto_scan_table(db)
     conn = db.require_conn()
     now = utc_now_iso()
     key = normalize_retailer_key(retailer)
+    existing = (await list_retailer_auto_scan_settings(db, guild_id)).get(key, default_auto_scan_config(key))
+    next_interval = interval_hours if interval_hours is not None else int(existing.get("interval_hours") or DEFAULT_AUTOSCAN_INTERVAL_HOURS)
+    next_daily_limit = daily_limit if daily_limit is not None else int(existing.get("daily_limit") if existing.get("daily_limit") is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)
     await conn.execute(
         """
-        INSERT INTO guild_retailer_auto_scan_settings (guild_id, retailer, enabled, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO guild_retailer_auto_scan_settings (guild_id, retailer, enabled, interval_hours, daily_limit, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(guild_id, retailer) DO UPDATE SET
             enabled = excluded.enabled,
+            interval_hours = excluded.interval_hours,
+            daily_limit = excluded.daily_limit,
             updated_at = excluded.updated_at
         """,
-        (guild_id, key, int(enabled), now, now),
+        (guild_id, key, int(enabled), next_interval, next_daily_limit, now, now),
     )
     await conn.commit()
 
 
-async def list_retailer_auto_scan_settings(db, guild_id: int) -> dict[str, bool]:
+async def list_retailer_auto_scan_settings(db, guild_id: int) -> dict[str, dict]:
     await ensure_retailer_auto_scan_table(db)
     conn = db.require_conn()
     cursor = await conn.execute(
-        "SELECT retailer, enabled FROM guild_retailer_auto_scan_settings WHERE guild_id = ?",
+        "SELECT retailer, enabled, interval_hours, daily_limit FROM guild_retailer_auto_scan_settings WHERE guild_id = ?",
         (guild_id,),
     )
     rows = await cursor.fetchall()
-    settings = {retailer: False for retailer in SUPPORTED_RETAILERS}
+    settings = {retailer: default_auto_scan_config(retailer) for retailer in SUPPORTED_RETAILERS}
     for row in rows:
         key = normalize_retailer_key(row["retailer"])
         if key in SUPPORTED_RETAILERS:
-            settings[key] = bool(row["enabled"])
+            settings[key] = {
+                "retailer": key,
+                "enabled": bool(row["enabled"]),
+                "interval_hours": int(row["interval_hours"] or DEFAULT_AUTOSCAN_INTERVAL_HOURS),
+                "daily_limit": int(row["daily_limit"] if row["daily_limit"] is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT),
+            }
     return settings

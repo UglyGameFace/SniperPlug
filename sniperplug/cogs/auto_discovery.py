@@ -12,6 +12,9 @@ from sniperplug.cogs.deal_scanner import (
     run_preset_hunt,
 )
 
+DISCORD_EMBED_MESSAGE_LIMIT = 6000
+SAFE_EMBED_MESSAGE_LIMIT = 5200
+
 
 class AutoDiscoveryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -76,11 +79,7 @@ class AutoDiscoveryCog(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        await interaction.followup.send(
-            embeds=[embed] + [card.embed for card in all_cards[:5]],
-            view=PresetResultView(all_cards[:5]),
-            ephemeral=True,
-        )
+        await send_discovery_results(interaction, summary=embed, cards=all_cards[:5])
 
     @discover.error
     async def discover_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -89,6 +88,58 @@ class AutoDiscoveryCog(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+
+async def send_discovery_results(interaction: discord.Interaction, *, summary: discord.Embed, cards: list[DealCard]) -> None:
+    """Send Auto Discovery results without tripping Discord's 6000-char embed payload cap.
+
+    Walmart proof cards can be rich. Discord counts the combined embed text in a
+    single message, so summary + five rich cards can exceed 6000 even when each
+    individual card is valid. Send the summary first, then cards in safe chunks.
+    """
+    await interaction.followup.send(embed=summary, ephemeral=True)
+
+    batches = batch_cards_for_embed_limit(cards, limit=SAFE_EMBED_MESSAGE_LIMIT)
+    for batch in batches:
+        await interaction.followup.send(
+            embeds=[card.embed for card in batch],
+            view=PresetResultView(batch),
+            ephemeral=True,
+        )
+
+
+def batch_cards_for_embed_limit(cards: list[DealCard], *, limit: int = SAFE_EMBED_MESSAGE_LIMIT) -> list[list[DealCard]]:
+    batches: list[list[DealCard]] = []
+    current: list[DealCard] = []
+    current_size = 0
+
+    for card in cards:
+        size = embed_text_size(card.embed)
+        if current and current_size + size > limit:
+            batches.append(current)
+            current = []
+            current_size = 0
+        current.append(card)
+        current_size += size
+
+    if current:
+        batches.append(current)
+    return batches
+
+
+def embed_text_size(embed: discord.Embed) -> int:
+    data = embed.to_dict()
+    total = 0
+    total += len(str(data.get("title") or ""))
+    total += len(str(data.get("description") or ""))
+    footer = data.get("footer") or {}
+    total += len(str(footer.get("text") or ""))
+    author = data.get("author") or {}
+    total += len(str(author.get("name") or ""))
+    for field in data.get("fields") or []:
+        total += len(str(field.get("name") or ""))
+        total += len(str(field.get("value") or ""))
+    return total
 
 
 def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:

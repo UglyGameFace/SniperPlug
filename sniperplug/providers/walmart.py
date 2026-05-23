@@ -158,7 +158,7 @@ class WalmartProvider(DealProvider):
     def _candidate_from_item(self, item: dict, request: ProviderScanRequest) -> SourceCandidate | None:
         title = str(item.get("name") or "").strip()
         raw_tracking_url = str(item.get("productTrackingUrl") or "").strip()
-        item_id = item.get("itemId")
+        item_id = item.get("itemId") or item.get("usItemId")
         direct_product_url = _direct_walmart_url(item_id)
         product_url = raw_tracking_url or direct_product_url
         signals = self._item_signals(item)
@@ -174,13 +174,16 @@ class WalmartProvider(DealProvider):
         typical_price, reference_signal = _trusted_reference_price(item=item, title=title, current_price=current_price)
         if reference_signal:
             signals.append(reference_signal)
+
         variant = extract_variant_proof(item, title)
+        proof_attrs = _walmart_proof_attributes(item, variant.attributes)
         if variant.warning:
             signals.append(variant.warning)
         elif variant.label:
             signals.append(f"selected option: {variant.label}")
         category_path = str(item.get("categoryPath") or "").strip()
         if category_path:
+            proof_attrs["category"] = category_path
             signals.append(f"Walmart category: {category_path}")
 
         return SourceCandidate(
@@ -197,19 +200,19 @@ class WalmartProvider(DealProvider):
             upc=str(item.get("upc")) if item.get("upc") else None,
             selected_offer_id=variant.offer_id,
             variant_label=variant.label,
-            variant_attributes=variant.attributes,
-            pack_size=variant.attributes.get("packSize") or variant.attributes.get("size"),
-            color=variant.attributes.get("color"),
-            platform=variant.attributes.get("platform"),
-            model=variant.attributes.get("model") or variant.attributes.get("modelNumber"),
-            parent_title=title if variant.attributes else None,
+            variant_attributes=proof_attrs,
+            pack_size=proof_attrs.get("packSize") or proof_attrs.get("size") or proof_attrs.get("unitSize"),
+            color=proof_attrs.get("color"),
+            platform=proof_attrs.get("platform"),
+            model=proof_attrs.get("model") or proof_attrs.get("modelNumber"),
+            parent_title=title if proof_attrs else None,
             option_mismatch_warning=variant.warning,
             stock_status=str(item.get("stock") or "") or None,
             can_add_to_cart=bool(item.get("availableOnline")) if "availableOnline" in item else None,
             is_business_offer=False,
             is_member_only=False,
             is_checkout_price=False,
-            signals=signals[:10],
+            signals=signals[:12],
         )
 
     def _item_signals(self, item: dict) -> list[str]:
@@ -234,6 +237,12 @@ class WalmartProvider(DealProvider):
         offer_type = item.get("offerType")
         if offer_type:
             signals.append(f"offer type: {offer_type}")
+        if item.get("shipToStore") is True:
+            signals.append("ship to store available")
+        if item.get("freeShipToStore") is True:
+            signals.append("free ship to store")
+        if item.get("twoThreeDayShipping") is True:
+            signals.append("2-3 day shipping")
         return signals
 
     def _missing_config(self) -> list[str]:
@@ -321,6 +330,63 @@ def _first_positive_reference(references: list[tuple[str, float | None]]) -> flo
         if value and value > 0:
             return value
     return None
+
+
+def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str]) -> dict[str, str]:
+    attrs: dict[str, str] = dict(variant_attrs)
+    for key, label in (
+        ("brandName", "brand"),
+        ("manufacturer", "manufacturer"),
+        ("modelNumber", "modelNumber"),
+        ("msrp", "msrp"),
+        ("customerRating", "rating"),
+        ("numReviews", "reviews"),
+        ("offerType", "offerType"),
+        ("productUrlText", "urlText"),
+        ("categoryNode", "categoryNode"),
+        ("unitPrice", "unitPrice"),
+        ("unit", "unit"),
+        ("size", "size"),
+        ("color", "color"),
+    ):
+        value = _clean_string(item.get(key))
+        if value and label not in attrs:
+            attrs[label] = value
+    for key in ("rollback", "clearance", "specialBuy", "marketplace", "bundle", "availableOnline", "shipToStore", "freeShipToStore", "twoThreeDayShipping"):
+        if key in item:
+            attrs[key] = "yes" if item.get(key) is True else "no"
+    max_items = _clean_string(item.get("maxItemsInOrder"))
+    if max_items:
+        attrs["maxOrderQty"] = max_items
+    unit_size = _unit_size_from_title(str(item.get("name") or ""))
+    if unit_size and "unitSize" not in attrs:
+        attrs["unitSize"] = unit_size
+    return attrs
+
+
+def _unit_size_from_title(title: str) -> str | None:
+    import re
+
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(fl\s*oz|fluid\s*ounce|oz|ounce|ounces|ct|count|lb|lbs|pack)\b", title, flags=re.IGNORECASE)
+    if not match:
+        return None
+    amount, unit = match.groups()
+    unit = "oz" if unit.lower() in {"fl oz", "fluid ounce", "ounce", "ounces"} else unit
+    return f"{amount} {unit}"
+
+
+def _clean_string(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, dict):
+        return _clean_string(_price_from_value(value))
+    return str(value).strip() or None
 
 
 def _nested_price(item: dict, *path: str) -> float | None:

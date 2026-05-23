@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -239,6 +241,29 @@ async def ensure_retailer_auto_scan_table(db) -> None:
     await conn.commit()
 
 
+async def ensure_retailer_auto_scan_run_table(db) -> None:
+    conn = db.require_conn()
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS guild_retailer_auto_scan_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            retailer TEXT NOT NULL,
+            scan_key TEXT NOT NULL,
+            ran_at TEXT NOT NULL,
+            day_key TEXT NOT NULL
+        )
+        """
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_auto_scan_runs_guild_retailer_day ON guild_retailer_auto_scan_runs (guild_id, retailer, day_key)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_auto_scan_runs_guild_retailer_key ON guild_retailer_auto_scan_runs (guild_id, retailer, scan_key, ran_at)"
+    )
+    await conn.commit()
+
+
 async def maybe_add_column(conn, table: str, column: str, definition: str) -> None:
     try:
         await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -279,7 +304,7 @@ async def set_public_alert_config(db, *, guild_id: int, enabled: bool, retailers
 
     await ensure_public_alert_table(db)
     conn = db.require_conn()
-    now = utc_now_iso()
+    now = utc_now_iso)
     await conn.execute(
         """
         INSERT INTO guild_public_alert_settings (guild_id, enabled, retailers_json, channel_id, created_at, updated_at)
@@ -347,3 +372,56 @@ async def list_retailer_auto_scan_settings(db, guild_id: int) -> dict[str, dict]
                 "daily_limit": int(row["daily_limit"] if row["daily_limit"] is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT),
             }
     return settings
+
+
+async def auto_scan_allowed(db, guild_id: int, retailer: str, *, scan_key: str) -> tuple[bool, str, dict]:
+    key = normalize_retailer_key(retailer)
+    settings = (await list_retailer_auto_scan_settings(db, guild_id)).get(key, default_auto_scan_config(key))
+    if not settings.get("enabled"):
+        return False, f"`{key}` auto-scan is off", settings
+    daily_limit = int(settings.get("daily_limit") if settings.get("daily_limit") is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)
+    if daily_limit <= 0:
+        return False, f"`{key}` daily auto-scan limit is 0", settings
+
+    await ensure_retailer_auto_scan_run_table(db)
+    conn = db.require_conn()
+    now = datetime.now(timezone.utc)
+    day_key = now.date().isoformat()
+    cursor = await conn.execute(
+        "SELECT COUNT(*) AS count FROM guild_retailer_auto_scan_runs WHERE guild_id = ? AND retailer = ? AND day_key = ?",
+        (guild_id, key, day_key),
+    )
+    row = await cursor.fetchone()
+    used_today = int(row["count"] if row and row["count"] is not None else 0)
+    if used_today >= daily_limit:
+        return False, f"`{key}` daily auto-scan limit reached ({used_today}/{daily_limit})", settings
+
+    interval_hours = int(settings.get("interval_hours") or DEFAULT_AUTOSCAN_INTERVAL_HOURS)
+    cursor = await conn.execute(
+        "SELECT ran_at FROM guild_retailer_auto_scan_runs WHERE guild_id = ? AND retailer = ? AND scan_key = ? ORDER BY ran_at DESC LIMIT 1",
+        (guild_id, key, scan_key),
+    )
+    last = await cursor.fetchone()
+    if last and last["ran_at"]:
+        last_dt = datetime.fromisoformat(str(last["ran_at"]))
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        next_allowed = last_dt + timedelta(hours=interval_hours)
+        if now < next_allowed:
+            remaining = next_allowed - now
+            minutes = max(1, int(remaining.total_seconds() // 60))
+            return False, f"`{key}` interval gate: try again in about {minutes} minute(s)", settings
+
+    return True, f"`{key}` auto-scan allowed ({used_today}/{daily_limit} used today)", settings
+
+
+async def record_auto_scan_run(db, guild_id: int, retailer: str, *, scan_key: str) -> None:
+    await ensure_retailer_auto_scan_run_table(db)
+    conn = db.require_conn()
+    key = normalize_retailer_key(retailer)
+    now = datetime.now(timezone.utc)
+    await conn.execute(
+        "INSERT INTO guild_retailer_auto_scan_runs (guild_id, retailer, scan_key, ran_at, day_key) VALUES (?, ?, ?, ?, ?)",
+        (guild_id, key, scan_key, now.isoformat(), now.date().isoformat()),
+    )
+    await conn.commit()

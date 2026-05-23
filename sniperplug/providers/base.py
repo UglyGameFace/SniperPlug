@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Sequence
 
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.models.local_inventory import LocalInventoryProof, LocalInventoryRequest, make_unsupported_inventory_proof
 
 
 class ProviderCapability(str, Enum):
@@ -17,6 +18,9 @@ class ProviderCapability(str, Enum):
     IMAGE_LOOKUP = "image_lookup"
     BUSINESS_PRICING = "business_pricing"
     MEMBER_PRICING = "member_pricing"
+    LOCAL_INVENTORY = "local_inventory"
+    LOCAL_PRICE = "local_price"
+    CLEARANCE_SIGNAL = "clearance_signal"
 
 
 class ProviderStatus(str, Enum):
@@ -88,6 +92,15 @@ class DealProvider(ABC):
     @abstractmethod
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
         """Scan a source/category/query and return source-found candidates."""
+
+    async def check_local_inventory(self, request: LocalInventoryRequest) -> LocalInventoryProof:
+        """Return local inventory/price proof when a provider supports it.
+
+        The default is intentionally unsupported. Individual retailer adapters
+        must opt in so SniperPlug never pretends a store has universal inventory
+        proof when it does not.
+        """
+        return make_unsupported_inventory_proof(self.provider_key, request)
 
     def supports(self, capability: ProviderCapability) -> bool:
         return capability in self.capabilities

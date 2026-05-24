@@ -119,6 +119,21 @@ class SourceCandidate:
             condition=self.condition,
             availability_message="; ".join(availability_bits) if availability_bits else None,
         )
+
+        coupon_savings = _float_or_none(self.variant_attributes.get("couponSavings"))
+        if coupon_savings and coupon_savings > 0 and self.current_price is not None:
+            deal.pre_coupon_price = round(self.current_price + coupon_savings, 2)
+            deal.coupon_savings = round(coupon_savings, 2)
+            deal.coupon_terms.append(f"Walmart coupon: {money(coupon_savings)}")
+            deal.alert_tags.append("Walmart Coupon")
+            deal.verification_notes.append(f"Walmart coupon detected: {money(coupon_savings)}")
+
+        walmart_cash = _float_or_none(self.variant_attributes.get("walmartCashSavings"))
+        if walmart_cash and walmart_cash > 0:
+            deal.coupon_terms.append(f"Walmart Cash reward: {money(walmart_cash)}")
+            deal.alert_tags.append("Walmart Cash")
+            deal.verification_notes.append(f"Walmart Cash detected: {money(walmart_cash)} reward/value")
+
         deal.recalculate_prices()
 
         if self.variant_label:
@@ -153,3 +168,20 @@ class SourceCandidate:
             deal.risk_flags.extend(self.signals[:5])
 
         return deal
+
+
+def _float_or_none(value) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        value = value.replace("$", "").replace(",", "").strip()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def money(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"${value:,.2f}"

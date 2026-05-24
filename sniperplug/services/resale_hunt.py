@@ -9,6 +9,8 @@ from sniperplug.cogs import deal_scanner
 
 RESALE_HUNT_KEY = "resale"
 RESALE_HUNT_TIMEOUT_SECONDS = 90
+SAFE_EMBED_MESSAGE_LIMIT = 5200
+MAX_EMBEDS_PER_MESSAGE = 10
 
 RESALE_HUNT_QUERIES = (
     "restored laptop",
@@ -122,11 +124,7 @@ class ResaleHuntButton(deal_scanner.HuntPresetButton):
                 fallback_retailer="walmart",
             )
             deal_scanner.add_public_posting_field(summary, public_result)
-            await interaction.followup.send(
-                embeds=[summary] + [card.embed for card in shown_cards],
-                view=deal_scanner.PresetResultView(shown_cards),
-                ephemeral=True,
-            )
+            await send_resale_results(interaction, summary=summary, cards=shown_cards)
         except asyncio.TimeoutError:
             embed = discord.Embed(
                 title="♻️ Resale Hunt timed out safely",
@@ -142,9 +140,77 @@ class ResaleHuntButton(deal_scanner.HuntPresetButton):
         except Exception as exc:
             embed = discord.Embed(
                 title="♻️ Resale Hunt hit an error",
-                description=f"SniperPlug stopped the run instead of freezing. Error: `{type(exc).__name__}: {exc}`",
+                description=f"SniperPlug stopped the run instead of freezing. Error: `{short_error(exc)}`",
                 color=discord.Color.red(),
             )
             await interaction.followup.send(embed=embed, view=deal_scanner.HuntPresetMenuView(), ephemeral=True)
         finally:
             await deal_scanner.scan_operation_locks.release(lock_key)
+
+
+async def send_resale_results(
+    interaction: discord.Interaction,
+    *,
+    summary: discord.Embed,
+    cards: list[deal_scanner.DealCard],
+) -> None:
+    """Send resale results without exceeding Discord's combined embed limit.
+
+    Discord allows each embed to be large, but the combined embed text in one
+    message must stay below 6000 characters. Rich Walmart proof cards can blow
+    past that when summary + multiple cards are sent together, so send the
+    summary first and chunk product cards into safe batches.
+    """
+    await interaction.followup.send(embed=summary, ephemeral=True)
+    for batch in batch_cards_for_embed_limit(cards, limit=SAFE_EMBED_MESSAGE_LIMIT):
+        await interaction.followup.send(
+            embeds=[card.embed for card in batch],
+            view=deal_scanner.PresetResultView(batch),
+            ephemeral=True,
+        )
+
+
+def batch_cards_for_embed_limit(
+    cards: list[deal_scanner.DealCard],
+    *,
+    limit: int = SAFE_EMBED_MESSAGE_LIMIT,
+) -> list[list[deal_scanner.DealCard]]:
+    batches: list[list[deal_scanner.DealCard]] = []
+    current: list[deal_scanner.DealCard] = []
+    current_size = 0
+
+    for card in cards:
+        size = embed_text_size(card.embed)
+        if current and (current_size + size > limit or len(current) >= MAX_EMBEDS_PER_MESSAGE):
+            batches.append(current)
+            current = []
+            current_size = 0
+        current.append(card)
+        current_size += size
+
+    if current:
+        batches.append(current)
+    return batches
+
+
+def embed_text_size(embed: discord.Embed) -> int:
+    data = embed.to_dict()
+    total = len(str(data.get("title") or ""))
+    total += len(str(data.get("description") or ""))
+
+    footer = data.get("footer") or {}
+    total += len(str(footer.get("text") or ""))
+
+    author = data.get("author") or {}
+    total += len(str(author.get("name") or ""))
+
+    for field in data.get("fields") or []:
+        total += len(str(field.get("name") or ""))
+        total += len(str(field.get("value") or ""))
+    return total
+
+
+def short_error(exc: Exception, *, limit: int = 900) -> str:
+    text = f"{type(exc).__name__}: {exc}"
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"

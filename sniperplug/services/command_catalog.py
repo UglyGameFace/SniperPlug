@@ -116,6 +116,12 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use after deploys and when troubleshooting posting, scans, providers, or active cache.",
     ),
     CommandCatalogEntry(
+        name="/sniperplug_commands or /sniperplug commands",
+        audience="Owner",
+        purpose="Show the command guide.",
+        when_to_use="Use when anyone is confused about which SniperPlug command does what.",
+    ),
+    CommandCatalogEntry(
         name="/sniperplug setup",
         audience="Owner",
         purpose="Set fallback default alert channel.",

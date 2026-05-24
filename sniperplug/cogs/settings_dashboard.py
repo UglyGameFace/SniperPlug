@@ -7,6 +7,7 @@ from discord.ext import commands
 from sniperplug.cogs.active_deals import active_deal_counts
 from sniperplug.cogs.public_alerts import format_auto_scan_status, get_public_alert_config, list_retailer_auto_scan_settings
 from sniperplug.providers.registry import provider_registry
+from sniperplug.services.command_catalog import COMMAND_AUDIENCE_ORDER, CommandCatalogEntry, entries_for_audience
 from sniperplug.services.public_posting import format_retailers
 
 
@@ -34,9 +35,49 @@ class SettingsDashboardCog(commands.Cog):
         embed.add_field(name="Auto-scan retailers", value=format_auto_scan_status(auto_scan), inline=False)
         embed.add_field(name="Active cache", value=format_active_counts(active_counts), inline=False)
         embed.add_field(name="Provider health", value=format_provider_health(provider_health), inline=False)
-        embed.add_field(name="Recommended owner checks", value="Run public_alerts_status, retailer_autoscan_status, active_deals, and sniperplug providers after each deploy.", inline=False)
+        embed.add_field(name="Recommended owner checks", value="Run `/sniperplug_commands`, `/public_alerts_status`, `/retailer_autoscan_status`, `/active_deals`, and `/sniperplug providers` after each deploy.", inline=False)
         embed.set_footer(text="Manual commands can run even when auto-scan is off. Auto-scan only controls scheduled pulls.")
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="sniperplug_commands", description="Show what each SniperPlug command is for so nobody has to guess.")
+    @app_commands.describe(audience="Optional filter: everyone, staff, or owner.")
+    @app_commands.choices(
+        audience=[
+            app_commands.Choice(name="Everyone", value="everyone"),
+            app_commands.Choice(name="Staff", value="staff"),
+            app_commands.Choice(name="Owner", value="owner"),
+        ]
+    )
+    async def sniperplug_commands(self, interaction: discord.Interaction, audience: app_commands.Choice[str] | None = None) -> None:
+        await interaction.response.defer(ephemeral=True)
+        entries = entries_for_audience(audience.value if audience else None)
+        embed = build_command_guide_embed(entries, audience.value if audience else None)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+def build_command_guide_embed(entries: tuple[CommandCatalogEntry, ...], audience: str | None = None) -> discord.Embed:
+    title = "SniperPlug Command Guide"
+    description = "Simple names, clear purpose. Manual scans are different from scheduled auto-scan. Public posting is different from auto-scan."
+    if audience:
+        description += f"\nFiltered to: **{audience.title()}**"
+    embed = discord.Embed(title=title, description=description, color=discord.Color.orange())
+
+    grouped: dict[str, list[CommandCatalogEntry]] = {name: [] for name in COMMAND_AUDIENCE_ORDER}
+    for entry in entries:
+        grouped.setdefault(entry.audience, []).append(entry)
+
+    for group_name in COMMAND_AUDIENCE_ORDER:
+        group_entries = grouped.get(group_name) or []
+        if not group_entries:
+            continue
+        lines: list[str] = []
+        for entry in group_entries:
+            credit = f" Credit/API: {entry.credit_risk}." if entry.credit_risk and entry.credit_risk != "none" else ""
+            lines.append(f"**{entry.name}** — {entry.purpose}\nUse when: {entry.when_to_use}{credit}")
+        embed.add_field(name=group_name, value=truncate("\n\n".join(lines), 1024), inline=False)
+
+    embed.set_footer(text="Owner tip: use /sniperplug_dashboard when something feels wrong.")
+    return embed
 
 
 def format_active_counts(counts: dict[str, int]) -> str:
@@ -59,3 +100,8 @@ def format_provider_health(healthchecks) -> str:
 def trim(value: str, limit: int) -> str:
     text = " ".join(str(value).split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "..."
+
+
+def truncate(value: str, limit: int) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."

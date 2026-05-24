@@ -6,12 +6,15 @@ import discord
 from discord.ext import commands
 
 from sniperplug.config import Settings
+from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
+from sniperplug.cogs.auto_scan_runner import AutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_scanner import DealScannerCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.public_alerts import PublicAlertsCog
+from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
@@ -53,6 +56,9 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(HomeDepotSearchCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
         await self.add_cog(PublicAlertsCog(self))
+        await self.add_cog(ActiveDealsCog(self))
+        await self.add_cog(SettingsDashboardCog(self))
+        await self.add_cog(AutoScanRunnerCog(self))
 
         await self._sync_commands()
 

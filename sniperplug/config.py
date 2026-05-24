@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 
+TRUE_VALUES = {"1", "true", "yes", "on"}
+FALSE_VALUES = {"0", "false", "no", "off"}
+
+
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
@@ -13,6 +17,7 @@ class Settings:
     dev_guild_id: int | None = None
     dev_guild_ids: tuple[int, ...] = ()
     sync_global_commands: bool = False
+    sync_commands_on_boot: bool = False
     bestbuy_api_key: str | None = None
     walmart_consumer_id: str | None = None
     walmart_key_version: str | None = None
@@ -36,7 +41,8 @@ class Settings:
         if dev_guild_id and dev_guild_id not in dev_guild_ids:
             dev_guild_ids = (dev_guild_id, *dev_guild_ids)
 
-        sync_global_commands = os.getenv("SYNC_GLOBAL_COMMANDS", "").strip().lower() in {"1", "true", "yes", "on"}
+        sync_global_commands = env_bool("SYNC_GLOBAL_COMMANDS", default=False)
+        sync_commands_on_boot = env_bool("SYNC_COMMANDS_ON_BOOT", default=bool(dev_guild_ids or sync_global_commands))
 
         bestbuy_api_key = os.getenv("BESTBUY_API_KEY", "").strip() or None
 
@@ -44,7 +50,7 @@ class Settings:
         walmart_key_version = os.getenv("WALMART_KEY_VERSION", "1").strip() or "1"
         walmart_private_key_b64 = os.getenv("WALMART_PRIVATE_KEY_B64", "").strip() or None
         walmart_publisher_id = os.getenv("WALMART_PUBLISHER_ID", "").strip() or None
-        walmart_provider_enabled = os.getenv("WALMART_PROVIDER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+        walmart_provider_enabled = env_bool("WALMART_PROVIDER_ENABLED", default=False)
 
         return cls(
             discord_token=token,
@@ -52,6 +58,7 @@ class Settings:
             dev_guild_id=dev_guild_id,
             dev_guild_ids=dev_guild_ids,
             sync_global_commands=sync_global_commands,
+            sync_commands_on_boot=sync_commands_on_boot,
             bestbuy_api_key=bestbuy_api_key,
             walmart_consumer_id=walmart_consumer_id,
             walmart_key_version=walmart_key_version,
@@ -70,3 +77,12 @@ def parse_guild_ids(raw: str) -> tuple[int, ...]:
             if guild_id not in ids:
                 ids.append(guild_id)
     return tuple(ids)
+
+
+def env_bool(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if raw in TRUE_VALUES:
+        return True
+    if raw in FALSE_VALUES:
+        return False
+    return default

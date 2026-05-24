@@ -63,6 +63,12 @@ class SniperPlugBot(commands.Bot):
         await self._sync_commands()
 
     async def _sync_commands(self) -> None:
+        if not self.settings.sync_commands_on_boot:
+            log.info(
+                "Skipped slash command sync on boot. Set SYNC_COMMANDS_ON_BOOT=true only when command definitions changed."
+            )
+            return
+
         if self.settings.sync_global_commands:
             synced = await self.tree.sync()
             log.info("Synced %s global slash commands", len(synced))
@@ -76,8 +82,7 @@ class SniperPlugBot(commands.Bot):
                 log.info("Synced %s guild slash commands to %s", len(synced), guild_id)
             return
 
-        synced = await self.tree.sync()
-        log.info("Synced %s global slash commands", len(synced))
+        log.info("No DEV_GUILD_IDS configured and global sync is off; skipped slash command sync.")
 
     async def on_ready(self) -> None:
         log.info("SniperPlug online as %s (%s)", self.user, self.user.id if self.user else "unknown")

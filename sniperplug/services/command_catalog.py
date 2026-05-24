@@ -14,6 +14,18 @@ class CommandCatalogEntry:
 
 COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
+        name="/setup_sniperplug",
+        audience="Owner",
+        purpose="Recommended one-step setup for alert channel, public posting, retailers, and Walmart auto-scan safety.",
+        when_to_use="Use this first. It replaces the confusing split between default channel setup and public-alert setup.",
+    ),
+    CommandCatalogEntry(
+        name="/sniperplug_workflow",
+        audience="Everyone",
+        purpose="Show the simple SniperPlug workflow from setup to posting.",
+        when_to_use="Use when anyone is confused about what to run next.",
+    ),
+    CommandCatalogEntry(
         name="/deals",
         audience="Everyone",
         purpose="Simple Walmart deal search.",
@@ -88,8 +100,8 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
         name="/public_alerts",
         audience="Owner",
-        purpose="Configure whether verified deals may post publicly and where.",
-        when_to_use="Use for public channel and public-posting retailer settings. This is not the same as auto-scan.",
+        purpose="Advanced public posting settings only.",
+        when_to_use="Use only when `/setup_sniperplug` is not specific enough. This is not the same as auto-scan.",
     ),
     CommandCatalogEntry(
         name="/public_alerts_status",
@@ -100,7 +112,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
         name="/retailer_autoscan",
         audience="Owner",
-        purpose="Configure which retailers may be scanned automatically in the background.",
+        purpose="Advanced scheduled/background scan settings.",
         when_to_use="Use to protect paid/free-tier API credits. Manual commands still work when auto-scan is off.",
     ),
     CommandCatalogEntry(
@@ -116,10 +128,16 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use after deploys and when troubleshooting posting, scans, providers, or active cache.",
     ),
     CommandCatalogEntry(
+        name="/sniperplug_commands",
+        audience="Owner",
+        purpose="Show the command guide.",
+        when_to_use="Use when anyone is confused about which SniperPlug command does what.",
+    ),
+    CommandCatalogEntry(
         name="/sniperplug setup",
         audience="Owner",
-        purpose="Set fallback default alert channel.",
-        when_to_use="Use during first-time setup or when changing the default deal channel.",
+        purpose="Legacy fallback default alert channel setup.",
+        when_to_use="Prefer `/setup_sniperplug` because it also configures public posting.",
     ),
     CommandCatalogEntry(
         name="/sniperplug set_channel",

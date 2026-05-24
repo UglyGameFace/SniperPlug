@@ -11,7 +11,12 @@ from sniperplug.cogs.deal_scanner import (
     provider_health_error_message,
     run_preset_hunt,
 )
-from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
+from sniperplug.cogs.public_alerts import (
+    default_auto_scan_config,
+    format_daily_limit,
+    format_interval,
+    list_retailer_auto_scan_settings,
+)
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
 DISCORD_EMBED_MESSAGE_LIMIT = 6000
@@ -25,13 +30,13 @@ class AutoDiscoveryCog(commands.Cog):
 
     @app_commands.command(
         name="discover",
-        description="Let SniperPlug automatically hunt across categories without making you search.",
+        description="Let SniperPlug manually hunt across categories without making you search.",
     )
     async def discover(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
         if interaction.guild_id is None:
-            await interaction.followup.send("Use `/discover` in a server so SniperPlug can honor that server's auto-scan settings.", ephemeral=True)
+            await interaction.followup.send("Use `/discover` in a server so SniperPlug can use that server's public-posting and duplicate settings.", ephemeral=True)
             return
 
         health_error = await provider_health_error_message()
@@ -39,43 +44,14 @@ class AutoDiscoveryCog(commands.Cog):
             await interaction.followup.send(health_error, ephemeral=True)
             return
 
-        allowed, gate_reason, gate_settings = await auto_scan_allowed(
-            self.bot.db,
-            interaction.guild_id,
-            AUTO_DISCOVERY_RETAILER,
-            scan_key="discover:all_presets",
-        )
-        if not allowed:
-            embed = discord.Embed(
-                title="🛑 Auto Discovery blocked by credit safety",
-                description=(
-                    f"SniperPlug did **not** call `{AUTO_DISCOVERY_RETAILER}`.\n\n"
-                    f"Reason: {gate_reason}\n\n"
-                    "Manual store-specific commands still work. Turn on auto-scan only for stores you intentionally want pulled automatically."
-                ),
-                color=discord.Color.dark_gold(),
-            )
-            embed.add_field(
-                name="Current setting",
-                value=(
-                    f"Enabled: **{'yes' if gate_settings.get('enabled') else 'no'}**\n"
-                    f"Interval: **every {gate_settings.get('interval_hours')}h**\n"
-                    f"Daily limit: **{gate_settings.get('daily_limit')}/day**"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="Enable example",
-                value="`/retailer_autoscan retailer:walmart enabled:true interval_hours:4 daily_limit:25`",
-                inline=False,
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
+        auto_scan_settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
+        gate_settings = auto_scan_settings.get(AUTO_DISCOVERY_RETAILER, default_auto_scan_config(AUTO_DISCOVERY_RETAILER))
+        manual_note = manual_discover_note(gate_settings)
 
         all_cards: list[DealCard] = []
         total_pages_checked = 0
         total_products_checked = 0
-        warnings: list[str] = [gate_reason]
+        warnings: list[str] = [manual_note]
         category_notes: list[str] = []
 
         for preset in HUNT_PRESETS.values():
@@ -94,13 +70,6 @@ class AutoDiscoveryCog(commands.Cog):
             else:
                 category_notes.append(f"{preset.emoji} **{preset.label}**: no useful matches right now")
 
-        await record_auto_scan_run(
-            self.bot.db,
-            interaction.guild_id,
-            AUTO_DISCOVERY_RETAILER,
-            scan_key="discover:all_presets",
-        )
-
         all_cards = dedupe_cards(all_cards)
         all_cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
         shown_cards = all_cards[:5]
@@ -113,9 +82,9 @@ class AutoDiscoveryCog(commands.Cog):
         )
 
         embed = discord.Embed(
-            title="🤖 SniperPlug Auto Discovery",
+            title="🤖 SniperPlug Discovery",
             description=(
-                "I searched the enabled automatic deal source for you. No product names, pages, or filters needed.\n\n"
+                "I manually searched the deal source across categories for you. No product names, pages, or filters needed.\n\n"
                 f"Checked: **{total_products_checked} products** across **{total_pages_checked} smart searches**\n"
                 f"Found: **{len(all_cards)} candidate(s)**"
             ),
@@ -127,12 +96,8 @@ class AutoDiscoveryCog(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="Auto-scan budget",
-            value=(
-                f"Retailer: `{AUTO_DISCOVERY_RETAILER}`\n"
-                f"Interval: **every {gate_settings.get('interval_hours')}h**\n"
-                f"Daily limit: **{gate_settings.get('daily_limit')}/day**"
-            ),
+            name="Auto-scan setting",
+            value=discover_auto_scan_status(gate_settings),
             inline=False,
         )
         if public_result.any_activity:
@@ -141,13 +106,14 @@ class AutoDiscoveryCog(commands.Cog):
                 value=(
                     f"Posted: **{public_result.posted}**\n"
                     f"Duplicate blocked: **{public_result.skipped_duplicate}**\n"
-                    f"Not alertable/private review: **{public_result.skipped_not_alertable}**"
+                    f"Not alertable/private review: **{public_result.skipped_not_alertable}**\n"
+                    f"Cached active: **{getattr(public_result, 'cached_active', 0)}**"
                 ),
                 inline=False,
             )
         if warnings:
             embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
-        embed.set_footer(text="Auto Discovery does not guess discounts. Weak proof stays review-only instead of fake public alerts.")
+        embed.set_footer(text="Manual /discover does not burn auto-scan interval gates. Duplicate protection still prevents repeat public posts.")
 
         if not shown_cards:
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -157,7 +123,7 @@ class AutoDiscoveryCog(commands.Cog):
 
     @discover.error
     async def discover_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = f"Auto discovery hit an error: `{error}`"
+        message = f"Discovery hit an error: `{error}`"
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:
@@ -165,7 +131,7 @@ class AutoDiscoveryCog(commands.Cog):
 
 
 async def send_discovery_results(interaction: discord.Interaction, *, summary: discord.Embed, cards: list[DealCard]) -> None:
-    """Send Auto Discovery results without tripping Discord's 6000-char embed payload cap.
+    """Send Discovery results without tripping Discord's 6000-char embed payload cap.
 
     Walmart proof cards can be rich. Discord counts the combined embed text in a
     single message, so summary + five rich cards can exceed 6000 even when each
@@ -180,6 +146,24 @@ async def send_discovery_results(interaction: discord.Interaction, *, summary: d
             view=PresetResultView(batch),
             ephemeral=True,
         )
+
+
+def manual_discover_note(settings: dict) -> str:
+    if not settings.get("enabled"):
+        return f"Manual `/discover` override: `{AUTO_DISCOVERY_RETAILER}` auto-scan is off, but this manual command is allowed."
+    return f"Manual `/discover` run. `{AUTO_DISCOVERY_RETAILER}` auto-scan settings only gate scheduled/background pulls."
+
+
+def discover_auto_scan_status(settings: dict) -> str:
+    interval_hours = int(settings.get("interval_hours") if settings.get("interval_hours") is not None else 6)
+    daily_limit = int(settings.get("daily_limit") if settings.get("daily_limit") is not None else 25)
+    return (
+        f"Retailer: `{AUTO_DISCOVERY_RETAILER}`\n"
+        f"Auto enabled: **{'yes' if settings.get('enabled') else 'no'}**\n"
+        f"Interval: **{format_interval(interval_hours)}**\n"
+        f"Daily limit: **{format_daily_limit(daily_limit)}**\n"
+        "Manual `/discover`: **allowed**"
+    )
 
 
 def batch_cards_for_embed_limit(cards: list[DealCard], *, limit: int = SAFE_EMBED_MESSAGE_LIMIT) -> list[list[DealCard]]:

@@ -9,6 +9,7 @@ from discord.ext import commands, tasks
 from sniperplug.cogs.deal_scanner import HUNT_PRESETS, DealCard, provider_health_error_message, run_preset_hunt
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.public_deal_posts import get_public_post_config, maybe_post_public_deal_cards
+from sniperplug.services.public_result_explainer import explain_public_post_result
 
 
 log = logging.getLogger("sniperplug.autoscan")
@@ -26,10 +27,9 @@ class AutoScanGuild:
 class AutoScanRunnerCog(commands.Cog):
     """Runs enabled retailer auto-discovery in the background.
 
-    `/retailer_autoscan` owns credit/rate gates. This cog is the missing engine
-    that actually wakes up, checks those gates, scans enabled retailers, and
-    posts only through the same public-posting duplicate guard used by manual
-    scans.
+    `/retailer_autoscan` owns credit/rate gates. This cog wakes up, checks those
+    gates, scans enabled retailers, and posts only through the same public-posting
+    duplicate guard used by manual scans.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -101,7 +101,7 @@ class AutoScanRunnerCog(commands.Cog):
         await record_auto_scan_run(self.bot.db, guild.guild_id, AUTO_SCAN_RETAILER, scan_key=scan_key)
         if not shown_cards:
             log.info(
-                "Auto-scan completed with no postable cards guild=%s checked=%s searches=%s settings=%s warnings=%s",
+                "Auto-scan completed with no cards guild=%s checked=%s searches=%s settings=%s warnings=%s",
                 guild.guild_id,
                 products_checked,
                 searches_checked,
@@ -118,15 +118,20 @@ class AutoScanRunnerCog(commands.Cog):
             fallback_retailer=AUTO_SCAN_RETAILER,
         )
         log.info(
-            "Auto-scan completed guild=%s checked=%s searches=%s cards=%s posted=%s dupes=%s cached=%s errors=%s",
+            "Auto-scan completed guild=%s checked=%s searches=%s cards=%s attempted=%s posted=%s disabled=%s wrong_retailer=%s not_alertable=%s dupes=%s cached=%s errors=%s reason=%s",
             guild.guild_id,
             products_checked,
             searches_checked,
             len(shown_cards),
+            result.attempted,
             result.posted,
+            result.skipped_disabled,
+            result.skipped_wrong_retailer,
+            result.skipped_not_alertable,
             result.skipped_duplicate,
             result.cached_active,
             result.errors,
+            compact_log_text(explain_public_post_result(result)),
         )
 
 
@@ -172,3 +177,7 @@ async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
         if AUTO_SCAN_RETAILER in set(config.get("retailers") or ()):
             guilds.append(AutoScanGuild(guild_id=int(row["guild_id"]), channel_id=int(row["channel_id"])))
     return guilds
+
+
+def compact_log_text(value: str) -> str:
+    return " | ".join(str(value).splitlines())[:500]

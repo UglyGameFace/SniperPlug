@@ -21,7 +21,16 @@ class PublicPostResult:
 
     @property
     def any_activity(self) -> bool:
-        return bool(self.posted or self.skipped_duplicate or self.cached_active or self.errors)
+        return bool(
+            self.attempted
+            or self.posted
+            or self.skipped_duplicate
+            or self.skipped_not_alertable
+            or self.skipped_disabled
+            or self.skipped_wrong_retailer
+            or self.cached_active
+            or self.errors
+        )
 
 
 async def maybe_post_public_deal_cards(
@@ -42,9 +51,10 @@ async def maybe_post_public_deal_cards(
     if guild_id is None or not cards:
         return PublicPostResult()
 
+    attempted = len(cards)
     db = getattr(bot, "db", None)
     if db is None:
-        return PublicPostResult(errors=("public posting skipped: bot database unavailable",))
+        return PublicPostResult(attempted=attempted, errors=("public posting skipped: bot database unavailable",))
 
     fallback_key = normalize_retailer_key(fallback_retailer)
     cached_active = await cache_active_deal_cards(
@@ -57,16 +67,16 @@ async def maybe_post_public_deal_cards(
 
     config = await get_public_post_config(db, guild_id)
     if not config["enabled"] or not config["channel_id"]:
-        return PublicPostResult(skipped_disabled=len(cards), cached_active=cached_active)
+        return PublicPostResult(attempted=attempted, skipped_disabled=attempted, cached_active=cached_active)
 
     channel = bot.get_channel(config["channel_id"])
     if channel is None:
         try:
             channel = await bot.fetch_channel(config["channel_id"])
         except Exception as exc:  # pragma: no cover - Discord network/runtime path
-            return PublicPostResult(cached_active=cached_active, errors=(f"public channel lookup failed: {exc}",))
+            return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(f"public channel lookup failed: {exc}",))
     if not hasattr(channel, "send"):
-        return PublicPostResult(cached_active=cached_active, errors=("configured public alert channel is not sendable",))
+        return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=("configured public alert channel is not sendable",))
 
     allowed_retailers = set(config["retailers"])
     posted = 0
@@ -101,7 +111,7 @@ async def maybe_post_public_deal_cards(
         posted += 1
 
     return PublicPostResult(
-        attempted=len(cards),
+        attempted=attempted,
         posted=posted,
         skipped_duplicate=skipped_duplicate,
         skipped_not_alertable=skipped_not_alertable,

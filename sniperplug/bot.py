@@ -52,14 +52,24 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(AutoDiscoveryCog(self))
         await self.add_cog(PublicAlertsCog(self))
 
-        if self.settings.dev_guild_id:
-            guild = discord.Object(id=self.settings.dev_guild_id)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            log.info("Synced %s guild slash commands to %s", len(synced), self.settings.dev_guild_id)
-        else:
+        await self._sync_commands()
+
+    async def _sync_commands(self) -> None:
+        if self.settings.sync_global_commands:
             synced = await self.tree.sync()
             log.info("Synced %s global slash commands", len(synced))
+            return
+
+        if self.settings.dev_guild_ids:
+            for guild_id in self.settings.dev_guild_ids:
+                guild = discord.Object(id=guild_id)
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                log.info("Synced %s guild slash commands to %s", len(synced), guild_id)
+            return
+
+        synced = await self.tree.sync()
+        log.info("Synced %s global slash commands", len(synced))
 
     async def on_ready(self) -> None:
         log.info("SniperPlug online as %s (%s)", self.user, self.user.id if self.user else "unknown")

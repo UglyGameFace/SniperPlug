@@ -16,11 +16,12 @@ class PublicPostResult:
     skipped_not_alertable: int = 0
     skipped_disabled: int = 0
     skipped_wrong_retailer: int = 0
+    cached_active: int = 0
     errors: tuple[str, ...] = ()
 
     @property
     def any_activity(self) -> bool:
-        return bool(self.posted or self.skipped_duplicate or self.errors)
+        return bool(self.posted or self.skipped_duplicate or self.cached_active or self.errors)
 
 
 async def maybe_post_public_deal_cards(
@@ -32,7 +33,7 @@ async def maybe_post_public_deal_cards(
     fallback_retailer: str | None = None,
     min_alert_score: int = 90,
 ) -> PublicPostResult:
-    """Post alertable deal cards to the configured public channel.
+    """Cache active deal cards and post alertable cards to the configured public channel.
 
     Manual scans and auto scans both use this path. Auto-scan interval gates only
     protect provider calls; public posting is controlled by /public_alerts and a
@@ -45,20 +46,28 @@ async def maybe_post_public_deal_cards(
     if db is None:
         return PublicPostResult(errors=("public posting skipped: bot database unavailable",))
 
+    fallback_key = normalize_retailer_key(fallback_retailer)
+    cached_active = await cache_active_deal_cards(
+        db,
+        guild_id=guild_id,
+        cards=cards,
+        source_label=source_label,
+        fallback_retailer=fallback_key,
+    )
+
     config = await get_public_post_config(db, guild_id)
     if not config["enabled"] or not config["channel_id"]:
-        return PublicPostResult(skipped_disabled=len(cards))
+        return PublicPostResult(skipped_disabled=len(cards), cached_active=cached_active)
 
     channel = bot.get_channel(config["channel_id"])
     if channel is None:
         try:
             channel = await bot.fetch_channel(config["channel_id"])
         except Exception as exc:  # pragma: no cover - Discord network/runtime path
-            return PublicPostResult(errors=(f"public channel lookup failed: {exc}",))
+            return PublicPostResult(cached_active=cached_active, errors=(f"public channel lookup failed: {exc}",))
     if not hasattr(channel, "send"):
-        return PublicPostResult(errors=("configured public alert channel is not sendable",))
+        return PublicPostResult(cached_active=cached_active, errors=("configured public alert channel is not sendable",))
 
-    fallback_key = normalize_retailer_key(fallback_retailer)
     allowed_retailers = set(config["retailers"])
     posted = 0
     skipped_duplicate = 0
@@ -77,16 +86,7 @@ async def maybe_post_public_deal_cards(
         if not bool(should_alert):
             skipped_not_alertable += 1
             continue
-        deal_key = getattr(card, "public_post_key", None) or public_post_key(
-            retailer=retailer,
-            url=getattr(card, "url", ""),
-            current_price=getattr(card, "current_price", None),
-            selected_offer_id=getattr(card, "selected_offer_id", None),
-            sku=getattr(card, "sku", None),
-            upc=getattr(card, "upc", None),
-            score=getattr(card, "score", None),
-            discount=getattr(card, "discount", None),
-        )
+        deal_key = getattr(card, "public_post_key", None) or card_deal_key(card, retailer=retailer)
         reserved = await reserve_public_deal_post(db, guild_id=guild_id, retailer=retailer, deal_key=deal_key, source_label=source_label)
         if not reserved:
             skipped_duplicate += 1
@@ -107,7 +107,21 @@ async def maybe_post_public_deal_cards(
         skipped_not_alertable=skipped_not_alertable,
         skipped_disabled=0,
         skipped_wrong_retailer=skipped_wrong_retailer,
+        cached_active=cached_active,
         errors=tuple(errors[:5]),
+    )
+
+
+def card_deal_key(card: Any, *, retailer: str) -> str:
+    return public_post_key(
+        retailer=retailer,
+        url=getattr(card, "url", ""),
+        current_price=getattr(card, "current_price", None),
+        selected_offer_id=getattr(card, "selected_offer_id", None),
+        sku=getattr(card, "sku", None),
+        upc=getattr(card, "upc", None),
+        score=getattr(card, "score", None),
+        discount=getattr(card, "discount", None),
     )
 
 
@@ -135,6 +149,10 @@ def public_post_key(
     return ":".join((normalize_retailer_key(retailer), identity, price_part))
 
 
+def active_cache_key(*, retailer: str, url: str, selected_offer_id: str | None = None, sku: str | None = None, upc: str | None = None) -> str:
+    return ":".join((normalize_retailer_key(retailer), selected_offer_id or sku or upc or canonical_url_key(url)))
+
+
 def price_key(value: float | None) -> str:
     if value is None:
         return "price:unknown"
@@ -144,6 +162,57 @@ def price_key(value: float | None) -> str:
 def canonical_url_key(url: str) -> str:
     text = (url or "").strip()
     return text.split("?", 1)[0].rstrip("/") or "unknown"
+
+
+async def cache_active_deal_cards(db, *, guild_id: int, cards: list[Any], source_label: str, fallback_retailer: str | None = None) -> int:
+    await ensure_public_post_tables(db)
+    conn = db.require_conn()
+    now = datetime.now(timezone.utc).isoformat()
+    cached = 0
+    for card in cards:
+        retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
+        if not retailer:
+            continue
+        url = getattr(card, "url", "") or ""
+        key = active_cache_key(
+            retailer=retailer,
+            url=url,
+            selected_offer_id=getattr(card, "selected_offer_id", None),
+            sku=getattr(card, "sku", None),
+            upc=getattr(card, "upc", None),
+        )
+        await conn.execute(
+            """
+            INSERT INTO guild_active_deal_cache (
+                guild_id, active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            ON CONFLICT(guild_id, active_key) DO UPDATE SET
+                title = excluded.title,
+                url = excluded.url,
+                current_price = excluded.current_price,
+                discount = excluded.discount,
+                score = excluded.score,
+                source_label = excluded.source_label,
+                status = 'active',
+                last_seen_at = excluded.last_seen_at
+            """,
+            (
+                guild_id,
+                key,
+                retailer,
+                getattr(card, "label", None) or "deal",
+                url,
+                getattr(card, "current_price", None),
+                getattr(card, "discount", None),
+                getattr(card, "score", None),
+                source_label,
+                now,
+                now,
+            ),
+        )
+        cached += 1
+    await conn.commit()
+    return cached
 
 
 async def get_public_post_config(db, guild_id: int) -> dict:
@@ -196,8 +265,26 @@ async def ensure_public_post_tables(db) -> None:
         """
     )
     await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_public_deal_posts_guild_retailer ON guild_public_deal_posts (guild_id, retailer)"
+        """
+        CREATE TABLE IF NOT EXISTS guild_active_deal_cache (
+            guild_id INTEGER NOT NULL,
+            active_key TEXT NOT NULL,
+            retailer TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            current_price REAL,
+            discount REAL,
+            score INTEGER,
+            source_label TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (guild_id, active_key)
+        )
+        """
     )
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_public_deal_posts_guild_retailer ON guild_public_deal_posts (guild_id, retailer)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_active_deal_cache_guild_retailer ON guild_active_deal_cache (guild_id, retailer, status)")
     await conn.commit()
 
 

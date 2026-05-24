@@ -27,12 +27,7 @@ REQUIRED_CHANNEL_PERMS = {
 
 
 class WorkflowCog(commands.Cog):
-    """Owner-friendly commands that hide the confusing setup split.
-
-    The older commands still exist for advanced control, but this cog gives a
-    server owner one obvious path: choose an alert channel, choose retailers,
-    decide whether background scans are allowed, then test manually.
-    """
+    """Owner-friendly commands that hide the confusing setup split."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -56,8 +51,60 @@ class WorkflowCog(commands.Cog):
         walmart_unlimited: bool = False,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
+        await self._apply_setup(
+            interaction,
+            channel=channel,
+            retailers=retailers,
+            public_alerts=public_alerts,
+            walmart_autoscan=walmart_autoscan,
+            walmart_unlimited=walmart_unlimited,
+        )
+
+    @app_commands.command(name="setup_sniperplug_here", description="Setup SniperPlug to post in the channel where you run this command.")
+    @app_commands.describe(
+        retailers="Stores allowed to public-post. Default: walmart.",
+        public_alerts="Allow verified deals to post publicly into this channel.",
+        walmart_autoscan="Allow scheduled/background Walmart discovery. Manual scans always work.",
+        walmart_unlimited="For Walmart only: remove scheduled interval/daily gates because official API is unmetered here.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def setup_sniperplug_here(
+        self,
+        interaction: discord.Interaction,
+        retailers: str = "walmart",
+        public_alerts: bool = True,
+        walmart_autoscan: bool = False,
+        walmart_unlimited: bool = False,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send("Run this inside the text channel where SniperPlug should post verified deals, or use `/setup_sniperplug` and pick a channel.", ephemeral=True)
+            return
+        await self._apply_setup(
+            interaction,
+            channel=channel,
+            retailers=retailers,
+            public_alerts=public_alerts,
+            walmart_autoscan=walmart_autoscan,
+            walmart_unlimited=walmart_unlimited,
+        )
+
+    async def _apply_setup(
+        self,
+        interaction: discord.Interaction,
+        *,
+        channel: discord.TextChannel,
+        retailers: str,
+        public_alerts: bool,
+        walmart_autoscan: bool,
+        walmart_unlimited: bool,
+    ) -> None:
         if interaction.guild_id is None or interaction.guild is None:
             await interaction.followup.send("Use this in a server so SniperPlug can save that server's workflow settings.", ephemeral=True)
+            return
+        if channel.guild.id != interaction.guild_id:
+            await interaction.followup.send("That channel is not in this server. Run setup inside the target server/channel.", ephemeral=True)
             return
 
         missing = missing_channel_permissions(channel, interaction.guild.me)
@@ -74,11 +121,7 @@ class WorkflowCog(commands.Cog):
             )
             return
 
-        # Keep old routing compatibility while making public posting work from
-        # the same setup command users naturally reach for.
-        if hasattr(self.bot.db, "set_guild_deal_channel"):
-            await self.bot.db.set_guild_deal_channel(interaction.guild_id, channel.id)
-
+        await self.bot.db.set_guild_deal_channel(interaction.guild_id, channel.id)
         await set_public_alert_config(
             self.bot.db,
             guild_id=interaction.guild_id,
@@ -112,26 +155,10 @@ class WorkflowCog(commands.Cog):
             description="Use this order so the bot feels simple instead of scattered.",
             color=discord.Color.orange(),
         )
-        embed.add_field(
-            name="1. Setup once",
-            value="Run `/setup_sniperplug` and pick the public deal channel. This configures default routing **and** public posting together.",
-            inline=False,
-        )
-        embed.add_field(
-            name="2. Manual testing",
-            value="Use `/deals` for one item, `/hunt` for category buttons, or `/discover` for broad manual discovery. Manual scans do not depend on auto-scan being enabled.",
-            inline=False,
-        )
-        embed.add_field(
-            name="3. Background scanning",
-            value="Use `/retailer_autoscan` only when you want scheduled/background pulls. Keep paid-credit providers protected.",
-            inline=False,
-        )
-        embed.add_field(
-            name="4. Troubleshooting",
-            value="Use `/sniperplug_dashboard`, `/active_deals`, and `/sniperplug_commands` to see what is configured, cached, and available.",
-            inline=False,
-        )
+        embed.add_field(name="1. Setup once", value="Fastest: run `/setup_sniperplug_here` inside the deal channel. Advanced: run `/setup_sniperplug` and choose a channel.", inline=False)
+        embed.add_field(name="2. Manual testing", value="Use `/deals` for one item, `/hunt` for category buttons, or `/discover` for broad manual discovery. Manual scans do not depend on auto-scan being enabled.", inline=False)
+        embed.add_field(name="3. Background scanning", value="Use `/retailer_autoscan` only when you want scheduled/background pulls. Keep paid-credit providers protected.", inline=False)
+        embed.add_field(name="4. Troubleshooting", value="Use `/sniperplug_dashboard`, `/active_deals`, and `/sniperplug_commands` to see what is configured, cached, and available.", inline=False)
         embed.set_footer(text="Public posting requires public alerts ON, an alert channel, allowed retailers, and alertable proof.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -142,7 +169,7 @@ def build_setup_complete_embed(channel: discord.TextChannel, public_config: dict
     daily = int(walmart.get("daily_limit") if walmart.get("daily_limit") is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)
     embed = discord.Embed(
         title="SniperPlug setup complete",
-        description="This is the recommended owner workflow. It sets the public channel and the public posting rules together so deals do not silently cache without posting.",
+        description="This sets the default route and public posting rules together so deals do not silently cache without posting.",
         color=discord.Color.green(),
     )
     embed.add_field(name="Public alert channel", value=channel.mention, inline=True)
@@ -158,11 +185,7 @@ def build_setup_complete_embed(channel: discord.TextChannel, public_config: dict
         ),
         inline=False,
     )
-    embed.add_field(
-        name="Next test",
-        value="Run `/deals search:turtle wax` or `/discover`. If cards are cached but not posted, check `/active_deals` and `/sniperplug_dashboard`.",
-        inline=False,
-    )
+    embed.add_field(name="Next test", value="Run `/deals search:turtle wax` or `/discover`. If cards are cached but not posted, check `/active_deals` and `/sniperplug_dashboard`.", inline=False)
     return embed
 
 
@@ -178,5 +201,5 @@ def missing_permissions_message(channel: discord.TextChannel, missing: list[str]
         f"SniperPlug cannot post in {channel.mention} yet.\n\n"
         "Missing channel permissions:\n"
         + "\n".join(f"• {perm}" for perm in missing)
-        + "\n\nGive the SniperPlug bot/role those permissions, then run `/setup_sniperplug` again."
+        + "\n\nGive the SniperPlug bot/role those permissions, then run `/setup_sniperplug_here` in that channel."
     )

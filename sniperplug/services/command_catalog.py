@@ -14,10 +14,16 @@ class CommandCatalogEntry:
 
 COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
+        name="/setup_sniperplug_here",
+        audience="Owner",
+        purpose="Fastest setup: use the current channel for public alerts, default route, retailers, and Walmart auto-scan safety.",
+        when_to_use="Run this inside the channel where SniperPlug should post verified deals. This avoids Discord channel-picker/mobile channel-id issues.",
+    ),
+    CommandCatalogEntry(
         name="/setup_sniperplug",
         audience="Owner",
-        purpose="Recommended one-step setup for alert channel, public posting, retailers, and Walmart auto-scan safety.",
-        when_to_use="Use this first. It replaces the confusing split between default channel setup and public-alert setup.",
+        purpose="Advanced one-step setup where you pick the alert channel manually.",
+        when_to_use="Use this when setup from the current channel is not enough. If Discord says channel id invalid, use `/setup_sniperplug_here` instead.",
     ),
     CommandCatalogEntry(
         name="/sniperplug_workflow",
@@ -101,7 +107,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         name="/public_alerts",
         audience="Owner",
         purpose="Advanced public posting settings only.",
-        when_to_use="Use only when `/setup_sniperplug` is not specific enough. This is not the same as auto-scan.",
+        when_to_use="Use only when `/setup_sniperplug_here` is not specific enough. This is not the same as auto-scan.",
     ),
     CommandCatalogEntry(
         name="/public_alerts_status",
@@ -137,7 +143,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         name="/sniperplug setup",
         audience="Owner",
         purpose="Legacy fallback default alert channel setup.",
-        when_to_use="Prefer `/setup_sniperplug` because it also configures public posting.",
+        when_to_use="Prefer `/setup_sniperplug_here` because it also configures public posting.",
     ),
     CommandCatalogEntry(
         name="/sniperplug set_channel",

@@ -73,11 +73,11 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
             score += 25
             reasons.append("50%+ below typical price")
     elif suspicious_reference:
-        reasons.append("Reference price ignored because it looked mismatched")
+        reasons.append("Reference price ignored because it was low-confidence or mismatched")
 
     if deal.coupon_terms:
         score += 35
-        reasons.append("Coupon observed")
+        reasons.append("Coupon/reward observed")
     if deal.coupon_stack_detected:
         score += 35
         reasons.append("Coupon stack observed")
@@ -149,10 +149,11 @@ def score_level(score: int) -> str:
 def has_suspicious_reference(deal: NormalizedDeal) -> bool:
     return any(
         "ignored suspicious" in flag.lower()
+        or "ignored low-confidence" in flag.lower()
         or "reference price looked mismatched" in flag.lower()
         or "reference price needs recheck" in flag.lower()
         for flag in deal.risk_flags
-    )
+    ) or deal.variant_attributes.get("referencePriceTrusted") == "no"
 
 
 def weak_signal_hits(deal: NormalizedDeal) -> list[str]:

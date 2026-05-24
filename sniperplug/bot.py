@@ -16,6 +16,7 @@ from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.public_alerts import PublicAlertsCog
 from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
+from sniperplug.cogs.workflow import WorkflowCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
@@ -50,6 +51,7 @@ class SniperPlugBot(commands.Bot):
         provider_registry.register(SerpApiHomeDepotProvider())
 
         await self.add_cog(SniperPlugCog(self))
+        await self.add_cog(WorkflowCog(self))
         await self.add_cog(DealScannerCog(self))
         await self.add_cog(LocalInventoryCog(self))
         await self.add_cog(ClearanceBankCog(self))

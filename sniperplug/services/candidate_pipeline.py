@@ -38,7 +38,7 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
     should_alert = anomaly.score >= MIN_PUBLIC_ALERT_SCORE
     hold_for_review = MIN_REVIEW_SCORE <= anomaly.score < MIN_PUBLIC_ALERT_SCORE
 
-    condition_label = lower_price_condition_label(deal.condition, deal.variant_attributes)
+    condition_label = lower_price_condition_label(deal.condition, deal.variant_attributes, title=deal.title)
     if condition_label:
         deal.alert_tags.append("Lower-price condition offer")
         deal.risk_flags.append(f"Condition-specific lower price: {condition_label}")
@@ -83,8 +83,8 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
     )
 
 
-def lower_price_condition_label(condition: str | None, attrs: dict[str, str]) -> str | None:
-    text = " ".join(
+def lower_price_condition_label(condition: str | None, attrs: dict[str, str], title: str | None = None) -> str | None:
+    explicit_text = " ".join(
         str(value)
         for value in (
             condition,
@@ -95,22 +95,33 @@ def lower_price_condition_label(condition: str | None, attrs: dict[str, str]) ->
         )
         if value
     ).strip()
-    if not text:
-        return None
+    if explicit_text and _has_resale_condition_term(explicit_text, allow_generic_excellent=True):
+        return explicit_text
+
+    title_text = (title or "").strip()
+    if title_text and _has_resale_condition_term(title_text, allow_generic_excellent=False):
+        return title_text
+    return None
+
+
+def _has_resale_condition_term(text: str, *, allow_generic_excellent: bool) -> bool:
     lowered = text.lower()
-    condition_terms = (
+    strong_terms = (
         "open box",
         "open-box",
         "openbox",
         "like new",
         "likenew",
-        "excellent",
         "certified refurbished",
         "refurbished",
         "renewed",
+        "restored premium",
+        "restored",
         "used - like new",
         "used like new",
+        "pre-owned",
+        "preowned",
     )
-    if any(term in lowered for term in condition_terms):
-        return text
-    return None
+    if any(term in lowered for term in strong_terms):
+        return True
+    return allow_generic_excellent and "excellent" in lowered

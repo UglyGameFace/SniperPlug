@@ -25,7 +25,7 @@ from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
 from sniperplug.services.resale_hunt import install_resale_hunt_preset
-from sniperplug.services.walmart_accuracy import install_walmart_accuracy_patches
+from sniperplug.services.walmart_renderer_install import install_walmart_renderer
 from sniperplug.storage.db import Database
 
 
@@ -45,7 +45,7 @@ class SniperPlugBot(commands.Bot):
         await self.db.init()
 
         install_safe_followup_send_patch()
-        install_walmart_accuracy_patches()
+        install_walmart_renderer()
         install_manual_posting_explainer_patch()
         install_resale_hunt_preset()
 

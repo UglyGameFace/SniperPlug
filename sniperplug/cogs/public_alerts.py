@@ -18,6 +18,9 @@ from sniperplug.services.public_posting import (
 
 DEFAULT_AUTOSCAN_INTERVAL_HOURS = 6
 DEFAULT_AUTOSCAN_DAILY_LIMIT = 25
+UNLIMITED_AUTOSCAN_INTERVAL_HOURS = 0
+UNLIMITED_AUTOSCAN_DAILY_LIMIT = 0
+UNMETERED_OFFICIAL_RETAILERS = {"walmart"}
 
 
 class PublicAlertsCog(commands.Cog):
@@ -72,8 +75,9 @@ class PublicAlertsCog(commands.Cog):
     @app_commands.describe(
         retailer="Store to toggle: walmart, home_depot, bestbuy, amazon.",
         enabled="Allow this store in automatic multi-store scans. Manual commands still work.",
-        interval_hours="Minimum hours between automatic scans for this store. Default keeps current value or 6.",
-        daily_limit="Max automatic scans per day for this store. Use 0 to block spending even if enabled.",
+        interval_hours="Minimum hours between automatic scans for this store. Use 0 for no interval gate on supported official APIs.",
+        daily_limit="Max automatic scans per day for this store. Use 0 for no daily gate on supported official APIs.",
+        unlimited="Bypass interval/daily gates for supported official APIs like Walmart. Not allowed for paid-credit providers.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def retailer_autoscan(
@@ -81,8 +85,9 @@ class PublicAlertsCog(commands.Cog):
         interaction: discord.Interaction,
         retailer: str,
         enabled: bool,
-        interval_hours: app_commands.Range[int, 1, 168] | None = None,
+        interval_hours: app_commands.Range[int, 0, 168] | None = None,
         daily_limit: app_commands.Range[int, 0, 500] | None = None,
+        unlimited: bool = False,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is None:
@@ -92,6 +97,15 @@ class PublicAlertsCog(commands.Cog):
         if key not in SUPPORTED_RETAILERS:
             await interaction.followup.send(f"Unknown retailer `{retailer}`. Supported: {format_retailers(tuple(sorted(SUPPORTED_RETAILERS)))}", ephemeral=True)
             return
+        if unlimited and key not in UNMETERED_OFFICIAL_RETAILERS:
+            await interaction.followup.send(
+                f"Unlimited auto-scan is only allowed for supported official/unmetered providers right now: {format_retailers(tuple(sorted(UNMETERED_OFFICIAL_RETAILERS)))}. Keep paid-credit providers interval/daily protected.",
+                ephemeral=True,
+            )
+            return
+        if unlimited:
+            interval_hours = UNLIMITED_AUTOSCAN_INTERVAL_HOURS
+            daily_limit = UNLIMITED_AUTOSCAN_DAILY_LIMIT
         await set_retailer_auto_scan(self.bot.db, interaction.guild_id, key, enabled, interval_hours=interval_hours, daily_limit=daily_limit)
         settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         updated = settings[key]
@@ -100,8 +114,8 @@ class PublicAlertsCog(commands.Cog):
             name="Updated",
             value=(
                 f"`{key}` auto-scan is now **{'on' if updated['enabled'] else 'off'}**.\n"
-                f"Interval: **every {updated['interval_hours']} hour(s)**\n"
-                f"Daily limit: **{updated['daily_limit']} automatic scan(s)**\n"
+                f"Interval: **{format_interval(updated['interval_hours'])}**\n"
+                f"Daily limit: **{format_daily_limit(updated['daily_limit'])}**\n"
                 f"{retailer_credit_note(key)}"
             ),
             inline=False,
@@ -125,7 +139,7 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
     embed.add_field(name="Channel", value=f"<#{channel_id}>" if channel_id else "not set", inline=True)
     if auto_scan is not None:
         embed.add_field(name="Auto-scan stores", value=format_auto_scan_status(auto_scan), inline=False)
-    embed.add_field(name="Credit safety", value="Public posting and auto-scanning are separate. A store can be allowed for public posting while still blocked from automatic scans that spend credits.", inline=False)
+    embed.add_field(name="Credit safety", value="Public posting and auto-scanning are separate. A store can be allowed for public posting while still blocked from automatic scans that spend credits. Walmart can be set unlimited because it is official/unmetered for this bot, but paid-credit providers stay protected.", inline=False)
     embed.set_footer(text="More stores can be added later without changing the command format.")
     return embed
 
@@ -133,7 +147,7 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
 def retailer_auto_scan_embed(settings: dict[str, dict]) -> discord.Embed:
     embed = discord.Embed(title="🧭 Retailer Auto-Scan Settings", description="Controls which stores SniperPlug may include in automatic multi-store scans. Manual store-specific commands still work even when auto-scan is off.", color=discord.Color.blue())
     embed.add_field(name="Stores", value=format_auto_scan_status(settings), inline=False)
-    embed.add_field(name="Why this exists", value="This protects free tiers and paid/limited APIs. Turn on only the stores you intentionally want SniperPlug to pull automatically, then set intervals and daily limits to cap credit usage.", inline=False)
+    embed.add_field(name="Why this exists", value="This protects free tiers and paid/limited APIs. Walmart can bypass interval/daily gates if you choose because it is official/unmetered here; keep paid-credit APIs protected.", inline=False)
     return embed
 
 
@@ -142,14 +156,25 @@ def format_auto_scan_status(settings: dict[str, dict]) -> str:
     for retailer in sorted(SUPPORTED_RETAILERS):
         config = settings.get(retailer, default_auto_scan_config(retailer))
         enabled = bool(config.get("enabled"))
-        interval_hours = int(config.get("interval_hours") or DEFAULT_AUTOSCAN_INTERVAL_HOURS)
+        interval_hours = int(config.get("interval_hours") if config.get("interval_hours") is not None else DEFAULT_AUTOSCAN_INTERVAL_HOURS)
         daily_limit = int(config.get("daily_limit") if config.get("daily_limit") is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)
-        rows.append(f"{'✅' if enabled else '⛔'} `{retailer}` • every {interval_hours}h • max {daily_limit}/day")
+        rows.append(f"{'✅' if enabled else '⛔'} `{retailer}` • {format_interval(interval_hours)} • {format_daily_limit(daily_limit)}")
     return "\n".join(rows)
 
 
+def format_interval(interval_hours: int) -> str:
+    return "no interval gate" if int(interval_hours) <= 0 else f"every {int(interval_hours)}h"
+
+
+def format_daily_limit(daily_limit: int) -> str:
+    return "no daily gate" if int(daily_limit) <= 0 else f"max {int(daily_limit)}/day"
+
+
 def default_auto_scan_config(retailer: str) -> dict:
-    return {"retailer": normalize_retailer_key(retailer), "enabled": False, "interval_hours": DEFAULT_AUTOSCAN_INTERVAL_HOURS, "daily_limit": DEFAULT_AUTOSCAN_DAILY_LIMIT}
+    key = normalize_retailer_key(retailer)
+    if key in UNMETERED_OFFICIAL_RETAILERS:
+        return {"retailer": key, "enabled": False, "interval_hours": DEFAULT_AUTOSCAN_INTERVAL_HOURS, "daily_limit": DEFAULT_AUTOSCAN_DAILY_LIMIT}
+    return {"retailer": key, "enabled": False, "interval_hours": DEFAULT_AUTOSCAN_INTERVAL_HOURS, "daily_limit": DEFAULT_AUTOSCAN_DAILY_LIMIT}
 
 
 async def ensure_public_alert_table(db) -> None:
@@ -250,7 +275,7 @@ async def set_retailer_auto_scan(db, guild_id: int, retailer: str, enabled: bool
     now = utc_now_iso()
     key = normalize_retailer_key(retailer)
     existing = (await list_retailer_auto_scan_settings(db, guild_id)).get(key, default_auto_scan_config(key))
-    next_interval = interval_hours if interval_hours is not None else int(existing.get("interval_hours") or DEFAULT_AUTOSCAN_INTERVAL_HOURS)
+    next_interval = interval_hours if interval_hours is not None else int(existing.get("interval_hours") if existing.get("interval_hours") is not None else DEFAULT_AUTOSCAN_INTERVAL_HOURS)
     next_daily_limit = daily_limit if daily_limit is not None else int(existing.get("daily_limit") if existing.get("daily_limit") is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)
     await conn.execute("""
         INSERT INTO guild_retailer_auto_scan_settings (guild_id, retailer, enabled, interval_hours, daily_limit, created_at, updated_at)
@@ -273,7 +298,7 @@ async def list_retailer_auto_scan_settings(db, guild_id: int) -> dict[str, dict]
     for row in rows:
         key = normalize_retailer_key(row["retailer"])
         if key in SUPPORTED_RETAILERS:
-            settings[key] = {"retailer": key, "enabled": bool(row["enabled"]), "interval_hours": int(row["interval_hours"] or DEFAULT_AUTOSCAN_INTERVAL_HOURS), "daily_limit": int(row["daily_limit"] if row["daily_limit"] is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)}
+            settings[key] = {"retailer": key, "enabled": bool(row["enabled"]), "interval_hours": int(row["interval_hours"] if row["interval_hours"] is not None else DEFAULT_AUTOSCAN_INTERVAL_HOURS), "daily_limit": int(row["daily_limit"] if row["daily_limit"] is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)}
     return settings
 
 
@@ -283,7 +308,9 @@ async def auto_scan_allowed(db, guild_id: int, retailer: str, *, scan_key: str) 
     if not settings.get("enabled"):
         return False, f"`{key}` auto-scan is off", settings
     daily_limit = int(settings.get("daily_limit") if settings.get("daily_limit") is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)
-    if daily_limit <= 0:
+    interval_hours = int(settings.get("interval_hours") if settings.get("interval_hours") is not None else DEFAULT_AUTOSCAN_INTERVAL_HOURS)
+    bypass_gates = key in UNMETERED_OFFICIAL_RETAILERS and daily_limit <= 0 and interval_hours <= 0
+    if not bypass_gates and daily_limit <= 0:
         return False, f"`{key}` daily auto-scan limit is 0", settings
     await ensure_retailer_auto_scan_run_table(db)
     conn = db.require_conn()
@@ -292,19 +319,21 @@ async def auto_scan_allowed(db, guild_id: int, retailer: str, *, scan_key: str) 
     cursor = await conn.execute("SELECT COUNT(*) AS count FROM guild_retailer_auto_scan_runs WHERE guild_id = ? AND retailer = ? AND day_key = ?", (guild_id, key, day_key))
     row = await cursor.fetchone()
     used_today = int(row["count"] if row and row["count"] is not None else 0)
-    if used_today >= daily_limit:
+    if not bypass_gates and used_today >= daily_limit:
         return False, f"`{key}` daily auto-scan limit reached ({used_today}/{daily_limit})", settings
-    interval_hours = int(settings.get("interval_hours") or DEFAULT_AUTOSCAN_INTERVAL_HOURS)
-    cursor = await conn.execute("SELECT ran_at FROM guild_retailer_auto_scan_runs WHERE guild_id = ? AND retailer = ? AND scan_key = ? ORDER BY ran_at DESC LIMIT 1", (guild_id, key, scan_key))
-    last = await cursor.fetchone()
-    if last and last["ran_at"]:
-        last_dt = datetime.fromisoformat(str(last["ran_at"]))
-        if last_dt.tzinfo is None:
-            last_dt = last_dt.replace(tzinfo=timezone.utc)
-        next_allowed = last_dt + timedelta(hours=interval_hours)
-        if now < next_allowed:
-            minutes = max(1, int((next_allowed - now).total_seconds() // 60))
-            return False, f"`{key}` interval gate: try again in about {minutes} minute(s)", settings
+    if not bypass_gates and interval_hours > 0:
+        cursor = await conn.execute("SELECT ran_at FROM guild_retailer_auto_scan_runs WHERE guild_id = ? AND retailer = ? AND scan_key = ? ORDER BY ran_at DESC LIMIT 1", (guild_id, key, scan_key))
+        last = await cursor.fetchone()
+        if last and last["ran_at"]:
+            last_dt = datetime.fromisoformat(str(last["ran_at"]))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            next_allowed = last_dt + timedelta(hours=interval_hours)
+            if now < next_allowed:
+                minutes = max(1, int((next_allowed - now).total_seconds() // 60))
+                return False, f"`{key}` interval gate: try again in about {minutes} minute(s)", settings
+    if bypass_gates:
+        return True, f"`{key}` auto-scan allowed with official-provider bypass ({used_today} runs logged today)", settings
     return True, f"`{key}` auto-scan allowed ({used_today}/{daily_limit} used today)", settings
 
 

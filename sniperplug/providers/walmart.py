@@ -184,7 +184,12 @@ class WalmartProvider(DealProvider):
             signals.append(reference_signal)
 
         variant = extract_variant_proof(item, title)
-        proof_attrs = _walmart_proof_attributes(item, variant.attributes, selected_offer)
+        promotions = _walmart_promotion_proof(item)
+        proof_attrs = _walmart_proof_attributes(item, variant.attributes, selected_offer, promotions)
+        if typical_price is not None:
+            proof_attrs["referencePriceTrusted"] = "yes"
+        elif reference_signal and reference_signal.startswith("ignored"):
+            proof_attrs["referencePriceTrusted"] = "no"
         if variant.warning:
             signals.append(variant.warning)
         elif variant.label:
@@ -193,6 +198,10 @@ class WalmartProvider(DealProvider):
         if category_path:
             proof_attrs["category"] = category_path
             signals.append(f"Walmart category: {category_path}")
+        if promotions.get("couponSavings"):
+            signals.append(f"Walmart coupon detected: ${float(promotions['couponSavings']):,.2f}")
+        if promotions.get("walmartCashSavings"):
+            signals.append(f"Walmart Cash detected: ${float(promotions['walmartCashSavings']):,.2f}")
 
         return SourceCandidate(
             source_key=self.provider_key,
@@ -223,7 +232,7 @@ class WalmartProvider(DealProvider):
             is_business_offer=False,
             is_member_only=False,
             is_checkout_price=False,
-            signals=signals[:12],
+            signals=signals[:16],
         )
 
     def _item_signals(self, item: dict) -> list[str]:
@@ -301,22 +310,29 @@ def _current_price_candidates(item: dict) -> list[tuple[str, float | None]]:
 
 def _trusted_reference_price(item: dict, title: str, current_price: float | None) -> tuple[float | None, str | None]:
     references = _reference_price_candidates(item)
+    ignored: list[str] = []
     if current_price is None or current_price <= 0:
         value, source = _first_trusted_reference(references, title=title, current_price=current_price)
         return value, f"Walmart reference price source: {source}" if value and source else None
     for source, value in references:
         if value is None or value <= current_price:
             continue
+        trust = _reference_price_trust(source)
+        if trust != "high":
+            ignored.append(f"{source}=${value:,.2f}")
+            continue
         if _reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=value):
-            return None, f"ignored suspicious Walmart {source} reference price: ${value:,.2f}"
+            ignored.append(f"suspicious {source}=${value:,.2f}")
+            continue
         return value, f"Walmart reference price source: {source}"
+    if ignored:
+        return None, "ignored low-confidence Walmart reference price(s): " + ", ".join(ignored[:3])
     return None, None
 
 
 def _reference_price_candidates(item: dict) -> list[tuple[str, float | None]]:
-    # Trust explicit sale/reference fields first. MSRP is useful proof, but it is
-    # the noisiest value in Walmart Affiliate payloads and must never be allowed
-    # to manufacture fake 90%+ glitches by itself.
+    # Only high-trust sale/reference fields can prove true discounts. MSRP/list
+    # values are stored as proof attributes but not used to calculate % off.
     references = [
         ("wasPrice", _price_from_value(item.get("wasPrice"))),
         ("priceInfo.wasPrice", _nested_price(item, "priceInfo", "wasPrice")),
@@ -333,6 +349,13 @@ def _reference_price_candidates(item: dict) -> list[tuple[str, float | None]]:
     return references
 
 
+def _reference_price_trust(source: str) -> str:
+    source_key = source.lower()
+    if any(token in source_key for token in ("wasprice", "regularprice", "strikethrough", "comparisonprice")):
+        return "high"
+    return "low"
+
+
 def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | None]]:
     best_marketplace = item.get("bestMarketplacePrice")
     if not isinstance(best_marketplace, dict):
@@ -344,10 +367,63 @@ def _first_trusted_reference(references: list[tuple[str, float | None]], *, titl
     for source, value in references:
         if not value or value <= 0:
             continue
+        if _reference_price_trust(source) != "high":
+            continue
         if current_price is not None and _reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=value):
             continue
         return value, source
     return None, None
+
+
+def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
+    coupon = _promotion_amount(item, include_terms=("coupon",), exclude_terms=("cash", "reward"))
+    walmart_cash = _promotion_amount(item, include_terms=("walmart cash", "cash reward", "reward"), exclude_terms=())
+    attrs: dict[str, str] = {}
+    if coupon and coupon > 0:
+        attrs["couponSavings"] = f"{coupon:.2f}"
+    if walmart_cash and walmart_cash > 0:
+        attrs["walmartCashSavings"] = f"{walmart_cash:.2f}"
+    return attrs
+
+
+def _promotion_amount(value: Any, *, include_terms: tuple[str, ...], exclude_terms: tuple[str, ...]) -> float | None:
+    best: float | None = None
+    for key_path, candidate in _walk_payload(value):
+        lowered_key = key_path.lower()
+        lowered_text = str(candidate).lower()
+        haystack = f"{lowered_key} {lowered_text}"
+        if not any(term in haystack for term in include_terms):
+            continue
+        if any(term in haystack for term in exclude_terms):
+            continue
+        parsed = _price_from_value(candidate)
+        if parsed is None:
+            parsed = _first_money_amount(str(candidate))
+        if parsed is None or parsed <= 0:
+            continue
+        best = max(best or 0, parsed)
+    return best
+
+
+def _walk_payload(value: Any, prefix: str = ""):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            yield from _walk_payload(child, child_prefix)
+        return
+    if isinstance(value, list):
+        for idx, child in enumerate(value):
+            child_prefix = f"{prefix}[{idx}]"
+            yield from _walk_payload(child, child_prefix)
+        return
+    yield prefix, value
+
+
+def _first_money_amount(text: str) -> float | None:
+    match = re.search(r"\$\s*(\d+(?:\.\d{1,2})?)", text)
+    if not match:
+        return None
+    return _float_or_none(match.group(1))
 
 
 def _selected_offer_proof(item: dict[str, Any]) -> dict[str, str | None]:
@@ -412,7 +488,7 @@ def _seller_name_is_walmart(seller_name: str | None) -> bool:
     return seller_name.strip().lower() in {"walmart", "walmart.com", "walmart stores, inc.", "walmart stores inc"}
 
 
-def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str], selected_offer: dict[str, str | None] | None = None) -> dict[str, str]:
+def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str], selected_offer: dict[str, str | None] | None = None, promotions: dict[str, str] | None = None) -> dict[str, str]:
     attrs: dict[str, str] = dict(variant_attrs)
     for key, label in (
         ("brandName", "brand"),
@@ -432,6 +508,8 @@ def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str
         value = _clean_string(item.get(key))
         if value and label not in attrs:
             attrs[label] = value
+    if promotions:
+        attrs.update(promotions)
     if selected_offer:
         for key, label in (("seller_name", "seller"), ("seller_id", "sellerId"), ("fulfillment_type", "fulfillment"), ("condition", "condition"), ("is_walmart_seller", "walmartSeller")):
             value = selected_offer.get(key)
@@ -506,12 +584,7 @@ def _reference_price_looks_suspicious(*, source: str, title: str, current_price:
     source_key = source.lower()
     title_text = title.lower()
     explicit_sale_source = any(token in source_key for token in ("wasprice", "regularprice", "strikethrough", "comparisonprice"))
-    low_trust_source = "msrp" in source_key or "listprice" in source_key or "marketplace" in source_key
 
-    if low_trust_source and current_price <= 20 and ratio >= 5:
-        return True
-    if low_trust_source and _is_consumable_or_size_sensitive(title_text) and ratio >= 4:
-        return True
     if _is_consumable_or_size_sensitive(title_text):
         if ratio >= 8:
             return True

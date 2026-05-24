@@ -19,6 +19,7 @@ from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider
 from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.services.resale_hunt import install_resale_hunt_preset
+from sniperplug.services.walmart_accuracy import install_walmart_accuracy_patches
 from sniperplug.storage.db import Database
 
 
@@ -37,6 +38,7 @@ class SniperPlugBot(commands.Bot):
         await self.db.connect()
         await self.db.init()
 
+        install_walmart_accuracy_patches()
         install_resale_hunt_preset()
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))

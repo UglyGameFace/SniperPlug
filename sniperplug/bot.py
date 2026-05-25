@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import discord
 from discord.ext import commands
@@ -69,6 +70,15 @@ class SniperPlugBot(commands.Bot):
         await self._sync_commands()
 
     async def _sync_commands(self) -> None:
+        if env_enabled("CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT"):
+            self.tree.clear_commands(guild=None)
+            synced = await self.tree.sync()
+            log.warning(
+                "Cleared stale global slash commands. Synced %s global commands. Turn CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT off now.",
+                len(synced),
+            )
+            return
+
         if not self.settings.sync_commands_on_boot:
             log.info(
                 "Skipped slash command sync on boot. Set SYNC_COMMANDS_ON_BOOT=true only when command definitions changed."
@@ -109,3 +119,7 @@ async def run() -> None:
 
     async with bot:
         await bot.start(settings.discord_token)
+
+
+def env_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}

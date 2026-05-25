@@ -15,14 +15,6 @@ MAX_DETAILS_FIELD_CHARS = 850
 
 
 def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_only: bool) -> list[deal_scanner.DealCard]:
-    """Build Walmart cards through the strict production renderer.
-
-    This renderer is the source of truth for Walmart proof:
-    - no fake MSRP/list-price-only markdowns
-    - trusted reference price required for % off
-    - coupon/Walmart Cash shown as value signals
-    - selected option/offer carried into public-post dedupe
-    """
     cards: list[deal_scanner.DealCard] = []
     for candidate in result.candidates:
         decision = evaluate_candidate(candidate)
@@ -125,20 +117,30 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
 def price_block(deal: NormalizedDeal, proof) -> str:
     if deal.current_price is None:
         return "Current price unavailable"
+    attrs = deal.variant_attributes or {}
     lines = [f"Current: **{money(deal.current_price)}**"]
     if proof.discount_percent is not None and deal.typical_price:
-        lines.append(f"Was: ~~{money(deal.typical_price)}~~")
+        source = attrs.get("trustedReferenceSource")
+        source_text = f" `{source}`" if source else ""
+        lines.append(f"Was/typical: ~~{money(deal.typical_price)}~~{source_text}")
         lines.append(f"Verified save: **{money(proof.savings_amount)} ({proof.discount_percent:.0f}%)**")
-        lines.append("Proof: **trusted Walmart reference**")
+        lines.append("Proof: **trusted Walmart markdown reference**")
     else:
-        lines.append("Was/typical: **not counted**")
+        context_price = float_or_none(attrs.get("referenceContextPrice"))
+        context_source = attrs.get("referenceContextSource")
+        if context_price and context_price > deal.current_price:
+            source_text = f" `{context_source}`" if context_source else ""
+            lines.append(f"Reference shown: **{money(context_price)}**{source_text}")
+            lines.append("Was/typical: **not counted for % off**")
+        else:
+            lines.append("Was/typical: **not returned/trusted**")
         lines.append("Proof: **no trusted markdown proof**")
     if deal.coupon_savings:
         lines.append(f"Coupon: **{money(deal.coupon_savings)}**")
-    cash = deal.variant_attributes.get("walmartCashSavings")
+    cash = float_or_none(attrs.get("walmartCashSavings"))
     if cash:
-        lines.append(f"Walmart Cash: **{money(float(cash))} value**")
-    return truncate("\n".join(lines), 500)
+        lines.append(f"Walmart Cash: **{money(cash)} value**")
+    return truncate("\n".join(lines), 650)
 
 
 def compact_stock_line(candidate: SourceCandidate, deal: NormalizedDeal) -> str | None:
@@ -207,17 +209,7 @@ def api_detail_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[s
         lines.append("• " + " • ".join(seller_bits[:4]))
 
     flags = []
-    for key, label in (
-        ("rollback", "Rollback"),
-        ("clearance", "Clearance"),
-        ("specialBuy", "Special Buy"),
-        ("marketplace", "Marketplace"),
-        ("bundle", "Bundle"),
-        ("availableOnline", "Online"),
-        ("shipToStore", "Ship-to-store"),
-        ("freeShipToStore", "Free ship-to-store"),
-        ("twoThreeDayShipping", "2-3 day shipping"),
-    ):
+    for key, label in (("rollback", "Rollback"), ("clearance", "Clearance"), ("specialBuy", "Special Buy"), ("marketplace", "Marketplace"), ("bundle", "Bundle"), ("availableOnline", "Online"), ("shipToStore", "Ship-to-store"), ("freeShipToStore", "Free ship-to-store"), ("twoThreeDayShipping", "2-3 day shipping")):
         value = attrs.get(key)
         if value:
             flags.append(f"{label}: **{value}**")
@@ -225,15 +217,7 @@ def api_detail_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[s
         lines.append("• " + " • ".join(flags[:5]))
 
     product_bits = []
-    for key, label in (
-        ("brand", "Brand"),
-        ("modelNumber", "Model"),
-        ("rating", "Rating"),
-        ("reviews", "Reviews"),
-        ("offerType", "Offer type"),
-        ("maxOrderQty", "Max qty"),
-        ("category", "Category"),
-    ):
+    for key, label in (("brand", "Brand"), ("modelNumber", "Model"), ("rating", "Rating"), ("reviews", "Reviews"), ("offerType", "Offer type"), ("maxOrderQty", "Max qty"), ("category", "Category")):
         value = attrs.get(key)
         if value:
             product_bits.append(f"{label}: **{truncate(value, 40)}**")
@@ -254,6 +238,14 @@ def api_detail_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[s
     reference_trusted = attrs.get("referencePriceTrusted")
     if reference_trusted:
         proof_bits.append(f"Reference trusted: **{reference_trusted}**")
+    trusted_price = float_or_none(attrs.get("trustedReferencePrice"))
+    trusted_source = attrs.get("trustedReferenceSource")
+    if trusted_price:
+        proof_bits.append(f"Trusted was/typical: **{money(trusted_price)}** `{trusted_source or 'unknown'}`")
+    context_price = float_or_none(attrs.get("referenceContextPrice"))
+    context_source = attrs.get("referenceContextSource")
+    if context_price:
+        proof_bits.append(f"Reference shown/not counted: **{money(context_price)}** `{context_source or 'unknown'}`")
     if attrs.get("msrp"):
         proof_bits.append(f"MSRP shown but not counted: **{attrs['msrp']}**")
     if attrs.get("couponSavings"):
@@ -274,17 +266,7 @@ def proof_lines_for(candidate: SourceCandidate, decision, proof) -> list[str]:
         lines.append("• no trusted was/strike/reference price; % off suppressed")
     for reason in decision.anomaly.reasons[:1]:
         lines.append(f"• {reason}")
-    important_signals = [
-        signal
-        for signal in candidate.signals
-        if signal.startswith("Walmart current price source")
-        or signal.startswith("Walmart reference price source")
-        or signal.startswith("ignored low-confidence")
-        or signal.startswith("selected option")
-        or signal.startswith("Walmart coupon")
-        or signal.startswith("Walmart Cash")
-        or signal in {"rollback", "clearance", "special buy", "marketplace seller", "bundle"}
-    ]
+    important_signals = [signal for signal in candidate.signals if signal.startswith("Walmart current price source") or signal.startswith("Walmart reference price source") or signal.startswith("Walmart reference shown") or signal.startswith("ignored low-confidence") or signal.startswith("selected option") or signal.startswith("Walmart coupon") or signal.startswith("Walmart Cash") or signal in {"rollback", "clearance", "special buy", "marketplace seller", "bundle"}]
     lines.extend(f"• {truncate(signal, 120)}" for signal in important_signals[:2])
     return deal_scanner.dedupe_lines(lines) or ["• Product link and current price returned by Walmart API"]
 
@@ -299,6 +281,15 @@ def money(value: float | None) -> str:
     if value is None:
         return "N/A"
     return f"${value:,.2f}"
+
+
+def float_or_none(value) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value).replace("$", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def truncate(value: str, limit: int) -> str:

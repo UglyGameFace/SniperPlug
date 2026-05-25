@@ -11,6 +11,7 @@ from sniperplug.services.safe_links import product_link_choices
 
 
 MAX_CARD_FIELD_CHARS = 900
+MAX_DETAILS_FIELD_CHARS = 850
 
 
 def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_only: bool) -> list[deal_scanner.DealCard]:
@@ -101,6 +102,10 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
     if value_lines:
         embed.add_field(name="💵 Coupon / Cash", value=truncate("\n".join(f"• {line}" for line in value_lines), 350), inline=False)
 
+    details = api_detail_lines(candidate, deal)
+    if details:
+        embed.add_field(name="🧾 Walmart API details", value=truncate("\n".join(details), MAX_DETAILS_FIELD_CHARS), inline=False)
+
     reason_lines = proof_lines_for(candidate, decision, proof)
     if reason_lines:
         embed.add_field(name="🔎 Why", value=truncate("\n".join(reason_lines[:3]), 500), inline=False)
@@ -169,6 +174,96 @@ def compact_seller_line(candidate: SourceCandidate, deal: NormalizedDeal) -> str
     if condition:
         bits.append(f"Condition: {truncate(condition, 60)}")
     return " • ".join(bits) if bits else None
+
+
+def api_detail_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
+    attrs = deal.variant_attributes or {}
+    lines: list[str] = []
+
+    ids = []
+    if deal.sku:
+        ids.append(f"SKU `{deal.sku}`")
+    if deal.upc:
+        ids.append(f"UPC `{deal.upc}`")
+    if deal.selected_offer_id:
+        ids.append(f"Offer `{deal.selected_offer_id}`")
+    if ids:
+        lines.append("• " + " • ".join(ids[:3]))
+
+    seller_bits = []
+    seller = candidate.seller_name or deal.seller_name or attrs.get("seller")
+    if seller:
+        seller_bits.append(f"Seller **{seller}**")
+    walmart_seller = attrs.get("walmartSeller")
+    if walmart_seller:
+        seller_bits.append(f"Walmart seller: **{walmart_seller}**")
+    fulfillment = candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")
+    if fulfillment:
+        seller_bits.append(f"Fulfillment **{fulfillment}**")
+    condition = candidate.condition or deal.condition or attrs.get("condition")
+    if condition:
+        seller_bits.append(f"Condition **{condition}**")
+    if seller_bits:
+        lines.append("• " + " • ".join(seller_bits[:4]))
+
+    flags = []
+    for key, label in (
+        ("rollback", "Rollback"),
+        ("clearance", "Clearance"),
+        ("specialBuy", "Special Buy"),
+        ("marketplace", "Marketplace"),
+        ("bundle", "Bundle"),
+        ("availableOnline", "Online"),
+        ("shipToStore", "Ship-to-store"),
+        ("freeShipToStore", "Free ship-to-store"),
+        ("twoThreeDayShipping", "2-3 day shipping"),
+    ):
+        value = attrs.get(key)
+        if value:
+            flags.append(f"{label}: **{value}**")
+    if flags:
+        lines.append("• " + " • ".join(flags[:5]))
+
+    product_bits = []
+    for key, label in (
+        ("brand", "Brand"),
+        ("modelNumber", "Model"),
+        ("rating", "Rating"),
+        ("reviews", "Reviews"),
+        ("offerType", "Offer type"),
+        ("maxOrderQty", "Max qty"),
+        ("category", "Category"),
+    ):
+        value = attrs.get(key)
+        if value:
+            product_bits.append(f"{label}: **{truncate(value, 40)}**")
+    if product_bits:
+        lines.append("• " + " • ".join(product_bits[:4]))
+
+    option_bits = []
+    if deal.variant_label:
+        option_bits.append(f"Selected option: **{truncate(deal.variant_label, 60)}**")
+    for key, label in (("packSize", "Pack"), ("size", "Size"), ("unitSize", "Unit"), ("color", "Color"), ("platform", "Platform")):
+        value = attrs.get(key)
+        if value:
+            option_bits.append(f"{label}: **{truncate(value, 40)}**")
+    if option_bits:
+        lines.append("• " + " • ".join(option_bits[:4]))
+
+    proof_bits = []
+    reference_trusted = attrs.get("referencePriceTrusted")
+    if reference_trusted:
+        proof_bits.append(f"Reference trusted: **{reference_trusted}**")
+    if attrs.get("msrp"):
+        proof_bits.append(f"MSRP shown but not counted: **{attrs['msrp']}**")
+    if attrs.get("couponSavings"):
+        proof_bits.append(f"Coupon API value: **{money(float(attrs['couponSavings']))}**")
+    if attrs.get("walmartCashSavings"):
+        proof_bits.append(f"Walmart Cash API value: **{money(float(attrs['walmartCashSavings']))}**")
+    if proof_bits:
+        lines.append("• " + " • ".join(proof_bits[:4]))
+
+    return lines[:6]
 
 
 def proof_lines_for(candidate: SourceCandidate, decision, proof) -> list[str]:

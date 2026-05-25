@@ -1,5 +1,5 @@
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.providers.walmart import _trusted_reference_price, _walmart_promotion_proof
+from sniperplug.providers.walmart import _best_reference_context_price, _trusted_reference_price, _walmart_promotion_proof
 from sniperplug.services.anomaly_score import has_suspicious_reference
 
 
@@ -20,6 +20,36 @@ def test_walmart_accepts_was_price_as_discount_proof():
 
     assert reference == 94.99
     assert signal == "Walmart reference price source: wasPrice"
+
+
+def test_walmart_accepts_nested_was_price_as_discount_proof():
+    item = {"priceInfo": {"wasPrice": {"price": 129.99}}, "salePrice": 79.99}
+
+    reference, signal = _trusted_reference_price(item, title="Gaming Keyboard", current_price=79.99)
+
+    assert reference == 129.99
+    assert signal == "Walmart reference price source: priceInfo.wasPrice"
+
+
+def test_walmart_accepts_snake_case_original_price_as_discount_proof():
+    item = {"price_info": {"original_price": "$49.99"}, "sale_price": "$24.99"}
+
+    reference, signal = _trusted_reference_price(item, title="Gaming Mouse", current_price=24.99)
+
+    assert reference == 49.99
+    assert signal == "Walmart reference price source: price_info.original_price"
+
+
+def test_walmart_keeps_low_trust_reference_as_context_not_discount():
+    item = {"listPrice": 199.99, "salePrice": 99.99}
+
+    reference, signal = _trusted_reference_price(item, title="Vacuum", current_price=99.99)
+    context_price, context_source = _best_reference_context_price(item=item, current_price=99.99)
+
+    assert reference is None
+    assert "ignored low-confidence" in signal
+    assert context_price == 199.99
+    assert context_source == "listPrice"
 
 
 def test_walmart_detects_coupon_and_cash_payload_values():

@@ -188,8 +188,19 @@ class WalmartProvider(DealProvider):
         proof_attrs = _walmart_proof_attributes(item, variant.attributes, selected_offer, promotions)
         if typical_price is not None:
             proof_attrs["referencePriceTrusted"] = "yes"
-        elif reference_signal and reference_signal.startswith("ignored"):
-            proof_attrs["referencePriceTrusted"] = "no"
+            trusted_source = _trusted_reference_source(item=item, title=title, current_price=current_price, reference_price=typical_price)
+            if trusted_source:
+                proof_attrs["trustedReferencePrice"] = f"{typical_price:.2f}"
+                proof_attrs["trustedReferenceSource"] = trusted_source
+        else:
+            context_price, context_source = _best_reference_context_price(item=item, current_price=current_price)
+            if context_price is not None and context_source:
+                proof_attrs["referencePriceTrusted"] = "no"
+                proof_attrs["referenceContextPrice"] = f"{context_price:.2f}"
+                proof_attrs["referenceContextSource"] = context_source
+                signals.append(f"Walmart reference shown but not counted: {context_source}=${context_price:,.2f}")
+            elif reference_signal and reference_signal.startswith("ignored"):
+                proof_attrs["referencePriceTrusted"] = "no"
         if variant.warning:
             signals.append(variant.warning)
         elif variant.label:
@@ -298,14 +309,13 @@ def _trusted_current_price(item: dict) -> tuple[float | None, str | None]:
 
 
 def _current_price_candidates(item: dict) -> list[tuple[str, float | None]]:
-    return [
-        ("salePrice", _float_or_none(item.get("salePrice"))),
-        ("currentPrice", _price_from_value(item.get("currentPrice"))),
-        ("price", _price_from_value(item.get("price"))),
-        ("priceInfo.currentPrice", _nested_price(item, "priceInfo", "currentPrice")),
-        ("priceInfo.price", _nested_price(item, "priceInfo", "price")),
-        ("minPrice", _float_or_none(item.get("minPrice"))),
-    ]
+    return _price_candidates_for_names(
+        item,
+        (
+            "salePrice", "sale_price", "currentPrice", "current_price", "price", "priceInfo.currentPrice", "priceInfo.price",
+            "priceInfo.current_price", "price_info.currentPrice", "price_info.price", "minPrice", "min_price",
+        ),
+    )
 
 
 def _trusted_reference_price(item: dict, title: str, current_price: float | None) -> tuple[float | None, str | None]:
@@ -330,37 +340,64 @@ def _trusted_reference_price(item: dict, title: str, current_price: float | None
     return None, None
 
 
+def _trusted_reference_source(*, item: dict, title: str, current_price: float | None, reference_price: float) -> str | None:
+    for source, value in _reference_price_candidates(item):
+        if value is None or abs(value - reference_price) > 0.005:
+            continue
+        if _reference_price_trust(source) != "high":
+            continue
+        if current_price is not None and _reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=value):
+            continue
+        return source
+    return None
+
+
+def _best_reference_context_price(*, item: dict, current_price: float | None) -> tuple[float | None, str | None]:
+    best_price: float | None = None
+    best_source: str | None = None
+    for source, value in _reference_price_candidates(item):
+        if value is None or value <= 0:
+            continue
+        if current_price is not None and value <= current_price:
+            continue
+        if best_price is None or value > best_price:
+            best_price = value
+            best_source = source
+    return best_price, best_source
+
+
 def _reference_price_candidates(item: dict) -> list[tuple[str, float | None]]:
-    # Only high-trust sale/reference fields can prove true discounts. MSRP/list
-    # values are stored as proof attributes but not used to calculate % off.
-    references = [
-        ("wasPrice", _price_from_value(item.get("wasPrice"))),
-        ("priceInfo.wasPrice", _nested_price(item, "priceInfo", "wasPrice")),
-        ("regularPrice", _price_from_value(item.get("regularPrice"))),
-        ("strikeThroughPrice", _price_from_value(item.get("strikeThroughPrice"))),
-        ("priceInfo.strikeThroughPrice", _nested_price(item, "priceInfo", "strikeThroughPrice")),
-        ("comparisonPrice", _price_from_value(item.get("comparisonPrice"))),
-        ("priceInfo.comparisonPrice", _nested_price(item, "priceInfo", "comparisonPrice")),
-        ("listPrice", _price_from_value(item.get("listPrice"))),
-        ("priceInfo.listPrice", _nested_price(item, "priceInfo", "listPrice")),
-        ("msrp", _float_or_none(item.get("msrp"))),
-    ]
+    references = _price_candidates_for_names(
+        item,
+        (
+            "wasPrice", "was_price", "was", "priceInfo.wasPrice", "priceInfo.was_price", "price_info.wasPrice", "price_info.was_price",
+            "regularPrice", "regular_price", "priceInfo.regularPrice", "priceInfo.regular_price", "price_info.regularPrice", "price_info.regular_price",
+            "strikeThroughPrice", "strikethroughPrice", "strike_through_price", "strikethrough_price",
+            "priceInfo.strikeThroughPrice", "priceInfo.strikethroughPrice", "priceInfo.strike_through_price", "priceInfo.strikethrough_price",
+            "comparisonPrice", "comparison_price", "priceInfo.comparisonPrice", "priceInfo.comparison_price",
+            "originalPrice", "original_price", "priceInfo.originalPrice", "priceInfo.original_price",
+            "listPrice", "list_price", "priceInfo.listPrice", "priceInfo.list_price",
+            "retailPrice", "retail_price", "priceInfo.retailPrice", "priceInfo.retail_price",
+            "msrp", "priceInfo.msrp", "price_info.msrp",
+        ),
+    )
     references.extend(_best_marketplace_reference_prices(item))
     return references
 
 
 def _reference_price_trust(source: str) -> str:
-    source_key = source.lower()
-    if any(token in source_key for token in ("wasprice", "regularprice", "strikethrough", "comparisonprice")):
+    source_key = source.lower().replace("_", "")
+    high_tokens = ("wasprice", ".was", "regularprice", "strikethroughprice", "strikethrough", "comparisonprice", "originalprice")
+    if any(token in source_key for token in high_tokens):
         return "high"
     return "low"
 
 
 def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | None]]:
-    best_marketplace = item.get("bestMarketplacePrice")
+    best_marketplace = item.get("bestMarketplacePrice") or item.get("best_marketplace_price")
     if not isinstance(best_marketplace, dict):
         return []
-    return [("bestMarketplacePrice.price", _float_or_none(best_marketplace.get("price")))]
+    return [("bestMarketplacePrice.price", _float_or_none(best_marketplace.get("price") or best_marketplace.get("amount") or best_marketplace.get("value")))]
 
 
 def _first_trusted_reference(references: list[tuple[str, float | None]], *, title: str, current_price: float | None) -> tuple[float | None, str | None]:
@@ -373,6 +410,19 @@ def _first_trusted_reference(references: list[tuple[str, float | None]], *, titl
             continue
         return value, source
     return None, None
+
+
+def _price_candidates_for_names(item: dict, names: tuple[str, ...]) -> list[tuple[str, float | None]]:
+    return [(name, _price_from_path(item, name)) for name in names]
+
+
+def _price_from_path(item: dict, dotted_path: str) -> float | None:
+    value: Any = item
+    for part in dotted_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return _price_from_value(value)
 
 
 def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
@@ -427,36 +477,12 @@ def _first_money_amount(text: str) -> float | None:
 
 
 def _selected_offer_proof(item: dict[str, Any]) -> dict[str, str | None]:
-    seller_name = _clean_string(
-        item.get("sellerName")
-        or item.get("sellerDisplayName")
-        or item.get("seller")
-        or _nested_value(item, "sellerInfo", "sellerName")
-        or _nested_value(item, "sellerInfo", "name")
-        or _nested_value(item, "seller", "name")
-    )
-    seller_id = _clean_string(
-        item.get("sellerId")
-        or item.get("sellerID")
-        or _nested_value(item, "sellerInfo", "sellerId")
-        or _nested_value(item, "seller", "id")
-    )
-    fulfillment_type = _clean_string(
-        item.get("fulfillmentType")
-        or item.get("fulfillment")
-        or item.get("fulfillmentBadge")
-        or _nested_value(item, "fulfillmentSummary", "fulfillment")
-        or _nested_value(item, "fulfillmentSummary", "fulfillmentType")
-    )
+    seller_name = _clean_string(item.get("sellerName") or item.get("sellerDisplayName") or item.get("seller") or _nested_value(item, "sellerInfo", "sellerName") or _nested_value(item, "sellerInfo", "name") or _nested_value(item, "seller", "name"))
+    seller_id = _clean_string(item.get("sellerId") or item.get("sellerID") or _nested_value(item, "sellerInfo", "sellerId") or _nested_value(item, "seller", "id"))
+    fulfillment_type = _clean_string(item.get("fulfillmentType") or item.get("fulfillment") or item.get("fulfillmentBadge") or _nested_value(item, "fulfillmentSummary", "fulfillment") or _nested_value(item, "fulfillmentSummary", "fulfillmentType"))
     condition = _clean_string(item.get("condition") or item.get("conditionType") or _nested_value(item, "condition", "type"))
     is_walmart_seller = _is_walmart_seller(seller_name=seller_name, seller_id=seller_id, item=item)
-    return {
-        "seller_name": seller_name or ("Walmart" if is_walmart_seller else None),
-        "seller_id": seller_id,
-        "fulfillment_type": fulfillment_type,
-        "condition": condition,
-        "is_walmart_seller": "yes" if is_walmart_seller else "no" if seller_name or seller_id or item.get("marketplace") is True else None,
-    }
+    return {"seller_name": seller_name or ("Walmart" if is_walmart_seller else None), "seller_id": seller_id, "fulfillment_type": fulfillment_type, "condition": condition, "is_walmart_seller": "yes" if is_walmart_seller else "no" if seller_name or seller_id or item.get("marketplace") is True else None}
 
 
 def _seller_signals(*, seller_name: str | None, fulfillment_type: str | None, condition: str | None) -> list[str]:
@@ -490,21 +516,7 @@ def _seller_name_is_walmart(seller_name: str | None) -> bool:
 
 def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str], selected_offer: dict[str, str | None] | None = None, promotions: dict[str, str] | None = None) -> dict[str, str]:
     attrs: dict[str, str] = dict(variant_attrs)
-    for key, label in (
-        ("brandName", "brand"),
-        ("manufacturer", "manufacturer"),
-        ("modelNumber", "modelNumber"),
-        ("msrp", "msrp"),
-        ("customerRating", "rating"),
-        ("numReviews", "reviews"),
-        ("offerType", "offerType"),
-        ("productUrlText", "urlText"),
-        ("categoryNode", "categoryNode"),
-        ("unitPrice", "unitPrice"),
-        ("unit", "unit"),
-        ("size", "size"),
-        ("color", "color"),
-    ):
+    for key, label in (("brandName", "brand"), ("manufacturer", "manufacturer"), ("modelNumber", "modelNumber"), ("msrp", "msrp"), ("customerRating", "rating"), ("numReviews", "reviews"), ("offerType", "offerType"), ("productUrlText", "urlText"), ("categoryNode", "categoryNode"), ("unitPrice", "unitPrice"), ("unit", "unit"), ("size", "size"), ("color", "color")):
         value = _clean_string(item.get(key))
         if value and label not in attrs:
             attrs[label] = value
@@ -561,15 +573,14 @@ def _nested_value(item: dict[str, Any], *path: str) -> Any:
     return value
 
 
-def _nested_price(item: dict, *path: str) -> float | None:
-    value = _nested_value(item, *path)
-    return _price_from_value(value)
-
-
 def _price_from_value(value: Any) -> float | None:
     if isinstance(value, dict):
-        for key in ("price", "amount", "value", "displayValue"):
+        for key in ("price", "amount", "value", "displayValue", "displayPrice", "priceString", "currencyAmount", "currencyValue", "min", "max"):
             parsed = _float_or_none(value.get(key))
+            if parsed is not None:
+                return parsed
+        for child in value.values():
+            parsed = _price_from_value(child) if isinstance(child, dict) else None
             if parsed is not None:
                 return parsed
         return None
@@ -580,11 +591,9 @@ def _reference_price_looks_suspicious(*, source: str, title: str, current_price:
     ratio = reference_price / current_price
     if ratio <= 1:
         return True
-
-    source_key = source.lower()
+    source_key = source.lower().replace("_", "")
     title_text = title.lower()
-    explicit_sale_source = any(token in source_key for token in ("wasprice", "regularprice", "strikethrough", "comparisonprice"))
-
+    explicit_sale_source = any(token in source_key for token in ("wasprice", "regularprice", "strikethrough", "comparisonprice", "originalprice"))
     if _is_consumable_or_size_sensitive(title_text):
         if ratio >= 8:
             return True
@@ -598,13 +607,7 @@ def _reference_price_looks_suspicious(*, source: str, title: str, current_price:
 
 
 def _is_consumable_or_size_sensitive(title: str) -> bool:
-    keywords = (
-        "toilet paper", "toilet tissue", "bath tissue", "paper towel", "paper towels", "tissue", "napkin",
-        "detergent", "laundry", "trash bag", "dish soap", "cleaner", "cleaning", "wipes", "diaper", "razor",
-        "disposable", "shampoo", "conditioner", "body wash", "soap", "toothpaste", "toothbrush", "deodorant",
-        "car wash", "wash", "wax", "turtle wax", "armor all", "meguiar", "chemical guys", "spray", "fluid",
-        "oz", "fl oz", "ounce", "count", "ct", "pack", "refill", "bottle", "jug", "gallon",
-    )
+    keywords = ("toilet paper", "toilet tissue", "bath tissue", "paper towel", "paper towels", "tissue", "napkin", "detergent", "laundry", "trash bag", "dish soap", "cleaner", "cleaning", "wipes", "diaper", "razor", "disposable", "shampoo", "conditioner", "body wash", "soap", "toothpaste", "toothbrush", "deodorant", "car wash", "wash", "wax", "turtle wax", "armor all", "meguiar", "chemical guys", "spray", "fluid", "oz", "fl oz", "ounce", "count", "ct", "pack", "refill", "bottle", "jug", "gallon")
     return any(keyword in title for keyword in keywords)
 
 
@@ -612,7 +615,11 @@ def _float_or_none(value) -> float | None:
     if value is None or value == "":
         return None
     if isinstance(value, str):
-        value = value.replace("$", "").replace(",", "").strip()
+        text = value.replace("$", "").replace(",", "").strip()
+        money_match = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not money_match:
+            return None
+        value = money_match.group(0)
     try:
         return float(value)
     except (TypeError, ValueError):

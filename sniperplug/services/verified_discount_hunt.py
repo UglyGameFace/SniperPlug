@@ -11,6 +11,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
+from sniperplug.services.walmart_price_memory import PriceMemorySelection, select_price_intelligent_cards
 
 
 TRUE_DISCOUNT_MIN = 50
@@ -19,8 +20,6 @@ PAGES_PER_QUERY = 5
 SCAN_CONCURRENCY = 8
 ALL_VERIFIED_HUNT_KEY = "all_verified_discounts"
 
-# These are not user-facing presets. They are broad Walmart API discovery routes
-# used to pull verified markdown candidates from multiple sale/result surfaces.
 DISCOVERY_QUERIES: tuple[str, ...] = (
     "clearance",
     "rollback",
@@ -76,6 +75,8 @@ class VerifiedHuntResult:
     warnings: list[str]
     searches_attempted: int
     min_discount: int = TRUE_DISCOUNT_MIN
+    price_memory: PriceMemorySelection | None = None
+    total_verified_cards: int = 0
 
 
 async def run_verified_discount_hunt(preset: HuntPreset | None = None, requested_by: str = "") -> tuple[list[DealCard], int, int, list[str], int]:
@@ -83,7 +84,7 @@ async def run_verified_discount_hunt(preset: HuntPreset | None = None, requested
     return result.cards, result.pages_checked, result.products_checked, result.warnings, result.min_discount
 
 
-async def collect_verified_discount_cards(*, requested_by: str) -> VerifiedHuntResult:
+async def collect_verified_discount_cards(*, requested_by: str, db=None, guild_id: int | None = None, use_price_memory: bool = False) -> VerifiedHuntResult:
     warnings: list[str] = []
     all_candidates: list[SourceCandidate] = []
     pages_checked = 0
@@ -123,9 +124,16 @@ async def collect_verified_discount_cards(*, requested_by: str) -> VerifiedHuntR
         start_index=1,
         has_next_page=True,
     )
-    cards = deal_scanner.build_walmart_cards(aggregate, min_discount=TRUE_DISCOUNT_MIN, alerts_only=False)
-    cards = dedupe_cards(cards)
-    cards.sort(key=lambda card: (float(getattr(card, "discount", 0.0) or 0.0), -(float(getattr(card, "current_price", 0.0) or 0.0))), reverse=True)
+    verified_cards = deal_scanner.build_walmart_cards(aggregate, min_discount=TRUE_DISCOUNT_MIN, alerts_only=False)
+    verified_cards = dedupe_cards(verified_cards)
+    verified_cards.sort(key=lambda card: (float(getattr(card, "discount", 0.0) or 0.0), -(float(getattr(card, "current_price", 0.0) or 0.0))), reverse=True)
+
+    price_memory = None
+    cards = verified_cards
+    if use_price_memory and db is not None and guild_id is not None:
+        price_memory = await select_price_intelligent_cards(db, guild_id=guild_id, cards=verified_cards, fallback_retailer="walmart", limit=None)
+        cards = price_memory.shown
+
     return VerifiedHuntResult(
         cards=cards,
         pages_checked=pages_checked,
@@ -133,11 +141,12 @@ async def collect_verified_discount_cards(*, requested_by: str) -> VerifiedHuntR
         warnings=warnings,
         searches_attempted=searches_attempted,
         min_discount=TRUE_DISCOUNT_MIN,
+        price_memory=price_memory,
+        total_verified_cards=len(verified_cards),
     )
 
 
 def install_verified_discount_hunt() -> None:
-    """Make /hunt a global verified-discount hunt, not a category preset menu."""
     if getattr(deal_scanner, "_sniperplug_verified_discount_hunt_installed", False):
         return
     deal_scanner.HUNT_PRESETS.clear()
@@ -175,7 +184,12 @@ async def verified_hunt_button_callback(self, interaction: discord.Interaction) 
         if health_error:
             await interaction.followup.send(health_error, ephemeral=True)
             return
-        result = await collect_verified_discount_cards(requested_by=str(interaction.user.id))
+        result = await collect_verified_discount_cards(
+            requested_by=str(interaction.user.id),
+            db=getattr(interaction.client, "db", None),
+            guild_id=interaction.guild_id,
+            use_price_memory=True,
+        )
         summary = build_verified_hunt_result_embed(result)
         public_result = await maybe_post_public_deal_cards(
             bot=interaction.client,
@@ -213,32 +227,33 @@ def build_verified_hunt_menu_embed() -> discord.Embed:
         value=f"{len(DISCOVERY_QUERIES)} broad discovery routes × {len(SORT_PASSES)} sort passes × up to {PAGES_PER_QUERY} pages.",
         inline=False,
     )
-    embed.set_footer(text="Manual hunt posts/caches through the normal duplicate guard; lower prices can appear again.")
+    embed.set_footer(text="Price memory hides same-price repeats; lower prices, new lows, better coupon/cash, and offer changes can reappear.")
     return embed
 
 
 def build_verified_hunt_summary(preset: HuntPreset, pages_checked: int, products_checked: int, found_count: int, warnings: tuple[str, ...], shown_discount: int) -> discord.Embed:
-    result = VerifiedHuntResult(cards=[], pages_checked=pages_checked, products_checked=products_checked, warnings=list(warnings), searches_attempted=pages_checked, min_discount=TRUE_DISCOUNT_MIN)
-    embed = build_verified_hunt_result_embed(result)
-    embed.description = (embed.description or "") + f"\nFound: **{found_count} verified card(s)**"
-    return embed
+    result = VerifiedHuntResult(cards=[], pages_checked=pages_checked, products_checked=products_checked, warnings=list(warnings), searches_attempted=pages_checked, min_discount=TRUE_DISCOUNT_MIN, total_verified_cards=found_count)
+    return build_verified_hunt_result_embed(result)
 
 
 def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embed:
+    found_total = result.total_verified_cards if result.total_verified_cards else len(result.cards)
     embed = discord.Embed(
         title="🚨 Verified 50%+ Walmart Hunt Results",
         description=(
             f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} API result pages**\n"
             f"Discovery routes: **{len(DISCOVERY_QUERIES)}** • Sort passes: **{len(SORT_PASSES)}** • Page size: **{RESULTS_PER_PAGE}**\n"
             f"Minimum discount: **{result.min_discount}%+ verified by Walmart API fields**\n"
-            f"Found: **{len(result.cards)} verified card(s)**"
+            f"Verified total: **{found_total}** • Shown now: **{len(result.cards)}**"
         ),
         color=discord.Color.red() if result.cards else discord.Color.dark_gold(),
     )
+    if result.price_memory is not None:
+        embed.add_field(name="🧠 Price memory", value=result.price_memory.summary_line(), inline=False)
     if not result.cards:
         embed.add_field(
-            name="No verified 50%+ API markdowns found",
-            value="SniperPlug did not lower the threshold or show filler. Try again later when Walmart returns stronger markdown proof.",
+            name="No new verified 50%+ API markdowns to show",
+            value="Either Walmart returned no trusted 50%+ markdowns, or every verified result was already seen at the same/higher price. Lower prices, new lows, offer changes, and better coupon/cash values can still reappear.",
             inline=False,
         )
     if result.warnings:

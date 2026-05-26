@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from sniperplug.cogs.deal_scanner import DealCard, PresetResultView, provider_health_error_message
+from sniperplug.cogs.deal_scanner import DealCard, provider_health_error_message
 from sniperplug.cogs.public_alerts import (
     default_auto_scan_config,
     format_daily_limit,
@@ -13,14 +13,11 @@ from sniperplug.cogs.public_alerts import (
 )
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
-from sniperplug.services.verified_discount_hunt import (
-    AUTO_DISCOVERY_RETAILER,
-    collect_verified_discount_cards,
-    send_card_batches,
-)
+from sniperplug.services.verified_discount_hunt import collect_verified_discount_cards, send_card_batches
 
 DISCORD_EMBED_MESSAGE_LIMIT = 6000
 SAFE_EMBED_MESSAGE_LIMIT = 5200
+AUTO_DISCOVERY_RETAILER = "walmart"
 
 
 class AutoDiscoveryCog(commands.Cog):

@@ -4,13 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from sniperplug.cogs.deal_scanner import (
-    HUNT_PRESETS,
-    DealCard,
-    PresetResultView,
-    provider_health_error_message,
-    run_preset_hunt,
-)
+from sniperplug.cogs.deal_scanner import DealCard, provider_health_error_message
 from sniperplug.cogs.public_alerts import (
     default_auto_scan_config,
     format_daily_limit,
@@ -19,6 +13,7 @@ from sniperplug.cogs.public_alerts import (
 )
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
+from sniperplug.services.verified_discount_hunt import collect_verified_discount_cards, send_card_batches
 
 DISCORD_EMBED_MESSAGE_LIMIT = 6000
 SAFE_EMBED_MESSAGE_LIMIT = 5200
@@ -31,7 +26,7 @@ class AutoDiscoveryCog(commands.Cog):
 
     @app_commands.command(
         name="discover",
-        description="Let SniperPlug manually hunt across categories without making you search.",
+        description="Manually scan Walmart for verified 50%+ discounts without picking categories.",
     )
     async def discover(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -47,68 +42,35 @@ class AutoDiscoveryCog(commands.Cog):
 
         auto_scan_settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         gate_settings = auto_scan_settings.get(AUTO_DISCOVERY_RETAILER, default_auto_scan_config(AUTO_DISCOVERY_RETAILER))
-        manual_note = manual_discover_note(gate_settings)
-
-        all_cards: list[DealCard] = []
-        total_pages_checked = 0
-        total_products_checked = 0
-        warnings: list[str] = [manual_note]
-        category_notes: list[str] = []
-
-        for preset in HUNT_PRESETS.values():
-            cards, pages_checked, products_checked, preset_warnings, shown_discount = await run_preset_hunt(
-                preset=preset,
-                requested_by=str(interaction.user.id),
-            )
-            total_pages_checked += pages_checked
-            total_products_checked += products_checked
-            warnings.extend(w for w in preset_warnings if w not in warnings)
-            if cards:
-                category_notes.append(
-                    f"{preset.emoji} **{preset.label}**: {len(cards)} match(es), showing {shown_discount}%+ best available"
-                )
-                all_cards.extend(cards[:5])
-            else:
-                category_notes.append(f"{preset.emoji} **{preset.label}**: no useful matches right now")
-
-        all_cards = dedupe_cards(all_cards)
-        all_cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
+        result = await collect_verified_discount_cards(requested_by=str(interaction.user.id))
         fresh_selection = await select_fresh_deal_cards(
             self.bot.db,
             guild_id=interaction.guild_id,
-            cards=all_cards,
+            cards=result.cards,
             fallback_retailer=AUTO_DISCOVERY_RETAILER,
-            limit=5,
+            limit=max(len(result.cards), 1),
         )
         shown_cards = fresh_selection.fresh
         public_result = await maybe_post_public_deal_cards(
             bot=self.bot,
             guild_id=interaction.guild_id,
             cards=shown_cards,
-            source_label="discover",
+            source_label="discover:verified_50_plus",
             fallback_retailer=AUTO_DISCOVERY_RETAILER,
         )
 
         embed = discord.Embed(
-            title="🤖 SniperPlug Discovery",
+            title="🤖 Verified Walmart Discovery",
             description=(
-                "I manually searched the deal source across categories for you. No product names, pages, or filters needed.\n\n"
-                f"Checked: **{total_products_checked} products** across **{total_pages_checked} smart searches**\n"
-                f"Found: **{len(all_cards)} candidate(s)**\n"
+                "Manual `/discover` now uses the same broad verified 50%+ hunt as `/hunt`.\n"
+                "No category presets. No relaxed filler. No guessed discount math.\n\n"
+                f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} API result pages**\n"
+                f"Found: **{len(result.cards)} verified 50%+ card(s)**\n"
                 f"Fresh filter: {fresh_selection.summary_line()}"
             ),
-            color=discord.Color.orange() if all_cards else discord.Color.dark_gold(),
+            color=discord.Color.red() if shown_cards else discord.Color.dark_gold(),
         )
-        embed.add_field(
-            name="Category results",
-            value="\n".join(category_notes[:8]) or "No category results yet.",
-            inline=False,
-        )
-        embed.add_field(
-            name="Auto-scan setting",
-            value=discover_auto_scan_status(gate_settings),
-            inline=False,
-        )
+        embed.add_field(name="Auto-scan setting", value=discover_auto_scan_status(gate_settings), inline=False)
         if public_result.any_activity:
             embed.add_field(
                 name="📣 Public posting",
@@ -120,15 +82,15 @@ class AutoDiscoveryCog(commands.Cog):
                 ),
                 inline=False,
             )
-        if warnings:
-            embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
-        embed.set_footer(text="Manual /discover hides repeated same-price deals and allows lower-price repeats.")
+        if result.warnings:
+            embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
+        embed.set_footer(text="Only API-verified 50%+ markdowns are shown. Same-price repeats are hidden; lower prices can appear again.")
 
         if not shown_cards:
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        await send_discovery_results(interaction, summary=embed, cards=shown_cards)
+        await send_card_batches(interaction, summary=embed, cards=shown_cards)
 
     @discover.error
     async def discover_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -137,18 +99,6 @@ class AutoDiscoveryCog(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
-
-
-async def send_discovery_results(interaction: discord.Interaction, *, summary: discord.Embed, cards: list[DealCard]) -> None:
-    await interaction.followup.send(embed=summary, ephemeral=True)
-
-    batches = batch_cards_for_embed_limit(cards, limit=SAFE_EMBED_MESSAGE_LIMIT)
-    for batch in batches:
-        await interaction.followup.send(
-            embeds=[card.embed for card in batch],
-            view=PresetResultView(batch),
-            ephemeral=True,
-        )
 
 
 def manual_discover_note(settings: dict) -> str:

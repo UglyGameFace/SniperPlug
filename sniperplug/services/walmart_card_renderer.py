@@ -1,20 +1,31 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
+import discord
+
 from sniperplug.cogs import deal_scanner
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.candidate_pipeline import evaluate_candidate
 from sniperplug.services.price_proof import verified_deal_value
-from sniperplug.services.routing import route_label
 from sniperplug.services.safe_links import product_link_choices
 
 
-MAX_CARD_FIELD_CHARS = 900
-MAX_DETAILS_FIELD_CHARS = 850
+MAX_FIELD_VALUE = 1024
+SAFE_FIELD_VALUE = 950
 
 
 def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_only: bool) -> list[deal_scanner.DealCard]:
+    """Build Walmart cards using only API-returned fields and labeled API math.
+
+    The card surface must not present guesses as facts. Heuristics may decide
+    sorting/filtering, but visible text is restricted to:
+    - direct fields normalized from the Walmart API payload
+    - API-derived math from those fields, labeled as derived
+    - explicit notes that a field was not returned/trusted
+    """
     cards: list[deal_scanner.DealCard] = []
     for candidate in result.candidates:
         decision = evaluate_candidate(candidate)
@@ -44,7 +55,7 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
             asin=deal.asin,
         )
         card = deal_scanner.DealCard(
-            embed=build_deal_card_embed(candidate, deal, decision, proof, choices),
+            embed=build_deal_card_embed(candidate, deal, proof, choices),
             url=deal.product_url,
             label=deal_scanner.short_button_label(deal.title),
             score=decision.anomaly.score,
@@ -61,214 +72,214 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
     return cards
 
 
-def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, decision, proof, link_choices=()):
+def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, proof, link_choices=()) -> discord.Embed:
     discount = proof.discount_percent or 0.0
-    score = decision.anomaly.score
-    title_prefix = f"{discount:.0f}% OFF" if proof.discount_percent is not None else "VALUE WATCH"
-    embed = deal_scanner.discord.Embed(
+    title_prefix = f"{discount:.0f}% API-derived markdown" if proof.discount_percent is not None else "Walmart API result"
+    embed = discord.Embed(
         title=f"{deal_scanner.heat_emoji(discount, deal.current_price)} {title_prefix} • {deal_scanner.trim_title(deal.title, 68)}",
         url=deal.product_url,
-        color=deal_scanner.embed_color(discount, score),
+        color=deal_scanner.embed_color(discount, 0),
     )
     if deal.image_url:
         embed.set_thumbnail(url=deal.image_url)
 
-    embed.add_field(name="💰 Price", value=price_block(deal, proof), inline=False)
-
-    compact_lines: list[str] = []
-    compact_lines.append(f"Score: **{deal_scanner.friendly_score_level(decision.anomaly.level)}** `{score}/250`")
-    compact_lines.append(f"Route: **{route_label(decision.route.route)}**")
-    compact_lines.append(f"Would alert: **{'Yes' if decision.should_alert and proof.discount_percent is not None else 'No'}**")
-    stock = compact_stock_line(candidate, deal)
-    if stock:
-        compact_lines.append(stock)
-    option = compact_option_line(deal)
-    if option:
-        compact_lines.append(option)
-    seller = compact_seller_line(candidate, deal)
-    if seller:
-        compact_lines.append(seller)
-    embed.add_field(name="📊 Proof", value=truncate("\n".join(compact_lines), MAX_CARD_FIELD_CHARS), inline=False)
-
-    value_lines = list(proof.effective_value_notes)
-    if value_lines:
-        embed.add_field(name="💵 Coupon / Cash", value=truncate("\n".join(f"• {line}" for line in value_lines), 350), inline=False)
-
-    details = api_detail_lines(candidate, deal)
-    if details:
-        embed.add_field(name="🧾 Walmart API details", value=truncate("\n".join(details), MAX_DETAILS_FIELD_CHARS), inline=False)
-
-    reason_lines = proof_lines_for(candidate, decision, proof)
-    if reason_lines:
-        embed.add_field(name="🔎 Why", value=truncate("\n".join(reason_lines[:3]), 500), inline=False)
+    append_field_chunks(embed, "💰 Price from Walmart API", price_lines(candidate, deal, proof))
+    append_field_chunks(embed, "🧾 Product identity from API", identity_lines(candidate, deal))
+    append_field_chunks(embed, "🏷️ Offer / seller from API", offer_lines(candidate, deal))
+    append_field_chunks(embed, "📦 Fulfillment / stock from API", fulfillment_lines(candidate, deal))
+    append_field_chunks(embed, "🎯 Variant / option from API", variant_lines(candidate, deal))
+    append_field_chunks(embed, "💵 Coupon / Walmart Cash from API", value_lines(deal, proof))
+    append_field_chunks(embed, "🧮 API evidence used", evidence_lines(candidate, deal, proof))
 
     link_block = deal_scanner.product_link_block(link_choices, fallback_url=deal.product_url)
     if link_block:
         embed.add_field(name="🔗 Links", value=link_block, inline=False)
 
-    footer_bits = [f"SKU: {deal.sku or 'n/a'}"]
+    footer_bits = ["No guessed card values"]
+    if deal.sku:
+        footer_bits.append(f"SKU: {deal.sku}")
     if deal.upc:
         footer_bits.append(f"UPC: {deal.upc}")
-    footer_bits.append("trusted price proof required")
     embed.set_footer(text=truncate(" • ".join(footer_bits), 180))
     return embed
 
 
-def price_block(deal: NormalizedDeal, proof) -> str:
-    if deal.current_price is None:
-        return "Current price unavailable"
+def price_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> list[str]:
     attrs = deal.variant_attributes or {}
-    lines = [f"Current: **{money(deal.current_price)}**"]
+    lines: list[str] = []
+    if deal.current_price is None:
+        lines.append("• Current price: **not returned by Walmart API**")
+    else:
+        current_source = api_signal(candidate.signals, "Walmart current price source") or attrs.get("currentPriceSource")
+        source_text = f" `{current_source}`" if current_source else ""
+        lines.append(f"• Current: **{money(deal.current_price)}**{source_text}")
+
     if proof.discount_percent is not None and deal.typical_price:
-        source = attrs.get("trustedReferenceSource")
+        source = attrs.get("trustedReferenceSource") or api_signal(candidate.signals, "Walmart reference price source")
         source_text = f" `{source}`" if source else ""
-        lines.append(f"Was/typical: ~~{money(deal.typical_price)}~~{source_text}")
-        lines.append(f"Verified save: **{money(proof.savings_amount)} ({proof.discount_percent:.0f}%)**")
-        lines.append("Proof: **trusted Walmart markdown reference**")
+        lines.append(f"• Was/typical: ~~{money(deal.typical_price)}~~{source_text}")
+        lines.append(f"• API-derived savings: **{money(proof.savings_amount)} ({proof.discount_percent:.0f}%)**")
+        lines.append("• Discount math status: **trusted Walmart reference used**")
     else:
         context_price = float_or_none(attrs.get("referenceContextPrice"))
         context_source = attrs.get("referenceContextSource")
-        if context_price and context_price > deal.current_price:
+        if context_price and deal.current_price is not None and context_price > deal.current_price:
             source_text = f" `{context_source}`" if context_source else ""
-            lines.append(f"Reference shown: **{money(context_price)}**{source_text}")
-            lines.append("Was/typical: **not counted for % off**")
+            lines.append(f"• Reference shown: **{money(context_price)}**{source_text}")
+            lines.append("• Discount math status: **reference shown but not counted**")
         else:
-            lines.append("Was/typical: **not returned/trusted**")
-        lines.append("Proof: **no trusted markdown proof**")
+            lines.append("• Was/typical: **not returned or not trusted by Walmart API**")
+            lines.append("• Discount math status: **no trusted Walmart reference**")
+
     if deal.coupon_savings:
-        lines.append(f"Coupon: **{money(deal.coupon_savings)}**")
+        lines.append(f"• Coupon API value: **{money(deal.coupon_savings)}**")
     cash = float_or_none(attrs.get("walmartCashSavings"))
     if cash:
-        lines.append(f"Walmart Cash: **{money(cash)} value**")
-    return truncate("\n".join(lines), 650)
+        lines.append(f"• Walmart Cash API value: **{money(cash)}**")
+    return lines
 
 
-def compact_stock_line(candidate: SourceCandidate, deal: NormalizedDeal) -> str | None:
-    parts: list[str] = []
-    if candidate.stock_status:
-        parts.append(candidate.stock_status[:40])
-    if candidate.can_add_to_cart is True:
-        parts.append("add-to-cart seen")
-    elif candidate.can_add_to_cart is False:
-        parts.append("cart not confirmed")
-    if deal.variant_attributes.get("availableOnline") == "yes":
-        parts.append("online available")
-    return "Stock: " + ", ".join(parts[:3]) if parts else None
+def identity_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
+    attrs = deal.variant_attributes or {}
+    lines = [
+        maybe_line("Item ID / SKU", deal.sku),
+        maybe_line("UPC", deal.upc),
+        maybe_line("Brand", attrs.get("brand")),
+        maybe_line("Model", deal.model or attrs.get("model") or attrs.get("modelNumber")),
+        maybe_line("Category", attrs.get("category")),
+        maybe_line("Category node", attrs.get("categoryNode")),
+        maybe_line("Rating", attrs.get("rating")),
+        maybe_line("Reviews", attrs.get("reviews")),
+        maybe_line("API product id", candidate.product_id),
+    ]
+    return compact(lines)
 
 
-def compact_option_line(deal: NormalizedDeal) -> str | None:
-    if deal.variant_label:
-        return f"Option: {truncate(deal.variant_label, 80)}"
-    attrs = deal.variant_attributes
-    for key in ("packSize", "size", "unitSize", "color", "platform"):
-        value = attrs.get(key)
-        if value:
-            return f"{key}: {truncate(value, 80)}"
-    return None
+def offer_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
+    attrs = deal.variant_attributes or {}
+    lines = [
+        maybe_line("Selected offer ID", deal.selected_offer_id),
+        maybe_line("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")),
+        maybe_line("Seller ID", attrs.get("sellerId")),
+        maybe_line("Walmart seller", attrs.get("walmartSeller")),
+        maybe_line("Marketplace", attrs.get("marketplace")),
+        maybe_line("Offer type", attrs.get("offerType")),
+        maybe_line("Condition", candidate.condition or deal.condition or attrs.get("condition")),
+        maybe_line("Max order qty", attrs.get("maxOrderQty")),
+    ]
+    return compact(lines)
 
 
-def compact_seller_line(candidate: SourceCandidate, deal: NormalizedDeal) -> str | None:
-    seller = candidate.seller_name or deal.seller_name or deal.variant_attributes.get("seller")
-    condition = candidate.condition or deal.condition or deal.variant_attributes.get("condition")
-    bits = []
-    if seller:
-        bits.append(f"Seller: {truncate(seller, 60)}")
-    if condition:
-        bits.append(f"Condition: {truncate(condition, 60)}")
-    return " • ".join(bits) if bits else None
+def fulfillment_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
+    attrs = deal.variant_attributes or {}
+    add_to_cart = "yes" if candidate.can_add_to_cart is True else "no/unknown" if candidate.can_add_to_cart is False else None
+    lines = [
+        maybe_line("Stock", candidate.stock_status),
+        maybe_line("Add-to-cart", add_to_cart),
+        maybe_line("Available online", attrs.get("availableOnline")),
+        maybe_line("Fulfillment", candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")),
+        maybe_line("Ship to store", attrs.get("shipToStore")),
+        maybe_line("Free ship to store", attrs.get("freeShipToStore")),
+        maybe_line("2-3 day shipping", attrs.get("twoThreeDayShipping")),
+    ]
+    return compact(lines)
 
 
-def api_detail_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
+def variant_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
+    attrs = deal.variant_attributes or {}
+    lines = [
+        maybe_line("Selected option", deal.variant_label),
+        maybe_line("Pack", attrs.get("packSize") or deal.pack_size),
+        maybe_line("Size", attrs.get("size")),
+        maybe_line("Unit", attrs.get("unitSize") or attrs.get("unit")),
+        maybe_line("Color", attrs.get("color") or deal.color),
+        maybe_line("Platform", attrs.get("platform") or deal.platform),
+        maybe_line("Parent title", deal.parent_title if deal.parent_title and deal.parent_title != deal.title else None),
+        maybe_line("Option warning", candidate.option_mismatch_warning or deal.option_mismatch_warning),
+    ]
+    return compact(lines)
+
+
+def value_lines(deal: NormalizedDeal, proof) -> list[str]:
+    attrs = deal.variant_attributes or {}
+    lines = [f"• {line}" for line in proof.effective_value_notes]
+    coupon = float_or_none(attrs.get("couponSavings"))
+    cash = float_or_none(attrs.get("walmartCashSavings"))
+    if coupon and not any("coupon" in line.lower() for line in lines):
+        lines.append(f"• Coupon API value: **{money(coupon)}**")
+    if cash and not any("cash" in line.lower() for line in lines):
+        lines.append(f"• Walmart Cash API value: **{money(cash)}**")
+    return lines
+
+
+def evidence_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> list[str]:
     attrs = deal.variant_attributes or {}
     lines: list[str] = []
-
-    ids = []
-    if deal.sku:
-        ids.append(f"SKU `{deal.sku}`")
-    if deal.upc:
-        ids.append(f"UPC `{deal.upc}`")
-    if deal.selected_offer_id:
-        ids.append(f"Offer `{deal.selected_offer_id}`")
-    if ids:
-        lines.append("• " + " • ".join(ids[:3]))
-
-    seller_bits = []
-    seller = candidate.seller_name or deal.seller_name or attrs.get("seller")
-    if seller:
-        seller_bits.append(f"Seller **{seller}**")
-    walmart_seller = attrs.get("walmartSeller")
-    if walmart_seller:
-        seller_bits.append(f"Walmart seller: **{walmart_seller}**")
-    fulfillment = candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")
-    if fulfillment:
-        seller_bits.append(f"Fulfillment **{fulfillment}**")
-    condition = candidate.condition or deal.condition or attrs.get("condition")
-    if condition:
-        seller_bits.append(f"Condition **{condition}**")
-    if seller_bits:
-        lines.append("• " + " • ".join(seller_bits[:4]))
-
-    flags = []
-    for key, label in (("rollback", "Rollback"), ("clearance", "Clearance"), ("specialBuy", "Special Buy"), ("marketplace", "Marketplace"), ("bundle", "Bundle"), ("availableOnline", "Online"), ("shipToStore", "Ship-to-store"), ("freeShipToStore", "Free ship-to-store"), ("twoThreeDayShipping", "2-3 day shipping")):
+    for label, key in (
+        ("Current price source", "currentPriceSource"),
+        ("Trusted reference source", "trustedReferenceSource"),
+        ("Reference context source", "referenceContextSource"),
+    ):
         value = attrs.get(key)
         if value:
-            flags.append(f"{label}: **{value}**")
-    if flags:
-        lines.append("• " + " • ".join(flags[:5]))
-
-    product_bits = []
-    for key, label in (("brand", "Brand"), ("modelNumber", "Model"), ("rating", "Rating"), ("reviews", "Reviews"), ("offerType", "Offer type"), ("maxOrderQty", "Max qty"), ("category", "Category")):
-        value = attrs.get(key)
-        if value:
-            product_bits.append(f"{label}: **{truncate(value, 40)}**")
-    if product_bits:
-        lines.append("• " + " • ".join(product_bits[:4]))
-
-    option_bits = []
-    if deal.variant_label:
-        option_bits.append(f"Selected option: **{truncate(deal.variant_label, 60)}**")
-    for key, label in (("packSize", "Pack"), ("size", "Size"), ("unitSize", "Unit"), ("color", "Color"), ("platform", "Platform")):
-        value = attrs.get(key)
-        if value:
-            option_bits.append(f"{label}: **{truncate(value, 40)}**")
-    if option_bits:
-        lines.append("• " + " • ".join(option_bits[:4]))
-
-    proof_bits = []
-    reference_trusted = attrs.get("referencePriceTrusted")
-    if reference_trusted:
-        proof_bits.append(f"Reference trusted: **{reference_trusted}**")
-    trusted_price = float_or_none(attrs.get("trustedReferencePrice"))
-    trusted_source = attrs.get("trustedReferenceSource")
-    if trusted_price:
-        proof_bits.append(f"Trusted was/typical: **{money(trusted_price)}** `{trusted_source or 'unknown'}`")
-    context_price = float_or_none(attrs.get("referenceContextPrice"))
-    context_source = attrs.get("referenceContextSource")
-    if context_price:
-        proof_bits.append(f"Reference shown/not counted: **{money(context_price)}** `{context_source or 'unknown'}`")
+            lines.append(f"• {label}: `{value}`")
+    for prefix in (
+        "Walmart current price source",
+        "Walmart reference price source",
+        "Walmart reference shown",
+        "ignored low-confidence Walmart reference price",
+        "selected option",
+        "Walmart coupon detected",
+        "Walmart Cash detected",
+    ):
+        found = api_signal(candidate.signals, prefix, keep_prefix=True)
+        if found:
+            lines.append(f"• {found}")
     if attrs.get("msrp"):
-        proof_bits.append(f"MSRP shown but not counted: **{attrs['msrp']}**")
-    if attrs.get("couponSavings"):
-        proof_bits.append(f"Coupon API value: **{money(float(attrs['couponSavings']))}**")
-    if attrs.get("walmartCashSavings"):
-        proof_bits.append(f"Walmart Cash API value: **{money(float(attrs['walmartCashSavings']))}**")
-    if proof_bits:
-        lines.append("• " + " • ".join(proof_bits[:4]))
-
-    return lines[:6]
+        lines.append(f"• MSRP returned: `{attrs['msrp']}` — not counted unless trusted reference rules pass")
+    if proof.discount_percent is None and not lines:
+        lines.append("• No trusted Walmart markdown reference was returned for discount math")
+    return deal_scanner.dedupe_lines(lines)
 
 
-def proof_lines_for(candidate: SourceCandidate, decision, proof) -> list[str]:
-    lines: list[str] = []
-    if proof.price_proof_level == "trusted_reference_price":
-        lines.append("• trusted Walmart reference used for % off")
-    else:
-        lines.append("• no trusted was/strike/reference price; % off suppressed")
-    for reason in decision.anomaly.reasons[:1]:
-        lines.append(f"• {reason}")
-    important_signals = [signal for signal in candidate.signals if signal.startswith("Walmart current price source") or signal.startswith("Walmart reference price source") or signal.startswith("Walmart reference shown") or signal.startswith("ignored low-confidence") or signal.startswith("selected option") or signal.startswith("Walmart coupon") or signal.startswith("Walmart Cash") or signal in {"rollback", "clearance", "special buy", "marketplace seller", "bundle"}]
-    lines.extend(f"• {truncate(signal, 120)}" for signal in important_signals[:2])
-    return deal_scanner.dedupe_lines(lines) or ["• Product link and current price returned by Walmart API"]
+def append_field_chunks(embed: discord.Embed, name: str, lines: Iterable[str]) -> None:
+    clean_lines = [line for line in lines if line]
+    if not clean_lines:
+        return
+    chunks: list[str] = []
+    current = ""
+    for line in clean_lines:
+        safe_line = truncate(line, SAFE_FIELD_VALUE)
+        candidate = safe_line if not current else current + "\n" + safe_line
+        if len(candidate) > SAFE_FIELD_VALUE:
+            if current:
+                chunks.append(current)
+            current = safe_line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    for index, chunk in enumerate(chunks[:4]):
+        field_name = name if index == 0 else f"{name} cont. {index + 1}"
+        embed.add_field(name=field_name, value=chunk[:MAX_FIELD_VALUE], inline=False)
+
+
+def maybe_line(label: str, value) -> str | None:
+    if value is None or value == "":
+        return None
+    return f"• {label}: **{truncate(str(value), 120)}**"
+
+
+def compact(lines: Iterable[str | None]) -> list[str]:
+    return [line for line in lines if line]
+
+
+def api_signal(signals, prefix: str, *, keep_prefix: bool = False) -> str | None:
+    for signal in signals or ():
+        text = str(signal)
+        if text.startswith(prefix):
+            return text if keep_prefix else text.split(":", 1)[1].strip() if ":" in text else text
+    return None
 
 
 def strict_discount_percent(current_price: float | None, typical_price: float | None) -> float | None:

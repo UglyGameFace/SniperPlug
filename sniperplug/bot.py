@@ -25,7 +25,7 @@ from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider
 from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
-from sniperplug.services.resale_hunt import install_resale_hunt_preset
+from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
 from sniperplug.services.walmart_discovery_expansion import install_walmart_discovery_expansion
 from sniperplug.services.walmart_renderer_install import install_walmart_renderer
 from sniperplug.storage.db import Database
@@ -48,8 +48,8 @@ class SniperPlugBot(commands.Bot):
         install_safe_followup_send_patch()
         install_walmart_renderer()
         install_manual_posting_explainer_patch()
-        install_resale_hunt_preset()
         install_walmart_discovery_expansion()
+        install_verified_discount_hunt()
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
         provider_registry.register(WalmartProvider(configured=False))

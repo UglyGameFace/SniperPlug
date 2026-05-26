@@ -27,6 +27,7 @@ from sniperplug.services.embed_delivery_patch import install_safe_followup_send_
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
 from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
 from sniperplug.services.walmart_discovery_expansion import install_walmart_discovery_expansion
+from sniperplug.services.walmart_price_guard import install_walmart_price_guard
 from sniperplug.services.walmart_renderer_install import install_walmart_renderer
 from sniperplug.storage.db import Database
 
@@ -46,6 +47,7 @@ class SniperPlugBot(commands.Bot):
         await self.db.init()
 
         install_safe_followup_send_patch()
+        install_walmart_price_guard()
         install_walmart_renderer()
         install_manual_posting_explainer_patch()
         install_walmart_discovery_expansion()

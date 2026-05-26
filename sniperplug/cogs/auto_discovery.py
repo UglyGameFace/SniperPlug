@@ -17,6 +17,7 @@ from sniperplug.cogs.public_alerts import (
     format_interval,
     list_retailer_auto_scan_settings,
 )
+from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
 DISCORD_EMBED_MESSAGE_LIMIT = 6000
@@ -66,13 +67,20 @@ class AutoDiscoveryCog(commands.Cog):
                 category_notes.append(
                     f"{preset.emoji} **{preset.label}**: {len(cards)} match(es), showing {shown_discount}%+ best available"
                 )
-                all_cards.extend(cards[:3])
+                all_cards.extend(cards[:5])
             else:
                 category_notes.append(f"{preset.emoji} **{preset.label}**: no useful matches right now")
 
         all_cards = dedupe_cards(all_cards)
         all_cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
-        shown_cards = all_cards[:5]
+        fresh_selection = await select_fresh_deal_cards(
+            self.bot.db,
+            guild_id=interaction.guild_id,
+            cards=all_cards,
+            fallback_retailer=AUTO_DISCOVERY_RETAILER,
+            limit=5,
+        )
+        shown_cards = fresh_selection.fresh
         public_result = await maybe_post_public_deal_cards(
             bot=self.bot,
             guild_id=interaction.guild_id,
@@ -86,7 +94,8 @@ class AutoDiscoveryCog(commands.Cog):
             description=(
                 "I manually searched the deal source across categories for you. No product names, pages, or filters needed.\n\n"
                 f"Checked: **{total_products_checked} products** across **{total_pages_checked} smart searches**\n"
-                f"Found: **{len(all_cards)} candidate(s)**"
+                f"Found: **{len(all_cards)} candidate(s)**\n"
+                f"Fresh filter: {fresh_selection.summary_line()}"
             ),
             color=discord.Color.orange() if all_cards else discord.Color.dark_gold(),
         )
@@ -113,7 +122,7 @@ class AutoDiscoveryCog(commands.Cog):
             )
         if warnings:
             embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
-        embed.set_footer(text="Manual /discover does not burn auto-scan interval gates. Duplicate protection still prevents repeat public posts.")
+        embed.set_footer(text="Manual /discover hides repeated same-price deals and allows lower-price repeats.")
 
         if not shown_cards:
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -131,12 +140,6 @@ class AutoDiscoveryCog(commands.Cog):
 
 
 async def send_discovery_results(interaction: discord.Interaction, *, summary: discord.Embed, cards: list[DealCard]) -> None:
-    """Send Discovery results without tripping Discord's 6000-char embed payload cap.
-
-    Walmart proof cards can be rich. Discord counts the combined embed text in a
-    single message, so summary + five rich cards can exceed 6000 even when each
-    individual card is valid. Send the summary first, then cards in safe chunks.
-    """
     await interaction.followup.send(embed=summary, ephemeral=True)
 
     batches = batch_cards_for_embed_limit(cards, limit=SAFE_EMBED_MESSAGE_LIMIT)
@@ -204,7 +207,7 @@ def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:
     seen: set[str] = set()
     unique: list[DealCard] = []
     for card in cards:
-        key = getattr(card, "public_post_key", None) or card.url or card.label
+        key = getattr(card, "public_post_key", None) or getattr(card, "selected_offer_id", None) or getattr(card, "sku", None) or getattr(card, "upc", None) or card.url or card.label
         if key in seen:
             continue
         seen.add(key)

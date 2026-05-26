@@ -26,6 +26,7 @@ from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
 from sniperplug.services.resale_hunt import install_resale_hunt_preset
+from sniperplug.services.walmart_discovery_expansion import install_walmart_discovery_expansion
 from sniperplug.services.walmart_renderer_install import install_walmart_renderer
 from sniperplug.storage.db import Database
 
@@ -37,7 +38,6 @@ class SniperPlugBot(commands.Bot):
     def __init__(self, settings: Settings):
         intents = discord.Intents.default()
         super().__init__(command_prefix="!", intents=intents)
-
         self.settings = settings
         self.db = Database(settings.database_path)
 
@@ -49,6 +49,7 @@ class SniperPlugBot(commands.Bot):
         install_walmart_renderer()
         install_manual_posting_explainer_patch()
         install_resale_hunt_preset()
+        install_walmart_discovery_expansion()
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
         provider_registry.register(WalmartProvider(configured=False))
@@ -73,23 +74,15 @@ class SniperPlugBot(commands.Bot):
         if env_enabled("CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT"):
             self.tree.clear_commands(guild=None)
             synced = await self.tree.sync()
-            log.warning(
-                "Cleared stale global slash commands. Synced %s global commands. Turn CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT off now.",
-                len(synced),
-            )
+            log.warning("Cleared stale global slash commands. Synced %s global commands. Turn CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT off now.", len(synced))
             return
-
         if not self.settings.sync_commands_on_boot:
-            log.info(
-                "Skipped slash command sync on boot. Set SYNC_COMMANDS_ON_BOOT=true only when command definitions changed."
-            )
+            log.info("Skipped slash command sync on boot. Set SYNC_COMMANDS_ON_BOOT=true only when command definitions changed.")
             return
-
         if self.settings.sync_global_commands:
             synced = await self.tree.sync()
             log.info("Synced %s global slash commands", len(synced))
             return
-
         if self.settings.dev_guild_ids:
             for guild_id in self.settings.dev_guild_ids:
                 guild = discord.Object(id=guild_id)
@@ -97,7 +90,6 @@ class SniperPlugBot(commands.Bot):
                 synced = await self.tree.sync(guild=guild)
                 log.info("Synced %s guild slash commands to %s", len(synced), guild_id)
             return
-
         log.info("No DEV_GUILD_IDS configured and global sync is off; skipped slash command sync.")
 
     async def on_ready(self) -> None:
@@ -109,14 +101,9 @@ class SniperPlugBot(commands.Bot):
 
 
 async def run() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
-
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     settings = Settings.from_env()
     bot = SniperPlugBot(settings)
-
     async with bot:
         await bot.start(settings.discord_token)
 

@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 
 from sniperplug.cogs.deal_scanner import HUNT_PRESETS, DealCard, provider_health_error_message, run_preset_hunt
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
+from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_deal_posts import get_public_post_config, maybe_post_public_deal_cards
 from sniperplug.services.public_result_explainer import explain_public_post_result
 
@@ -25,12 +26,7 @@ class AutoScanGuild:
 
 
 class AutoScanRunnerCog(commands.Cog):
-    """Runs enabled retailer auto-discovery in the background.
-
-    `/retailer_autoscan` owns credit/rate gates. This cog wakes up, checks those
-    gates, scans enabled retailers, and posts only through the same public-posting
-    duplicate guard used by manual scans.
-    """
+    """Runs enabled retailer auto-discovery in the background."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -91,20 +87,27 @@ class AutoScanRunnerCog(commands.Cog):
             products_checked += checked
             warnings.extend(w for w in preset_warnings if w not in warnings)
             all_cards.extend(cards[:3])
-            if len(all_cards) >= 12:
-                break
 
         unique_cards = dedupe_cards(all_cards)
         unique_cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
-        shown_cards = unique_cards[:5]
+        fresh_selection = await select_fresh_deal_cards(
+            self.bot.db,
+            guild_id=guild.guild_id,
+            cards=unique_cards,
+            fallback_retailer=AUTO_SCAN_RETAILER,
+            limit=5,
+        )
+        shown_cards = fresh_selection.fresh
 
         await record_auto_scan_run(self.bot.db, guild.guild_id, AUTO_SCAN_RETAILER, scan_key=scan_key)
         if not shown_cards:
             log.info(
-                "Auto-scan completed with no cards guild=%s checked=%s searches=%s settings=%s warnings=%s",
+                "Auto-scan completed with no fresh cards guild=%s checked=%s searches=%s total_cards=%s repeat_summary=%s settings=%s warnings=%s",
                 guild.guild_id,
                 products_checked,
                 searches_checked,
+                len(unique_cards),
+                compact_log_text(fresh_selection.summary_line()),
                 settings,
                 warnings[:3],
             )
@@ -118,11 +121,13 @@ class AutoScanRunnerCog(commands.Cog):
             fallback_retailer=AUTO_SCAN_RETAILER,
         )
         log.info(
-            "Auto-scan completed guild=%s checked=%s searches=%s cards=%s attempted=%s posted=%s disabled=%s wrong_retailer=%s not_alertable=%s dupes=%s cached=%s errors=%s reason=%s",
+            "Auto-scan completed guild=%s checked=%s searches=%s total_cards=%s fresh_cards=%s repeat_summary=%s attempted=%s posted=%s disabled=%s wrong_retailer=%s not_alertable=%s dupes=%s cached=%s errors=%s reason=%s",
             guild.guild_id,
             products_checked,
             searches_checked,
+            len(unique_cards),
             len(shown_cards),
+            compact_log_text(fresh_selection.summary_line()),
             result.attempted,
             result.posted,
             result.skipped_disabled,
@@ -148,11 +153,6 @@ def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:
 
 
 async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
-    """Return guilds that have public posting configured.
-
-    Auto-scan still respects `/retailer_autoscan`; this list only identifies
-    where results are allowed to be posted if the retailer gate also passes.
-    """
     conn = db.require_conn()
     await conn.execute(
         """

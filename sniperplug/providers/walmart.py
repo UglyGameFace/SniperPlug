@@ -186,6 +186,8 @@ class WalmartProvider(DealProvider):
         variant = extract_variant_proof(item, title)
         promotions = _walmart_promotion_proof(item)
         proof_attrs = _walmart_proof_attributes(item, variant.attributes, selected_offer, promotions)
+        if current_price_signal:
+            proof_attrs["currentPriceSource"] = current_price_signal.split(":", 1)[1].strip() if ":" in current_price_signal else current_price_signal
         if typical_price is not None:
             proof_attrs["referencePriceTrusted"] = "yes"
             trusted_source = _trusted_reference_source(item=item, title=title, current_price=current_price, reference_price=typical_price)
@@ -302,9 +304,15 @@ def _direct_walmart_url(item_id) -> str:
 
 
 def _trusted_current_price(item: dict) -> tuple[float | None, str | None]:
+    sale_price = _price_from_path(item, "salePrice")
+    if sale_price is not None and sale_price >= 0:
+        return sale_price, "Walmart current price source: salePrice"
     for source, value in _current_price_candidates(item):
         if value is not None and value >= 0:
             return value, f"Walmart current price source: {source}"
+    unit_value, unit_source = _unit_price_context(item)
+    if unit_value is not None and unit_source:
+        return None, f"Walmart unit price ignored as product price: {unit_source}=${unit_value:,.2f}"
     return None, "Walmart current price missing"
 
 
@@ -312,7 +320,7 @@ def _current_price_candidates(item: dict) -> list[tuple[str, float | None]]:
     return _price_candidates_for_names(
         item,
         (
-            "salePrice", "sale_price", "currentPrice", "current_price", "price", "priceInfo.currentPrice", "priceInfo.price",
+            "currentPrice", "current_price", "price", "priceInfo.currentPrice", "priceInfo.price",
             "priceInfo.current_price", "price_info.currentPrice", "price_info.price", "minPrice", "min_price",
         ),
     )
@@ -359,6 +367,8 @@ def _best_reference_context_price(*, item: dict, current_price: float | None) ->
         if value is None or value <= 0:
             continue
         if current_price is not None and value <= current_price:
+            continue
+        if _is_unit_price_source(source):
             continue
         if best_price is None or value > best_price:
             best_price = value
@@ -422,6 +432,8 @@ def _price_from_path(item: dict, dotted_path: str) -> float | None:
         if not isinstance(value, dict):
             return None
         value = value.get(part)
+    if _is_unit_price_source(dotted_path):
+        return None
     return _price_from_value(value)
 
 
@@ -537,6 +549,28 @@ def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str
     if unit_size and "unitSize" not in attrs:
         attrs["unitSize"] = unit_size
     return attrs
+
+
+def _unit_price_context(item: dict) -> tuple[float | None, str | None]:
+    for source in ("unitPrice", "priceInfo.unitPrice", "price_info.unitPrice", "unit_price"):
+        value = _price_from_value(_nested_dotted_value(item, source))
+        if value is not None:
+            return value, source
+    return None, None
+
+
+def _nested_dotted_value(item: dict, dotted_path: str) -> Any:
+    value: Any = item
+    for part in dotted_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def _is_unit_price_source(source: str) -> bool:
+    lowered = source.lower().replace("_", "")
+    return "unitprice" in lowered or lowered.endswith(".unit")
 
 
 def _unit_size_from_title(title: str) -> str | None:

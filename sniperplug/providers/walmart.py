@@ -186,6 +186,8 @@ class WalmartProvider(DealProvider):
         variant = extract_variant_proof(item, title)
         promotions = _walmart_promotion_proof(item)
         proof_attrs = _walmart_proof_attributes(item, variant.attributes, selected_offer, promotions)
+        if current_price_signal:
+            proof_attrs["currentPriceSource"] = current_price_signal.split(":", 1)[-1].strip()
         if typical_price is not None:
             proof_attrs["referencePriceTrusted"] = "yes"
             trusted_source = _trusted_reference_source(item=item, title=title, current_price=current_price, reference_price=typical_price)
@@ -309,12 +311,27 @@ def _trusted_current_price(item: dict) -> tuple[float | None, str | None]:
 
 
 def _current_price_candidates(item: dict) -> list[tuple[str, float | None]]:
-    return _price_candidates_for_names(
-        item,
-        (
-            "salePrice", "sale_price", "currentPrice", "current_price", "price", "priceInfo.currentPrice", "priceInfo.price",
-            "priceInfo.current_price", "price_info.currentPrice", "price_info.price", "minPrice", "min_price",
-        ),
+    return _dedupe_price_candidates(
+        _price_candidates_for_names(
+            item,
+            (
+                "salePrice",
+                "sale_price",
+                "currentPrice",
+                "current_price",
+                "price",
+                "priceInfo.currentPrice",
+                "priceInfo.current_price",
+                "priceInfo.priceMap.currentPrice",
+                "priceInfo.priceMap.price",
+                "price_info.currentPrice",
+                "price_info.current_price",
+                "price_info.priceMap.currentPrice",
+                "price_info.priceMap.price",
+                "minPrice",
+                "min_price",
+            ),
+        )
     )
 
 
@@ -382,7 +399,7 @@ def _reference_price_candidates(item: dict) -> list[tuple[str, float | None]]:
         ),
     )
     references.extend(_best_marketplace_reference_prices(item))
-    return references
+    return _dedupe_price_candidates(references)
 
 
 def _reference_price_trust(source: str) -> str:
@@ -413,16 +430,34 @@ def _first_trusted_reference(references: list[tuple[str, float | None]], *, titl
 
 
 def _price_candidates_for_names(item: dict, names: tuple[str, ...]) -> list[tuple[str, float | None]]:
-    return [(name, _price_from_path(item, name)) for name in names]
+    return [(name, _price_from_path(item, name, allow_unit_price=False)) for name in names]
 
 
-def _price_from_path(item: dict, dotted_path: str) -> float | None:
+def _dedupe_price_candidates(candidates: list[tuple[str, float | None]]) -> list[tuple[str, float | None]]:
+    seen: set[tuple[str, float | None]] = set()
+    deduped: list[tuple[str, float | None]] = []
+    for source, value in candidates:
+        marker = (source, value)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append((source, value))
+    return deduped
+
+
+def _price_from_path(item: dict, dotted_path: str, *, allow_unit_price: bool = False) -> float | None:
+    if _is_unit_price_path(dotted_path) and not allow_unit_price:
+        return None
     value: Any = item
+    traversed: list[str] = []
     for part in dotted_path.split("."):
+        traversed.append(part)
+        if _is_unit_price_path(".".join(traversed)) and not allow_unit_price:
+            return None
         if not isinstance(value, dict):
             return None
         value = value.get(part)
-    return _price_from_value(value)
+    return _price_from_value(value, allow_unit_price=allow_unit_price, path=dotted_path)
 
 
 def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
@@ -446,7 +481,7 @@ def _promotion_amount(value: Any, *, include_terms: tuple[str, ...], exclude_ter
             continue
         if any(term in haystack for term in exclude_terms):
             continue
-        parsed = _price_from_value(candidate)
+        parsed = _price_from_value(candidate, allow_unit_price=False, path=key_path)
         if parsed is None:
             parsed = _first_money_amount(str(candidate))
         if parsed is None or parsed <= 0:
@@ -560,7 +595,8 @@ def _clean_string(value: Any) -> str | None:
     if isinstance(value, int):
         return str(value)
     if isinstance(value, dict):
-        return _clean_string(_price_from_value(value))
+        parsed = _price_from_value(value, allow_unit_price=True)
+        return _clean_string(parsed)
     return str(value).strip() or None
 
 
@@ -573,18 +609,39 @@ def _nested_value(item: dict[str, Any], *path: str) -> Any:
     return value
 
 
-def _price_from_value(value: Any) -> float | None:
+def _price_from_value(value: Any, *, allow_unit_price: bool = False, path: str = "") -> float | None:
+    if _is_unit_price_path(path) and not allow_unit_price:
+        return None
     if isinstance(value, dict):
         for key in ("price", "amount", "value", "displayValue", "displayPrice", "priceString", "currencyAmount", "currencyValue", "min", "max"):
+            child_path = f"{path}.{key}" if path else key
+            if _is_unit_price_path(child_path) and not allow_unit_price:
+                continue
             parsed = _float_or_none(value.get(key))
             if parsed is not None:
                 return parsed
-        for child in value.values():
-            parsed = _price_from_value(child) if isinstance(child, dict) else None
+        for child_key, child in value.items():
+            child_path = f"{path}.{child_key}" if path else str(child_key)
+            if _is_unit_price_path(child_path) and not allow_unit_price:
+                continue
+            parsed = _price_from_value(child, allow_unit_price=allow_unit_price, path=child_path) if isinstance(child, dict) else None
             if parsed is not None:
                 return parsed
         return None
     return _float_or_none(value)
+
+
+def _is_unit_price_path(path: str) -> bool:
+    normalized = path.lower().replace("_", "").replace("-", "")
+    unit_tokens = (
+        "unitprice",
+        "priceperunit",
+        "unitpriceinfo",
+        "ppu",
+        "priceper",
+        "unitcost",
+    )
+    return any(token in normalized for token in unit_tokens)
 
 
 def _reference_price_looks_suspicious(*, source: str, title: str, current_price: float, reference_price: float) -> bool:
@@ -607,7 +664,7 @@ def _reference_price_looks_suspicious(*, source: str, title: str, current_price:
 
 
 def _is_consumable_or_size_sensitive(title: str) -> bool:
-    keywords = ("toilet paper", "toilet tissue", "bath tissue", "paper towel", "paper towels", "tissue", "napkin", "detergent", "laundry", "trash bag", "dish soap", "cleaner", "cleaning", "wipes", "diaper", "razor", "disposable", "shampoo", "conditioner", "body wash", "soap", "toothpaste", "toothbrush", "deodorant", "car wash", "wash", "wax", "turtle wax", "armor all", "meguiar", "chemical guys", "spray", "fluid", "oz", "fl oz", "ounce", "count", "ct", "pack", "refill", "bottle", "jug", "gallon")
+    keywords = ("toilet paper", "toilet tissue", "bath tissue", "paper towel", "paper towels", "tissue", "napkin", "detergent", "laundry", "trash bag", "dish soap", "cleaner", "cleaning", "wipes", "diaper", "razor", "disposable", "shampoo", "conditioner", "body wash", "soap", "toothpaste", "toothbrush", "deodorant", "car wash", "wash", "wax", "turtle wax", "armor all", "meguiar", "chemical guys", "spray", "fluid", "oz", "fl oz", "ounce", "count", "ct", "pack", "refill", "bottle", "jug", "gallon", "beef", "chicken", "turkey", "meat", "lb", "pound", "count")
     return any(keyword in title for keyword in keywords)
 
 

@@ -12,9 +12,12 @@ from sniperplug.services.price_proof import verified_deal_value
 from sniperplug.services.safe_links import product_link_choices
 
 
-REVIEW_CANDIDATE_LIMIT = 20
-REVIEW_MIN_CONTEXT_DISCOUNT = 35.0
+REVIEW_CANDIDATE_LIMIT = 10
+REVIEW_MIN_TRUSTED_DISCOUNT = 20.0
 REVIEW_MIN_COUPON_OR_CASH = 5.0
+MAX_VALUE_RATIO = 0.80
+
+LOW_TRUST_REFERENCE_SOURCES = {"msrp", "listprice", "list_price", "retailprice", "retail_price"}
 
 
 @dataclass(frozen=True)
@@ -25,76 +28,99 @@ class ReviewCandidateResult:
     weak_reference_count: int = 0
     missing_current_count: int = 0
     no_value_signal_count: int = 0
+    rejected_bad_value_count: int = 0
 
     def summary_line(self) -> str:
         return (
             f"review candidates: **{len(self.cards)}** • "
-            f"under 50%: **{self.under_threshold_count}** • "
-            f"weak reference: **{self.weak_reference_count}** • "
-            f"missing was/reference: **{self.missing_reference_count}** • "
-            f"missing current: **{self.missing_current_count}**"
+            f"under 50% trusted: **{self.under_threshold_count}** • "
+            f"weak reference ignored: **{self.weak_reference_count}** • "
+            f"bad value rejected: **{self.rejected_bad_value_count}** • "
+            f"missing was/reference: **{self.missing_reference_count}**"
         )
 
 
 def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: int = REVIEW_CANDIDATE_LIMIT) -> ReviewCandidateResult:
-    review_cards: list[DealCard] = []
     under_threshold = 0
     missing_reference = 0
     weak_reference = 0
     missing_current = 0
     no_value_signal = 0
+    rejected_bad_value = 0
 
     scored: list[tuple[float, DealCard]] = []
     for candidate in candidates:
         deal = candidate.to_normalized_deal()
         proof = verified_deal_value(deal)
-        if deal.current_price is None:
+        if deal.current_price is None or deal.current_price <= 0:
             missing_current += 1
             continue
         if proof.discount_percent is not None and proof.discount_percent >= 50:
             continue
 
-        context_price = float_or_none(deal.variant_attributes.get("referenceContextPrice"))
-        context_discount = percent_off(deal.current_price, context_price)
-        coupon = float_or_none(deal.variant_attributes.get("couponSavings")) or 0.0
-        cash = float_or_none(deal.variant_attributes.get("walmartCashSavings")) or 0.0
+        coupon = safe_value_amount(deal.variant_attributes.get("couponSavings"), deal.current_price)
+        cash = safe_value_amount(deal.variant_attributes.get("walmartCashSavings"), deal.current_price)
+        if (deal.variant_attributes.get("couponSavings") and coupon is None) or (deal.variant_attributes.get("walmartCashSavings") and cash is None):
+            rejected_bad_value += 1
+        coupon = coupon or 0.0
+        cash = cash or 0.0
         trusted_discount = proof.discount_percent or 0.0
+
+        raw_context_price = float_or_none(deal.variant_attributes.get("referenceContextPrice"))
+        context_source = str(deal.variant_attributes.get("referenceContextSource") or "")
+        context_price = trusted_context_price(
+            current_price=deal.current_price,
+            context_price=raw_context_price,
+            context_source=context_source,
+            title=deal.title,
+        )
+        context_discount = percent_off(deal.current_price, context_price)
 
         if proof.discount_percent is not None and proof.discount_percent < 50:
             under_threshold += 1
-        elif context_price is not None:
+        elif raw_context_price is not None and context_price is None:
+            weak_reference += 1
+        elif raw_context_price is not None:
             weak_reference += 1
         else:
             missing_reference += 1
 
-        review_score = max(trusted_discount, context_discount or 0.0) + coupon + cash
         has_value_signal = (
-            (proof.discount_percent is not None and proof.discount_percent >= 20)
-            or (context_discount is not None and context_discount >= REVIEW_MIN_CONTEXT_DISCOUNT)
+            trusted_discount >= REVIEW_MIN_TRUSTED_DISCOUNT
             or coupon >= REVIEW_MIN_COUPON_OR_CASH
             or cash >= REVIEW_MIN_COUPON_OR_CASH
-            or has_markdown_signal(candidate)
+            or safe_markdown_signal(candidate)
         )
         if not has_value_signal:
             no_value_signal += 1
             continue
 
-        card = build_review_card(candidate, deal, proof, context_discount=context_discount, coupon=coupon, cash=cash)
+        review_score = trusted_discount + coupon + cash + (5 if safe_markdown_signal(candidate) else 0)
+        card = build_review_card(
+            candidate,
+            deal,
+            proof,
+            context_price=context_price,
+            context_discount=context_discount,
+            ignored_context_price=raw_context_price if context_price is None else None,
+            coupon=coupon,
+            cash=cash,
+        )
         scored.append((review_score, card))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    review_cards = [card for _, card in scored[:limit]]
     return ReviewCandidateResult(
-        cards=review_cards,
+        cards=[card for _, card in scored[:limit]],
         under_threshold_count=under_threshold,
         missing_reference_count=missing_reference,
         weak_reference_count=weak_reference,
         missing_current_count=missing_current,
         no_value_signal_count=no_value_signal,
+        rejected_bad_value_count=rejected_bad_value,
     )
 
 
-def build_review_card(candidate: SourceCandidate, deal, proof, *, context_discount: float | None, coupon: float, cash: float) -> DealCard:
+def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price: float | None, context_discount: float | None, ignored_context_price: float | None, coupon: float, cash: float) -> DealCard:
     choices = product_link_choices(
         retailer=deal.retailer,
         product_url=deal.product_url,
@@ -111,17 +137,18 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_discou
     if deal.image_url:
         embed.set_thumbnail(url=deal.image_url)
 
-    lines = [f"Current: **{money(deal.current_price)}**"]
+    lines = [f"Current product price: **{money(deal.current_price)}**"]
     if proof.discount_percent is not None and deal.typical_price:
         lines.append(f"Trusted was/typical: **{money(deal.typical_price)}**")
         lines.append(f"Trusted API markdown: **{proof.discount_percent:.0f}%** — below 50% hunt threshold")
     else:
-        context_price = float_or_none(deal.variant_attributes.get("referenceContextPrice"))
         context_source = deal.variant_attributes.get("referenceContextSource")
-        if context_price:
-            lines.append(f"Reference shown: **{money(context_price)}** `{context_source or 'unknown'}`")
-            if context_discount is not None:
-                lines.append(f"Reference math: **{context_discount:.0f}%** — **not counted as verified discount**")
+        if context_price and context_discount is not None:
+            lines.append(f"Reference context: **{money(context_price)}** `{context_source or 'unknown'}`")
+            lines.append(f"Context math: **{context_discount:.0f}%** — not verified / not auto-postable")
+        elif ignored_context_price:
+            lines.append(f"Ignored reference: **{money(ignored_context_price)}** `{context_source or 'unknown'}`")
+            lines.append("Reference math: **blocked as low-trust/suspicious**")
         else:
             lines.append("Was/reference: **not returned or not trusted by Walmart API**")
     if coupon:
@@ -138,8 +165,8 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_discou
     if link_block:
         embed.add_field(name="🔗 Links", value=link_block, inline=False)
 
-    embed.set_footer(text="Review-only: shown because the API returned value signals, but 50% trusted markdown was not proven.")
-    card = DealCard(embed=embed, url=deal.product_url, label=deal_scanner.short_button_label(deal.title), score=0, discount=proof.discount_percent or context_discount or 0.0, link_choices=choices)
+    embed.set_footer(text="Review-only: API-backed lead, not a verified 50% deal. No public post without trusted math.")
+    card = DealCard(embed=embed, url=deal.product_url, label=deal_scanner.short_button_label(deal.title), score=0, discount=proof.discount_percent or 0.0, link_choices=choices)
     card.retailer = deal.retailer
     card.should_alert = False
     card.current_price = deal.current_price
@@ -169,9 +196,38 @@ def api_lines(candidate: SourceCandidate, deal) -> list[str]:
     return lines
 
 
-def has_markdown_signal(candidate: SourceCandidate) -> bool:
-    terms = {"rollback", "clearance", "special buy", "marketplace seller", "bundle"}
-    return any(str(signal).lower() in terms or "coupon" in str(signal).lower() or "cash" in str(signal).lower() for signal in candidate.signals)
+def safe_markdown_signal(candidate: SourceCandidate) -> bool:
+    allowed = {"rollback", "clearance", "special buy"}
+    return any(str(signal).lower().strip() in allowed for signal in candidate.signals)
+
+
+def trusted_context_price(*, current_price: float, context_price: float | None, context_source: str, title: str) -> float | None:
+    if context_price is None or context_price <= current_price:
+        return None
+    source_key = context_source.lower().replace("_", "")
+    if source_key in LOW_TRUST_REFERENCE_SOURCES:
+        return None
+    ratio = context_price / current_price
+    if ratio >= 4:
+        return None
+    if is_consumable_or_size_sensitive(title) and ratio >= 2.5:
+        return None
+    return context_price
+
+
+def safe_value_amount(value: Any, current_price: float) -> float | None:
+    parsed = float_or_none(value)
+    if parsed is None or parsed <= 0:
+        return None
+    if parsed > max(current_price * MAX_VALUE_RATIO, 50):
+        return None
+    return parsed
+
+
+def is_consumable_or_size_sensitive(title: str) -> bool:
+    text = title.lower()
+    keywords = ("peas", "carrots", "vegetable", "stuffing", "food", "beef", "turkey", "chicken", "oz", "lb", "count", "ct", "pack", "can", "detergent", "cleaner", "soap", "paper", "tissue", "diaper", "wipes")
+    return any(keyword in text for keyword in keywords)
 
 
 def percent_off(current: float | None, reference: float | None) -> float | None:

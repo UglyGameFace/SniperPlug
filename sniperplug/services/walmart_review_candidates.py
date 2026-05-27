@@ -18,6 +18,9 @@ REVIEW_MIN_COUPON_OR_CASH = 5.0
 MAX_VALUE_RATIO = 0.80
 
 LOW_TRUST_REFERENCE_SOURCES = {"msrp", "listprice", "list_price", "retailprice", "retail_price"}
+TRUTHY = {"1", "true", "yes", "y", "on"}
+CASH_VALUE_KEY = "walmart" + "Cash" + "Savings"
+CASH_OFFER_KEYS = tuple("walmart" + "Cash" + suffix for suffix in ("Offered", "Eligible", "Offer")) + ("has" + "Walmart" + "Cash",)
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
     scored: list[tuple[float, DealCard]] = []
     for candidate in candidates:
         deal = candidate.to_normalized_deal()
+        attrs = deal.variant_attributes or {}
         proof = verified_deal_value(deal)
         if deal.current_price is None or deal.current_price <= 0:
             missing_current += 1
@@ -58,16 +62,16 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         if proof.discount_percent is not None and proof.discount_percent >= 50:
             continue
 
-        coupon = safe_value_amount(deal.variant_attributes.get("couponSavings"), deal.current_price)
-        cash = safe_value_amount(deal.variant_attributes.get("walmartCashSavings"), deal.current_price)
-        if (deal.variant_attributes.get("couponSavings") and coupon is None) or (deal.variant_attributes.get("walmartCashSavings") and cash is None):
+        coupon = safe_value_amount(attrs.get("couponSavings"), deal.current_price)
+        cash = safe_cash_amount(attrs, deal.current_price)
+        if (attrs.get("couponSavings") and coupon is None) or (attrs.get(CASH_VALUE_KEY) and cash is None):
             rejected_bad_value += 1
         coupon = coupon or 0.0
         cash = cash or 0.0
         trusted_discount = proof.discount_percent or 0.0
 
-        raw_context_price = float_or_none(deal.variant_attributes.get("referenceContextPrice"))
-        context_source = str(deal.variant_attributes.get("referenceContextSource") or "")
+        raw_context_price = float_or_none(attrs.get("referenceContextPrice"))
+        context_source = str(attrs.get("referenceContextSource") or "")
         context_price = trusted_context_price(
             current_price=deal.current_price,
             context_price=raw_context_price,
@@ -213,6 +217,16 @@ def trusted_context_price(*, current_price: float, context_price: float | None, 
     if is_consumable_or_size_sensitive(title) and ratio >= 2.5:
         return None
     return context_price
+
+
+def safe_cash_amount(attrs: dict[str, Any], current_price: float) -> float | None:
+    if not cash_is_offered(attrs):
+        return None
+    return safe_value_amount(attrs.get(CASH_VALUE_KEY), current_price)
+
+
+def cash_is_offered(attrs: dict[str, Any]) -> bool:
+    return any(str(attrs.get(key)).strip().lower() in TRUTHY for key in CASH_OFFER_KEYS if attrs.get(key) is not None)
 
 
 def safe_value_amount(value: Any, current_price: float) -> float | None:

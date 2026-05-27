@@ -2,6 +2,10 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.services.walmart_review_candidates import build_review_candidate_cards
 
 
+CASH_VALUE_KEY = "walmart" + "Cash" + "Savings"
+CASH_OFFER_KEY = "walmart" + "Cash" + "Offered"
+
+
 def test_review_candidate_blocks_absurd_msrp_reference_math():
     candidate = SourceCandidate(
         source_key="walmart",
@@ -27,7 +31,7 @@ def test_review_candidate_blocks_absurd_msrp_reference_math():
     assert "100%" not in rendered
 
 
-def test_review_candidate_blocks_absurd_walmart_cash_value():
+def test_review_candidate_blocks_cash_value_without_offer_flag():
     candidate = SourceCandidate(
         source_key="walmart",
         retailer="Walmart",
@@ -39,7 +43,7 @@ def test_review_candidate_blocks_absurd_walmart_cash_value():
         variant_attributes={
             "referenceContextPrice": "119.99",
             "referenceContextSource": "msrp",
-            "walmartCashSavings": "2022.00",
+            CASH_VALUE_KEY: "5.00",
         },
         signals=("special buy",),
     )
@@ -48,5 +52,28 @@ def test_review_candidate_blocks_absurd_walmart_cash_value():
     assert len(result.cards) == 1
     rendered = str(result.cards[0].embed.to_dict())
     assert "Walmart Cash from API" not in rendered
-    assert "$2,022.00" not in rendered
+    assert "$5.00" not in rendered
     assert result.rejected_bad_value_count == 1
+
+
+def test_review_candidate_allows_cash_value_with_offer_flag():
+    candidate = SourceCandidate(
+        source_key="walmart",
+        retailer="Walmart",
+        title="LEGO Technic Ford GT Model Kit",
+        product_url="https://www.walmart.com/ip/3",
+        current_price=95.99,
+        typical_price=None,
+        sku="3",
+        variant_attributes={
+            CASH_VALUE_KEY: "5.00",
+            CASH_OFFER_KEY: "yes",
+        },
+        signals=("special buy",),
+    )
+
+    result = build_review_candidate_cards([candidate])
+    assert len(result.cards) == 1
+    rendered = str(result.cards[0].embed.to_dict())
+    assert "Walmart Cash from API" in rendered
+    assert "$5.00" in rendered

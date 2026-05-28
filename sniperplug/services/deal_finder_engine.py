@@ -113,7 +113,7 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
     verified = rank_verified_cards(verified)
 
     review = build_review_candidate_cards(list(deduped))
-    scout_cards = scout_low_price_leads(deduped, limit=8)
+    scout_cards = scout_low_price_leads(deduped, limit=8, search_query=query)
     review = merge_scout_review_cards(review, scout_cards)
     review = rank_review_candidate_result(review)
 

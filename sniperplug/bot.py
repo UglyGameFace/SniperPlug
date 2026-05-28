@@ -26,6 +26,7 @@ from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.services.deal_finder_install import install_unified_deal_finder
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
+from sniperplug.services.raw_price_review_patch import install_raw_price_review_patch
 from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
 from sniperplug.services.walmart_cash_guard import install_strict_walmart_cash_guard
 from sniperplug.services.walmart_discovery_expansion import install_walmart_discovery_expansion
@@ -54,6 +55,7 @@ class SniperPlugBot(commands.Bot):
         install_strict_walmart_cash_guard()
         install_walmart_marketplace_comp_guard()
         install_walmart_flip_research_patch()
+        install_raw_price_review_patch()
         install_unified_deal_finder()
         install_manual_posting_explainer_patch()
         install_walmart_discovery_expansion()

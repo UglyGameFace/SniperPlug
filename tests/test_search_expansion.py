@@ -23,3 +23,15 @@ def test_expand_query_respects_max_queries():
     plan = expand_walmart_query("samsung galaxy phone", max_queries=3)
 
     assert len(plan.queries) == 3
+
+
+def test_expand_query_uses_overlapping_memory_boosts_only():
+    plan = expand_walmart_query(
+        "galaxy phone",
+        max_queries=8,
+        boosted_queries=("galaxy phone prepaid", "lego clearance"),
+    )
+
+    assert "galaxy phone prepaid" in plan.queries
+    assert "lego clearance" not in plan.queries
+    assert any("server-learned" in note for note in plan.notes)

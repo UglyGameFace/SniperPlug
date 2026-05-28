@@ -8,6 +8,7 @@ from sniperplug.cogs.deal_scanner import DealCard, HuntPreset
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
+from sniperplug.services.deal_route_memory import RETAILER_WALMART, memory_boost_queries, record_route_memory, top_route_memory, update_from_route_stats
 from sniperplug.services.search_expansion import SearchPlan, expand_walmart_query
 from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
 
@@ -34,19 +35,18 @@ class DealFinderResult:
     searches_attempted: int
     min_discount: int
     route_stats: tuple[SearchRouteStats, ...] = ()
+    boosted_routes: tuple[str, ...] = ()
 
     @property
     def has_any_cards(self) -> bool:
         return bool(self.verified_cards or self.review_candidates.cards)
 
 
-async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_discount: int = 50, max_queries: int = 5, pages_per_query: int = QUERY_PAGES) -> DealFinderResult:
-    """Run an expanded Walmart query search and return verified + review/flip cards.
-
-    This is the shared engine path for `/deals` first, and can be reused by
-    category/discovery commands as they migrate away from one-off scan code.
-    """
-    plan = expand_walmart_query(query, max_queries=max_queries)
+async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_discount: int = 50, max_queries: int = 5, pages_per_query: int = QUERY_PAGES, db=None, guild_id: int | None = None) -> DealFinderResult:
+    """Run an expanded Walmart query search and return verified + review/flip cards."""
+    memory_records = await top_route_memory(db, guild_id=guild_id, retailer=RETAILER_WALMART, limit=8)
+    boosted_routes = memory_boost_queries(memory_records, limit=3)
+    plan = expand_walmart_query(query, max_queries=max_queries, boosted_queries=boosted_routes)
     warnings: list[str] = []
     all_candidates = []
     route_stats: list[SearchRouteStats] = []
@@ -89,6 +89,12 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
 
     deduped = deal_scanner.dedupe_candidates(list(all_candidates))
     merged_route_stats = merge_route_stats(route_stats)
+    await record_route_memory(
+        db,
+        guild_id=guild_id,
+        retailer=RETAILER_WALMART,
+        updates=update_from_route_stats(merged_route_stats),
+    )
     aggregate = ProviderScanResult(
         provider_key="walmart",
         candidates=tuple(deduped),
@@ -119,15 +125,11 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
         searches_attempted=searches_attempted,
         min_discount=min_discount,
         route_stats=merged_route_stats,
+        boosted_routes=boosted_routes,
     )
 
 
 async def find_walmart_deals_for_preset(*, requested_by: str, preset: HuntPreset | None = None, db=None, guild_id: int | None = None, use_price_memory: bool = False):
-    """Shared engine wrapper for category/broad Walmart hunts.
-
-    This intentionally delegates scan collection to the existing verified hunt
-    implementation, then applies the same ranking normalization used by `/deals`.
-    """
     from sniperplug.services.verified_discount_hunt import VerifiedHuntResult, collect_verified_discount_cards
 
     result = await collect_verified_discount_cards(
@@ -155,7 +157,6 @@ async def find_walmart_deals_for_preset(*, requested_by: str, preset: HuntPreset
 
 
 async def find_walmart_discovery_deals(*, requested_by: str, db=None, guild_id: int | None = None, use_price_memory: bool = False):
-    """Shared broad discovery entrypoint used by `/discover` and future schedulers."""
     return await find_walmart_deals_for_preset(
         requested_by=requested_by,
         preset=None,

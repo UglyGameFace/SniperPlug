@@ -9,6 +9,7 @@ from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import DealCard, HuntPreset
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
+from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route, top_route_lines
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
@@ -55,6 +56,7 @@ class VerifiedHuntResult:
     total_verified_cards: int = 0
     review_candidates: ReviewCandidateResult | None = None
     category_key: str = "all"
+    route_stats: tuple[SearchRouteStats, ...] = ()
 
 
 async def run_verified_discount_hunt(preset: HuntPreset | None = None, requested_by: str = "") -> tuple[list[DealCard], int, int, list[str], int]:
@@ -66,15 +68,16 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
     preset = preset or ALL_VERIFIED_PRESET
     warnings: list[str] = []
     all_candidates: list[SourceCandidate] = []
+    route_stats: list[SearchRouteStats] = []
     pages_checked = 0
     searches_attempted = 0
     semaphore = asyncio.Semaphore(SCAN_CONCURRENCY)
 
-    async def scan_one(query: str, page: int, sort_value: str | None, order_value: str | None) -> ProviderScanResult:
+    async def scan_one(query: str, page: int, sort_value: str | None, order_value: str | None) -> tuple[str, ProviderScanResult]:
         nonlocal searches_attempted
         async with semaphore:
             searches_attempted += 1
-            return await deal_scanner.run_walmart_scan(query, page, RESULTS_PER_PAGE, sort_value, order_value, requested_by)
+            return query, await deal_scanner.run_walmart_scan(query, page, RESULTS_PER_PAGE, sort_value, order_value, requested_by)
 
     tasks = [
         scan_one(query, page, sort_value, order_value)
@@ -90,11 +93,17 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
             text = str(item) or item.__class__.__name__
             if text not in warnings:
                 warnings.append(text)
+            route_stats.append(SearchRouteStats(query="unknown", pages_checked=1, returned_products=0, warnings=(text,)))
             continue
-        all_candidates.extend(item.candidates)
-        warnings.extend(w for w in item.warnings if w not in warnings)
+        query, result = item
+        candidates = list(result.candidates)
+        tag_candidates_with_route(candidates, query=query)
+        all_candidates.extend(candidates)
+        warnings.extend(w for w in result.warnings if w not in warnings)
+        route_stats.append(SearchRouteStats(query=query, pages_checked=1, returned_products=len(candidates), warnings=tuple(result.warnings)))
 
     deduped_candidates = deal_scanner.dedupe_candidates(all_candidates)
+    merged_route_stats = merge_route_stats(route_stats)
     aggregate = ProviderScanResult(
         provider_key="walmart",
         candidates=tuple(deduped_candidates),
@@ -134,6 +143,7 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
         total_verified_cards=len(verified_cards),
         review_candidates=review_candidates,
         category_key=preset.key,
+        route_stats=merged_route_stats,
     )
 
 
@@ -234,6 +244,9 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
         ),
         color=discord.Color.red() if result.cards else discord.Color.dark_gold(),
     )
+    route_lines = top_route_lines(result.route_stats, limit=5)
+    if route_lines:
+        embed.add_field(name="🧭 Productive routes", value="\n".join(route_lines), inline=False)
     if result.price_memory is not None:
         embed.add_field(name="🧠 Price memory", value=result.price_memory.summary_line(), inline=False)
     if result.review_candidates is not None:

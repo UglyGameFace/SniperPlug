@@ -1,7 +1,8 @@
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.providers.walmart import _candidate_from_item if False else WalmartProvider, WalmartAffiliateConfig, _walmart_promotion_proof
+from sniperplug.providers.base import ProviderScanRequest
+from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider, _walmart_promotion_proof
 from sniperplug.services.price_proof import verified_deal_value
-from sniperplug.services.walmart_cash_guard import install_strict_walmart_cash_guard, strict_walmart_promotion_proof, walmart_cash_amount
+from sniperplug.services.walmart_cash_guard import install_strict_walmart_cash_guard, strict_walmart_promotion_proof
 
 
 # Install the runtime patch for direct provider-function tests. This mirrors bot startup.
@@ -127,7 +128,7 @@ def test_provider_candidate_only_sets_real_walmart_cash():
         "promotion": {"name": "Walmart Cash", "amount": 39.99},
     }
 
-    candidate = provider._candidate_from_item(item, request=__import__("sniperplug.providers.base", fromlist=["ProviderScanRequest"]).ProviderScanRequest(source_key="walmart", query="cash"))
+    candidate = provider._candidate_from_item(item, request=ProviderScanRequest(source_key="walmart", query="cash"))
 
     assert candidate is not None
     assert candidate.variant_attributes["walmartCashSavings"] == "39.99"

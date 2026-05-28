@@ -1,6 +1,7 @@
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.providers import walmart as walmart_provider_module
 from sniperplug.providers.base import ProviderScanRequest
-from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider, _walmart_promotion_proof
+from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
 from sniperplug.services.price_proof import verified_deal_value
 from sniperplug.services.walmart_cash_guard import install_strict_walmart_cash_guard, strict_walmart_promotion_proof
 
@@ -96,7 +97,7 @@ def test_provider_patch_stops_generic_reward_from_becoming_walmart_cash():
         "reward": "Earn 20000 reward points",
     }
 
-    attrs = _walmart_promotion_proof(item)
+    attrs = walmart_provider_module._walmart_promotion_proof(item)
 
     assert "walmartCashSavings" not in attrs
 

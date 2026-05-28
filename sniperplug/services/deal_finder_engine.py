@@ -9,6 +9,7 @@ from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
 from sniperplug.services.deal_route_memory import RETAILER_WALMART, memory_boost_queries, record_route_memory, top_route_memory, update_from_route_stats
+from sniperplug.services.low_price_scout import scout_low_price_leads
 from sniperplug.services.search_expansion import SearchPlan, expand_walmart_query
 from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
 
@@ -36,6 +37,7 @@ class DealFinderResult:
     min_discount: int
     route_stats: tuple[SearchRouteStats, ...] = ()
     boosted_routes: tuple[str, ...] = ()
+    scout_lead_count: int = 0
 
     @property
     def has_any_cards(self) -> bool:
@@ -43,7 +45,7 @@ class DealFinderResult:
 
 
 async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_discount: int = 50, max_queries: int = 5, pages_per_query: int = QUERY_PAGES, db=None, guild_id: int | None = None) -> DealFinderResult:
-    """Run an expanded Walmart query search and return verified + review/flip cards."""
+    """Run an expanded Walmart query search and return verified + review/flip/scout cards."""
     memory_records = await top_route_memory(db, guild_id=guild_id, retailer=RETAILER_WALMART, limit=8)
     boosted_routes = memory_boost_queries(memory_records, limit=3)
     plan = expand_walmart_query(query, max_queries=max_queries, boosted_queries=boosted_routes)
@@ -111,6 +113,8 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
     verified = rank_verified_cards(verified)
 
     review = build_review_candidate_cards(list(deduped))
+    scout_cards = scout_low_price_leads(deduped, limit=8)
+    review = merge_scout_review_cards(review, scout_cards)
     review = rank_review_candidate_result(review)
 
     return DealFinderResult(
@@ -126,6 +130,7 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
         min_discount=min_discount,
         route_stats=merged_route_stats,
         boosted_routes=boosted_routes,
+        scout_lead_count=len(scout_cards),
     )
 
 
@@ -163,6 +168,26 @@ async def find_walmart_discovery_deals(*, requested_by: str, db=None, guild_id: 
         db=db,
         guild_id=guild_id,
         use_price_memory=use_price_memory,
+    )
+
+
+def merge_scout_review_cards(review: ReviewCandidateResult, scout_cards: list[DealCard], *, limit: int = 10) -> ReviewCandidateResult:
+    merged: list[DealCard] = []
+    seen: set[str] = set()
+    for card in [*review.cards, *scout_cards]:
+        key = getattr(card, "selected_offer_id", None) or getattr(card, "sku", None) or getattr(card, "upc", None) or card.url or card.label
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(card)
+    return ReviewCandidateResult(
+        cards=merged[:limit],
+        under_threshold_count=review.under_threshold_count,
+        missing_reference_count=review.missing_reference_count,
+        weak_reference_count=review.weak_reference_count,
+        missing_current_count=review.missing_current_count,
+        no_value_signal_count=review.no_value_signal_count,
+        rejected_bad_value_count=review.rejected_bad_value_count,
     )
 
 

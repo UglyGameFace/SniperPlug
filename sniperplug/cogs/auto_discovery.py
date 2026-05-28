@@ -85,7 +85,7 @@ class AutoDiscoveryCog(commands.Cog):
                     f"Posted: **{public_result.posted}**\n"
                     f"Duplicate blocked: **{public_result.skipped_duplicate}**\n"
                     f"Not alertable/private review: **{public_result.skipped_not_alertable}**\n"
-                    f"Cached active: **{getattr(public_result, 'cached_active', 0)}**"
+                    f"Cached active: **{getattr(public_result, 'cached_active', 0)}"
                 ),
                 inline=False,
             )
@@ -108,6 +108,42 @@ class AutoDiscoveryCog(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+
+def embed_text_size(embed: discord.Embed) -> int:
+    total = 0
+    if embed.title:
+        total += len(str(embed.title))
+    if embed.description:
+        total += len(str(embed.description))
+    for field in embed.fields:
+        total += len(str(field.name)) + len(str(field.value))
+    footer = getattr(embed, "footer", None)
+    footer_text = getattr(footer, "text", None)
+    if footer_text:
+        total += len(str(footer_text))
+    author = getattr(embed, "author", None)
+    author_name = getattr(author, "name", None)
+    if author_name:
+        total += len(str(author_name))
+    return total
+
+
+def batch_cards_for_embed_limit(cards: list[DealCard], *, limit: int = SAFE_EMBED_MESSAGE_LIMIT) -> list[list[DealCard]]:
+    batches: list[list[DealCard]] = []
+    current: list[DealCard] = []
+    current_size = 0
+    for card in cards:
+        size = embed_text_size(card.embed)
+        if current and current_size + size > limit:
+            batches.append(current)
+            current = []
+            current_size = 0
+        current.append(card)
+        current_size += size
+    if current:
+        batches.append(current)
+    return batches
 
 
 def manual_discover_note(settings: dict) -> str:

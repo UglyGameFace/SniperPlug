@@ -4,6 +4,7 @@ import discord
 
 from sniperplug.services.deal_finder_engine import DealFinderResult, find_walmart_deals_for_query
 from sniperplug.services.deal_finder_telemetry import top_route_lines
+from sniperplug.services.manual_review_share import ManualReviewShareView
 
 
 _PATCHED = False
@@ -70,9 +71,9 @@ async def _send_walmart_scan_with_deal_finder(self, interaction, query: str, min
         )
         if shown_review:
             await interaction.followup.send(
-                content="🟨 Extra review/flip leads — private only, not public-posted as verified deals.",
+                content="🟨 Extra review/raw/flip leads — private only. Staff can manually publish one after checking it.",
                 embeds=[card.embed for card in shown_review],
-                view=deal_scanner.PresetResultView(shown_review),
+                view=ManualReviewShareView(shown_review),
                 ephemeral=True,
             )
         return
@@ -80,7 +81,7 @@ async def _send_walmart_scan_with_deal_finder(self, interaction, query: str, min
     if shown_review:
         await interaction.followup.send(
             embeds=[summary] + [card.embed for card in shown_review],
-            view=deal_scanner.PresetResultView(shown_review),
+            view=ManualReviewShareView(shown_review),
             ephemeral=True,
         )
         return
@@ -102,7 +103,7 @@ def build_deal_finder_summary(result: DealFinderResult) -> discord.Embed:
             f"Expanded searches: **{len(result.search_plan.queries)}** • API calls: **{result.searches_attempted}**\n"
             f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} result pages**\n"
             f"Verified {result.min_discount}%+ deals: **{len(result.verified_cards)}**\n"
-            f"Review/flip leads: **{review_count}**"
+            f"Review/raw/flip leads: **{review_count}**"
         ),
         color=discord.Color.red() if result.verified_cards else discord.Color.dark_gold() if review_count else discord.Color.orange(),
     )
@@ -127,5 +128,5 @@ def build_deal_finder_summary(result: DealFinderResult) -> discord.Embed:
         embed.add_field(name="🟨 Review / flip audit", value=result.review_candidates.summary_line(), inline=False)
     if result.warnings:
         embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
-    embed.set_footer(text="Verified cards can public-post. Review/flip leads are private and require manual checkout/comp checks.")
+    embed.set_footer(text="Verified cards can public-post. Review/raw/flip leads are private unless staff manually publishes one.")
     return embed

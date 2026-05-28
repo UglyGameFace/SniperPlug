@@ -73,6 +73,9 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
     "essentials": ("Daily Essentials", "🧼", "Household, grocery, personal care, and coupon/cash value checks.", ("household clearance", "grocery clearance", "cleaning supplies clearance", "laundry detergent rollback", "paper goods rollback")),
 }
 
+# Backward-compatible broad route constant used by older tests/helpers.
+DISCOVERY_QUERIES = CATEGORY_ROUTES["all"][3]
+
 SORT_PASSES: tuple[tuple[str | None, str | None], ...] = (
     (None, None),
     ("price", "ascending"),

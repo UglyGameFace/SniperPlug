@@ -19,7 +19,7 @@ from sniperplug.services.walmart_review_candidates import ReviewCandidateResult,
 
 TRUE_DISCOUNT_MIN = 50
 RESULTS_PER_PAGE = 25
-PAGES_PER_QUERY = 3
+PAGES_PER_QUERY = 5
 SCAN_CONCURRENCY = 6
 ALL_VERIFIED_HUNT_KEY = "all_verified_discounts"
 
@@ -34,6 +34,10 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
             "price drop",
             "reduced price",
             "special buy",
+            "walmart deals",
+            "online clearance",
+            "hidden clearance",
+            "overstock clearance",
             "electronics clearance",
             "toy clearance",
             "home clearance",
@@ -85,7 +89,14 @@ HUNT_PRESETS: dict[str, HuntPreset] = {
     key: HuntPreset(key, label, emoji, description, queries, TRUE_DISCOUNT_MIN)
     for key, (label, emoji, description, queries) in CATEGORY_ROUTES.items()
 }
-ALL_VERIFIED_PRESET = HUNT_PRESETS["all"]
+ALL_VERIFIED_PRESET = HuntPreset(
+    ALL_VERIFIED_HUNT_KEY,
+    CATEGORY_ROUTES["all"][0],
+    CATEGORY_ROUTES["all"][1],
+    CATEGORY_ROUTES["all"][2],
+    DISCOVERY_QUERIES,
+    TRUE_DISCOUNT_MIN,
+)
 
 
 @dataclass(frozen=True)

@@ -96,16 +96,7 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
     verified = rank_verified_cards(verified)
 
     review = build_review_candidate_cards(list(deduped))
-    ranked_review_cards = rank_review_cards(review.cards)
-    review = ReviewCandidateResult(
-        cards=ranked_review_cards,
-        under_threshold_count=review.under_threshold_count,
-        missing_reference_count=review.missing_reference_count,
-        weak_reference_count=review.weak_reference_count,
-        missing_current_count=review.missing_current_count,
-        no_value_signal_count=review.no_value_signal_count,
-        rejected_bad_value_count=review.rejected_bad_value_count,
-    )
+    review = rank_review_candidate_result(review)
 
     return DealFinderResult(
         query=query,
@@ -118,6 +109,60 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
         warnings=warnings,
         searches_attempted=searches_attempted,
         min_discount=min_discount,
+    )
+
+
+async def find_walmart_deals_for_preset(*, requested_by: str, preset: HuntPreset | None = None, db=None, guild_id: int | None = None, use_price_memory: bool = False):
+    """Shared engine wrapper for category/broad Walmart hunts.
+
+    This intentionally delegates scan collection to the existing verified hunt
+    implementation, then applies the same ranking normalization used by `/deals`.
+    """
+    from sniperplug.services.verified_discount_hunt import VerifiedHuntResult, collect_verified_discount_cards
+
+    result = await collect_verified_discount_cards(
+        requested_by=requested_by,
+        preset=preset,
+        db=db,
+        guild_id=guild_id,
+        use_price_memory=use_price_memory,
+    )
+    review = rank_review_candidate_result(result.review_candidates) if result.review_candidates else None
+    cards = rank_verified_cards(result.cards)
+    return VerifiedHuntResult(
+        cards=cards,
+        pages_checked=result.pages_checked,
+        products_checked=result.products_checked,
+        warnings=result.warnings,
+        searches_attempted=result.searches_attempted,
+        min_discount=result.min_discount,
+        price_memory=result.price_memory,
+        total_verified_cards=result.total_verified_cards,
+        review_candidates=review,
+        category_key=result.category_key,
+    )
+
+
+async def find_walmart_discovery_deals(*, requested_by: str, db=None, guild_id: int | None = None, use_price_memory: bool = False):
+    """Shared broad discovery entrypoint used by `/discover` and future schedulers."""
+    return await find_walmart_deals_for_preset(
+        requested_by=requested_by,
+        preset=None,
+        db=db,
+        guild_id=guild_id,
+        use_price_memory=use_price_memory,
+    )
+
+
+def rank_review_candidate_result(review: ReviewCandidateResult) -> ReviewCandidateResult:
+    return ReviewCandidateResult(
+        cards=rank_review_cards(review.cards),
+        under_threshold_count=review.under_threshold_count,
+        missing_reference_count=review.missing_reference_count,
+        weak_reference_count=review.weak_reference_count,
+        missing_current_count=review.missing_current_count,
+        no_value_signal_count=review.no_value_signal_count,
+        rejected_bad_value_count=review.rejected_bad_value_count,
     )
 
 

@@ -42,7 +42,13 @@ async def _send_walmart_scan_with_deal_finder(self, interaction, query: str, min
         await interaction.followup.send("Deal search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
         return
 
-    result = await find_walmart_deals_for_query(query=query, requested_by=str(interaction.user.id), min_discount=min_discount)
+    result = await find_walmart_deals_for_query(
+        query=query,
+        requested_by=str(interaction.user.id),
+        min_discount=min_discount,
+        db=getattr(self.bot, "db", None),
+        guild_id=interaction.guild_id,
+    )
     summary = build_deal_finder_summary(result)
 
     shown_verified = result.verified_cards[:5]
@@ -104,6 +110,12 @@ def build_deal_finder_summary(result: DealFinderResult) -> discord.Embed:
         embed.add_field(
             name="Search plan",
             value=", ".join(f"`{query}`" for query in result.search_plan.queries[:6]),
+            inline=False,
+        )
+    if result.boosted_routes:
+        embed.add_field(
+            name="🧠 Learned route boost",
+            value=", ".join(f"`{query}`" for query in result.boosted_routes[:3]),
             inline=False,
         )
     route_lines = top_route_lines(result.route_stats, limit=5)

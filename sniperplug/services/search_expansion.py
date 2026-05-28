@@ -32,9 +32,30 @@ HOUSEHOLD_TERMS = ("detergent", "paper", "toilet", "cleaner", "soap", "diaper", 
 TOY_TERMS = ("lego", "toy", "pokemon", "barbie", "board game", "collectible")
 TOOL_TERMS = ("tool", "drill", "dewalt", "milwaukee", "hart", "hyper tough", "socket", "pressure washer")
 HOME_TERMS = ("air fryer", "vacuum", "coffee", "patio", "furniture", "mattress", "appliance")
+BEAUTY_FRAGRANCE_TERMS = (
+    "fragrance",
+    "cologne",
+    "perfume",
+    "parfum",
+    "eau de parfum",
+    "eau de toilette",
+    "edt",
+    "edp",
+    "spray",
+    "dolce",
+    "gabbana",
+    "gucci",
+    "versace",
+    "armani",
+    "yves saint laurent",
+    "ysl",
+    "prada",
+    "burberry",
+    "calvin klein",
+)
 
 
-def expand_walmart_query(query: str, *, max_queries: int = 5, boosted_queries: tuple[str, ...] = ()) -> SearchPlan:
+def expand_walmart_query(query: str, *, max_queries: int = 6, boosted_queries: tuple[str, ...] = ()) -> SearchPlan:
     """Expand a user query into a small set of Walmart sale-surface searches.
 
     Keep this deterministic and conservative. The goal is to improve recall without
@@ -60,6 +81,12 @@ def expand_walmart_query(query: str, *, max_queries: int = 5, boosted_queries: t
         notes.append("expanded with prepaid/mobile surfaces")
         add_unique(expansions, f"{cleaned} prepaid")
         add_unique(expansions, f"straight talk {cleaned}")
+    if any(term in lowered for term in BEAUTY_FRAGRANCE_TERMS):
+        notes.append("expanded with beauty/fragrance deal surfaces")
+        add_unique(expansions, f"{cleaned} fragrance clearance")
+        add_unique(expansions, f"{cleaned} perfume clearance")
+        add_unique(expansions, f"{cleaned} cologne clearance")
+        add_unique(expansions, f"designer fragrance {cleaned}")
     if any(term in lowered for term in HOUSEHOLD_TERMS):
         notes.append("expanded with household rollback surfaces")
         add_unique(expansions, f"{cleaned} household rollback")

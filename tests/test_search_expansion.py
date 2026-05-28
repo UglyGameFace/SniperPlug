@@ -35,3 +35,14 @@ def test_expand_query_uses_overlapping_memory_boosts_only():
     assert "galaxy phone prepaid" in plan.queries
     assert "lego clearance" not in plan.queries
     assert any("server-learned" in note for note in plan.notes)
+
+
+def test_expand_fragrance_query_adds_beauty_surfaces():
+    plan = expand_walmart_query("dolce gabbana cologne", max_queries=8)
+
+    assert plan.queries[0] == "dolce gabbana cologne"
+    assert "dolce gabbana cologne clearance" in plan.queries
+    assert "dolce gabbana cologne fragrance clearance" in plan.queries
+    assert "dolce gabbana cologne cologne clearance" in plan.queries
+    assert "designer fragrance dolce gabbana cologne" in plan.queries
+    assert any("beauty/fragrance" in note for note in plan.notes)

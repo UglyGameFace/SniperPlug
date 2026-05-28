@@ -34,11 +34,12 @@ TOOL_TERMS = ("tool", "drill", "dewalt", "milwaukee", "hart", "hyper tough", "so
 HOME_TERMS = ("air fryer", "vacuum", "coffee", "patio", "furniture", "mattress", "appliance")
 
 
-def expand_walmart_query(query: str, *, max_queries: int = 5) -> SearchPlan:
+def expand_walmart_query(query: str, *, max_queries: int = 5, boosted_queries: tuple[str, ...] = ()) -> SearchPlan:
     """Expand a user query into a small set of Walmart sale-surface searches.
 
     Keep this deterministic and conservative. The goal is to improve recall without
-    adding noisy preset terms that wreck result quality.
+    adding noisy preset terms that wreck result quality. Boosted queries come from
+    per-server route memory and are appended after the direct/safe expansions.
     """
     cleaned = normalize_query(query)
     if not cleaned:
@@ -72,12 +73,36 @@ def expand_walmart_query(query: str, *, max_queries: int = 5) -> SearchPlan:
         notes.append("expanded with home clearance surfaces")
         add_unique(expansions, f"{cleaned} home clearance")
 
+    for boosted in boosted_queries:
+        if len(expansions) >= max_queries:
+            break
+        boosted_cleaned = normalize_query(boosted)
+        if not boosted_cleaned:
+            continue
+        # Only use memory routes that still overlap the user's current intent.
+        if query_overlap(cleaned, boosted_cleaned):
+            add_unique(expansions, boosted_cleaned)
+
+    if boosted_queries:
+        notes.append("checked server-learned productive routes")
+
     return SearchPlan(original_query=query, queries=tuple(expansions[:max_queries]), notes=tuple(dedupe(notes)))
 
 
 def normalize_query(query: str) -> str:
     cleaned = re.sub(r"\s+", " ", (query or "").strip())
     return cleaned[:120]
+
+
+def query_overlap(query: str, boosted_query: str) -> bool:
+    query_tokens = meaningful_tokens(query)
+    boosted_tokens = meaningful_tokens(boosted_query)
+    return bool(query_tokens & boosted_tokens)
+
+
+def meaningful_tokens(query: str) -> set[str]:
+    stopwords = {"the", "and", "for", "with", "clearance", "rollback", "sale", "deals", "deal", "walmart"}
+    return {token for token in re.findall(r"[a-z0-9]+", query.lower()) if len(token) >= 3 and token not in stopwords}
 
 
 def add_unique(values: list[str], value: str) -> None:

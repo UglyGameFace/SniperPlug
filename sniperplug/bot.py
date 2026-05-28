@@ -23,6 +23,7 @@ from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider
 from sniperplug.providers.walmart import WalmartProvider
+from sniperplug.services.deal_finder_install import install_unified_deal_finder
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
 from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
@@ -53,6 +54,7 @@ class SniperPlugBot(commands.Bot):
         install_strict_walmart_cash_guard()
         install_walmart_marketplace_comp_guard()
         install_walmart_flip_research_patch()
+        install_unified_deal_finder()
         install_manual_posting_explainer_patch()
         install_walmart_discovery_expansion()
         install_verified_discount_hunt()

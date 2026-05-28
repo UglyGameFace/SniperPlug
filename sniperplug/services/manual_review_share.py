@@ -23,7 +23,7 @@ class ManualShareSelect(discord.ui.Select):
             discord.SelectOption(label=f"Post {index + 1}: {getattr(card, 'label', 'deal')[:70]}", value=str(index))
             for index, card in enumerate(cards[:5])
         ]
-        super().__init__(placeholder="Staff: manually post one lead to public", min_values=1, max_values=1, options=options, row=4)
+        super().__init__(placeholder="Staff: manually post one lead to public", min_values=1, max_values=1, options=options, row=3)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         try:

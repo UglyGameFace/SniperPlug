@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sniperplug.models.deal import NormalizedDeal
+from sniperplug.services.walmart_cash_guard import walmart_cash_amount_is_sane
 
 
 @dataclass(frozen=True)
@@ -42,9 +43,11 @@ def verified_deal_value(deal: NormalizedDeal) -> VerifiedDealValue:
         notes.append(f"Walmart coupon: ${deal.coupon_savings:,.2f}")
         effective_savings += deal.coupon_savings
     walmart_cash = _float_or_none(attrs.get("walmartCashSavings"))
-    if walmart_cash and walmart_cash > 0:
+    if walmart_cash and walmart_cash_amount_is_sane(walmart_cash, current_price=current):
         notes.append(f"Walmart Cash reward/value: ${walmart_cash:,.2f}")
         effective_savings += walmart_cash
+    elif walmart_cash and walmart_cash > 0:
+        notes.append("Ignored suspicious Walmart Cash value")
     if attrs.get("referencePriceTrusted") == "no":
         notes.append("Ignored low-confidence MSRP/list/marketplace reference price")
     return VerifiedDealValue(discount, savings, proof_level, round(effective_savings, 2), tuple(notes))

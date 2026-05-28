@@ -126,7 +126,7 @@ def price_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> list
         if context_price and deal.current_price is not None and context_price > deal.current_price:
             source_text = f" `{context_source}`" if context_source else ""
             lines.append(f"• Reference shown: **{money(context_price)}**{source_text}")
-            lines.append("• Discount math status: **reference shown but not counted**")
+            lines.append("• Discount math status: **reference shown but not counted for % off**")
         else:
             lines.append("• Was/typical: **not returned or not trusted by Walmart API**")
             lines.append("• Discount math status: **no trusted Walmart reference**")
@@ -137,6 +137,58 @@ def price_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> list
     if cash:
         lines.append(f"• Walmart Cash API value: **{money(cash)}**")
     return lines
+
+
+def price_block(deal: NormalizedDeal, proof) -> str:
+    """Backward-compatible rendered price block used by older tests."""
+    attrs = deal.variant_attributes or {}
+    fake_candidate = SourceCandidate(
+        source_key="walmart",
+        retailer=deal.retailer or "Walmart",
+        title=deal.title,
+        product_url=deal.product_url,
+        current_price=deal.current_price,
+        typical_price=deal.typical_price,
+        variant_attributes=attrs,
+    )
+    return "\n".join(price_lines(fake_candidate, deal, proof))
+
+
+def api_detail_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
+    """Backward-compatible compact Walmart API details used by older tests."""
+    attrs = deal.variant_attributes or {}
+    lines: list[str] = []
+    if deal.sku:
+        lines.append(f"SKU `{deal.sku}`")
+    if deal.upc:
+        lines.append(f"UPC `{deal.upc}`")
+    if candidate.seller_name or deal.seller_name or attrs.get("seller"):
+        lines.append(f"Seller **{candidate.seller_name or deal.seller_name or attrs.get('seller')}**")
+    if attrs.get("rollback") is not None:
+        lines.append(f"Rollback: **{attrs.get('rollback')}**")
+    if attrs.get("referencePriceTrusted") is not None:
+        lines.append(f"Reference trusted: **{attrs.get('referencePriceTrusted')}**")
+    trusted_price = float_or_none(attrs.get("trustedReferencePrice")) or deal.typical_price
+    trusted_source = attrs.get("trustedReferenceSource")
+    if trusted_price:
+        source_text = f" `{trusted_source}`" if trusted_source else ""
+        lines.append(f"Trusted was/typical: **{money(trusted_price)}**{source_text}")
+    coupon = float_or_none(attrs.get("couponSavings"))
+    if coupon:
+        lines.append(f"Coupon API value: **{money(coupon)}**")
+    cash = float_or_none(attrs.get("walmartCashSavings"))
+    if cash:
+        lines.append(f"Walmart Cash API value: **{money(cash)}**")
+    lines.extend(identity_lines(candidate, deal))
+    lines.extend(offer_lines(candidate, deal))
+    lines.extend(fulfillment_lines(candidate, deal))
+    lines.extend(variant_lines(candidate, deal))
+    return deal_scanner.dedupe_lines(lines)
+
+
+def api_evidence_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> list[str]:
+    """Backward-compatible alias for the native evidence line builder."""
+    return evidence_lines(candidate, deal, proof)
 
 
 def identity_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:

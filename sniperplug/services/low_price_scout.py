@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -23,11 +24,9 @@ HOT_CATEGORY_TERMS = (
     "toy", "tool", "drill", "vacuum", "air fryer",
 )
 
-BAD_TITLE_TERMS = (
-    "sample", "decant", "empty bottle", "case only", "replacement cap", "refill only",
-)
-
+BAD_TITLE_TERMS = ("sample", "decant", "empty bottle", "case only", "replacement cap", "refill only")
 DEAL_ROUTE_TERMS = ("clearance", "rollback", "fragrance", "cologne", "perfume", "designer")
+QUERY_STOPWORDS = {"the", "and", "for", "with", "walmart", "deal", "deals", "clearance", "rollback", "sale"}
 
 
 @dataclass(frozen=True)
@@ -37,11 +36,11 @@ class ScoutLead:
     reasons: tuple[str, ...]
 
 
-def scout_low_price_leads(candidates: Iterable[SourceCandidate], *, limit: int = 8) -> list[DealCard]:
+def scout_low_price_leads(candidates: Iterable[SourceCandidate], *, limit: int = 8, search_query: str = "") -> list[DealCard]:
     scored: list[ScoutLead] = []
     seen: set[str] = set()
     for candidate in candidates:
-        lead = score_candidate(candidate)
+        lead = score_candidate(candidate, search_query=search_query)
         if lead is None:
             continue
         key = candidate.selected_offer_id or candidate.product_id or candidate.sku or candidate.upc or candidate.product_url or candidate.title
@@ -53,7 +52,7 @@ def scout_low_price_leads(candidates: Iterable[SourceCandidate], *, limit: int =
     return [build_scout_card(lead) for lead in scored[:limit]]
 
 
-def score_candidate(candidate: SourceCandidate) -> ScoutLead | None:
+def score_candidate(candidate: SourceCandidate, *, search_query: str = "") -> ScoutLead | None:
     if candidate.current_price is None or candidate.current_price <= 0:
         return None
     if candidate.current_price > 250:
@@ -66,6 +65,10 @@ def score_candidate(candidate: SourceCandidate) -> ScoutLead | None:
 
     reasons: list[str] = []
     score = 0.0
+
+    intent_score, intent_reasons = score_search_intent(product_text, search_query)
+    score += intent_score
+    reasons.extend(intent_reasons)
 
     product_brand_hits = [term for term in HOT_BRAND_TERMS if term in product_text]
     route_brand_hits = [term for term in HOT_BRAND_TERMS if term in route_text]
@@ -117,11 +120,50 @@ def score_candidate(candidate: SourceCandidate) -> ScoutLead | None:
         score += 8
         reasons.append("seller looks like Walmart")
 
-    if not product_brand_hits and not product_category_hits and not route_category_hits:
+    if search_query and intent_score < 0:
+        score += intent_score
+    if not product_brand_hits and not product_category_hits and not route_category_hits and intent_score <= 0:
         return None
     if score < 35:
         return None
     return ScoutLead(candidate=candidate, score=round(score, 1), reasons=tuple(reasons))
+
+
+def score_search_intent(product_text: str, search_query: str) -> tuple[float, list[str]]:
+    query = normalize_text(search_query)
+    if not query:
+        return 0.0, []
+    tokens = meaningful_query_tokens(query)
+    if not tokens:
+        return 0.0, []
+
+    score = 0.0
+    reasons: list[str] = []
+    if query in product_text:
+        score += 45
+        reasons.append("exact search phrase matched product title")
+
+    matched = [token for token in tokens if token in product_text]
+    missing = [token for token in tokens if token not in product_text]
+    if matched:
+        score += min(32, len(matched) * 8)
+        reasons.append(f"matched search terms: {', '.join(matched[:5])}")
+    if missing:
+        penalty = min(36, len(missing) * 10)
+        score -= penalty
+        reasons.append(f"missing search terms: {', '.join(missing[:5])}")
+    if "one" in tokens and "one" not in product_text:
+        score -= 30
+        reasons.append("missing distinctive term: one")
+    return score, reasons
+
+
+def normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
+def meaningful_query_tokens(query: str) -> list[str]:
+    return [token for token in re.findall(r"[a-z0-9]+", query.lower()) if len(token) >= 3 and token not in QUERY_STOPWORDS]
 
 
 def build_scout_card(lead: ScoutLead) -> DealCard:
@@ -149,21 +191,17 @@ def build_scout_card(lead: ScoutLead) -> DealCard:
         savings = raw_reference - deal.current_price
         markdown = percent_off(deal.current_price, raw_reference)
         source = reference_source(candidate)
-        price_lines.extend(
-            [
-                f"Raw was/typical/reference: **{money(raw_reference)}** `{source}`",
-                f"Raw Walmart savings: **{money(savings)}** / **{markdown:.0f}%**",
-                "Raw price context is useful for review, but this card is still not auto-post verified.",
-            ]
-        )
+        price_lines.extend([
+            f"Raw was/typical/reference: **{money(raw_reference)}** `{source}`",
+            f"Raw Walmart savings: **{money(savings)}** / **{markdown:.0f}%**",
+            "Raw price context is useful for review, but this card is still not auto-post verified.",
+        ])
     else:
         price_lines.append("Was/typical/reference: **not returned by API for this scout card**")
-    price_lines.extend(
-        [
-            f"Scout score: **{lead.score:.1f}/100**",
-            "This is not auto-verified markdown proof. It is surfaced because it looks unusually worth checking.",
-        ]
-    )
+    price_lines.extend([
+        f"Scout score: **{lead.score:.1f}/100**",
+        "This is not auto-verified markdown proof. It is surfaced because it looks unusually worth checking.",
+    ])
     embed.add_field(name="💰 Scout price", value="\n".join(price_lines), inline=False)
     embed.add_field(name="Why shown", value="\n".join(f"• {reason}" for reason in lead.reasons[:6]), inline=False)
     api = api_lines(candidate, deal)
@@ -186,19 +224,13 @@ def build_scout_card(lead: ScoutLead) -> DealCard:
 
 
 def product_terms(candidate: SourceCandidate) -> str:
-    values = [
-        candidate.title,
-        candidate.parent_title,
-        candidate.variant_label,
-        candidate.seller_name,
-        " ".join(str(signal) for signal in candidate.signals or ()),
-    ]
-    return " ".join(str(value).lower() for value in values if value)
+    values = [candidate.title, candidate.parent_title, candidate.variant_label, candidate.seller_name, " ".join(str(signal) for signal in candidate.signals or ())]
+    return normalize_text(" ".join(str(value) for value in values if value))
 
 
 def route_terms(candidate: SourceCandidate) -> str:
     attrs = candidate.variant_attributes or {}
-    return f"{attrs.get('finderSourceQuery', '')} {attrs.get('finderSourceQueries', '')}".lower()
+    return normalize_text(f"{attrs.get('finderSourceQuery', '')} {attrs.get('finderSourceQueries', '')}")
 
 
 def reference_price(candidate: SourceCandidate) -> float | None:
@@ -228,15 +260,7 @@ def percent_off(current: float, reference: float) -> float:
 def api_lines(candidate: SourceCandidate, deal: Any) -> list[str]:
     attrs = deal.variant_attributes or {}
     lines: list[str] = []
-    for label, value in (
-        ("SKU", deal.sku),
-        ("UPC", deal.upc),
-        ("Offer ID", deal.selected_offer_id),
-        ("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")),
-        ("Stock", candidate.stock_status),
-        ("Available online", attrs.get("availableOnline")),
-        ("Finder route", attrs.get("finderSourceQuery")),
-    ):
+    for label, value in (("SKU", deal.sku), ("UPC", deal.upc), ("Offer ID", deal.selected_offer_id), ("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")), ("Stock", candidate.stock_status), ("Available online", attrs.get("availableOnline")), ("Finder route", attrs.get("finderSourceQuery"))):
         if value:
             lines.append(f"• {label}: **{str(value)[:90]}**")
     return lines

@@ -188,7 +188,7 @@ class Database:
                 channel_id = excluded.channel_id,
                 updated_at = excluded.updated_at
             """,
-            (guild_id, route, channel_id, now),
+            (guild_id, route, channel_id, now, now),
         )
         if commit:
             await conn.commit()

@@ -11,9 +11,10 @@ from sniperplug.cogs.public_alerts import (
     format_interval,
     list_retailer_auto_scan_settings,
 )
+from sniperplug.services.deal_finder_engine import find_walmart_discovery_deals
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
-from sniperplug.services.verified_discount_hunt import collect_verified_discount_cards, send_card_batches
+from sniperplug.services.verified_discount_hunt import send_card_batches
 
 DISCORD_EMBED_MESSAGE_LIMIT = 6000
 SAFE_EMBED_MESSAGE_LIMIT = 5200
@@ -42,7 +43,7 @@ class AutoDiscoveryCog(commands.Cog):
 
         auto_scan_settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         gate_settings = auto_scan_settings.get(AUTO_DISCOVERY_RETAILER, default_auto_scan_config(AUTO_DISCOVERY_RETAILER))
-        result = await collect_verified_discount_cards(requested_by=str(interaction.user.id))
+        result = await find_walmart_discovery_deals(requested_by=str(interaction.user.id))
         fresh_selection = await select_fresh_deal_cards(
             self.bot.db,
             guild_id=interaction.guild_id,
@@ -59,18 +60,24 @@ class AutoDiscoveryCog(commands.Cog):
             fallback_retailer=AUTO_DISCOVERY_RETAILER,
         )
 
+        review_count = len(result.review_candidates.cards) if result.review_candidates else 0
         embed = discord.Embed(
             title="🤖 Verified Walmart Discovery",
             description=(
-                "Manual `/discover` now uses the same broad verified 50%+ hunt as `/hunt`.\n"
+                "Manual `/discover` now uses the shared Deal Finder engine over the broad verified 50%+ hunt.\n"
                 "No category presets. No relaxed filler. No guessed discount math.\n\n"
                 f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} API result pages**\n"
-                f"Found: **{len(result.cards)} verified 50%+ card(s)**\n"
+                f"Verified total: **{result.total_verified_cards}** • Fresh shown: **{len(shown_cards)}**\n"
+                f"Review/flip leads: **{review_count}**\n"
                 f"Fresh filter: {fresh_selection.summary_line()}"
             ),
             color=discord.Color.red() if shown_cards else discord.Color.dark_gold(),
         )
         embed.add_field(name="Auto-scan setting", value=discover_auto_scan_status(gate_settings), inline=False)
+        if result.price_memory is not None:
+            embed.add_field(name="🧠 Price memory", value=result.price_memory.summary_line(), inline=False)
+        if result.review_candidates is not None:
+            embed.add_field(name="🟨 Review / flip audit", value=result.review_candidates.summary_line(), inline=False)
         if public_result.any_activity:
             embed.add_field(
                 name="📣 Public posting",
@@ -84,13 +91,15 @@ class AutoDiscoveryCog(commands.Cog):
             )
         if result.warnings:
             embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
-        embed.set_footer(text="Only API-verified 50%+ markdowns are shown. Same-price repeats are hidden; lower prices can appear again.")
+        embed.set_footer(text="Verified cards can public-post. Review/flip leads are private and require manual checkout/comp checks.")
 
         if not shown_cards:
             await interaction.followup.send(embed=embed, ephemeral=True)
+            if result.review_candidates and result.review_candidates.cards:
+                await send_card_batches(interaction, summary=discord.Embed(title="🟨 Review / flip leads", description="Private leads only — not public-posted as verified deals.", color=discord.Color.gold()), cards=[], review_cards=result.review_candidates.cards[:5])
             return
 
-        await send_card_batches(interaction, summary=embed, cards=shown_cards)
+        await send_card_batches(interaction, summary=embed, cards=shown_cards, review_cards=result.review_candidates.cards[:5] if result.review_candidates else [])
 
     @discover.error
     async def discover_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -117,49 +126,3 @@ def discover_auto_scan_status(settings: dict) -> str:
         f"Daily limit: **{format_daily_limit(daily_limit)}**\n"
         "Manual `/discover`: **allowed**"
     )
-
-
-def batch_cards_for_embed_limit(cards: list[DealCard], *, limit: int = SAFE_EMBED_MESSAGE_LIMIT) -> list[list[DealCard]]:
-    batches: list[list[DealCard]] = []
-    current: list[DealCard] = []
-    current_size = 0
-
-    for card in cards:
-        size = embed_text_size(card.embed)
-        if current and current_size + size > limit:
-            batches.append(current)
-            current = []
-            current_size = 0
-        current.append(card)
-        current_size += size
-
-    if current:
-        batches.append(current)
-    return batches
-
-
-def embed_text_size(embed: discord.Embed) -> int:
-    data = embed.to_dict()
-    total = 0
-    total += len(str(data.get("title") or ""))
-    total += len(str(data.get("description") or ""))
-    footer = data.get("footer") or {}
-    total += len(str(footer.get("text") or ""))
-    author = data.get("author") or {}
-    total += len(str(author.get("name") or ""))
-    for field in data.get("fields") or []:
-        total += len(str(field.get("name") or ""))
-        total += len(str(field.get("value") or ""))
-    return total
-
-
-def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:
-    seen: set[str] = set()
-    unique: list[DealCard] = []
-    for card in cards:
-        key = getattr(card, "public_post_key", None) or getattr(card, "selected_offer_id", None) or getattr(card, "sku", None) or getattr(card, "upc", None) or card.url or card.label
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(card)
-    return unique

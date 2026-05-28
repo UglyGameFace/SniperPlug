@@ -120,6 +120,22 @@ class Database:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS deal_route_memory (
+                guild_id INTEGER NOT NULL,
+                retailer TEXT NOT NULL,
+                route_query TEXT NOT NULL,
+                scans INTEGER NOT NULL DEFAULT 0,
+                returned_products INTEGER NOT NULL DEFAULT 0,
+                verified_hits INTEGER NOT NULL DEFAULT 0,
+                review_hits INTEGER NOT NULL DEFAULT 0,
+                flip_hits INTEGER NOT NULL DEFAULT 0,
+                blocked_hits INTEGER NOT NULL DEFAULT 0,
+                last_score REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, retailer, route_query)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_guild_alert_channels_guild ON guild_alert_channels(guild_id);
             CREATE INDEX IF NOT EXISTS idx_deals_retailer ON deals(retailer);
             CREATE INDEX IF NOT EXISTS idx_deals_discount ON deals(discount_percent);
@@ -127,6 +143,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_clearance_seeds_guild_retailer ON clearance_seeds(guild_id, retailer);
             CREATE INDEX IF NOT EXISTS idx_clearance_seeds_sku ON clearance_seeds(sku);
             CREATE INDEX IF NOT EXISTS idx_clearance_seeds_upc ON clearance_seeds(upc);
+            CREATE INDEX IF NOT EXISTS idx_deal_route_memory_guild_retailer_score ON deal_route_memory(guild_id, retailer, last_score DESC);
             """
         )
         await conn.commit()
@@ -171,7 +188,7 @@ class Database:
                 channel_id = excluded.channel_id,
                 updated_at = excluded.updated_at
             """,
-            (guild_id, route, channel_id, now, now),
+            (guild_id, route, channel_id, now),
         )
         if commit:
             await conn.commit()

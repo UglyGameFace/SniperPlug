@@ -28,6 +28,7 @@ from sniperplug.services.manual_posting_explainer import install_manual_posting_
 from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
 from sniperplug.services.walmart_cash_guard import install_strict_walmart_cash_guard
 from sniperplug.services.walmart_discovery_expansion import install_walmart_discovery_expansion
+from sniperplug.services.walmart_flip_research_patch import install_walmart_flip_research_patch
 from sniperplug.services.walmart_marketplace_comp_guard import install_walmart_marketplace_comp_guard
 from sniperplug.services.walmart_renderer_install import install_walmart_renderer
 from sniperplug.storage.db import Database
@@ -51,6 +52,7 @@ class SniperPlugBot(commands.Bot):
         install_walmart_renderer()
         install_strict_walmart_cash_guard()
         install_walmart_marketplace_comp_guard()
+        install_walmart_flip_research_patch()
         install_manual_posting_explainer_patch()
         install_walmart_discovery_expansion()
         install_verified_discount_hunt()

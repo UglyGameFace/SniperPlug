@@ -120,8 +120,6 @@ def score_candidate(candidate: SourceCandidate, *, search_query: str = "") -> Sc
         score += 8
         reasons.append("seller looks like Walmart")
 
-    if search_query and intent_score < 0:
-        score += intent_score
     if not product_brand_hits and not product_category_hits and not route_category_hits and intent_score <= 0:
         return None
     if score < 35:

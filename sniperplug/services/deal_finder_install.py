@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 
 from sniperplug.services.deal_finder_engine import DealFinderResult, find_walmart_deals_for_query
+from sniperplug.services.deal_finder_telemetry import top_route_lines
 
 
 _PATCHED = False
@@ -105,6 +106,9 @@ def build_deal_finder_summary(result: DealFinderResult) -> discord.Embed:
             value=", ".join(f"`{query}`" for query in result.search_plan.queries[:6]),
             inline=False,
         )
+    route_lines = top_route_lines(result.route_stats, limit=5)
+    if route_lines:
+        embed.add_field(name="🧭 Productive routes", value="\n".join(route_lines), inline=False)
     if result.search_plan.notes:
         embed.add_field(name="Expansion notes", value="\n".join(f"• {note}" for note in result.search_plan.notes[:4]), inline=False)
     if result.review_candidates:

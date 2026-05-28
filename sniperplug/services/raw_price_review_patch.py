@@ -30,7 +30,10 @@ def build_review_candidate_cards_with_raw_leads(candidates, *, limit=None):
     from sniperplug.services import walmart_review_candidates
 
     safe_limit = limit or walmart_review_candidates.REVIEW_CANDIDATE_LIMIT
-    base = _ORIGINAL_BUILD(candidates, limit=safe_limit)
+    base_builder = _ORIGINAL_BUILD or walmart_review_candidates.build_review_candidate_cards
+    if base_builder is build_review_candidate_cards_with_raw_leads:
+        raise RuntimeError("Raw price review patch was installed without preserving the original builder.")
+    base = base_builder(candidates, limit=safe_limit)
     existing = list(base.cards)
     existing_keys = {card_key(card) for card in existing}
     raw_cards = []

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Any
+from typing import Any, Iterable
 
 import discord
 
@@ -26,6 +26,8 @@ HOT_CATEGORY_TERMS = (
 BAD_TITLE_TERMS = (
     "sample", "decant", "empty bottle", "case only", "replacement cap", "refill only",
 )
+
+DEAL_ROUTE_TERMS = ("clearance", "rollback", "fragrance", "cologne", "perfume", "designer")
 
 
 @dataclass(frozen=True)
@@ -56,25 +58,36 @@ def score_candidate(candidate: SourceCandidate) -> ScoutLead | None:
         return None
     if candidate.current_price > 250:
         return None
-    text = candidate_text(candidate)
-    if any(term in text for term in BAD_TITLE_TERMS):
+
+    product_text = product_terms(candidate)
+    route_text = route_terms(candidate)
+    if any(term in product_text for term in BAD_TITLE_TERMS):
         return None
 
     reasons: list[str] = []
     score = 0.0
 
-    brand_hits = [term for term in HOT_BRAND_TERMS if term in text]
-    category_hits = [term for term in HOT_CATEGORY_TERMS if term in text]
-    if brand_hits:
-        score += 25
-        reasons.append(f"hot brand/title terms: {', '.join(brand_hits[:3])}")
-    if category_hits:
-        score += 20
-        reasons.append(f"hot category terms: {', '.join(category_hits[:3])}")
+    product_brand_hits = [term for term in HOT_BRAND_TERMS if term in product_text]
+    route_brand_hits = [term for term in HOT_BRAND_TERMS if term in route_text]
+    product_category_hits = [term for term in HOT_CATEGORY_TERMS if term in product_text]
+    route_category_hits = [term for term in HOT_CATEGORY_TERMS if term in route_text]
 
-    route_text = route_terms(candidate)
-    if any(term in route_text for term in ("clearance", "rollback", "fragrance", "cologne", "perfume", "designer")):
-        score += 18
+    if route_brand_hits and not product_brand_hits:
+        score -= 22
+        reasons.append(f"brand route mismatch: route had {', '.join(route_brand_hits[:2])}, title did not")
+
+    if product_brand_hits:
+        score += 28
+        reasons.append(f"hot product title/brand terms: {', '.join(product_brand_hits[:3])}")
+    if product_category_hits:
+        score += 20
+        reasons.append(f"hot product category terms: {', '.join(product_category_hits[:3])}")
+    elif route_category_hits:
+        score += 8
+        reasons.append(f"hot route category terms: {', '.join(route_category_hits[:3])}")
+
+    if any(term in route_text for term in DEAL_ROUTE_TERMS):
+        score += 14
         reasons.append("found through deal-focused route")
 
     if candidate.current_price <= 25:
@@ -87,6 +100,12 @@ def score_candidate(candidate: SourceCandidate) -> ScoutLead | None:
         score += 8
         reasons.append("moderate scout price")
 
+    raw_reference = reference_price(candidate)
+    if raw_reference and raw_reference > candidate.current_price:
+        markdown = percent_off(candidate.current_price, raw_reference)
+        score += min(18, max(3, markdown / 3))
+        reasons.append(f"Walmart raw price context shows about {markdown:.0f}% off")
+
     stock = (candidate.stock_status or "").lower()
     attrs = candidate.variant_attributes or {}
     if "available" in stock or str(attrs.get("availableOnline", "")).lower() in {"true", "yes", "1"}:
@@ -98,7 +117,7 @@ def score_candidate(candidate: SourceCandidate) -> ScoutLead | None:
         score += 8
         reasons.append("seller looks like Walmart")
 
-    if not brand_hits and not category_hits:
+    if not product_brand_hits and not product_category_hits and not route_category_hits:
         return None
     if score < 35:
         return None
@@ -123,15 +142,29 @@ def build_scout_card(lead: ScoutLead) -> DealCard:
     )
     if deal.image_url:
         embed.set_thumbnail(url=deal.image_url)
-    embed.add_field(
-        name="💰 Scout price",
-        value=(
-            f"Current Walmart API price: **{money(deal.current_price)}**\n"
-            f"Scout score: **{lead.score:.1f}/100**\n"
-            "This is not auto-verified markdown proof. It is surfaced because it looks unusually worth checking."
-        ),
-        inline=False,
+
+    price_lines = [f"Current Walmart API price: **{money(deal.current_price)}**"]
+    raw_reference = reference_price(candidate)
+    if raw_reference and deal.current_price and raw_reference > deal.current_price:
+        savings = raw_reference - deal.current_price
+        markdown = percent_off(deal.current_price, raw_reference)
+        source = reference_source(candidate)
+        price_lines.extend(
+            [
+                f"Raw was/typical/reference: **{money(raw_reference)}** `{source}`",
+                f"Raw Walmart savings: **{money(savings)}** / **{markdown:.0f}%**",
+                "Raw price context is useful for review, but this card is still not auto-post verified.",
+            ]
+        )
+    else:
+        price_lines.append("Was/typical/reference: **not returned by API for this scout card**")
+    price_lines.extend(
+        [
+            f"Scout score: **{lead.score:.1f}/100**",
+            "This is not auto-verified markdown proof. It is surfaced because it looks unusually worth checking.",
+        ]
     )
+    embed.add_field(name="💰 Scout price", value="\n".join(price_lines), inline=False)
     embed.add_field(name="Why shown", value="\n".join(f"• {reason}" for reason in lead.reasons[:6]), inline=False)
     api = api_lines(candidate, deal)
     if api:
@@ -152,15 +185,13 @@ def build_scout_card(lead: ScoutLead) -> DealCard:
     return card
 
 
-def candidate_text(candidate: SourceCandidate) -> str:
-    attrs = candidate.variant_attributes or {}
+def product_terms(candidate: SourceCandidate) -> str:
     values = [
         candidate.title,
+        candidate.parent_title,
+        candidate.variant_label,
         candidate.seller_name,
-        candidate.stock_status,
         " ".join(str(signal) for signal in candidate.signals or ()),
-        str(attrs.get("finderSourceQuery") or ""),
-        str(attrs.get("finderSourceQueries") or ""),
     ]
     return " ".join(str(value).lower() for value in values if value)
 
@@ -168,6 +199,30 @@ def candidate_text(candidate: SourceCandidate) -> str:
 def route_terms(candidate: SourceCandidate) -> str:
     attrs = candidate.variant_attributes or {}
     return f"{attrs.get('finderSourceQuery', '')} {attrs.get('finderSourceQueries', '')}".lower()
+
+
+def reference_price(candidate: SourceCandidate) -> float | None:
+    if candidate.typical_price and candidate.current_price and candidate.typical_price > candidate.current_price:
+        return float(candidate.typical_price)
+    attrs = candidate.variant_attributes or {}
+    for key in ("referenceContextPrice", "wasPrice", "listPrice", "msrp"):
+        parsed = float_or_none(attrs.get(key))
+        if parsed and candidate.current_price and parsed > candidate.current_price:
+            return parsed
+    return None
+
+
+def reference_source(candidate: SourceCandidate) -> str:
+    attrs = candidate.variant_attributes or {}
+    if candidate.typical_price:
+        return "typical_price"
+    return str(attrs.get("referenceContextSource") or "raw_api_reference")
+
+
+def percent_off(current: float, reference: float) -> float:
+    if reference <= 0 or reference <= current:
+        return 0.0
+    return max(0.0, (reference - current) / reference * 100)
 
 
 def api_lines(candidate: SourceCandidate, deal: Any) -> list[str]:
@@ -185,6 +240,15 @@ def api_lines(candidate: SourceCandidate, deal: Any) -> list[str]:
         if value:
             lines.append(f"• {label}: **{str(value)[:90]}**")
     return lines
+
+
+def float_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value).replace("$", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def money(value: Any) -> str:

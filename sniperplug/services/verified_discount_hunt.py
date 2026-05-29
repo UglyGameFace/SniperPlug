@@ -11,6 +11,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route, top_route_lines
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
+from sniperplug.services.low_price_scout import scout_low_price_leads
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
 from sniperplug.services.walmart_price_memory import PriceMemorySelection, select_price_intelligent_cards
@@ -27,7 +28,7 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
     "all": (
         "All Walmart",
         "🚨",
-        "All major Walmart sale surfaces, capped for speed.",
+        "All major Walmart sale, department, and low-price value surfaces.",
         (
             "clearance",
             "rollback",
@@ -36,45 +37,91 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
             "special buy",
             "walmart deals",
             "online clearance",
-            "hidden clearance",
             "overstock clearance",
             "electronics clearance",
+            "phone clearance",
+            "prepaid phone clearance",
+            "straight talk phone",
+            "open box electronics",
+            "restored electronics",
             "toy clearance",
+            "lego clearance",
             "home clearance",
             "kitchen clearance",
+            "appliance clearance",
             "tool clearance",
             "auto clearance",
+            "motor oil rollback",
+            "household clearance",
+            "grocery clearance",
+            "laundry detergent rollback",
+            "paper goods rollback",
+            "personal care clearance",
+            "baby clearance",
+            "pet clearance",
             "beauty clearance",
-            "fragrance clearance",
-            "cologne clearance",
-            "perfume clearance",
+            "fragrance",
+            "designer fragrance",
             "designer fragrance clearance",
-            "open box",
-            "restored",
+            "designer cologne",
+            "cologne",
+            "cologne clearance",
+            "men cologne",
+            "men cologne clearance",
+            "perfume",
+            "perfume clearance",
+            "eau de parfum",
+            "eau de toilette",
+            "dolce gabbana cologne",
+            "versace cologne",
+            "gucci perfume",
+            "ysl fragrance",
+            "armani cologne",
+            "calvin klein fragrance",
+            "apparel clearance",
+            "shoe clearance",
+            "jewelry clearance",
+            "sporting goods clearance",
+            "outdoor clearance",
+            "office clearance",
         ),
     ),
-    "tech": ("Tech & Gaming", "🎮", "Electronics, gaming, TVs, monitors, laptops, and restored tech.", ("electronics clearance", "gaming clearance", "laptop clearance", "tv clearance", "monitor clearance", "open box electronics", "restored monitor", "refurbished laptop")),
+    "tech": ("Tech & Gaming", "🎮", "Electronics, gaming, TVs, monitors, phones, laptops, and restored tech.", ("electronics clearance", "electronics rollback", "gaming clearance", "laptop clearance", "tv clearance", "monitor clearance", "phone clearance", "prepaid phone clearance", "straight talk phone", "open box electronics", "restored electronics", "refurbished laptop")),
     "beauty": (
         "Beauty & Fragrance",
         "💄",
-        "Perfume, cologne, designer fragrance, grooming, and beauty markdowns.",
+        "Perfume, cologne, designer fragrance, grooming, and beauty value leads.",
         (
-            "fragrance clearance",
-            "cologne clearance",
-            "perfume clearance",
-            "designer fragrance clearance",
             "beauty clearance",
-            "eau de parfum clearance",
-            "eau de toilette clearance",
+            "fragrance",
+            "fragrance clearance",
+            "designer fragrance",
+            "designer fragrance clearance",
+            "designer cologne",
+            "designer perfume",
+            "cologne",
+            "cologne clearance",
+            "men cologne",
             "men cologne clearance",
-            "women perfume clearance",
+            "perfume",
+            "perfume clearance",
+            "eau de parfum",
+            "eau de parfum clearance",
+            "eau de toilette",
+            "eau de toilette clearance",
+            "dolce gabbana cologne",
+            "versace cologne",
+            "gucci perfume",
+            "ysl fragrance",
+            "armani cologne",
+            "calvin klein fragrance",
             "premium beauty clearance",
         ),
     ),
-    "home": ("Home & Kitchen", "🏠", "Kitchen, home, furniture, patio, appliances, and storage.", ("home clearance", "kitchen clearance", "appliance clearance", "furniture clearance", "patio clearance", "vacuum clearance")),
-    "toys": ("Toys & Gifts", "🧸", "Toys, LEGO, games, collectibles, and giftable markdowns.", ("toy clearance", "lego clearance", "board game clearance", "collectible clearance", "video game clearance")),
-    "auto_tools": ("Auto & Tools", "🛠️", "Tools, garage, car care, oil, and DIY markdowns.", ("tool clearance", "auto clearance", "drill clearance", "pressure washer clearance", "car care clearance")),
-    "essentials": ("Daily Essentials", "🧼", "Household, grocery, personal care, and coupon/cash value checks.", ("household clearance", "grocery clearance", "cleaning supplies clearance", "laundry detergent rollback", "paper goods rollback")),
+    "home": ("Home & Kitchen", "🏠", "Kitchen, home, furniture, patio, appliances, and storage.", ("home clearance", "home rollback", "kitchen clearance", "appliance clearance", "furniture clearance", "patio clearance", "vacuum clearance", "air fryer clearance", "coffee maker clearance", "mattress clearance")),
+    "toys": ("Toys & Gifts", "🧸", "Toys, LEGO, games, collectibles, and giftable markdowns.", ("toy clearance", "toy rollback", "lego clearance", "pokemon cards", "board game clearance", "collectible clearance", "video game clearance", "barbie clearance")),
+    "auto_tools": ("Auto & Tools", "🛠️", "Tools, garage, car care, oil, and DIY markdowns.", ("tool clearance", "tool rollback", "auto clearance", "drill clearance", "dewalt clearance", "milwaukee clearance", "hart tools clearance", "pressure washer clearance", "car care clearance", "motor oil rollback")),
+    "essentials": ("Daily Essentials", "🧼", "Household, grocery, personal care, baby, pet, and coupon/cash value checks.", ("household clearance", "household rollback", "grocery clearance", "cleaning supplies clearance", "laundry detergent rollback", "paper goods rollback", "toilet paper rollback", "personal care clearance", "diaper clearance", "baby clearance", "pet clearance")),
 }
 
 # Backward-compatible broad route constant used by older tests/helpers.
@@ -112,6 +159,7 @@ class VerifiedHuntResult:
     review_candidates: ReviewCandidateResult | None = None
     category_key: str = "all"
     route_stats: tuple[SearchRouteStats, ...] = ()
+    scout_lead_count: int = 0
 
 
 async def run_verified_discount_hunt(preset: HuntPreset | None = None, requested_by: str = "") -> tuple[list[DealCard], int, int, list[str], int]:
@@ -172,6 +220,8 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
     verified_cards = rank_verified_cards(dedupe_cards(verified_cards))
 
     review_candidates = build_review_candidate_cards(list(deduped_candidates))
+    scout_cards = scout_low_price_leads(deduped_candidates, limit=12, search_query="")
+    review_candidates = merge_review_and_scout_cards(review_candidates, scout_cards, limit=12)
     review_candidates = ReviewCandidateResult(
         cards=rank_review_cards(review_candidates.cards),
         under_threshold_count=review_candidates.under_threshold_count,
@@ -180,6 +230,7 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
         missing_current_count=review_candidates.missing_current_count,
         no_value_signal_count=review_candidates.no_value_signal_count,
         rejected_bad_value_count=review_candidates.rejected_bad_value_count,
+        exact_match_count=getattr(review_candidates, "exact_match_count", 0),
     )
     price_memory = None
     cards = verified_cards
@@ -199,6 +250,7 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
         review_candidates=review_candidates,
         category_key=preset.key,
         route_stats=merged_route_stats,
+        scout_lead_count=len(scout_cards),
     )
 
 
@@ -270,12 +322,12 @@ def build_verified_hunt_menu_embed() -> discord.Embed:
         title="🚨 SniperPlug Walmart Hunt",
         description=(
             "Pick a category. Each button scans Walmart sale/result surfaces for **API-verified 50%+ deals**.\n"
-            "Categories are broad route groups, not tiny preset product searches. Review-only cards are private and never auto-post."
+            "Categories now include broad department seeds plus private low-price scout leads, so useful products are not hidden just because Walmart omitted was/typical markdown proof."
         ),
         color=discord.Color.red(),
     )
     for preset in HUNT_PRESETS.values():
-        embed.add_field(name=f"{preset.emoji} {preset.label}", value=f"{preset.description}\nStarts at **50%+ verified**.", inline=False)
+        embed.add_field(name=f"{preset.emoji} {preset.label}", value=f"{preset.description}\nStarts at **50%+ verified**. Scout leads are private.", inline=False)
     embed.set_footer(text=f"Each category checks {len(SORT_PASSES)} sort passes × up to {PAGES_PER_QUERY} pages per route. Math must come from trusted API product prices.")
     return embed
 
@@ -295,7 +347,7 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
             f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} API pages**\n"
             f"Routes: **{len(preset.queries)}** • Sort passes: **{len(SORT_PASSES)}** • Page size: **{RESULTS_PER_PAGE}**\n"
             f"Verified 50%+ total: **{found_total}** • Shown now: **{len(result.cards)}**\n"
-            f"Review/flip candidates: **{review_count}**"
+            f"Review/flip/scout candidates: **{review_count}**"
         ),
         color=discord.Color.red() if result.cards else discord.Color.dark_gold(),
     )
@@ -305,22 +357,24 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
     if result.price_memory is not None:
         embed.add_field(name="🧠 Price memory", value=result.price_memory.summary_line(), inline=False)
     if result.review_candidates is not None:
-        embed.add_field(name="🟨 Review / flip audit", value=result.review_candidates.summary_line(), inline=False)
+        embed.add_field(name="🟨 Review / flip / scout audit", value=result.review_candidates.summary_line(), inline=False)
+    if result.scout_lead_count:
+        embed.add_field(name="🔎 Low-price scout", value=f"Surfaced **{result.scout_lead_count}** private scout lead(s) from broad category scans.", inline=False)
     if not result.cards and review_count:
         embed.add_field(
-            name="No auto-postable verified 50%+ deals — showing review/flip candidates",
-            value="Review candidates are private only. They are API-backed leads, but not verified deals because trusted 50% markdown math did not pass.",
+            name="No auto-postable verified 50%+ deals — showing review/flip/scout candidates",
+            value="Private candidates can be manually checked and posted. They are not auto-posted unless trusted Walmart price math passes.",
             inline=False,
         )
     elif not result.cards:
         embed.add_field(
             name="No verified 50%+ API markdowns found",
-            value="Walmart did not return trusted 50%+ markdown proof or review-worthy value signals in this category run.",
+            value="Walmart did not return trusted 50%+ markdown proof, but broad route/scout coverage still checked category value leads.",
             inline=False,
         )
     if result.warnings:
         embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
-    embed.set_footer(text="Verified cards can public-post. Review/flip leads are private and require manual checkout/comp checks.")
+    embed.set_footer(text="Verified cards can public-post. Review/flip/scout leads are private and require manual checkout/comp checks.")
     return embed
 
 
@@ -329,7 +383,30 @@ async def send_card_batches(interaction: discord.Interaction, *, summary: discor
     for batch in chunked(cards, 5):
         await interaction.followup.send(embeds=[card.embed for card in batch], view=deal_scanner.PresetResultView(batch), ephemeral=True)
     for batch in chunked(review_cards or [], 5):
-        await interaction.followup.send(content="🟨 Review/flip API leads — private only, not public-posted as verified deals.", embeds=[card.embed for card in batch], view=deal_scanner.PresetResultView(batch), ephemeral=True)
+        await interaction.followup.send(content="🟨 Review/flip/scout API leads — private only, not public-posted as verified deals.", embeds=[card.embed for card in batch], view=deal_scanner.PresetResultView(batch), ephemeral=True)
+
+
+def merge_review_and_scout_cards(review: ReviewCandidateResult, scout_cards: list[DealCard], *, limit: int = 12) -> ReviewCandidateResult:
+    merged: list[DealCard] = []
+    seen: set[str] = set()
+    for card in [*review.cards, *scout_cards]:
+        key = getattr(card, "selected_offer_id", None) or getattr(card, "sku", None) or getattr(card, "upc", None) or card.url or card.label
+        price = getattr(card, "current_price", None)
+        identity = f"{key}:price:{price}"
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(card)
+    return ReviewCandidateResult(
+        cards=merged[:limit],
+        under_threshold_count=review.under_threshold_count,
+        missing_reference_count=review.missing_reference_count,
+        weak_reference_count=review.weak_reference_count,
+        missing_current_count=review.missing_current_count,
+        no_value_signal_count=review.no_value_signal_count,
+        rejected_bad_value_count=review.rejected_bad_value_count,
+        exact_match_count=getattr(review, "exact_match_count", 0),
+    )
 
 
 def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:

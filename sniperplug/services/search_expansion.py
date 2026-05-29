@@ -116,13 +116,14 @@ def expand_walmart_query(query: str, *, max_queries: int = 14, boosted_queries: 
         add_unique(expansions, f"straight talk {cleaned}")
     if any(term in lowered for term in BEAUTY_FRAGRANCE_TERMS):
         notes.append("expanded with beauty/fragrance deal surfaces")
-        # Clearance/value routes must come before plain category variants so
-        # tight max_queries callers still include deal-finding surfaces.
+        # Put all must-have deal/value routes before plain category variants so
+        # tight max_queries callers still include the routes that tests and
+        # Walmart recall depend on.
         for variant in fragrance_category_clearance_queries(cleaned):
             add_unique(expansions, variant)
+        add_unique(expansions, f"designer fragrance {cleaned}")
         for variant in fragrance_category_queries(cleaned):
             add_unique(expansions, variant)
-        add_unique(expansions, f"designer fragrance {cleaned}")
     if any(term in lowered for term in HOUSEHOLD_TERMS):
         notes.append("expanded with household rollback surfaces")
         add_unique(expansions, f"{cleaned} household rollback")

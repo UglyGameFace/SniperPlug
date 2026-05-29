@@ -112,7 +112,7 @@ def score_penny_candidate(candidate: SourceCandidate, *, has_store_id: bool = Fa
         # not be treated as raw/no-proof fallback or paid SerpApi credits get wasted.
         local_points = 14 if has_store_id else 12
         score += local_points
-        reasons.append(("Local store search" if has_store_id else "Local ZIP search") + f": +{local_points}")
+        reasons.append(f"Local store/ZIP search: +{local_points}")
     else:
         score -= 25
         reasons.append("No store_id or ZIP supplied: -25")

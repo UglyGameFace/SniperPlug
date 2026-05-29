@@ -8,6 +8,7 @@ import discord
 from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.services.direct_search_rescue import direct_match_score
 from sniperplug.services.price_proof import verified_deal_value
 from sniperplug.services.safe_links import product_link_choices
 
@@ -29,6 +30,7 @@ class ReviewCandidateResult:
     missing_current_count: int = 0
     no_value_signal_count: int = 0
     rejected_bad_value_count: int = 0
+    exact_match_count: int = 0
 
     def summary_line(self) -> str:
         return (
@@ -36,17 +38,19 @@ class ReviewCandidateResult:
             f"under 50% trusted: **{self.under_threshold_count}** • "
             f"weak reference ignored: **{self.weak_reference_count}** • "
             f"bad value rejected: **{self.rejected_bad_value_count}** • "
-            f"missing was/reference: **{self.missing_reference_count}**"
+            f"missing was/reference: **{self.missing_reference_count}** • "
+            f"exact matches rescued: **{self.exact_match_count}**"
         )
 
 
-def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: int = REVIEW_CANDIDATE_LIMIT) -> ReviewCandidateResult:
+def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: int = REVIEW_CANDIDATE_LIMIT, query: str | None = None) -> ReviewCandidateResult:
     under_threshold = 0
     missing_reference = 0
     weak_reference = 0
     missing_current = 0
     no_value_signal = 0
     rejected_bad_value = 0
+    exact_match_count = 0
 
     scored: list[tuple[float, DealCard]] = []
     for candidate in candidates:
@@ -57,6 +61,17 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
             continue
         if proof.discount_percent is not None and proof.discount_percent >= 50:
             continue
+
+        match_score = direct_match_score(
+            query or "",
+            deal.title,
+            sku=deal.sku,
+            upc=deal.upc,
+            product_id=candidate.product_id,
+        ) if query else 0.0
+        is_exact_search_match = match_score >= 0.45
+        if is_exact_search_match:
+            exact_match_count += 1
 
         coupon = safe_value_amount(deal.variant_attributes.get("couponSavings"), deal.current_price)
         cash = safe_value_amount(deal.variant_attributes.get("walmartCashSavings"), deal.current_price)
@@ -90,12 +105,13 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
             or coupon >= REVIEW_MIN_COUPON_OR_CASH
             or cash >= REVIEW_MIN_COUPON_OR_CASH
             or safe_markdown_signal(candidate)
+            or is_exact_search_match
         )
         if not has_value_signal:
             no_value_signal += 1
             continue
 
-        review_score = trusted_discount + coupon + cash + (5 if safe_markdown_signal(candidate) else 0)
+        review_score = trusted_discount + coupon + cash + (5 if safe_markdown_signal(candidate) else 0) + (35 * match_score)
         card = build_review_card(
             candidate,
             deal,
@@ -105,6 +121,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
             ignored_context_price=raw_context_price if context_price is None else None,
             coupon=coupon,
             cash=cash,
+            direct_match_score=match_score,
         )
         scored.append((review_score, card))
 
@@ -117,10 +134,22 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         missing_current_count=missing_current,
         no_value_signal_count=no_value_signal,
         rejected_bad_value_count=rejected_bad_value,
+        exact_match_count=exact_match_count,
     )
 
 
-def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price: float | None, context_discount: float | None, ignored_context_price: float | None, coupon: float, cash: float) -> DealCard:
+def build_review_card(
+    candidate: SourceCandidate,
+    deal,
+    proof,
+    *,
+    context_price: float | None,
+    context_discount: float | None,
+    ignored_context_price: float | None,
+    coupon: float,
+    cash: float,
+    direct_match_score: float = 0.0,
+) -> DealCard:
     choices = product_link_choices(
         retailer=deal.retailer,
         product_url=deal.product_url,
@@ -129,8 +158,9 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
         sku=deal.sku,
         asin=deal.asin,
     )
+    title_prefix = "🔎 Exact product match" if direct_match_score >= 0.45 else "🟨 Review candidate"
     embed = discord.Embed(
-        title=f"🟨 Review candidate • {deal_scanner.trim_title(deal.title, 72)}",
+        title=f"{title_prefix} • {deal_scanner.trim_title(deal.title, 72)}",
         url=deal.product_url,
         color=discord.Color.gold(),
     )
@@ -138,6 +168,8 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
         embed.set_thumbnail(url=deal.image_url)
 
     lines = [f"Current product price: **{money(deal.current_price)}**"]
+    if direct_match_score >= 0.45:
+        lines.append(f"Direct search match: **{direct_match_score:.0%}** — shown even without Walmart markdown proof")
     if proof.discount_percent is not None and deal.typical_price:
         lines.append(f"Trusted was/typical: **{money(deal.typical_price)}**")
         lines.append(f"Trusted API markdown: **{proof.discount_percent:.0f}%** — below 50% hunt threshold")
@@ -165,7 +197,7 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
     if link_block:
         embed.add_field(name="🔗 Links", value=link_block, inline=False)
 
-    embed.set_footer(text="Review-only: API-backed lead, not a verified 50% deal. No public post without trusted math.")
+    embed.set_footer(text="Review-only: API-backed lead, not a verified 50% deal. Exact matches may still need comp/profit checks before public posting.")
     card = DealCard(embed=embed, url=deal.product_url, label=deal_scanner.short_button_label(deal.title), score=0, discount=proof.discount_percent or 0.0, link_choices=choices)
     card.retailer = deal.retailer
     card.should_alert = False

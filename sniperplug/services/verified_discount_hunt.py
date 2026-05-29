@@ -11,6 +11,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route, top_route_lines
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
+from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT, get_starting_deal_percent, normalize_starting_deal_percent
 from sniperplug.services.low_price_scout import scout_low_price_leads
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
@@ -18,7 +19,7 @@ from sniperplug.services.walmart_price_memory import PriceMemorySelection, remem
 from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
 
 
-TRUE_DISCOUNT_MIN = 50
+TRUE_DISCOUNT_MIN = 50  # legacy/default constant kept for old tests/imports
 RESULTS_PER_PAGE = 25
 PAGES_PER_QUERY = 5
 SCAN_CONCURRENCY = 6
@@ -127,7 +128,6 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
     "essentials": ("Daily Essentials", "🧼", "Household, grocery, personal care, baby, pet, and coupon/cash value checks.", ("household clearance", "household rollback", "grocery clearance", "cleaning supplies clearance", "laundry detergent rollback", "paper goods rollback", "toilet paper rollback", "personal care clearance", "diaper clearance", "baby clearance", "pet clearance")),
 }
 
-# Backward-compatible broad route constant used by older tests/helpers.
 DISCOVERY_QUERIES = CATEGORY_ROUTES["all"][3]
 
 SORT_PASSES: tuple[tuple[str | None, str | None], ...] = (
@@ -171,8 +171,20 @@ async def run_verified_discount_hunt(preset: HuntPreset | None = None, requested
     return result.cards, result.pages_checked, result.products_checked, result.warnings, result.min_discount
 
 
-async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPreset | None = None, db=None, guild_id: int | None = None, use_price_memory: bool = False) -> VerifiedHuntResult:
+async def collect_verified_discount_cards(
+    *,
+    requested_by: str,
+    preset: HuntPreset | None = None,
+    db=None,
+    guild_id: int | None = None,
+    use_price_memory: bool = False,
+    min_discount: int | None = None,
+) -> VerifiedHuntResult:
     preset = preset or ALL_VERIFIED_PRESET
+    starting_discount = normalize_starting_deal_percent(
+        min_discount if min_discount is not None else await get_starting_deal_percent(db, guild_id, fallback=DEFAULT_STARTING_DEAL_PERCENT),
+        fallback=DEFAULT_STARTING_DEAL_PERCENT,
+    )
     warnings: list[str] = []
     all_candidates: list[SourceCandidate] = []
     route_stats: list[SearchRouteStats] = []
@@ -222,7 +234,7 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
         start_index=1,
         has_next_page=True,
     )
-    verified_cards = deal_scanner.build_walmart_cards(aggregate, min_discount=TRUE_DISCOUNT_MIN, alerts_only=False)
+    verified_cards = deal_scanner.build_walmart_cards(aggregate, min_discount=starting_discount, alerts_only=False)
     verified_cards = rank_verified_cards(dedupe_cards(verified_cards))
 
     review_candidates = build_review_candidate_cards(list(deduped_candidates), limit=REVIEW_LEAD_LIMIT)
@@ -250,7 +262,7 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
         products_checked=len(all_candidates),
         warnings=warnings,
         searches_attempted=searches_attempted,
-        min_discount=TRUE_DISCOUNT_MIN,
+        min_discount=starting_discount,
         price_memory=price_memory,
         total_verified_cards=len(verified_cards),
         review_candidates=review_candidates,
@@ -282,18 +294,19 @@ def verified_menu_init(self) -> None:
 
 async def verified_hunt_button_callback(self, interaction: discord.Interaction) -> None:
     preset = self.preset
+    starting_discount = await get_starting_deal_percent(getattr(interaction.client, "db", None), interaction.guild_id, fallback=DEFAULT_STARTING_DEAL_PERCENT)
     lock_key = ScanLockKey(
         guild_id=interaction.guild_id,
         user_id=interaction.user.id,
         action="verified_discount_hunt",
         preset=preset.key,
-        min_discount=TRUE_DISCOUNT_MIN,
+        min_discount=starting_discount,
     )
     if not await deal_scanner.acquire_scan_lock(
         interaction,
         lock_key,
         self.view,
-        f"⏳ Running Walmart {preset.label} 50%+ hunt. Buttons are locked so this cannot double-post...",
+        f"⏳ Running Walmart {preset.label} {starting_discount}%+ hunt. Buttons are locked so this cannot double-post...",
     ):
         return
     try:
@@ -315,7 +328,7 @@ async def verified_hunt_button_callback(self, interaction: discord.Interaction) 
             bot=interaction.client,
             guild_id=interaction.guild_id,
             cards=result.cards,
-            source_label=f"hunt:{preset.key}:verified_50_plus",
+            source_label=f"hunt:{preset.key}:verified_{result.min_discount}_plus",
             fallback_retailer="walmart",
         )
         deal_scanner.add_public_posting_field(summary, public_result)
@@ -328,19 +341,19 @@ def build_verified_hunt_menu_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🚨 SniperPlug Walmart Hunt",
         description=(
-            "Pick a category. Each button scans Walmart sale/result surfaces for **API-verified 50%+ deals**.\n"
-            "Hunts now combine broad category routes, product-family routes, private scout leads, and remembered product rechecks."
+            "Pick a category. Each button scans Walmart sale/result surfaces using your server's starting deal threshold.\n"
+            "Change it with `/deal_threshold percent:30`. Lower values show more verified results."
         ),
         color=discord.Color.red(),
     )
     for preset in HUNT_PRESETS.values():
-        embed.add_field(name=f"{preset.emoji} {preset.label}", value=f"{preset.description}\nStarts at **50%+ verified**. Scout/value leads are private.", inline=False)
+        embed.add_field(name=f"{preset.emoji} {preset.label}", value=f"{preset.description}\nUses the server deal threshold. Scout/value leads are private.", inline=False)
     embed.set_footer(text=f"Each category checks {len(SORT_PASSES)} sort passes × up to {PAGES_PER_QUERY} pages per route. Math must come from trusted API product prices.")
     return embed
 
 
 def build_verified_hunt_summary(preset: HuntPreset, pages_checked: int, products_checked: int, found_count: int, warnings: tuple[str, ...], shown_discount: int) -> discord.Embed:
-    result = VerifiedHuntResult(cards=[], pages_checked=pages_checked, products_checked=products_checked, warnings=list(warnings), searches_attempted=pages_checked, min_discount=TRUE_DISCOUNT_MIN, total_verified_cards=found_count, category_key=preset.key)
+    result = VerifiedHuntResult(cards=[], pages_checked=pages_checked, products_checked=products_checked, warnings=list(warnings), searches_attempted=pages_checked, min_discount=shown_discount, total_verified_cards=found_count, category_key=preset.key)
     return build_verified_hunt_result_embed(result)
 
 
@@ -351,9 +364,10 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
     embed = discord.Embed(
         title=f"{preset.emoji} {preset.label} Hunt Results",
         description=(
+            f"Starting threshold: **{result.min_discount}%+ verified markdown**\n"
             f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} API pages**\n"
             f"Routes: **{len(preset.queries)}** • Remembered product rechecks: **{result.memory_recheck_count}** • Page size: **{RESULTS_PER_PAGE}**\n"
-            f"Verified 50%+ total: **{found_total}** • Shown now: **{len(result.cards)}**\n"
+            f"Verified {result.min_discount}%+ total: **{found_total}** • Shown now: **{len(result.cards)}**\n"
             f"Review/flip/scout candidates: **{review_count}**"
         ),
         color=discord.Color.red() if result.cards else discord.Color.dark_gold(),
@@ -371,19 +385,19 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
         embed.add_field(name="♻️ Remembered products", value=f"Rechecked **{result.memory_recheck_count}** known Walmart SKU/UPC/title seed(s) so older good leads can resurface when price, coupon, offer, or stock changes.", inline=False)
     if not result.cards and review_count:
         embed.add_field(
-            name="No auto-postable verified 50%+ deals — showing review/flip/scout candidates",
+            name=f"No auto-postable verified {result.min_discount}%+ deals — showing review/flip/scout candidates",
             value="Private candidates can be manually checked and posted. They are not auto-posted unless trusted Walmart price math passes.",
             inline=False,
         )
     elif not result.cards:
         embed.add_field(
-            name="No verified 50%+ API markdowns found",
-            value="Walmart did not return trusted 50%+ markdown proof, but broad route/scout/memory coverage still checked category value leads.",
+            name=f"No verified {result.min_discount}%+ API markdowns found",
+            value="Walmart did not return enough trusted markdown proof at this threshold. Lower it with `/deal_threshold percent:30` to show more verified results.",
             inline=False,
         )
     if result.warnings:
         embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
-    embed.set_footer(text="Verified cards can public-post. Review/flip/scout leads are private and require manual checkout/comp checks.")
+    embed.set_footer(text="Change starting markdown with /deal_threshold. Review/flip/scout leads are private and require manual checkout/comp checks.")
     return embed
 
 

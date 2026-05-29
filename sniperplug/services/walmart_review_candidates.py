@@ -129,14 +129,16 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         if profit_signal:
             context_score = min(65.0, (context_discount or 0.0) * 0.70 + min(context_profit or 0.0, 60.0) * 0.45 + (context_margin or 0.0) * 18.0)
         review_score = trusted_discount + coupon + cash + context_score + (5 if safe_markdown_signal(candidate) else 0) + (35 * match_score)
+
+        # Keep this call compatible with the flip-research wrapper that monkey-patches
+        # build_review_card in test/runtime. Profit/margin are derived again inside
+        # build_review_card instead of being passed as new keyword-only args.
         card = build_review_card(
             candidate,
             deal,
             proof,
             context_price=context_price,
             context_discount=context_discount,
-            context_profit=context_profit,
-            context_margin=context_margin,
             ignored_context_price=raw_context_price if context_price is None else None,
             coupon=coupon,
             cash=cash,
@@ -164,13 +166,18 @@ def build_review_card(
     *,
     context_price: float | None,
     context_discount: float | None,
-    context_profit: float | None,
-    context_margin: float | None,
     ignored_context_price: float | None,
     coupon: float,
     cash: float,
     direct_match_score: float = 0.0,
+    context_profit: float | None = None,
+    context_margin: float | None = None,
 ) -> DealCard:
+    if context_profit is None:
+        context_profit = estimated_spread(deal.current_price, context_price)
+    if context_margin is None:
+        context_margin = margin_percent(context_profit, deal.current_price)
+
     choices = product_link_choices(
         retailer=deal.retailer,
         product_url=deal.product_url,

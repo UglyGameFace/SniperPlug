@@ -176,27 +176,29 @@ def relaxed_identity_queries(query: str) -> tuple[str, ...]:
     meaningful = [token for token in tokens if token not in SEARCH_STOPWORDS]
     no_gender = [token for token in meaningful if token not in GENDER_WORDS]
     gender_tokens = [token for token in meaningful if token in GENDER_WORDS]
+    has_fragrance_category = any(term in no_gender for term in FRAGRANCE_CATEGORY_TERMS)
 
     if len(no_gender) >= 2:
         add_unique(variants, " ".join(no_gender))
-    if len(no_gender) >= 3:
+    if gender_tokens and len(no_gender) >= 3:
         add_unique(variants, " ".join(no_gender[:3]))
         add_unique(variants, " ".join(no_gender[-3:]))
     if len(no_gender) >= 2 and any(term in lowered for term in BEAUTY_FRAGRANCE_TERMS):
         base = " ".join(no_gender)
-        add_unique(variants, f"{base} cologne")
-        add_unique(variants, f"{base} fragrance")
-        if gender_tokens:
+        # Do not burn the first 8 query slots with duplicate category routes like
+        # "dolce gabbana cologne cologne". The legacy clearance route still adds
+        # "... cologne clearance" where tests and Walmart recall need it.
+        if not has_fragrance_category:
+            add_unique(variants, f"{base} cologne")
+            add_unique(variants, f"{base} fragrance")
+            add_unique(variants, f"{' '.join(no_gender[-2:])} cologne")
+        if gender_tokens and len(no_gender) >= 2:
             add_unique(variants, f"{' '.join(no_gender[-2:])} {gender_tokens[0]} cologne")
-        add_unique(variants, f"{' '.join(no_gender[-2:])} cologne")
 
     return tuple(variants)
 
 
 def fragrance_category_queries(query: str) -> tuple[str, ...]:
-    lowered = query.lower()
-    if any(term in lowered for term in FRAGRANCE_CATEGORY_TERMS):
-        return ()
     variants = []
     for category in FRAGRANCE_CATEGORY_TERMS:
         add_unique(variants, f"{query} {category}")

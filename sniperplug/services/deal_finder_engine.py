@@ -15,11 +15,13 @@ from sniperplug.services.walmart_review_candidates import ReviewCandidateResult,
 
 
 QUERY_RESULTS_PER_PAGE = 25
-QUERY_PAGES = 2
-QUERY_CONCURRENCY = 5
+QUERY_PAGES = 5
+QUERY_CONCURRENCY = 8
 QUERY_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = (
     (None, None),
     ("price", "ascending"),
+    ("bestseller", None),
+    ("new", None),
 )
 
 
@@ -44,8 +46,8 @@ class DealFinderResult:
         return bool(self.verified_cards or self.review_candidates.cards)
 
 
-async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_discount: int = 50, max_queries: int = 5, pages_per_query: int = QUERY_PAGES, db=None, guild_id: int | None = None) -> DealFinderResult:
-    """Run an expanded Walmart query search and return verified + review/flip/scout cards."""
+async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_discount: int = 50, max_queries: int = 10, pages_per_query: int = QUERY_PAGES, db=None, guild_id: int | None = None) -> DealFinderResult:
+    """Run a deep Walmart query search and return verified + review/flip/scout cards."""
     memory_records = await top_route_memory(db, guild_id=guild_id, retailer=RETAILER_WALMART, limit=8)
     boosted_routes = memory_boost_queries(memory_records, limit=3)
     plan = expand_walmart_query(query, max_queries=max_queries, boosted_queries=boosted_routes)
@@ -112,7 +114,7 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
     verified = deal_scanner.dedupe_cards(verified) if hasattr(deal_scanner, "dedupe_cards") else _dedupe_cards(verified)
     verified = rank_verified_cards(verified)
 
-    review = build_review_candidate_cards(list(deduped))
+    review = build_review_candidate_cards(list(deduped), query=query)
     scout_cards = scout_low_price_leads(deduped, limit=8, search_query=query)
     review = merge_scout_review_cards(review, scout_cards)
     review = rank_review_candidate_result(review)
@@ -188,6 +190,7 @@ def merge_scout_review_cards(review: ReviewCandidateResult, scout_cards: list[De
         missing_current_count=review.missing_current_count,
         no_value_signal_count=review.no_value_signal_count,
         rejected_bad_value_count=review.rejected_bad_value_count,
+        exact_match_count=getattr(review, "exact_match_count", 0),
     )
 
 
@@ -200,6 +203,7 @@ def rank_review_candidate_result(review: ReviewCandidateResult) -> ReviewCandida
         missing_current_count=review.missing_current_count,
         no_value_signal_count=review.no_value_signal_count,
         rejected_bad_value_count=review.rejected_bad_value_count,
+        exact_match_count=getattr(review, "exact_match_count", 0),
     )
 
 

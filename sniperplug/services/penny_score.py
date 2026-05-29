@@ -110,7 +110,7 @@ def score_penny_candidate(candidate: SourceCandidate, *, has_store_id: bool = Fa
     if has_local_anchor:
         # Store ID is strongest, but ZIP is still real local search proof. It must
         # not be treated as raw/no-proof fallback or paid SerpApi credits get wasted.
-        local_points = 12 if has_store_id else 10
+        local_points = 14 if has_store_id else 12
         score += local_points
         reasons.append(("Local store search" if has_store_id else "Local ZIP search") + f": +{local_points}")
     else:

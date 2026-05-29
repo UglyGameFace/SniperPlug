@@ -572,7 +572,9 @@ def _price_from_path(item: dict, dotted_path: str, *, allow_unit_price: bool = F
 
 def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
     coupon = _promotion_amount(item, include_terms=("coupon",), exclude_terms=("cash", "reward"))
-    walmart_cash = _promotion_amount(item, include_terms=("walmart cash", "walmartcash", "cash reward", "cashoffer", "reward"), exclude_terms=())
+    walmart_cash = _direct_walmart_cash_amount(item)
+    if walmart_cash is None:
+        walmart_cash = _promotion_amount(item, include_terms=("walmart cash", "walmartcash", "cash reward", "cashoffer", "reward"), exclude_terms=())
     attrs: dict[str, str] = {}
     if coupon and coupon > 0:
         attrs["couponSavings"] = f"{coupon:.2f}"
@@ -581,16 +583,47 @@ def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
     return attrs
 
 
+def _direct_walmart_cash_amount(item: dict[str, Any]) -> float | None:
+    """Extract common Walmart Cash shapes before falling back to the generic walker."""
+    for key in (
+        "walmartCashOffer",
+        "walmart_cash_offer",
+        "walmartCash",
+        "walmart_cash",
+        "cashOffer",
+        "cash_offer",
+        "cashRewards",
+        "cash_rewards",
+    ):
+        payload = item.get(key)
+        if payload is None:
+            continue
+        parsed = _price_from_value(payload, allow_unit_price=False, path=key)
+        if parsed is None and isinstance(payload, dict):
+            for amount_key in ("amount", "value", "savings", "rewardAmount", "cashAmount"):
+                parsed = _float_or_none(payload.get(amount_key))
+                if parsed is not None:
+                    break
+        if parsed is None:
+            parsed = _first_money_amount(str(payload))
+        if parsed and parsed > 0:
+            return parsed
+    return None
+
+
 def _promotion_amount(value: Any, *, include_terms: tuple[str, ...], exclude_terms: tuple[str, ...]) -> float | None:
     best: float | None = None
+    normalized_include_terms = tuple(term.replace(" ", "").lower() for term in include_terms)
+    normalized_exclude_terms = tuple(term.replace(" ", "").lower() for term in exclude_terms)
     for key_path, candidate in _walk_payload(value):
         lowered_key = key_path.lower().replace("_", "")
         lowered_text = str(candidate).lower()
         spaced_key = re.sub(r"(?<!^)(?=[A-Z])", " ", key_path).lower()
-        haystack = f"{lowered_key} {spaced_key} {lowered_text}"
-        if not any(term in haystack for term in include_terms):
+        normalized_haystack = f"{lowered_key} {spaced_key.replace(' ', '')} {lowered_text.replace(' ', '')}"
+        haystack = f"{lowered_key} {spaced_key} {lowered_text} {normalized_haystack}"
+        if not any(term in haystack or term in normalized_haystack for term in include_terms + normalized_include_terms):
             continue
-        if any(term in haystack for term in exclude_terms):
+        if any(term in haystack or term in normalized_haystack for term in exclude_terms + normalized_exclude_terms):
             continue
         parsed = _price_from_value(candidate, allow_unit_price=False, path=key_path)
         if parsed is None:

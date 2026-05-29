@@ -68,6 +68,8 @@ def score_penny_candidate(candidate: SourceCandidate, *, has_store_id: bool = Fa
     reasons: list[str] = []
     attrs = candidate.variant_attributes or {}
     text = " ".join([candidate.title, *candidate.signals, *attrs.values()]).lower()
+    has_zip_anchor = any(signal.lower().startswith("zip:") for signal in candidate.signals)
+    has_local_anchor = has_store_id or has_zip_anchor
 
     ending = price_ending(candidate.current_price)
     if ending in PENNY_PRICE_ENDING_POINTS:
@@ -105,9 +107,12 @@ def score_penny_candidate(candidate: SourceCandidate, *, has_store_id: bool = Fa
         score += 5
         reasons.append("Home Depot savings text exists but was price not proven: +5")
 
-    if has_store_id:
-        score += 8
-        reasons.append("Local store/ZIP search: +8")
+    if has_local_anchor:
+        # Store ID is strongest, but ZIP is still real local search proof. It must
+        # not be treated as raw/no-proof fallback or paid SerpApi credits get wasted.
+        local_points = 12 if has_store_id else 10
+        score += local_points
+        reasons.append(("Local store search" if has_store_id else "Local ZIP search") + f": +{local_points}")
     else:
         score -= 25
         reasons.append("No store_id or ZIP supplied: -25")
@@ -130,8 +135,8 @@ def score_penny_candidate(candidate: SourceCandidate, *, has_store_id: bool = Fa
         reasons.append("Price under $5: +10")
 
     if any(keyword in text for keyword in PENNY_FRIENDLY_CATEGORIES):
-        score += 4
-        reasons.append("Known Home Depot deal-friendly category: +4")
+        score += 6
+        reasons.append("Known Home Depot deal-friendly category: +6")
 
     score = max(0, min(100, score))
     if score >= 80:

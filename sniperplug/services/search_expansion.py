@@ -53,30 +53,55 @@ BEAUTY_FRAGRANCE_TERMS = (
     "burberry",
     "calvin klein",
 )
+GENERIC_DEAL_SURFACES = ("rollback", "clearance")
+SECONDARY_DEAL_SURFACES = ("reduced price", "special buy", "online clearance")
+SEARCH_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "clearance",
+    "rollback",
+    "sale",
+    "deals",
+    "deal",
+    "walmart",
+    "online",
+    "price",
+    "reduced",
+    "special",
+    "buy",
+}
 
 
-def expand_walmart_query(query: str, *, max_queries: int = 6, boosted_queries: tuple[str, ...] = ()) -> SearchPlan:
-    """Expand a user query into a small set of Walmart sale-surface searches.
+def expand_walmart_query(query: str, *, max_queries: int = 10, boosted_queries: tuple[str, ...] = ()) -> SearchPlan:
+    """Expand a user query into recall-first Walmart search routes.
 
-    Keep this deterministic and conservative. The goal is to improve recall without
-    adding noisy preset terms that wreck result quality. Boosted queries come from
-    per-server route memory and are appended after the direct/safe expansions.
+    Direct product searches should not be a tiny markdown-only search. Keep the
+    exact user query first, then add compact/product-keyword, sale-surface, and
+    category-aware routes while still respecting the caller's max query budget.
     """
     cleaned = normalize_query(query)
     if not cleaned:
         return SearchPlan(original_query=query, queries=(), notes=("empty search query",))
 
     expansions: list[str] = [cleaned]
-    notes: list[str] = []
+    notes: list[str] = ["kept exact user search as the first route"]
     lowered = cleaned.lower()
 
-    add_unique(expansions, f"{cleaned} rollback")
-    add_unique(expansions, f"{cleaned} clearance")
+    compact = compact_product_query(cleaned)
+    if compact and compact.lower() != lowered:
+        add_unique(expansions, compact)
+        notes.append("added compact product-keyword route")
+
+    for surface in GENERIC_DEAL_SURFACES:
+        add_unique(expansions, f"{cleaned} {surface}")
 
     if any(term in lowered for term in TECH_TERMS):
         notes.append("expanded with tech sale surfaces")
         add_unique(expansions, f"{cleaned} electronics clearance")
         add_unique(expansions, f"{cleaned} restored")
+        add_unique(expansions, f"{cleaned} open box")
     if any(term in lowered for term in PREPAID_TERMS) or "phone" in lowered or "galaxy" in lowered:
         notes.append("expanded with prepaid/mobile surfaces")
         add_unique(expansions, f"{cleaned} prepaid")
@@ -90,15 +115,22 @@ def expand_walmart_query(query: str, *, max_queries: int = 6, boosted_queries: t
     if any(term in lowered for term in HOUSEHOLD_TERMS):
         notes.append("expanded with household rollback surfaces")
         add_unique(expansions, f"{cleaned} household rollback")
+        add_unique(expansions, f"{cleaned} value pack")
     if any(term in lowered for term in TOY_TERMS):
         notes.append("expanded with toy clearance surfaces")
         add_unique(expansions, f"{cleaned} toy clearance")
+        add_unique(expansions, f"{cleaned} collector")
     if any(term in lowered for term in TOOL_TERMS):
         notes.append("expanded with tool/auto clearance surfaces")
         add_unique(expansions, f"{cleaned} tool clearance")
+        add_unique(expansions, f"{cleaned} hardware clearance")
     if any(term in lowered for term in HOME_TERMS):
         notes.append("expanded with home clearance surfaces")
         add_unique(expansions, f"{cleaned} home clearance")
+        add_unique(expansions, f"{cleaned} kitchen clearance")
+
+    for surface in SECONDARY_DEAL_SURFACES:
+        add_unique(expansions, f"{cleaned} {surface}")
 
     for boosted in boosted_queries:
         if len(expansions) >= max_queries:
@@ -121,6 +153,13 @@ def normalize_query(query: str) -> str:
     return cleaned[:120]
 
 
+def compact_product_query(query: str) -> str:
+    tokens = [token for token in re.findall(r"[a-z0-9]+", query.lower()) if len(token) >= 3 and token not in SEARCH_STOPWORDS]
+    if len(tokens) <= 2:
+        return ""
+    return " ".join(tokens[:8])
+
+
 def query_overlap(query: str, boosted_query: str) -> bool:
     query_tokens = meaningful_tokens(query)
     boosted_tokens = meaningful_tokens(boosted_query)
@@ -128,8 +167,7 @@ def query_overlap(query: str, boosted_query: str) -> bool:
 
 
 def meaningful_tokens(query: str) -> set[str]:
-    stopwords = {"the", "and", "for", "with", "clearance", "rollback", "sale", "deals", "deal", "walmart"}
-    return {token for token in re.findall(r"[a-z0-9]+", query.lower()) if len(token) >= 3 and token not in stopwords}
+    return {token for token in re.findall(r"[a-z0-9]+", query.lower()) if len(token) >= 3 and token not in SEARCH_STOPWORDS}
 
 
 def add_unique(values: list[str], value: str) -> None:

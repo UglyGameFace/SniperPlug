@@ -14,7 +14,7 @@ from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_ca
 from sniperplug.services.low_price_scout import scout_low_price_leads
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
-from sniperplug.services.walmart_price_memory import PriceMemorySelection, select_price_intelligent_cards
+from sniperplug.services.walmart_price_memory import PriceMemorySelection, remembered_walmart_search_seeds, select_price_intelligent_cards
 from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
 
 
@@ -22,6 +22,8 @@ TRUE_DISCOUNT_MIN = 50
 RESULTS_PER_PAGE = 25
 PAGES_PER_QUERY = 5
 SCAN_CONCURRENCY = 6
+MEMORY_RECHECK_LIMIT = 30
+REVIEW_LEAD_LIMIT = 25
 ALL_VERIFIED_HUNT_KEY = "all_verified_discounts"
 
 CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
@@ -161,6 +163,7 @@ class VerifiedHuntResult:
     category_key: str = "all"
     route_stats: tuple[SearchRouteStats, ...] = ()
     scout_lead_count: int = 0
+    memory_recheck_count: int = 0
 
 
 async def run_verified_discount_hunt(preset: HuntPreset | None = None, requested_by: str = "") -> tuple[list[DealCard], int, int, list[str], int]:
@@ -176,6 +179,8 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
     pages_checked = 0
     searches_attempted = 0
     semaphore = asyncio.Semaphore(SCAN_CONCURRENCY)
+    memory_seeds = await remembered_walmart_search_seeds(db, guild_id=guild_id, limit=MEMORY_RECHECK_LIMIT)
+    preset_queries = tuple(dedupe_strings([*preset.queries, *memory_seeds]))
 
     async def scan_one(query: str, page: int, sort_value: str | None, order_value: str | None) -> tuple[str, ProviderScanResult]:
         nonlocal searches_attempted
@@ -185,7 +190,7 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
 
     tasks = [
         scan_one(query, page, sort_value, order_value)
-        for query in preset.queries
+        for query in preset_queries
         for sort_value, order_value in SORT_PASSES
         for page in range(1, PAGES_PER_QUERY + 1)
     ]
@@ -220,9 +225,9 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
     verified_cards = deal_scanner.build_walmart_cards(aggregate, min_discount=TRUE_DISCOUNT_MIN, alerts_only=False)
     verified_cards = rank_verified_cards(dedupe_cards(verified_cards))
 
-    review_candidates = build_review_candidate_cards(list(deduped_candidates))
-    scout_cards = scout_low_price_leads(deduped_candidates, limit=12, search_query="")
-    review_candidates = merge_review_and_scout_cards(review_candidates, scout_cards, limit=12)
+    review_candidates = build_review_candidate_cards(list(deduped_candidates), limit=REVIEW_LEAD_LIMIT)
+    scout_cards = scout_low_price_leads(deduped_candidates, limit=REVIEW_LEAD_LIMIT, search_query="")
+    review_candidates = merge_review_and_scout_cards(review_candidates, scout_cards, limit=REVIEW_LEAD_LIMIT)
     review_candidates = ReviewCandidateResult(
         cards=rank_review_cards(review_candidates.cards),
         under_threshold_count=review_candidates.under_threshold_count,
@@ -252,6 +257,7 @@ async def collect_verified_discount_cards(*, requested_by: str, preset: HuntPres
         category_key=preset.key,
         route_stats=merged_route_stats,
         scout_lead_count=len(scout_cards),
+        memory_recheck_count=len(memory_seeds),
     )
 
 
@@ -323,12 +329,12 @@ def build_verified_hunt_menu_embed() -> discord.Embed:
         title="🚨 SniperPlug Walmart Hunt",
         description=(
             "Pick a category. Each button scans Walmart sale/result surfaces for **API-verified 50%+ deals**.\n"
-            "Categories now include broad department seeds plus private low-price scout leads, so useful products are not hidden just because Walmart omitted was/typical markdown proof."
+            "Hunts now combine broad category routes, product-family routes, private scout leads, and remembered product rechecks."
         ),
         color=discord.Color.red(),
     )
     for preset in HUNT_PRESETS.values():
-        embed.add_field(name=f"{preset.emoji} {preset.label}", value=f"{preset.description}\nStarts at **50%+ verified**. Scout leads are private.", inline=False)
+        embed.add_field(name=f"{preset.emoji} {preset.label}", value=f"{preset.description}\nStarts at **50%+ verified**. Scout/value leads are private.", inline=False)
     embed.set_footer(text=f"Each category checks {len(SORT_PASSES)} sort passes × up to {PAGES_PER_QUERY} pages per route. Math must come from trusted API product prices.")
     return embed
 
@@ -346,7 +352,7 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
         title=f"{preset.emoji} {preset.label} Hunt Results",
         description=(
             f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} API pages**\n"
-            f"Routes: **{len(preset.queries)}** • Sort passes: **{len(SORT_PASSES)}** • Page size: **{RESULTS_PER_PAGE}**\n"
+            f"Routes: **{len(preset.queries)}** • Remembered product rechecks: **{result.memory_recheck_count}** • Page size: **{RESULTS_PER_PAGE}**\n"
             f"Verified 50%+ total: **{found_total}** • Shown now: **{len(result.cards)}**\n"
             f"Review/flip/scout candidates: **{review_count}**"
         ),
@@ -360,7 +366,9 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
     if result.review_candidates is not None:
         embed.add_field(name="🟨 Review / flip / scout audit", value=result.review_candidates.summary_line(), inline=False)
     if result.scout_lead_count:
-        embed.add_field(name="🔎 Low-price scout", value=f"Surfaced **{result.scout_lead_count}** private scout lead(s) from broad category scans.", inline=False)
+        embed.add_field(name="🔎 Low-price scout", value=f"Surfaced **{result.scout_lead_count}** private scout/value lead(s) from broad category scans.", inline=False)
+    if result.memory_recheck_count:
+        embed.add_field(name="♻️ Remembered products", value=f"Rechecked **{result.memory_recheck_count}** known Walmart SKU/UPC/title seed(s) so older good leads can resurface when price, coupon, offer, or stock changes.", inline=False)
     if not result.cards and review_count:
         embed.add_field(
             name="No auto-postable verified 50%+ deals — showing review/flip/scout candidates",
@@ -370,7 +378,7 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
     elif not result.cards:
         embed.add_field(
             name="No verified 50%+ API markdowns found",
-            value="Walmart did not return trusted 50%+ markdown proof, but broad route/scout coverage still checked category value leads.",
+            value="Walmart did not return trusted 50%+ markdown proof, but broad route/scout/memory coverage still checked category value leads.",
             inline=False,
         )
     if result.warnings:
@@ -387,7 +395,7 @@ async def send_card_batches(interaction: discord.Interaction, *, summary: discor
         await interaction.followup.send(content="🟨 Review/flip/scout API leads — private only, not public-posted as verified deals.", embeds=[card.embed for card in batch], view=deal_scanner.PresetResultView(batch), ephemeral=True)
 
 
-def merge_review_and_scout_cards(review: ReviewCandidateResult, scout_cards: list[DealCard], *, limit: int = 12) -> ReviewCandidateResult:
+def merge_review_and_scout_cards(review: ReviewCandidateResult, scout_cards: list[DealCard], *, limit: int = REVIEW_LEAD_LIMIT) -> ReviewCandidateResult:
     merged: list[DealCard] = []
     seen: set[str] = set()
     for card in [*review.cards, *scout_cards]:
@@ -422,6 +430,19 @@ def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:
         seen.add(identity)
         unique.append(card)
     return unique
+
+
+def dedupe_strings(values: list[str] | tuple[str, ...]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
 
 
 def chunked(cards: list[DealCard], size: int) -> list[list[DealCard]]:

@@ -13,12 +13,16 @@ from sniperplug.services.price_proof import verified_deal_value
 from sniperplug.services.safe_links import product_link_choices
 
 
-REVIEW_CANDIDATE_LIMIT = 10
+REVIEW_CANDIDATE_LIMIT = 25
 REVIEW_MIN_TRUSTED_DISCOUNT = 20.0
 REVIEW_MIN_COUPON_OR_CASH = 5.0
+REVIEW_MIN_CONTEXT_DISCOUNT = 35.0
+REVIEW_MIN_CONTEXT_PROFIT = 15.0
+REVIEW_MIN_CONTEXT_MARGIN = 0.25
 MAX_VALUE_RATIO = 0.80
 
 LOW_TRUST_REFERENCE_SOURCES = {"msrp", "listprice", "list_price", "retailprice", "retail_price"}
+FRAGRANCE_TERMS = ("fragrance", "cologne", "perfume", "parfum", "eau de parfum", "eau de toilette", "edt", "edp")
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,15 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
             title=deal.title,
         )
         context_discount = percent_off(deal.current_price, context_price)
+        context_profit = estimated_spread(deal.current_price, context_price)
+        context_margin = margin_percent(context_profit, deal.current_price)
+        profit_signal = has_profit_context_signal(
+            current_price=deal.current_price,
+            context_price=context_price,
+            context_discount=context_discount,
+            context_profit=context_profit,
+            context_margin=context_margin,
+        )
 
         if proof.discount_percent is not None and proof.discount_percent < 50:
             under_threshold += 1
@@ -106,18 +119,24 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
             or cash >= REVIEW_MIN_COUPON_OR_CASH
             or safe_markdown_signal(candidate)
             or is_exact_search_match
+            or profit_signal
         )
         if not has_value_signal:
             no_value_signal += 1
             continue
 
-        review_score = trusted_discount + coupon + cash + (5 if safe_markdown_signal(candidate) else 0) + (35 * match_score)
+        context_score = 0.0
+        if profit_signal:
+            context_score = min(65.0, (context_discount or 0.0) * 0.70 + min(context_profit or 0.0, 60.0) * 0.45 + (context_margin or 0.0) * 18.0)
+        review_score = trusted_discount + coupon + cash + context_score + (5 if safe_markdown_signal(candidate) else 0) + (35 * match_score)
         card = build_review_card(
             candidate,
             deal,
             proof,
             context_price=context_price,
             context_discount=context_discount,
+            context_profit=context_profit,
+            context_margin=context_margin,
             ignored_context_price=raw_context_price if context_price is None else None,
             coupon=coupon,
             cash=cash,
@@ -145,6 +164,8 @@ def build_review_card(
     *,
     context_price: float | None,
     context_discount: float | None,
+    context_profit: float | None,
+    context_margin: float | None,
     ignored_context_price: float | None,
     coupon: float,
     cash: float,
@@ -158,7 +179,12 @@ def build_review_card(
         sku=deal.sku,
         asin=deal.asin,
     )
-    title_prefix = "🔎 Exact product match" if direct_match_score >= 0.45 else "🟨 Review candidate"
+    if direct_match_score >= 0.45:
+        title_prefix = "🔎 Exact product match"
+    elif context_profit is not None and context_margin is not None and context_profit >= REVIEW_MIN_CONTEXT_PROFIT:
+        title_prefix = "💸 Flip/value lead"
+    else:
+        title_prefix = "🟨 Review candidate"
     embed = discord.Embed(
         title=f"{title_prefix} • {deal_scanner.trim_title(deal.title, 72)}",
         url=deal.product_url,
@@ -176,8 +202,10 @@ def build_review_card(
     else:
         context_source = deal.variant_attributes.get("referenceContextSource")
         if context_price and context_discount is not None:
-            lines.append(f"Reference context: **{money(context_price)}** `{context_source or 'unknown'}`")
-            lines.append(f"Context math: **{context_discount:.0f}%** — not verified / not auto-postable")
+            lines.append(f"Reference/comp context: **{money(context_price)}** `{context_source or 'unknown'}`")
+            lines.append(f"Context math: **{context_discount:.0f}%** — not verified Walmart markdown proof")
+            if context_profit is not None and context_margin is not None:
+                lines.append(f"Rough spread before fees/tax/shipping: **{money(context_profit)}** / **{context_margin:.0%} margin**")
         elif ignored_context_price:
             lines.append(f"Ignored reference: **{money(ignored_context_price)}** `{context_source or 'unknown'}`")
             lines.append("Reference math: **blocked as low-trust/suspicious**")
@@ -197,7 +225,7 @@ def build_review_card(
     if link_block:
         embed.add_field(name="🔗 Links", value=link_block, inline=False)
 
-    embed.set_footer(text="Review-only: API-backed lead, not a verified 50% deal. Exact matches may still need comp/profit checks before public posting.")
+    embed.set_footer(text="Review-only: API-backed lead, not a verified 50% deal. Use comps/profit checks before public posting.")
     card = DealCard(embed=embed, url=deal.product_url, label=deal_scanner.short_button_label(deal.title), score=0, discount=proof.discount_percent or 0.0, link_choices=choices)
     card.retailer = deal.retailer
     card.should_alert = False
@@ -205,6 +233,11 @@ def build_review_card(
     card.selected_offer_id = deal.selected_offer_id
     card.sku = deal.sku
     card.upc = deal.upc
+    card.manual_share_allowed = True
+    if context_profit is not None:
+        card.estimated_profit = context_profit
+    if context_margin is not None:
+        card.estimated_margin = context_margin
     return card
 
 
@@ -240,11 +273,38 @@ def trusted_context_price(*, current_price: float, context_price: float | None, 
     if source_key in LOW_TRUST_REFERENCE_SOURCES:
         return None
     ratio = context_price / current_price
+    fragrance = is_fragrance_or_beauty(title)
+    if fragrance:
+        # Fragrance sizes include ounces, so the normal consumable/size-sensitive
+        # guard would incorrectly hide real designer-fragrance value leads.
+        if ratio >= 6:
+            return None
+        return context_price
     if ratio >= 4:
         return None
     if is_consumable_or_size_sensitive(title) and ratio >= 2.5:
         return None
     return context_price
+
+
+def has_profit_context_signal(*, current_price: float, context_price: float | None, context_discount: float | None, context_profit: float | None, context_margin: float | None) -> bool:
+    if context_price is None or context_profit is None or context_margin is None or context_discount is None:
+        return False
+    if current_price <= 0:
+        return False
+    return context_discount >= REVIEW_MIN_CONTEXT_DISCOUNT and context_profit >= REVIEW_MIN_CONTEXT_PROFIT and context_margin >= REVIEW_MIN_CONTEXT_MARGIN
+
+
+def estimated_spread(current: float | None, reference: float | None) -> float | None:
+    if current is None or reference is None or reference <= current:
+        return None
+    return round(reference - current, 2)
+
+
+def margin_percent(spread: float | None, current: float | None) -> float | None:
+    if spread is None or current is None or current <= 0:
+        return None
+    return spread / current
 
 
 def safe_value_amount(value: Any, current_price: float) -> float | None:
@@ -256,8 +316,15 @@ def safe_value_amount(value: Any, current_price: float) -> float | None:
     return parsed
 
 
+def is_fragrance_or_beauty(title: str) -> bool:
+    text = title.lower()
+    return any(term in text for term in FRAGRANCE_TERMS)
+
+
 def is_consumable_or_size_sensitive(title: str) -> bool:
     text = title.lower()
+    if is_fragrance_or_beauty(text):
+        return False
     keywords = ("peas", "carrots", "vegetable", "stuffing", "food", "beef", "turkey", "chicken", "oz", "lb", "count", "ct", "pack", "can", "detergent", "cleaner", "soap", "paper", "tissue", "diaper", "wipes")
     return any(keyword in text for keyword in keywords)
 

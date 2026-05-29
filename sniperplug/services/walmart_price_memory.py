@@ -150,6 +150,49 @@ async def select_price_intelligent_cards(
     return PriceMemorySelection(shown=shown, decisions=decisions)
 
 
+async def remembered_walmart_search_seeds(db, *, guild_id: int | None, limit: int = 30) -> tuple[str, ...]:
+    """Return direct recheck seeds from products SniperPlug has already seen.
+
+    Route scans miss products when Walmart stops returning them for a keyword.
+    Remembered seeds let every hunt recheck known SKUs/UPCs/titles directly so
+    previously seen good products can resurface on price drops, new lows, coupon
+    changes, offer changes, or restocks.
+    """
+    if db is None or guild_id is None:
+        return ()
+    await ensure_price_memory_table(db)
+    conn = db.require_conn()
+    cursor = await conn.execute(
+        """
+        SELECT sku, upc, title, selected_offer_id, last_status, lowest_seen_price, current_price
+        FROM walmart_price_memory
+        WHERE guild_id = ? AND retailer = 'walmart'
+        ORDER BY
+            CASE last_status
+                WHEN 'new_low' THEN 0
+                WHEN 'lower_price' THEN 1
+                WHEN 'better_value' THEN 2
+                WHEN 'offer_changed' THEN 3
+                WHEN 'new' THEN 4
+                ELSE 5
+            END,
+            last_seen_at DESC
+        LIMIT ?
+        """,
+        (guild_id, max(1, limit * 2)),
+    )
+    rows = await cursor.fetchall()
+    seeds: list[str] = []
+    for row in rows:
+        for value in (row["sku"], row["upc"], row["selected_offer_id"], compact_title_seed(row["title"])):
+            text = str(value or "").strip()
+            if text and text.lower() not in {item.lower() for item in seeds}:
+                seeds.append(text)
+            if len(seeds) >= limit:
+                return tuple(seeds)
+    return tuple(seeds)
+
+
 def decide(card: Any, *, row, current_price: float | None, current_coupon: float | None, current_cash: float | None, selected_offer_id: str | None) -> PriceMemoryDecision:
     if row is None:
         return PriceMemoryDecision(card=card, status="new", reason="new API-verified offer", current_price=current_price)
@@ -236,6 +279,12 @@ async def ensure_price_memory_table(db) -> None:
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_walmart_price_memory_guild_status ON walmart_price_memory (guild_id, last_status)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_walmart_price_memory_guild_price ON walmart_price_memory (guild_id, current_price)")
     await conn.commit()
+
+
+def compact_title_seed(title: str | None) -> str:
+    words = [word.strip(" ,-/|()[]{}") for word in str(title or "").split()]
+    useful = [word for word in words if len(word) >= 3 and word.lower() not in {"the", "and", "for", "with", "walmart"}]
+    return " ".join(useful[:6])[:80]
 
 
 def float_or_none(value) -> float | None:

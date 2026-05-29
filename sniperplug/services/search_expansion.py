@@ -116,11 +116,12 @@ def expand_walmart_query(query: str, *, max_queries: int = 14, boosted_queries: 
         add_unique(expansions, f"straight talk {cleaned}")
     if any(term in lowered for term in BEAUTY_FRAGRANCE_TERMS):
         notes.append("expanded with beauty/fragrance deal surfaces")
+        # Clearance/value routes must come before plain category variants so
+        # tight max_queries callers still include deal-finding surfaces.
+        for variant in fragrance_category_clearance_queries(cleaned):
+            add_unique(expansions, variant)
         for variant in fragrance_category_queries(cleaned):
             add_unique(expansions, variant)
-        add_unique(expansions, f"{cleaned} fragrance clearance")
-        add_unique(expansions, f"{cleaned} perfume clearance")
-        add_unique(expansions, f"{cleaned} cologne clearance")
         add_unique(expansions, f"designer fragrance {cleaned}")
     if any(term in lowered for term in HOUSEHOLD_TERMS):
         notes.append("expanded with household rollback surfaces")
@@ -185,9 +186,6 @@ def relaxed_identity_queries(query: str) -> tuple[str, ...]:
         add_unique(variants, " ".join(no_gender[-3:]))
     if len(no_gender) >= 2 and any(term in lowered for term in BEAUTY_FRAGRANCE_TERMS):
         base = " ".join(no_gender)
-        # Do not burn the first 8 query slots with duplicate category routes like
-        # "dolce gabbana cologne cologne". The legacy clearance route still adds
-        # "... cologne clearance" where tests and Walmart recall need it.
         if not has_fragrance_category:
             add_unique(variants, f"{base} cologne")
             add_unique(variants, f"{base} fragrance")
@@ -195,6 +193,13 @@ def relaxed_identity_queries(query: str) -> tuple[str, ...]:
         if gender_tokens and len(no_gender) >= 2:
             add_unique(variants, f"{' '.join(no_gender[-2:])} {gender_tokens[0]} cologne")
 
+    return tuple(variants)
+
+
+def fragrance_category_clearance_queries(query: str) -> tuple[str, ...]:
+    variants = []
+    for category in FRAGRANCE_CATEGORY_TERMS:
+        add_unique(variants, f"{query} {category} clearance")
     return tuple(variants)
 
 

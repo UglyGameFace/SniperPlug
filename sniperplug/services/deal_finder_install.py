@@ -4,6 +4,7 @@ import discord
 
 from sniperplug.services.deal_finder_engine import DealFinderResult, find_walmart_deals_for_query
 from sniperplug.services.deal_finder_telemetry import top_route_lines
+from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.manual_review_share import ManualReviewShareView
 
 
@@ -43,10 +44,11 @@ async def _send_walmart_scan_with_deal_finder(self, interaction, query: str, min
         await interaction.followup.send("Deal search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
         return
 
+    starting_discount = await get_starting_deal_percent(getattr(self.bot, "db", None), interaction.guild_id, fallback=min_discount)
     result = await find_walmart_deals_for_query(
         query=query,
         requested_by=str(interaction.user.id),
-        min_discount=min_discount,
+        min_discount=starting_discount,
         db=getattr(self.bot, "db", None),
         guild_id=interaction.guild_id,
     )
@@ -66,7 +68,7 @@ async def _send_walmart_scan_with_deal_finder(self, interaction, query: str, min
         summary.add_field(name="Product links", value="Each verified card includes its own **App/Web** and **Browser Search** links.", inline=False)
         await interaction.followup.send(
             embeds=[summary] + [card.embed for card in shown_verified],
-            view=deal_scanner.DealSearchControlView(query, page, max(0, min_discount), max_results, sort_value, order_value, alerts_only, simple_mode, shown_verified, result.aggregate.has_next_page),
+            view=deal_scanner.DealSearchControlView(query, page, max(0, starting_discount), max_results, sort_value, order_value, alerts_only, simple_mode, shown_verified, result.aggregate.has_next_page),
             ephemeral=True,
         )
         if shown_review:
@@ -86,10 +88,10 @@ async def _send_walmart_scan_with_deal_finder(self, interaction, query: str, min
         )
         return
 
-    summary.add_field(name="Nothing useful found yet", value=deal_scanner.no_match_help(query, min_discount, page, simple_mode), inline=False)
+    summary.add_field(name="Nothing useful found yet", value=deal_scanner.no_match_help(query, starting_discount, page, simple_mode), inline=False)
     await interaction.followup.send(
         embed=summary,
-        view=deal_scanner.DealSearchControlView(query, page, max(0, min_discount), max_results, sort_value, order_value, alerts_only, simple_mode),
+        view=deal_scanner.DealSearchControlView(query, page, max(0, starting_discount), max_results, sort_value, order_value, alerts_only, simple_mode),
         ephemeral=True,
     )
 
@@ -101,6 +103,7 @@ def build_deal_finder_summary(result: DealFinderResult) -> discord.Embed:
         title="🔌 SniperPlug Deal Finder",
         description=(
             f"Searching: **{result.query}**\n"
+            f"Starting threshold: **{result.min_discount}%+ verified markdown**\n"
             f"Expanded searches: **{len(result.search_plan.queries)}** • API calls: **{result.searches_attempted}**\n"
             f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} result pages**\n"
             f"Verified {result.min_discount}%+ deals: **{len(result.verified_cards)}**\n"
@@ -130,5 +133,5 @@ def build_deal_finder_summary(result: DealFinderResult) -> discord.Embed:
         embed.add_field(name="🟨 Review / flip audit", value=result.review_candidates.summary_line(), inline=False)
     if result.warnings:
         embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
-    embed.set_footer(text="Verified cards can public-post. Review/raw/flip/scout leads are private unless staff manually publishes one.")
+    embed.set_footer(text="Change starting markdown with /deal_threshold. Review/raw/flip/scout leads stay private unless staff manually publishes one.")
     return embed

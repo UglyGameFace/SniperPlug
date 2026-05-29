@@ -8,6 +8,7 @@ from sniperplug.cogs.active_deals import active_deal_counts
 from sniperplug.cogs.public_alerts import format_auto_scan_status, get_public_alert_config, list_retailer_auto_scan_settings
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.command_catalog import COMMAND_AUDIENCE_ORDER, CommandCatalogEntry, entries_for_audience
+from sniperplug.services.deal_threshold_settings import get_starting_deal_percent, set_starting_deal_percent
 from sniperplug.services.public_posting import format_retailers
 
 
@@ -27,10 +28,12 @@ class SettingsDashboardCog(commands.Cog):
         auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         provider_health = await provider_registry.healthchecks()
         active_counts = await active_deal_counts(self.bot.db, interaction.guild_id)
+        starting_percent = await get_starting_deal_percent(self.bot.db, interaction.guild_id)
         channel_id = public_config.get("channel_id")
         channel_text = str(channel_id) if channel_id else "not set"
 
         embed = discord.Embed(title="SniperPlug Dashboard", description="Settings that decide whether SniperPlug scans, caches, and posts deals.", color=discord.Color.blue())
+        embed.add_field(name="Deal finder threshold", value=f"Starting verified markdown: **{starting_percent}%+**\nChange with `/deal_threshold percent:30`.", inline=False)
         embed.add_field(name="Public posting", value=f"Enabled: {'yes' if public_config['enabled'] else 'no'}\nChannel ID: {channel_text}\nRetailers: {format_retailers(public_config['retailers'])}", inline=False)
         embed.add_field(name="Auto-scan retailers", value=format_auto_scan_status(auto_scan), inline=False)
         embed.add_field(name="Active cache", value=format_active_counts(active_counts), inline=False)
@@ -38,6 +41,34 @@ class SettingsDashboardCog(commands.Cog):
         embed.add_field(name="Recommended owner checks", value="Run `/sniperplug_commands`, `/public_alerts_status`, `/retailer_autoscan_status`, `/active_deals`, and `/sniperplug providers` after each deploy.", inline=False)
         embed.set_footer(text="Manual commands can run even when auto-scan is off. Auto-scan only controls scheduled pulls.")
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="deal_threshold", description="Set the starting verified discount percent for /deals and /hunt.")
+    @app_commands.describe(percent="Starting verified markdown percent. Lower shows more results. Try 20, 30, 40, or 50.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def deal_threshold(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 95]) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I can save the server threshold.", ephemeral=True)
+            return
+        saved = await set_starting_deal_percent(self.bot.db, interaction.guild_id, int(percent))
+        embed = discord.Embed(
+            title="Deal threshold updated",
+            description=(
+                f"SniperPlug will now start `/deals` and `/hunt` at **{saved}%+ verified markdown**.\n\n"
+                "Lower numbers show more results. Higher numbers are stricter and may hide profitable flip/value leads."
+            ),
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Recommended", value="Use **30–40%** for normal deal hunting. Use **50%+** only when you want stricter glitch-style markdowns.", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @deal_threshold.error
+    async def deal_threshold_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = "You need **Manage Server** permission to change the deal threshold." if isinstance(error, app_commands.MissingPermissions) else f"Deal threshold hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(name="sniperplug_commands", description="Show what each SniperPlug command is for so nobody has to guess.")
     @app_commands.describe(audience="Optional filter: everyone, staff, or owner.")

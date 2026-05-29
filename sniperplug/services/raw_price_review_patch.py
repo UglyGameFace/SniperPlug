@@ -29,6 +29,9 @@ def build_review_candidate_cards_with_raw_leads(candidates, *, limit=None):
     safe_limit = limit or 10
     base = build_review_candidate_cards(candidates, limit=safe_limit)
     scout_cards = scout_low_price_leads(candidates, limit=safe_limit)
+    for card in scout_cards:
+        mark_raw_price_compat_card(card)
+
     merged = []
     seen: set[str] = set()
     for card in [*base.cards, *scout_cards]:
@@ -46,3 +49,19 @@ def build_review_candidate_cards_with_raw_leads(candidates, *, limit=None):
         no_value_signal_count=base.no_value_signal_count,
         rejected_bad_value_count=base.rejected_bad_value_count,
     )
+
+
+def mark_raw_price_compat_card(card) -> None:
+    """Expose old raw-price lead markers on native low-price scout cards."""
+    card.raw_price_lead = True
+    card.manual_share_allowed = True
+    title = getattr(card.embed, "title", "") or ""
+    if "Raw price lead" not in title:
+        card.embed.title = title.replace("Low-price scout", "Raw price lead") if "Low-price scout" in title else f"🧪 Raw price lead • {title}"
+    rendered = str(card.embed.to_dict())
+    if "Manual review needed" not in rendered:
+        card.embed.add_field(
+            name="Manual review needed",
+            value="Compare comps and verify exact price, seller, size, and variant before posting.",
+            inline=False,
+        )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 
 _PATCHED = False
 _ORIGINAL_BUILD_REVIEW_CARD = None
@@ -18,19 +20,31 @@ def install_walmart_flip_research_patch() -> None:
     _PATCHED = True
 
 
-def _build_review_card_with_flip_research(candidate, deal, proof, *, context_price, context_discount, ignored_context_price, coupon, cash):
+def _build_review_card_with_flip_research(
+    candidate,
+    deal,
+    proof,
+    *,
+    context_price,
+    context_discount,
+    ignored_context_price,
+    coupon,
+    cash,
+    direct_match_score: float = 0.0,
+):
     from sniperplug.services.walmart_marketplace_comp_guard import comp_search_links
 
-    card = _ORIGINAL_BUILD_REVIEW_CARD(
-        candidate,
-        deal,
-        proof,
-        context_price=context_price,
-        context_discount=context_discount,
-        ignored_context_price=ignored_context_price,
-        coupon=coupon,
-        cash=cash,
-    )
+    kwargs = {
+        "context_price": context_price,
+        "context_discount": context_discount,
+        "ignored_context_price": ignored_context_price,
+        "coupon": coupon,
+        "cash": cash,
+    }
+    if "direct_match_score" in inspect.signature(_ORIGINAL_BUILD_REVIEW_CARD).parameters:
+        kwargs["direct_match_score"] = direct_match_score
+
+    card = _ORIGINAL_BUILD_REVIEW_CARD(candidate, deal, proof, **kwargs)
     attrs = deal.variant_attributes or {}
     if not attrs.get("marketplaceCompPrice"):
         return card

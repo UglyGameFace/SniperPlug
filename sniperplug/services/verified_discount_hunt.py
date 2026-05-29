@@ -61,6 +61,7 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
             "pet clearance",
             "beauty clearance",
             "fragrance",
+            "fragrance clearance",
             "designer fragrance",
             "designer fragrance clearance",
             "designer cologne",

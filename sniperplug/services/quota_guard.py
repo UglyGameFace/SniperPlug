@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
 
 
 @dataclass(frozen=True)
@@ -34,8 +45,8 @@ class QuotaGuard:
     provider: str
     monthly_limit: int = 250
     safe_monthly_limit: int = 200
-    daily_limit: int = 6
-    hourly_user_limit: int = 3
+    daily_limit: int = 30
+    hourly_user_limit: int = 12
     _monthly_counts: dict[str, int] = field(default_factory=dict)
     _daily_counts: dict[str, int] = field(default_factory=dict)
     _hourly_user_counts: dict[tuple[str, int], int] = field(default_factory=dict)
@@ -90,4 +101,10 @@ class QuotaGuard:
         return self.check(user_id=user_id, cost=0, now=now)
 
 
-serpapi_quota_guard = QuotaGuard(provider="serpapi_home_depot")
+serpapi_quota_guard = QuotaGuard(
+    provider="serpapi_home_depot",
+    monthly_limit=_env_int("SERPAPI_MONTHLY_LIMIT", 250),
+    safe_monthly_limit=_env_int("SERPAPI_SAFE_MONTHLY_LIMIT", 200),
+    daily_limit=_env_int("SERPAPI_DAILY_LIMIT", 30),
+    hourly_user_limit=_env_int("SERPAPI_HOURLY_USER_LIMIT", 12),
+)

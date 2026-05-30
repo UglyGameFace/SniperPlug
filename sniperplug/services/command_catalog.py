@@ -74,6 +74,20 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         credit_risk="SerpApi credit",
     ),
     CommandCatalogEntry(
+        name="/hd_stock",
+        audience="Staff",
+        purpose="Home Depot SKU + ZIP stock/price proof checker.",
+        when_to_use="Use when you have a Home Depot SKU or Internet # and want a Hidden-Clearances-style local proof card before posting.",
+        credit_risk="SerpApi credit",
+    ),
+    CommandCatalogEntry(
+        name="/hd_penny_zip",
+        audience="Staff",
+        purpose="ZIP-anchored Home Depot penny/clearance starter scan.",
+        when_to_use="Use to quickly scan a ZIP for Home Depot clearance candidates. This is V1 ranking, not a locked ZIP penny database yet.",
+        credit_risk="SerpApi credit",
+    ),
+    CommandCatalogEntry(
         name="/local_check",
         audience="Staff",
         purpose="Private local inventory proof preview.",

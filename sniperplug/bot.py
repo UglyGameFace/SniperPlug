@@ -49,7 +49,9 @@ class SniperPlugBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.db.connect()
+        log.info("Database connected backend=%s", getattr(self.db, "backend", "unknown"))
         await self.db.init()
+        log.info("Database schema ready backend=%s", getattr(self.db, "backend", "unknown"))
 
         install_safe_followup_send_patch()
         install_walmart_renderer()

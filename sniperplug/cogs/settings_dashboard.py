@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -10,6 +12,7 @@ from sniperplug.providers.registry import provider_registry
 from sniperplug.services.command_catalog import COMMAND_AUDIENCE_ORDER, CommandCatalogEntry, entries_for_audience
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent, set_starting_deal_percent
 from sniperplug.services.public_posting import format_retailers
+from sniperplug.services.quota_guard import serpapi_quota_guard
 
 
 class SettingsDashboardCog(commands.Cog):
@@ -38,9 +41,59 @@ class SettingsDashboardCog(commands.Cog):
         embed.add_field(name="Auto-scan retailers", value=format_auto_scan_status(auto_scan), inline=False)
         embed.add_field(name="Active cache", value=format_active_counts(active_counts), inline=False)
         embed.add_field(name="Provider health", value=format_provider_health(provider_health), inline=False)
-        embed.add_field(name="Recommended owner checks", value="Run `/sniperplug_commands`, `/public_alerts_status`, `/retailer_autoscan_status`, `/active_deals`, and `/sniperplug providers` after each deploy.", inline=False)
+        embed.add_field(name="Recommended owner checks", value="Run `/sniperplug_health`, `/sniperplug_commands`, `/public_alerts_status`, `/retailer_autoscan_status`, `/active_deals`, and `/sniperplug providers` after each deploy.", inline=False)
         embed.set_footer(text="Manual commands can run even when auto-scan is off. Auto-scan only controls scheduled pulls.")
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="sniperplug_health", description="Show SniperPlug DB, cache, quota, and recent scan health.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def sniperplug_health(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I can show server-specific scan health.", ephemeral=True)
+            return
+
+        db = self.bot.db
+        try:
+            await db.prune_expired_cache()
+        except Exception:
+            pass
+
+        provider_health = await provider_registry.healthchecks()
+        health = await build_db_health_snapshot(db, interaction.guild_id)
+        quota = serpapi_quota_guard.check(interaction.user.id, cost=0)
+
+        backend = getattr(db, "backend", "unknown")
+        connected = "yes" if getattr(db, "conn", None) is not None else "no"
+        embed = discord.Embed(
+            title="SniperPlug Health",
+            description="Live backend/cache view so we can stop guessing from screenshots.",
+            color=discord.Color.green() if connected == "yes" else discord.Color.red(),
+        )
+        embed.add_field(name="Database", value=f"Backend: **{backend}**\nConnected: **{connected}**", inline=True)
+        embed.add_field(
+            name="SerpApi quota guard",
+            value=(
+                f"Daily: **{quota.daily_used}/{quota.daily_limit}**\n"
+                f"Hourly/user: **{quota.hourly_user_used}/{quota.hourly_user_limit}**\n"
+                f"Monthly safe: **{quota.monthly_used}/{quota.monthly_limit}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(name="Providers", value=format_provider_health(provider_health), inline=False)
+        embed.add_field(name="Cache tables", value=format_cache_counts(health.get("counts", {})), inline=False)
+        embed.add_field(name="Recent scan runs", value=format_recent_scans(health.get("recent_scans", [])), inline=False)
+        embed.add_field(name="Top query memory", value=format_query_memory(health.get("top_queries", [])), inline=False)
+        embed.set_footer(text="Tip: run the same scan twice. Cache hits should rise and provider calls should not.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @sniperplug_health.error
+    async def sniperplug_health_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = "You need **Manage Server** permission to view SniperPlug health." if isinstance(error, app_commands.MissingPermissions) else f"SniperPlug health hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(name="deal_threshold", description="Set the starting verified discount percent for /deals and /hunt.")
     @app_commands.describe(percent="Starting verified markdown percent. Lower shows more results. Try 20, 30, 40, or 50.")
@@ -86,6 +139,122 @@ class SettingsDashboardCog(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+async def build_db_health_snapshot(db: Any, guild_id: int) -> dict[str, Any]:
+    conn = db.require_conn()
+    counts = {}
+    for table in (
+        "provider_response_cache",
+        "scan_result_cache",
+        "product_identity",
+        "price_observations",
+        "alert_dedupe",
+        "store_cache",
+        "scan_runs",
+        "query_performance_memory",
+        "deals",
+    ):
+        counts[table] = await table_count(conn, table)
+
+    recent_scans = await fetch_recent_scan_summary(conn, guild_id)
+    top_queries = await fetch_top_query_memory(conn, guild_id)
+    return {"counts": counts, "recent_scans": recent_scans, "top_queries": top_queries}
+
+
+async def table_count(conn: Any, table: str) -> int:
+    if table not in {
+        "provider_response_cache",
+        "scan_result_cache",
+        "product_identity",
+        "price_observations",
+        "alert_dedupe",
+        "store_cache",
+        "scan_runs",
+        "query_performance_memory",
+        "deals",
+    }:
+        return 0
+    cursor = await conn.execute(f"SELECT COUNT(*) AS count FROM {table}")
+    row = await cursor.fetchone()
+    return int(row["count"] if row else 0)
+
+
+async def fetch_recent_scan_summary(conn: Any, guild_id: int) -> list[dict[str, Any]]:
+    cursor = await conn.execute(
+        """
+        SELECT retailer,
+               COUNT(*) AS scans,
+               SUM(provider_calls) AS provider_calls,
+               SUM(cache_hits) AS cache_hits,
+               SUM(cache_misses) AS cache_misses,
+               SUM(results_found) AS results_found
+        FROM scan_runs
+        WHERE guild_id = ? OR guild_id IS NULL
+        GROUP BY retailer
+        ORDER BY scans DESC
+        LIMIT 6
+        """,
+        (guild_id,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+async def fetch_top_query_memory(conn: Any, guild_id: int) -> list[dict[str, Any]]:
+    cursor = await conn.execute(
+        """
+        SELECT retailer, query, scans, returned_products, verified_hits, review_hits, blocked_hits, score
+        FROM query_performance_memory
+        WHERE guild_id = ?
+        ORDER BY score DESC
+        LIMIT 5
+        """,
+        (guild_id,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+def format_cache_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "No DB count data returned."
+    labels = {
+        "provider_response_cache": "provider cache",
+        "scan_result_cache": "scan cache",
+        "product_identity": "product identity",
+        "price_observations": "price history",
+        "alert_dedupe": "alert dedupe",
+        "store_cache": "store cache",
+        "scan_runs": "scan runs",
+        "query_performance_memory": "query memory",
+        "deals": "deals table",
+    }
+    lines = [f"**{labels.get(key, key)}:** {value}" for key, value in counts.items()]
+    return truncate("\n".join(lines), 1024)
+
+
+def format_recent_scans(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No scan runs recorded yet. Run `/deals` or `/walmart_scan` twice after redeploy."
+    lines = []
+    for row in rows[:6]:
+        retailer = row.get("retailer") or "unknown"
+        lines.append(
+            f"**{retailer}:** scans {row.get('scans') or 0} • provider {row.get('provider_calls') or 0} • cache hit {row.get('cache_hits') or 0} • miss {row.get('cache_misses') or 0} • results {row.get('results_found') or 0}"
+        )
+    return truncate("\n".join(lines), 1024)
+
+
+def format_query_memory(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No query memory yet. It fills as `/hunt`, `/deals`, and `/walmart_scan` run."
+    lines = []
+    for row in rows[:5]:
+        lines.append(
+            f"**{trim(row.get('query') or 'unknown', 35)}** ({row.get('retailer')}) — score {float(row.get('score') or 0):.1f}, scans {row.get('scans') or 0}, hits {row.get('verified_hits') or 0}/{row.get('review_hits') or 0}, blocked {row.get('blocked_hits') or 0}"
+        )
+    return truncate("\n".join(lines), 1024)
+
+
 def build_command_guide_embed(entries: tuple[CommandCatalogEntry, ...], audience: str | None = None) -> discord.Embed:
     title = "SniperPlug Command Guide"
     description = "Simple names, clear purpose. Manual scans are different from scheduled auto-scan. Public posting is different from auto-scan."
@@ -125,10 +294,10 @@ def format_provider_health(healthchecks) -> str:
         status = getattr(health.status, "value", str(health.status))
         icon = "ready" if health.ok else "staged" if status == "staged" else "blocked"
         rows.append(f"{icon}: {health.provider_key} - {status} - {trim(health.message, 120)}")
-    return "\n".join(rows[:10])
+    return truncate("\n".join(rows[:10]), 1024)
 
 
-def trim(value: str, limit: int) -> str:
+def trim(value: Any, limit: int) -> str:
     text = " ".join(str(value).split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "..."
 

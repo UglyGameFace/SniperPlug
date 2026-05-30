@@ -22,7 +22,7 @@ from sniperplug.cogs.workflow import WorkflowCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
-from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider
+from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.services.deal_finder_install import install_unified_deal_finder
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
@@ -54,7 +54,8 @@ class SniperPlugBot(commands.Bot):
         await self.db.init()
         log.info("Database schema ready backend=%s", getattr(self.db, "backend", "unknown"))
         configure_home_depot_product_detail_cache(self.db)
-        log.info("Home Depot Product API cache connected backend=%s", getattr(self.db, "backend", "unknown"))
+        configure_home_depot_search_cache(self.db)
+        log.info("Home Depot search/detail caches connected backend=%s", getattr(self.db, "backend", "unknown"))
 
         install_safe_followup_send_patch()
         install_walmart_renderer()

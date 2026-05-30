@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from typing import Any
+
 from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.providers.base import ProviderScanResult
+from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult
+from sniperplug.providers.cached_walmart import CachedWalmartProvider
+from sniperplug.providers.registry import provider_registry
 
 
 PAGES_PER_QUERY = 3
@@ -176,17 +180,56 @@ EXPANDED_PRESETS: dict[str, HuntPreset] = {
 
 
 def install_walmart_discovery_expansion() -> None:
-    """Check more official Walmart API results while keeping strict proof rules."""
-    if getattr(deal_scanner, "_sniperplug_walmart_discovery_expanded", False):
+    """Check more official Walmart API results while keeping strict proof rules.
+
+    This installer is already called on startup, so it also wires the DB-backed
+    Walmart cache without touching bot startup registration.
+    """
+    if not getattr(deal_scanner, "_sniperplug_walmart_discovery_expanded", False):
+        existing_resale = deal_scanner.HUNT_PRESETS.get(RESALE_HUNT_KEY)
+        expanded = dict(EXPANDED_PRESETS)
+        if existing_resale is not None:
+            expanded[RESALE_HUNT_KEY] = existing_resale
+        deal_scanner.HUNT_PRESETS.clear()
+        deal_scanner.HUNT_PRESETS.update(expanded)
+        deal_scanner.run_preset_hunt = run_expanded_preset_hunt
+        deal_scanner._sniperplug_walmart_discovery_expanded = True
+
+    if getattr(deal_scanner, "_sniperplug_cached_walmart_runtime_installed", False):
         return
-    existing_resale = deal_scanner.HUNT_PRESETS.get(RESALE_HUNT_KEY)
-    expanded = dict(EXPANDED_PRESETS)
-    if existing_resale is not None:
-        expanded[RESALE_HUNT_KEY] = existing_resale
-    deal_scanner.HUNT_PRESETS.clear()
-    deal_scanner.HUNT_PRESETS.update(expanded)
-    deal_scanner.run_preset_hunt = run_expanded_preset_hunt
-    deal_scanner._sniperplug_walmart_discovery_expanded = True
+    deal_scanner._sniperplug_original_run_walmart_scan = deal_scanner.run_walmart_scan
+    deal_scanner._sniperplug_original_deal_scanner_init = deal_scanner.DealScannerCog.__init__
+    deal_scanner.DealScannerCog.__init__ = _patched_deal_scanner_init
+    deal_scanner.run_walmart_scan = run_cached_walmart_scan
+    deal_scanner._sniperplug_cached_walmart_runtime_installed = True
+
+
+def _patched_deal_scanner_init(self: Any, bot: Any) -> None:
+    original_init = getattr(deal_scanner, "_sniperplug_original_deal_scanner_init")
+    original_init(self, bot)
+    deal_scanner._sniperplug_runtime_db = getattr(bot, "db", None)
+
+
+async def run_cached_walmart_scan(query: str, page: int, max_results: int, sort_value: str | None, order_value: str | None, requested_by: str) -> ProviderScanResult:
+    db = getattr(deal_scanner, "_sniperplug_runtime_db", None)
+    original_scan = getattr(deal_scanner, "_sniperplug_original_run_walmart_scan", None)
+    provider = provider_registry.get("walmart")
+    if db is None or provider is None:
+        if original_scan is not None:
+            return await original_scan(query, page, max_results, sort_value, order_value, requested_by)
+        return ProviderScanResult(provider_key="walmart", candidates=(), warnings=("Walmart cache runtime is not ready yet.",))
+    cached_provider = provider if isinstance(provider, CachedWalmartProvider) else CachedWalmartProvider(db, provider)
+    return await cached_provider.scan(
+        ProviderScanRequest(
+            source_key="walmart",
+            query=query.strip(),
+            max_results=max_results,
+            page=page,
+            sort=sort_value,
+            order=order_value,
+            metadata={"requested_by": requested_by},
+        )
+    )
 
 
 async def run_expanded_preset_hunt(preset: HuntPreset, requested_by: str) -> tuple[list[deal_scanner.DealCard], int, int, list[str], int]:

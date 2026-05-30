@@ -26,6 +26,7 @@ from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider
 from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.services.deal_finder_install import install_unified_deal_finder
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
+from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
 from sniperplug.services.raw_price_review_patch import install_raw_price_review_patch
 from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
@@ -52,6 +53,8 @@ class SniperPlugBot(commands.Bot):
         log.info("Database connected backend=%s", getattr(self.db, "backend", "unknown"))
         await self.db.init()
         log.info("Database schema ready backend=%s", getattr(self.db, "backend", "unknown"))
+        configure_home_depot_product_detail_cache(self.db)
+        log.info("Home Depot Product API cache connected backend=%s", getattr(self.db, "backend", "unknown"))
 
         install_safe_followup_send_patch()
         install_walmart_renderer()

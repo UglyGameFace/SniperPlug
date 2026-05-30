@@ -847,6 +847,8 @@ def _reference_price_looks_suspicious(*, source: str, title: str, current_price:
     source_key = source.lower().replace("_", "")
     if "waspricefromsavings" in source_key:
         return False
+    if _reference_price_trust(source) == "high":
+        return False
     if ratio >= 8:
         return True
     lowered_title = title.lower()

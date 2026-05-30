@@ -8,6 +8,7 @@ import discord
 from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.services.comp_discovery_links import build_free_comp_links, comp_link_block
 from sniperplug.services.direct_search_rescue import direct_match_score
 from sniperplug.services.price_proof import verified_deal_value
 from sniperplug.services.safe_links import product_link_choices
@@ -66,13 +67,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         if proof.discount_percent is not None and proof.discount_percent >= 50:
             continue
 
-        match_score = direct_match_score(
-            query or "",
-            deal.title,
-            sku=deal.sku,
-            upc=deal.upc,
-            product_id=candidate.product_id,
-        ) if query else 0.0
+        match_score = direct_match_score(query or "", deal.title, sku=deal.sku, upc=deal.upc, product_id=candidate.product_id) if query else 0.0
         is_exact_search_match = match_score >= 0.45
         if is_exact_search_match:
             exact_match_count += 1
@@ -87,22 +82,11 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
 
         raw_context_price = float_or_none(deal.variant_attributes.get("referenceContextPrice"))
         context_source = str(deal.variant_attributes.get("referenceContextSource") or "")
-        context_price = trusted_context_price(
-            current_price=deal.current_price,
-            context_price=raw_context_price,
-            context_source=context_source,
-            title=deal.title,
-        )
+        context_price = trusted_context_price(current_price=deal.current_price, context_price=raw_context_price, context_source=context_source, title=deal.title)
         context_discount = percent_off(deal.current_price, context_price)
         context_profit = estimated_spread(deal.current_price, context_price)
         context_margin = margin_percent(context_profit, deal.current_price)
-        profit_signal = has_profit_context_signal(
-            current_price=deal.current_price,
-            context_price=context_price,
-            context_discount=context_discount,
-            context_profit=context_profit,
-            context_margin=context_margin,
-        )
+        profit_signal = has_profit_context_signal(current_price=deal.current_price, context_price=context_price, context_discount=context_discount, context_profit=context_profit, context_margin=context_margin)
 
         if proof.discount_percent is not None and proof.discount_percent < 50:
             under_threshold += 1
@@ -113,14 +97,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         else:
             missing_reference += 1
 
-        has_value_signal = (
-            trusted_discount >= REVIEW_MIN_TRUSTED_DISCOUNT
-            or coupon >= REVIEW_MIN_COUPON_OR_CASH
-            or cash >= REVIEW_MIN_COUPON_OR_CASH
-            or safe_markdown_signal(candidate)
-            or is_exact_search_match
-            or profit_signal
-        )
+        has_value_signal = trusted_discount >= REVIEW_MIN_TRUSTED_DISCOUNT or coupon >= REVIEW_MIN_COUPON_OR_CASH or cash >= REVIEW_MIN_COUPON_OR_CASH or safe_markdown_signal(candidate) or is_exact_search_match or profit_signal
         if not has_value_signal:
             no_value_signal += 1
             continue
@@ -130,73 +107,28 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
             context_score = min(65.0, (context_discount or 0.0) * 0.70 + min(context_profit or 0.0, 60.0) * 0.45 + (context_margin or 0.0) * 18.0)
         review_score = trusted_discount + coupon + cash + context_score + (5 if safe_markdown_signal(candidate) else 0) + (35 * match_score)
 
-        # Keep this call compatible with the flip-research wrapper that monkey-patches
-        # build_review_card in test/runtime. Profit/margin are derived again inside
-        # build_review_card instead of being passed as new keyword-only args.
-        card = build_review_card(
-            candidate,
-            deal,
-            proof,
-            context_price=context_price,
-            context_discount=context_discount,
-            ignored_context_price=raw_context_price if context_price is None else None,
-            coupon=coupon,
-            cash=cash,
-            direct_match_score=match_score,
-        )
+        card = build_review_card(candidate, deal, proof, context_price=context_price, context_discount=context_discount, ignored_context_price=raw_context_price if context_price is None else None, coupon=coupon, cash=cash, direct_match_score=match_score)
         scored.append((review_score, card))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    return ReviewCandidateResult(
-        cards=[card for _, card in scored[:limit]],
-        under_threshold_count=under_threshold,
-        missing_reference_count=missing_reference,
-        weak_reference_count=weak_reference,
-        missing_current_count=missing_current,
-        no_value_signal_count=no_value_signal,
-        rejected_bad_value_count=rejected_bad_value,
-        exact_match_count=exact_match_count,
-    )
+    return ReviewCandidateResult(cards=[card for _, card in scored[:limit]], under_threshold_count=under_threshold, missing_reference_count=missing_reference, weak_reference_count=weak_reference, missing_current_count=missing_current, no_value_signal_count=no_value_signal, rejected_bad_value_count=rejected_bad_value, exact_match_count=exact_match_count)
 
 
-def build_review_card(
-    candidate: SourceCandidate,
-    deal,
-    proof,
-    *,
-    context_price: float | None,
-    context_discount: float | None,
-    ignored_context_price: float | None,
-    coupon: float,
-    cash: float,
-    direct_match_score: float = 0.0,
-    context_profit: float | None = None,
-    context_margin: float | None = None,
-) -> DealCard:
+def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price: float | None, context_discount: float | None, ignored_context_price: float | None, coupon: float, cash: float, direct_match_score: float = 0.0, context_profit: float | None = None, context_margin: float | None = None) -> DealCard:
     if context_profit is None:
         context_profit = estimated_spread(deal.current_price, context_price)
     if context_margin is None:
         context_margin = margin_percent(context_profit, deal.current_price)
 
-    choices = product_link_choices(
-        retailer=deal.retailer,
-        product_url=deal.product_url,
-        title=deal.title,
-        product_id=candidate.product_id,
-        sku=deal.sku,
-        asin=deal.asin,
-    )
+    category = deal.variant_attributes.get("category") or candidate.category
+    choices = product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, asin=deal.asin, upc=deal.upc, brand=deal.brand, model=deal.model, category=category)
     if direct_match_score >= 0.45:
         title_prefix = "🔎 Exact product match"
     elif context_profit is not None and context_margin is not None and context_profit >= REVIEW_MIN_CONTEXT_PROFIT:
         title_prefix = "💸 Flip/value lead"
     else:
         title_prefix = "🟨 Review candidate"
-    embed = discord.Embed(
-        title=f"{title_prefix} • {deal_scanner.trim_title(deal.title, 72)}",
-        url=deal.product_url,
-        color=discord.Color.gold(),
-    )
+    embed = discord.Embed(title=f"{title_prefix} • {deal_scanner.trim_title(deal.title, 72)}", url=deal.product_url, color=discord.Color.gold())
     if deal.image_url:
         embed.set_thumbnail(url=deal.image_url)
 
@@ -223,6 +155,11 @@ def build_review_card(
     if cash:
         lines.append(f"Walmart Cash from API: **{money(cash)}**")
     embed.add_field(name="💰 API price/value", value="\n".join(lines), inline=False)
+
+    comp_links = build_free_comp_links(title=deal.title, brand=deal.brand, upc=deal.upc, model=deal.model, sku=deal.sku or candidate.product_id, category=category, max_links=7)
+    comp_block = comp_link_block(comp_links, max_links=7)
+    if comp_block:
+        embed.add_field(name="🧭 Free comp research", value=f"{comp_block}\nUse these to verify market price. These links are **not auto-proof** until a retailer/API/parser confirms the price.", inline=False)
 
     proof_lines = api_lines(candidate, deal)
     if proof_lines:
@@ -251,18 +188,7 @@ def build_review_card(
 def api_lines(candidate: SourceCandidate, deal) -> list[str]:
     attrs = deal.variant_attributes or {}
     lines: list[str] = []
-    for label, value in (
-        ("SKU", deal.sku),
-        ("UPC", deal.upc),
-        ("Offer ID", deal.selected_offer_id),
-        ("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")),
-        ("Condition", candidate.condition or deal.condition or attrs.get("condition")),
-        ("Fulfillment", candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")),
-        ("Stock", candidate.stock_status),
-        ("Available online", attrs.get("availableOnline")),
-        ("Offer type", attrs.get("offerType")),
-        ("Max order qty", attrs.get("maxOrderQty")),
-    ):
+    for label, value in (("SKU", deal.sku), ("UPC", deal.upc), ("Offer ID", deal.selected_offer_id), ("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")), ("Condition", candidate.condition or deal.condition or attrs.get("condition")), ("Fulfillment", candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")), ("Stock", candidate.stock_status), ("Available online", attrs.get("availableOnline")), ("Offer type", attrs.get("offerType")), ("Max order qty", attrs.get("maxOrderQty"))):
         if value:
             lines.append(f"• {label}: **{str(value)[:90]}**")
     return lines
@@ -282,8 +208,6 @@ def trusted_context_price(*, current_price: float, context_price: float | None, 
     ratio = context_price / current_price
     fragrance = is_fragrance_or_beauty(title)
     if fragrance:
-        # Fragrance sizes include ounces, so the normal consumable/size-sensitive
-        # guard would incorrectly hide real designer-fragrance value leads.
         if ratio >= 6:
             return None
         return context_price

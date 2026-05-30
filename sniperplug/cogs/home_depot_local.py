@@ -10,6 +10,7 @@ from discord.ext import commands
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
+from sniperplug.services.home_depot_product_lookup import HomeDepotProductDetail, fetch_home_depot_product_detail
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
 from sniperplug.cogs.home_depot_search import home_depot_link_block, money, price_ending, trim_title
@@ -32,6 +33,8 @@ class HomeDepotLocalScan:
     returned_candidates: tuple[SourceCandidate, ...] = ()
     match_mode: str = "blocked"
     match_note: str = ""
+    detail: HomeDepotProductDetail | None = None
+    detail_lookup_used: bool = False
 
     @property
     def best_candidate(self) -> SourceCandidate | None:
@@ -107,9 +110,9 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str) -> Ho
     if health.status != ProviderStatus.READY:
         return HomeDepotLocalScan(sku, zip_code, sku, (), (health.message,), "SerpApi unavailable")
 
-    quota = serpapi_quota_guard.check(user_id, cost=1)
+    quota = serpapi_quota_guard.check(user_id, cost=2)
     if not quota.allowed:
-        return HomeDepotLocalScan(sku, zip_code, sku, (), (f"SerpApi scan blocked: {quota.reason}",), "SerpApi blocked")
+        return HomeDepotLocalScan(sku, zip_code, sku, (), (f"SerpApi 2-pass scan blocked: {quota.reason}",), "SerpApi blocked")
 
     result = await provider.scan(
         ProviderScanRequest(
@@ -119,55 +122,75 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str) -> Ho
             metadata={"zip_code": zip_code, "requested_by": str(user_id), "scan_type": "hd_stock"},
         )
     )
-    quota_after = serpapi_quota_guard.record(user_id, cost=1)
+
     exact_candidates = _exact_sku_candidates(result.candidates, sku)
     candidates = exact_candidates
-    match_mode = "exact"
-    match_note = "Exact ID proof: requested value matched returned product ID/SKU/UPC/URL token."
+    match_mode = "exact_search_match"
+    match_note = "Search proof: requested value matched returned product ID/SKU/UPC/URL token."
 
     if not candidates:
         candidates = _single_result_candidates(result.candidates, sku)
         if candidates:
             match_mode = "single_search_result"
-            match_note = (
-                "Store-SKU fallback: Home Depot search returned exactly one product for this requested value. "
-                "The returned Internet #/product ID may differ from the store SKU, so staff should verify before public posting."
-            )
+            match_note = "Search fallback: Home Depot search returned exactly one product for the requested value. Detail lookup still required."
         else:
-            match_mode = "blocked"
-            match_note = "Blocked: no exact ID proof and no single-result store-SKU fallback."
+            quota_after = serpapi_quota_guard.record(user_id, cost=1)
+            quota_text = f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today"
+            return HomeDepotLocalScan(
+                sku,
+                zip_code,
+                sku,
+                (),
+                result.warnings,
+                quota_text,
+                returned_count=len(result.candidates),
+                returned_candidates=tuple(result.candidates),
+                match_mode="blocked",
+                match_note="Blocked: no exact ID proof and no single-result fallback.",
+            )
 
+    candidate = candidates[0]
+    detail = None
+    detail_lookup_used = False
+    product_id = candidate.product_id or candidate.sku
+    if product_id:
+        detail_lookup_used = True
+        detail = await fetch_home_depot_product_detail(product_id, zip_code=zip_code)
+        candidates = (_merge_detail_candidate(candidate, detail),)
+        match_mode, match_note = _detail_match_mode(sku, candidate, detail, prior_mode=match_mode)
+
+    quota_after = serpapi_quota_guard.record(user_id, cost=2 if detail_lookup_used else 1)
     quota_text = f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today"
+    warnings = tuple(result.warnings) + tuple(detail.warnings if detail else ())
     return HomeDepotLocalScan(
         sku,
         zip_code,
         sku,
         candidates,
-        result.warnings,
+        warnings,
         quota_text,
         returned_count=len(result.candidates),
         returned_candidates=tuple(result.candidates),
         match_mode=match_mode,
         match_note=match_note,
+        detail=detail,
+        detail_lookup_used=detail_lookup_used,
     )
 
 
 def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     candidate = scan.best_candidate
     embed = discord.Embed(
-        title=f"🏚️ Home Depot Stock Check • SKU {scan.sku}",
-        description=(
-            f"ZIP: `{scan.zip_code}`\n"
-            "SniperPlug will show exact ID matches. If Home Depot search returns exactly one result for a store SKU, it shows the result as staff-review proof instead of hiding it."
-        ),
-        color=discord.Color.orange(),
+        title=f"🏚️ Home Depot Local Stock Check • SKU {scan.sku}",
+        description=f"ZIP: `{scan.zip_code}` • Mode: `{scan.match_mode}`",
+        color=_stock_color(scan),
     )
 
     if not candidate:
         embed.add_field(
             name="No usable stock result returned",
             value=(
-                f"SerpApi/Home Depot returned `{scan.returned_count}` product result(s), but none exactly matched requested SKU `{scan.sku}`.\n"
+                f"Home Depot search returned `{scan.returned_count}` product result(s), but none were safe enough to use.\n"
                 "SniperPlug blocked the card because multiple/no results would be too easy to misread."
             ),
             inline=False,
@@ -176,16 +199,7 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
         if closest:
             if closest.image_url:
                 embed.set_thumbnail(url=closest.image_url)
-            embed.add_field(
-                name="Closest returned result",
-                value=(
-                    f"**{trim_title(closest.title, 90)}**\n"
-                    f"Returned ID/SKU: `{closest.sku or closest.product_id or 'n/a'}`\n"
-                    f"Price: **{money(closest.current_price)}**\n"
-                    f"Stock / fulfillment:\n{_local_stock_block(closest)}"
-                ),
-                inline=False,
-            )
+            embed.add_field(name="Closest returned result", value=_candidate_summary(closest, scan.sku), inline=False)
             embed.add_field(name="Review link", value=home_depot_link_block(closest), inline=False)
         if scan.warnings:
             embed.add_field(name="Provider notes", value="\n".join(f"• {w}" for w in scan.warnings[:5]), inline=False)
@@ -196,41 +210,15 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     if candidate.image_url:
         embed.set_thumbnail(url=candidate.image_url)
     embed.url = candidate.product_url
-    embed.add_field(
-        name="Product",
-        value=(
-            f"**{trim_title(candidate.title, 120)}**\n"
-            f"Requested SKU/search: `{scan.sku}`\n"
-            f"Returned Internet #/SKU: `{candidate.sku or candidate.product_id or 'n/a'}`"
-        ),
-        inline=False,
-    )
-    embed.add_field(name="Price", value=_local_price_block(candidate), inline=True)
-    embed.add_field(name="Stock / fulfillment", value=_local_stock_block(candidate), inline=True)
+    embed.add_field(name="Product proof", value=_product_proof_block(scan, candidate), inline=False)
+    embed.add_field(name="Price proof", value=_local_price_block(candidate), inline=True)
+    embed.add_field(name="Local availability", value=_local_stock_block(candidate), inline=True)
     embed.add_field(name="Links", value=home_depot_link_block(candidate), inline=False)
+    embed.add_field(name="Proof status", value=f"**{_confidence_label(scan)}**\n{scan.match_note}", inline=False)
 
-    penny = score_penny_candidate(candidate, has_store_id=True)
-    public_alert = "No — staff verification first" if scan.match_mode != "exact" else "No — staff verification first"
-    embed.add_field(
-        name="SniperPlug read",
-        value=(
-            f"Score: `{penny.score}/100`\n"
-            f"Level: **{penny.level.replace('_', ' ').title()}**\n"
-            f"Public alert: **{public_alert}**"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Proof status",
-        value=f"Mode: `{scan.match_mode}`\n{scan.match_note}",
-        inline=False,
-    )
-    reasons = _proof_lines(scan, candidate, penny)
-    if reasons:
-        embed.add_field(name="Why it showed up", value="\n".join(f"• {reason}" for reason in reasons[:8]), inline=False)
     if scan.warnings:
         embed.add_field(name="Provider notes", value="\n".join(f"• {w}" for w in scan.warnings[:5]), inline=False)
-    embed.set_footer(text=f"{scan.quota_text} • Local inventory may be stale. Staff should verify before posting/driving.")
+    embed.set_footer(text=f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} • Verify before driving/posting.")
     return embed
 
 
@@ -260,6 +248,119 @@ def build_hd_penny_zip_embed(zip_code: str, candidates: tuple[SourceCandidate, .
     return embed
 
 
+def _merge_detail_candidate(candidate: SourceCandidate, detail: HomeDepotProductDetail | None) -> SourceCandidate:
+    if detail is None:
+        return candidate
+    attrs = dict(candidate.variant_attributes or {})
+    for key, value in {
+        "internet_number": detail.product_id,
+        "store_sku_number": detail.store_sku_number,
+        "upc": detail.upc,
+        "model_number": detail.model_number,
+        "brand": detail.brand,
+        "rating": detail.rating,
+        "reviews": detail.reviews,
+        "fulfillment_store": detail.fulfillment_store,
+    }.items():
+        if value:
+            attrs[key] = str(value)
+    if detail.fulfillment_quantity is not None:
+        attrs["fulfillment_quantity"] = str(detail.fulfillment_quantity)
+    if detail.fulfillment_options:
+        attrs["fulfillment_options"] = " | ".join(option.label() for option in detail.fulfillment_options[:4])
+        for option in detail.fulfillment_options:
+            key = re.sub(r"[^a-z0-9]+", "_", option.type.lower()).strip("_") or "option"
+            attrs[f"fulfillment_{key}"] = option.label()
+            if option.quantity is not None:
+                attrs[f"fulfillment_{key}_quantity"] = str(option.quantity)
+
+    return SourceCandidate(
+        source_key=candidate.source_key,
+        retailer=candidate.retailer,
+        title=detail.title or candidate.title,
+        product_url=detail.link or candidate.product_url,
+        current_price=detail.price if detail.price is not None else candidate.current_price,
+        typical_price=detail.original_price if detail.original_price is not None else candidate.typical_price,
+        image_url=detail.image_url or candidate.image_url,
+        product_id=detail.product_id or candidate.product_id,
+        product_id_type=candidate.product_id_type,
+        sku=detail.store_sku_number or candidate.sku,
+        upc=detail.upc or candidate.upc,
+        model=detail.model_number or candidate.model,
+        variant_attributes=attrs,
+        stock_status=_detail_stock_status(detail) or candidate.stock_status,
+        can_add_to_cart=candidate.can_add_to_cart,
+        signals=["Home Depot Product API detail lookup used"] + list(candidate.signals),
+    )
+
+
+def _detail_match_mode(sku: str, candidate: SourceCandidate, detail: HomeDepotProductDetail | None, *, prior_mode: str) -> tuple[str, str]:
+    if detail is None:
+        return prior_mode, "Detail lookup was not available; using search-result proof only."
+    normalized = _normalize_id(sku)
+    ids = {_normalize_id(v) for v in (detail.product_id, detail.store_sku_number, detail.upc, detail.model_number, candidate.product_id, candidate.sku) if v}
+    if normalized and normalized in ids:
+        if _has_local_stock_detail(detail):
+            return "product_api_local_match", "Product API proof: requested value matched returned ID/SKU/UPC/model and local fulfillment data was returned."
+        return "product_api_id_match", "Product API proof: requested value matched returned ID/SKU/UPC/model, but local quantity/store proof was limited."
+    if prior_mode == "single_search_result":
+        return "single_result_with_product_api", "Single search result plus Product API detail lookup. Product ID differs from requested store SKU, so verify before public posting."
+    return prior_mode, "Search proof remained stronger than Product API ID proof."
+
+
+def _has_local_stock_detail(detail: HomeDepotProductDetail | None) -> bool:
+    if detail is None:
+        return False
+    return bool(detail.fulfillment_store or detail.fulfillment_quantity is not None or detail.fulfillment_options)
+
+
+def _stock_color(scan: HomeDepotLocalScan) -> discord.Color:
+    if scan.match_mode == "product_api_local_match":
+        return discord.Color.green()
+    if scan.match_mode in {"product_api_id_match", "exact_search_match", "single_result_with_product_api"}:
+        return discord.Color.orange()
+    return discord.Color.dark_orange()
+
+
+def _confidence_label(scan: HomeDepotLocalScan) -> str:
+    if scan.match_mode == "product_api_local_match":
+        return "Strong staff-review proof"
+    if scan.match_mode == "product_api_id_match":
+        return "Product confirmed; local stock limited"
+    if scan.match_mode == "single_result_with_product_api":
+        return "Single-result match; verify SKU before posting"
+    if scan.match_mode == "exact_search_match":
+        return "Search-result product match"
+    return "Not enough proof"
+
+
+def _product_proof_block(scan: HomeDepotLocalScan, candidate: SourceCandidate) -> str:
+    attrs = candidate.variant_attributes or {}
+    lines = [
+        f"**{trim_title(candidate.title, 120)}**",
+        f"Requested SKU/search: `{scan.sku}`",
+        f"Internet #: `{candidate.product_id or attrs.get('internet_number') or 'n/a'}`",
+        f"Store SKU: `{attrs.get('store_sku_number') or candidate.sku or 'n/a'}`",
+    ]
+    if candidate.model:
+        lines.append(f"Model: `{candidate.model}`")
+    if candidate.upc:
+        lines.append(f"UPC: `{candidate.upc}`")
+    if attrs.get("brand"):
+        lines.append(f"Brand: **{attrs['brand']}**")
+    return "\n".join(lines)
+
+
+def _candidate_summary(candidate: SourceCandidate, requested: str) -> str:
+    return (
+        f"**{trim_title(candidate.title, 90)}**\n"
+        f"Requested: `{requested}`\n"
+        f"Returned ID/SKU: `{candidate.sku or candidate.product_id or 'n/a'}`\n"
+        f"Price: **{money(candidate.current_price)}**\n"
+        f"Stock / fulfillment:\n{_local_stock_block(candidate)}"
+    )
+
+
 def _local_price_block(candidate: SourceCandidate) -> str:
     ending = price_ending(candidate.current_price)
     ending_text = f"\nEnding: **.{ending}**" if ending else ""
@@ -275,7 +376,23 @@ def _local_stock_block(candidate: SourceCandidate) -> str:
     lines: list[str] = []
     if candidate.stock_status:
         lines.append(candidate.stock_status)
-    for key in ("store_stock", "store_stock_status", "pickup", "delivery", "general_stock", "general_stock_status", "add_to_cart", "buy_online_pay_in_store", "check_nearby_stores"):
+    for key in (
+        "fulfillment_store",
+        "fulfillment_quantity",
+        "fulfillment_options",
+        "fulfillment_pickup",
+        "fulfillment_delivery",
+        "fulfillment_shipping",
+        "store_stock",
+        "store_stock_status",
+        "pickup",
+        "delivery",
+        "general_stock",
+        "general_stock_status",
+        "add_to_cart",
+        "buy_online_pay_in_store",
+        "check_nearby_stores",
+    ):
         value = attrs.get(key)
         if value:
             lines.append(f"{key.replace('_', ' ').title()}: {value}")
@@ -283,7 +400,19 @@ def _local_stock_block(candidate: SourceCandidate) -> str:
         lines.append("Add to cart: yes")
     elif candidate.can_add_to_cart is False:
         lines.append("Add to cart: not confirmed")
-    return "\n".join(lines[:7]) if lines else "Local stock not returned by provider"
+    return "\n".join(lines[:8]) if lines else "Local stock not returned by provider"
+
+
+def _detail_stock_status(detail: HomeDepotProductDetail | None) -> str | None:
+    if detail is None:
+        return None
+    if detail.pickup_quantity is not None and detail.fulfillment_store:
+        return f"Pickup quantity: {detail.pickup_quantity} at store {detail.fulfillment_store}"
+    if detail.pickup_quantity is not None:
+        return f"Pickup quantity: {detail.pickup_quantity}"
+    if detail.fulfillment_quantity is not None and detail.fulfillment_store:
+        return f"Local fulfillment quantity: {detail.fulfillment_quantity} at store {detail.fulfillment_store}"
+    return None
 
 
 def _exact_sku_candidates(candidates: tuple[SourceCandidate, ...], sku: str) -> tuple[SourceCandidate, ...]:
@@ -305,25 +434,16 @@ def _is_exact_sku_match(candidate: SourceCandidate, normalized_sku: str) -> bool
 
 
 def _candidate_match_ids(candidate: SourceCandidate) -> set[str]:
-    ids = {_normalize_id(v) for v in (candidate.sku, candidate.product_id, candidate.upc, candidate.selected_offer_id) if v}
+    ids = {_normalize_id(v) for v in (candidate.sku, candidate.product_id, candidate.upc, candidate.selected_offer_id, candidate.model) if v}
+    attrs = candidate.variant_attributes or {}
+    for key in ("internet_number", "store_sku_number", "upc", "model_number"):
+        if attrs.get(key):
+            ids.add(_normalize_id(attrs[key]))
     for token in ID_TOKEN_RE.findall(candidate.product_url or ""):
         normalized = _normalize_id(token)
         if normalized:
             ids.add(normalized)
     return ids
-
-
-def _proof_lines(scan: HomeDepotLocalScan, candidate: SourceCandidate, penny) -> list[str]:
-    lines: list[str] = []
-    lines.append(f"Requested value: {scan.sku}")
-    lines.append(f"Returned product ID/SKU: {candidate.sku or candidate.product_id or 'n/a'}")
-    if scan.match_mode == "single_search_result":
-        lines.append("Home Depot search returned exactly one result for the requested numeric SKU/search value")
-    elif scan.match_mode == "exact":
-        lines.append("Requested value exactly matched a returned ID/URL token")
-    lines.extend(list(penny.reasons[:3]))
-    lines.extend([s for s in candidate.signals[:5] if s])
-    return lines
 
 
 def _penny_sort_key(candidate: SourceCandidate) -> tuple[int, int]:

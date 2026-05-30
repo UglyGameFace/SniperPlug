@@ -33,7 +33,6 @@ from sniperplug.services.walmart_discovery_expansion import install_walmart_disc
 from sniperplug.services.walmart_flip_research_patch import install_walmart_flip_research_patch
 from sniperplug.services.walmart_marketplace_comp_guard import install_walmart_marketplace_comp_guard
 from sniperplug.services.walmart_renderer_install import install_walmart_renderer
-from sniperplug.services.walmart_savings_reference_patch import install_walmart_savings_reference_patch
 from sniperplug.storage.db import Database
 
 
@@ -55,7 +54,6 @@ class SniperPlugBot(commands.Bot):
         install_walmart_renderer()
         install_strict_walmart_cash_guard()
         install_walmart_marketplace_comp_guard()
-        install_walmart_savings_reference_patch()
         install_walmart_flip_research_patch()
         install_raw_price_review_patch()
         install_unified_deal_finder()

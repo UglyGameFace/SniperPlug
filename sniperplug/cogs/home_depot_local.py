@@ -104,12 +104,15 @@ class HomeDepotLocalCog(commands.Cog):
 
         if not cleaned_store_id:
             stores = await find_home_depot_stores(cleaned_zip, max_results=8)
+
             if stores:
                 embed = discord.Embed(
                     title="🏚️ Pick a Home Depot store",
                     description=(
-                        f"SKU/search: `{cleaned_sku}`\nZIP: `{cleaned_zip}`\n\n"
-                        "Choose the store below so SniperPlug can run a store-specific stock check instead of trusting ZIP-only fulfillment."
+                        f"SKU/search: `{cleaned_sku}`\n"
+                        f"ZIP: `{cleaned_zip}`\n\n"
+                        "Choose the actual store below so SniperPlug can run a store-specific stock check.\n\n"
+                        "**Important:** ZIP-only Home Depot results are blocked because they can return the wrong store."
                     ),
                     color=discord.Color.orange(),
                 )
@@ -118,9 +121,37 @@ class HomeDepotLocalCog(commands.Cog):
                     value="\n".join(f"• **{store.short_label}**" for store in stores[:8]),
                     inline=False,
                 )
-                embed.set_footer(text="This avoids wrong-location results like Bangor showing for a Connecticut ZIP.")
-                await interaction.followup.send(embed=embed, view=HomeDepotStoreSelectView(interaction.user.id, cleaned_sku, cleaned_zip, stores), ephemeral=True)
+                embed.set_footer(text="Pick a store first. SniperPlug will not use ZIP-only local stock proof.")
+                await interaction.followup.send(
+                    embed=embed,
+                    view=HomeDepotStoreSelectView(interaction.user.id, cleaned_sku, cleaned_zip, stores),
+                    ephemeral=True,
+                )
                 return
+
+            store_search_url = f"https://www.homedepot.com/l/search/{cleaned_zip}"
+            embed = discord.Embed(
+                title="🏚️ Home Depot store selection required",
+                description=(
+                    f"SKU/search: `{cleaned_sku}`\n"
+                    f"ZIP: `{cleaned_zip}`\n\n"
+                    "SniperPlug could not automatically find nearby Home Depot stores for this ZIP.\n\n"
+                    "**The ZIP-only scan was blocked on purpose** so it does not show wrong-location stock like Bangor again."
+                ),
+                color=discord.Color.dark_orange(),
+            )
+            embed.add_field(
+                name="Next step",
+                value=(
+                    f"Open the Home Depot store finder:\n{store_search_url}\n\n"
+                    "Pick your actual store, copy the store number from the store page, then run:\n"
+                    f"`/hd_stock sku:{cleaned_sku} zip_code:{cleaned_zip} store_id:STORE_NUMBER`"
+                ),
+                inline=False,
+            )
+            embed.set_footer(text="No ZIP-only stock card was posted. Store-specific proof is required.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
 
         scan = await run_home_depot_local_scan(interaction.user.id, cleaned_sku, cleaned_zip, store_id=cleaned_store_id)
         await interaction.followup.send(embed=build_hd_stock_embed(scan), ephemeral=True)
@@ -228,7 +259,12 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     embed.add_field(name="Proof status", value=_trim_field(f"**{_confidence_label(scan)}**\n{scan.match_note}"), inline=False)
     if scan.warnings:
         embed.add_field(name="Provider notes", value=_trim_field("\n".join(f"• {w}" for w in scan.warnings[:5])), inline=False)
-    embed.set_footer(text=f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} • Store-specific proof requires store_id.")
+    embed.set_footer(
+        text=(
+            f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} "
+            "• ZIP-only stock proof is blocked unless a real store_id is used."
+        )
+    )
     return embed
 
 
@@ -326,8 +362,13 @@ def _local_price_block(candidate: SourceCandidate) -> str:
     if candidate.typical_price and candidate.current_price and candidate.typical_price > candidate.current_price:
         savings = candidate.typical_price - candidate.current_price
         pct = savings / candidate.typical_price * 100
-        return f"Now: **{money(candidate.current_price)}**\nWas: **{money(candidate.typical_price)}**\nSave: **{money(savings)} ({pct:.0f}%)**{ending_text}"
-    return f"Now: **{money(candidate.current_price)}**\nWas: **Not returned**{ending_text}"
+        return f"Now: **{money(candidate.current_price)}**\nWas/MSRP: **{money(candidate.typical_price)}**\nSave: **{money(savings)} ({pct:.0f}%)**{ending_text}"
+    return (
+        f"Now: **{money(candidate.current_price)}**\n"
+        f"Was/MSRP: **Not returned by Home Depot/SerpApi**\n"
+        f"Discount proof: **Blocked — no trusted reference price**"
+        f"{ending_text}"
+    )
 
 
 def _local_stock_block(candidate: SourceCandidate, scan: HomeDepotLocalScan) -> str:

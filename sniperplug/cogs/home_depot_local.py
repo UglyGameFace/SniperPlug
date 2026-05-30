@@ -22,6 +22,9 @@ ZIP_RE = re.compile(r"^\d{5}$")
 SKU_RE = re.compile(r"^[A-Za-z0-9-]{4,24}$")
 STORE_ID_RE = re.compile(r"^\d{3,6}$")
 ID_TOKEN_RE = re.compile(r"[A-Za-z0-9-]{4,}")
+DEFAULT_HOME_DEPOT_STORE_IDS_BY_ZIP = {
+    "06610": "6213",
+}
 
 
 @dataclass(frozen=True)
@@ -89,14 +92,14 @@ class HomeDepotLocalCog(commands.Cog):
     @app_commands.describe(
         sku="Home Depot SKU / Internet #, like 334851114.",
         zip_code="5-digit ZIP code to find nearby stores.",
-        store_id="Optional Home Depot store ID. Leave blank to pick from nearby stores.",
+        store_id="Optional Home Depot store ID. Leave blank to use saved default or pick from nearby stores.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def hd_stock(self, interaction: discord.Interaction, sku: str, zip_code: str, store_id: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True)
         cleaned_sku = _clean_sku(sku)
         cleaned_zip = _clean_zip(zip_code)
-        cleaned_store_id = _clean_store_id(store_id)
+        cleaned_store_id = _clean_store_id(store_id) or DEFAULT_HOME_DEPOT_STORE_IDS_BY_ZIP.get(cleaned_zip)
         error = _validation_error(cleaned_sku, cleaned_zip, cleaned_store_id)
         if error:
             await interaction.followup.send(error, ephemeral=True)
@@ -288,6 +291,8 @@ def _merge_detail_candidate(candidate: SourceCandidate, detail: HomeDepotProduct
     for key, value in {"internet_number": detail.product_id, "store_sku_number": detail.store_sku_number, "upc": detail.upc, "model_number": detail.model_number, "brand": detail.brand, "rating": detail.rating, "reviews": detail.reviews, "fulfillment_store": detail.fulfillment_store}.items():
         if value:
             attrs[key] = str(value)
+    if getattr(detail, "reference_price_source", None):
+        attrs["reference_price_source"] = str(detail.reference_price_source)
     if detail.fulfillment_quantity is not None:
         attrs["fulfillment_quantity"] = str(detail.fulfillment_quantity)
     if detail.fulfillment_options:
@@ -359,10 +364,13 @@ def _candidate_summary(candidate: SourceCandidate, requested: str, scan: HomeDep
 def _local_price_block(candidate: SourceCandidate) -> str:
     ending = price_ending(candidate.current_price)
     ending_text = f"\nEnding: **.{ending}**" if ending else ""
+    attrs = candidate.variant_attributes or {}
+    source = attrs.get("reference_price_source")
+    source_text = f"\nReference source: `{source}`" if source else ""
     if candidate.typical_price and candidate.current_price and candidate.typical_price > candidate.current_price:
         savings = candidate.typical_price - candidate.current_price
         pct = savings / candidate.typical_price * 100
-        return f"Now: **{money(candidate.current_price)}**\nWas/MSRP: **{money(candidate.typical_price)}**\nSave: **{money(savings)} ({pct:.0f}%)**{ending_text}"
+        return f"Now: **{money(candidate.current_price)}**\nWas/MSRP: **{money(candidate.typical_price)}**\nSave: **{money(savings)} ({pct:.0f}%)**{source_text}{ending_text}"
     return (
         f"Now: **{money(candidate.current_price)}**\n"
         f"Was/MSRP: **Not returned by Home Depot/SerpApi**\n"

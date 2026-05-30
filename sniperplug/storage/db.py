@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -11,12 +13,113 @@ from sniperplug.models.deal import NormalizedDeal, utc_now_iso
 from sniperplug.services.routing import DEFAULT_ROUTE
 
 
+class _LibsqlAsyncCursor:
+    def __init__(self, result: Any):
+        self.result = result
+        self._rows_cache: list[Any] | None = None
+
+    async def fetchone(self) -> Any | None:
+        rows = await self.fetchall()
+        return rows[0] if rows else None
+
+    async def fetchall(self) -> list[Any]:
+        if self._rows_cache is None:
+            rows = await asyncio.to_thread(self._fetchall_sync)
+            self._rows_cache = [self._normalize_row(row) for row in rows]
+        return self._rows_cache
+
+    def _fetchall_sync(self) -> list[Any]:
+        if hasattr(self.result, "fetchall"):
+            return list(self.result.fetchall())
+        rows = getattr(self.result, "rows", None)
+        if rows is not None:
+            return list(rows)
+        return []
+
+    def _columns(self) -> list[str]:
+        description = getattr(self.result, "description", None)
+        if description:
+            columns: list[str] = []
+            for item in description:
+                if isinstance(item, (tuple, list)) and item:
+                    columns.append(str(item[0]))
+                else:
+                    columns.append(str(getattr(item, "name", item)))
+            return columns
+        columns = getattr(self.result, "columns", None)
+        if callable(columns):
+            columns = columns()
+        if columns:
+            return [str(column) for column in columns]
+        return []
+
+    def _normalize_row(self, row: Any) -> Any:
+        if isinstance(row, dict):
+            return row
+        keys = getattr(row, "keys", None)
+        if callable(keys):
+            try:
+                return {str(key): row[key] for key in keys()}
+            except Exception:
+                pass
+        columns = self._columns()
+        if columns:
+            try:
+                return {columns[index]: row[index] for index in range(min(len(columns), len(row)))}
+            except Exception:
+                pass
+        return row
+
+
+class _LibsqlAsyncConnection:
+    def __init__(self, conn: Any):
+        self.conn = conn
+
+    async def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None) -> _LibsqlAsyncCursor:
+        def run() -> _LibsqlAsyncCursor:
+            if params is None:
+                result = self.conn.execute(sql)
+            else:
+                result = self.conn.execute(sql, tuple(params))
+            return _LibsqlAsyncCursor(result)
+
+        return await asyncio.to_thread(run)
+
+    async def executescript(self, script: str) -> None:
+        for statement in _split_sql_script(script):
+            await self.execute(statement)
+
+    async def commit(self) -> None:
+        await asyncio.to_thread(self.conn.commit)
+
+    async def close(self) -> None:
+        close = getattr(self.conn, "close", None)
+        if callable(close):
+            await asyncio.to_thread(close)
+
+
 class Database:
     def __init__(self, path: str):
         self.path = path
-        self.conn: aiosqlite.Connection | None = None
+        self.conn: Any | None = None
+        self.backend = "sqlite"
 
     async def connect(self) -> None:
+        turso_url = os.getenv("TURSO_DATABASE_URL", "").strip() or os.getenv("LIBSQL_URL", "").strip()
+        turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip() or os.getenv("LIBSQL_AUTH_TOKEN", "").strip()
+        if turso_url or turso_token:
+            if not turso_url or not turso_token:
+                raise RuntimeError("Turso database config is incomplete. Set both TURSO_DATABASE_URL and TURSO_AUTH_TOKEN.")
+            try:
+                import libsql
+            except ImportError as exc:
+                raise RuntimeError("Turso database config is present, but Python package 'libsql' is not installed.") from exc
+            self.conn = _LibsqlAsyncConnection(libsql.connect(database=turso_url, auth_token=turso_token))
+            self.backend = "turso"
+            await self.conn.execute("PRAGMA foreign_keys=ON;")
+            await self.conn.commit()
+            return
+
         db_path = Path(self.path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = await aiosqlite.connect(db_path.as_posix())
@@ -30,7 +133,7 @@ class Database:
             await self.conn.close()
             self.conn = None
 
-    def require_conn(self) -> aiosqlite.Connection:
+    def require_conn(self) -> Any:
         if not self.conn:
             raise RuntimeError("Database is not connected.")
         return self.conn
@@ -208,7 +311,7 @@ class Database:
                 channel_id = excluded.channel_id,
                 updated_at = excluded.updated_at
             """,
-            (guild_id, route, channel_id, now),
+            (guild_id, route, channel_id, now, now),
         )
         if commit:
             await conn.commit()
@@ -417,7 +520,7 @@ class Database:
             "last_seen_at": rows[0]["observed_at"],
         }
 
-    async def _fetch_price_observations(self, *, retailer: str, product_key: str, store_id: str | None, limit: int) -> list[aiosqlite.Row]:
+    async def _fetch_price_observations(self, *, retailer: str, product_key: str, store_id: str | None, limit: int) -> list[Any]:
         conn = self.require_conn()
         safe_limit = max(3, min(limit, 500))
         if store_id:
@@ -558,6 +661,10 @@ class Database:
             "deals_count": deals_count,
             "dead_reports_count": reports_count,
         }
+
+
+def _split_sql_script(script: str) -> list[str]:
+    return [statement.strip() for statement in script.split(";") if statement.strip()]
 
 
 def _median(values: list[float]) -> float:

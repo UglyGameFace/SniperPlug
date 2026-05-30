@@ -4,6 +4,8 @@ import re
 import urllib.parse
 from dataclasses import dataclass
 
+from sniperplug.services.comp_discovery_links import build_free_comp_links
+
 
 @dataclass(frozen=True)
 class SafeLinkResult:
@@ -63,20 +65,34 @@ def normalize_product_url(
     return _normalize_generic(raw_url, notes=notes)
 
 
-def product_link_choices(*, retailer: str, product_url: str, title: str = "", product_id: str | None = None, sku: str | None = None, asin: str | None = None) -> tuple[LinkChoice, ...]:
-    """Return user-facing app/web choices for Discord URL buttons.
+def product_link_choices(
+    *,
+    retailer: str,
+    product_url: str,
+    title: str = "",
+    product_id: str | None = None,
+    sku: str | None = None,
+    asin: str | None = None,
+    upc: str | None = None,
+    brand: str | None = None,
+    model: str | None = None,
+    category: str | None = None,
+    include_comp_links: bool = True,
+) -> tuple[LinkChoice, ...]:
+    """Return user-facing app/web and comp choices for Discord cards.
 
-    The normal public product URL lets Android/iOS open the retailer app when the
-    device supports it. The browser fallback goes through a search URL so users
-    on unsupported tablets can still get to the item without being trapped in a
-    broken app handoff.
+    Product links stay direct. Comp links are free discovery links only; they do
+    not scrape Google Shopping or pretend scraped prices are verified proof.
     """
     safe = normalize_product_url(retailer=retailer, url=product_url, product_id=product_id, sku=sku, asin=asin).url
     search = retailer_browser_search_url(retailer=retailer, title=title, product_id=product_id, sku=sku, asin=asin)
     choices = [LinkChoice("Open App/Web", safe)]
     if search and search != safe:
         choices.append(LinkChoice("Browser Search", search))
-    return tuple(choices)
+    if include_comp_links:
+        comp_links = build_free_comp_links(title=title, brand=brand, upc=upc, model=model, sku=sku or product_id, category=category, max_links=4)
+        choices.extend(LinkChoice(link.label, link.url) for link in comp_links)
+    return tuple(dedupe_link_choices(choices))
 
 
 def retailer_browser_search_url(*, retailer: str, title: str = "", product_id: str | None = None, sku: str | None = None, asin: str | None = None) -> str | None:
@@ -233,3 +249,14 @@ def _target_tcin_from_url(path: str) -> str | None:
     if match:
         return match.group(1)
     return None
+
+
+def dedupe_link_choices(choices: list[LinkChoice]) -> list[LinkChoice]:
+    seen: set[str] = set()
+    result: list[LinkChoice] = []
+    for choice in choices:
+        if not choice.url or choice.url in seen:
+            continue
+        seen.add(choice.url)
+        result.append(choice)
+    return result

@@ -1,5 +1,5 @@
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.providers.walmart import _best_reference_context_price, _trusted_reference_price, _walmart_promotion_proof
+from sniperplug.providers.walmart import _best_reference_context_price, _trusted_current_price, _trusted_reference_price, _walmart_promotion_proof
 from sniperplug.services.anomaly_score import has_suspicious_reference
 
 
@@ -82,3 +82,41 @@ def test_candidate_carries_coupon_and_walmart_cash_to_deal():
     assert "Walmart Coupon" in deal.alert_tags
     assert "Walmart Cash" in deal.alert_tags
     assert has_suspicious_reference(deal) is True
+
+
+def test_walmart_uses_real_sale_price_not_extra_savings_unit_values():
+    item = {
+        "name": "Astercook Kitchen Knife Set, 14 pcs Knives Block Set",
+        "salePrice": 39.99,
+        "wasPrice": 199.99,
+        "extraSavings": {"amount": 5.0, "description": "Save $5.00 extra"},
+        "unitPrice": "$2.86/count",
+    }
+
+    current, signal = _trusted_current_price(item)
+    reference, reference_signal = _trusted_reference_price(item, title=item["name"], current_price=current)
+    proof = _walmart_promotion_proof(item)
+
+    assert current == 39.99
+    assert signal == "Walmart current price source: salePrice"
+    assert reference == 199.99
+    assert reference_signal == "Walmart reference price source: wasPrice"
+    assert proof["walmartCashSavings"] == "5.00"
+
+
+def test_walmart_builds_was_from_product_savings_but_not_cash_bonus():
+    item = {
+        "name": "Dolce Gabbana The One Men Eau De Parfum Spray 3.3 oz",
+        "salePrice": 61.20,
+        "savingsAmount": 112.20,
+        "walmartCashOffer": {"amount": 5.0, "description": "Earn $5 Walmart Cash"},
+    }
+
+    current, _ = _trusted_current_price(item)
+    reference, reference_signal = _trusted_reference_price(item, title=item["name"], current_price=current)
+    proof = _walmart_promotion_proof(item)
+
+    assert current == 61.20
+    assert reference == 173.40
+    assert reference_signal == "Walmart reference price source: wasPriceFromSavings.savingsAmount"
+    assert proof["walmartCashSavings"] == "5.00"

@@ -17,6 +17,12 @@ from sniperplug.providers.base import DealProvider, ProviderCapability, Provider
 
 
 SEARCH_CACHE_MINUTES = 15
+_CACHE_DB: Any = None
+
+
+def configure_home_depot_search_cache(db: Any) -> None:
+    global _CACHE_DB
+    _CACHE_DB = db
 
 
 @dataclass(frozen=True)
@@ -49,18 +55,8 @@ class SerpApiHomeDepotProvider(DealProvider):
 
     async def healthcheck(self) -> ProviderHealth:
         if not self.config.configured:
-            return ProviderHealth(
-                provider_key=self.provider_key,
-                ok=False,
-                status=ProviderStatus.DISABLED,
-                message="SerpApi Home Depot search disabled: set SERPAPI_API_KEY.",
-            )
-        return ProviderHealth(
-            provider_key=self.provider_key,
-            ok=True,
-            status=ProviderStatus.READY,
-            message="Ready: SerpApi Home Depot search is configured.",
-        )
+            return ProviderHealth(provider_key=self.provider_key, ok=False, status=ProviderStatus.DISABLED, message="SerpApi Home Depot search disabled: set SERPAPI_API_KEY.")
+        return ProviderHealth(provider_key=self.provider_key, ok=True, status=ProviderStatus.READY, message="Ready: SerpApi Home Depot search is configured.")
 
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
         health = await self.healthcheck()
@@ -70,18 +66,28 @@ class SerpApiHomeDepotProvider(DealProvider):
             return ProviderScanResult(provider_key=self.provider_key, candidates=(), warnings=("Home Depot SerpApi scan skipped: query required.",))
 
         params = self._search_params(request)
-        db = request.metadata.get("db")
+        db = request.metadata.get("db") or _CACHE_DB
         cache_key = _cache_key(params)
         cache_hit = False
+        cache_only = bool(request.metadata.get("cache_only"))
         try:
             if db is not None:
                 cached = await db.get_provider_cache(self.provider_key, cache_key)
                 if cached:
                     payload = cached["response"]
                     cache_hit = True
+                elif cache_only:
+                    return ProviderScanResult(
+                        provider_key=self.provider_key,
+                        candidates=(),
+                        warnings=("Home Depot search cache miss; live SerpApi call blocked by quota guard.",),
+                        metadata={"cache_hit": False, "cache_only": True},
+                    )
                 else:
                     payload = await asyncio.to_thread(self._fetch_json, params)
                     await db.set_provider_cache(self.provider_key, cache_key, payload, request=_safe_params(params), expires_at=_expires_at(SEARCH_CACHE_MINUTES))
+            elif cache_only:
+                return ProviderScanResult(provider_key=self.provider_key, candidates=(), warnings=("Home Depot search cache unavailable; live SerpApi call blocked by quota guard.",), metadata={"cache_hit": False, "cache_only": True})
             else:
                 payload = await asyncio.to_thread(self._fetch_json, params)
         except SerpApiHomeDepotError as exc:
@@ -105,13 +111,7 @@ class SerpApiHomeDepotProvider(DealProvider):
         )
 
     def _search_params(self, request: ProviderScanRequest) -> dict[str, str]:
-        params = {
-            "engine": "home_depot",
-            "q": request.query or "",
-            "api_key": self.config.api_key or "",
-            "ps": str(max(1, min(request.max_results or 24, 24))),
-            "no_cache": "false",
-        }
+        params = {"engine": "home_depot", "q": request.query or "", "api_key": self.config.api_key or "", "ps": str(max(1, min(request.max_results or 24, 24))), "no_cache": "false"}
         store_id = request.metadata.get("store_id")
         zip_code = request.metadata.get("zip_code") or request.metadata.get("delivery_zip")
         if store_id:
@@ -200,24 +200,7 @@ class SerpApiHomeDepotProvider(DealProvider):
         if availability:
             signals.append(availability)
 
-        return SourceCandidate(
-            source_key=self.provider_key,
-            retailer="Home Depot",
-            title=title,
-            product_url=product_url,
-            current_price=price,
-            typical_price=typical_price,
-            image_url=_image_url_from_item(item),
-            product_id=product_id,
-            product_id_type="home_depot_product_id" if product_id else None,
-            sku=attrs.get("store_sku_number") or product_id,
-            upc=attrs.get("upc"),
-            model=attrs.get("model_number"),
-            variant_attributes=attrs,
-            stock_status=availability,
-            can_add_to_cart=_bool_or_none(item.get("add_to_cart")),
-            signals=signals[:14],
-        )
+        return SourceCandidate(source_key=self.provider_key, retailer="Home Depot", title=title, product_url=product_url, current_price=price, typical_price=typical_price, image_url=_image_url_from_item(item), product_id=product_id, product_id_type="home_depot_product_id" if product_id else None, sku=attrs.get("store_sku_number") or product_id, upc=attrs.get("upc"), model=attrs.get("model_number"), variant_attributes=attrs, stock_status=availability, can_add_to_cart=_bool_or_none(item.get("add_to_cart")), signals=signals[:14])
 
 
 class SerpApiHomeDepotError(RuntimeError):
@@ -315,29 +298,7 @@ def _is_valid_typical_price(value: float | None, current_price: float | None) ->
 
 def _variant_attributes_from_item(item: dict[str, Any]) -> dict[str, str]:
     attrs: dict[str, str] = {}
-    mapping = {
-        "product_id": "internet_number",
-        "productId": "internet_number",
-        "store_sku_number": "store_sku_number",
-        "storeSkuNumber": "store_sku_number",
-        "upc": "upc",
-        "brand": "brand",
-        "model_number": "model_number",
-        "modelNumber": "model_number",
-        "unit": "unit",
-        "price_badge": "price_badge",
-        "priceBadge": "price_badge",
-        "percentage_off": "percentage_off",
-        "percent_off": "percentage_off",
-        "percentOff": "percentage_off",
-        "favorite": "favorite_count",
-        "favorites": "favorite_count",
-        "rating": "rating",
-        "reviews": "reviews",
-        "price_saving": "price_saving",
-        "priceSaving": "price_saving",
-        "collection": "collection",
-    }
+    mapping = {"product_id": "internet_number", "productId": "internet_number", "store_sku_number": "store_sku_number", "storeSkuNumber": "store_sku_number", "upc": "upc", "brand": "brand", "model_number": "model_number", "modelNumber": "model_number", "unit": "unit", "price_badge": "price_badge", "priceBadge": "price_badge", "percentage_off": "percentage_off", "percent_off": "percentage_off", "percentOff": "percentage_off", "favorite": "favorite_count", "favorites": "favorite_count", "rating": "rating", "reviews": "reviews", "price_saving": "price_saving", "priceSaving": "price_saving", "collection": "collection"}
     for raw_key, attr_key in mapping.items():
         value = _clean_str(item.get(raw_key))
         if value:

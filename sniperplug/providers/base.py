@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Sequence
+from typing import Any, Sequence
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.local_inventory import LocalInventoryProof, LocalInventoryRequest, make_unsupported_inventory_proof
@@ -53,7 +53,9 @@ class ProviderScanRequest:
     page: int = 1
     sort: str | None = None
     order: str | None = None
-    metadata: dict[str, str] = field(default_factory=dict)
+    # Metadata may include service objects like db for internal cache wiring.
+    # Providers must ignore unknown keys safely.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,7 @@ class ProviderScanResult:
     page_size: int | None = None
     start_index: int | None = None
     has_next_page: bool = False
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class DealProvider(ABC):

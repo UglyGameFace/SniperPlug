@@ -120,8 +120,12 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
     if context_margin is None:
         context_margin = margin_percent(context_profit, deal.current_price)
 
-    category = deal.variant_attributes.get("category") or candidate.category
-    choices = product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, asin=deal.asin, upc=deal.upc, brand=deal.brand, model=deal.model, category=category)
+    attrs = deal.variant_attributes or {}
+    category = attr_text(attrs, "category", "categoryPath", "productCategory")
+    brand = attr_text(attrs, "brand", "brandName")
+    model = deal.model or attr_text(attrs, "model", "modelNumber")
+
+    choices = product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, asin=deal.asin, upc=deal.upc, brand=brand, model=model, category=category)
     if direct_match_score >= 0.45:
         title_prefix = "🔎 Exact product match"
     elif context_profit is not None and context_margin is not None and context_profit >= REVIEW_MIN_CONTEXT_PROFIT:
@@ -156,7 +160,7 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
         lines.append(f"Walmart Cash from API: **{money(cash)}**")
     embed.add_field(name="💰 API price/value", value="\n".join(lines), inline=False)
 
-    comp_links = build_free_comp_links(title=deal.title, brand=deal.brand, upc=deal.upc, model=deal.model, sku=deal.sku or candidate.product_id, category=category, max_links=7)
+    comp_links = build_free_comp_links(title=deal.title, brand=brand, upc=deal.upc, model=model, sku=deal.sku or candidate.product_id, category=category, max_links=7)
     comp_block = comp_link_block(comp_links, max_links=7)
     if comp_block:
         embed.add_field(name="🧭 Free comp research", value=f"{comp_block}\nUse these to verify market price. These links are **not auto-proof** until a retailer/API/parser confirms the price.", inline=False)
@@ -183,6 +187,17 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
     if context_margin is not None:
         card.estimated_margin = context_margin
     return card
+
+
+def attr_text(attrs: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = attrs.get(key)
+        if value is None or value == "":
+            continue
+        text = str(value).strip()
+        if text and text.lower() != "none":
+            return text
+    return None
 
 
 def api_lines(candidate: SourceCandidate, deal) -> list[str]:

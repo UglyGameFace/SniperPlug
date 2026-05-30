@@ -90,7 +90,9 @@ class _LibsqlAsyncConnection:
             await self.execute(statement)
 
     async def commit(self) -> None:
-        await asyncio.to_thread(self.conn.commit)
+        commit = getattr(self.conn, "commit", None)
+        if callable(commit):
+            await asyncio.to_thread(commit)
 
     async def close(self) -> None:
         close = getattr(self.conn, "close", None)
@@ -241,6 +243,111 @@ class Database:
                 observed_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS provider_response_cache (
+                provider TEXT NOT NULL,
+                cache_key TEXT NOT NULL,
+                request_json TEXT,
+                response_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY (provider, cache_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS product_identity (
+                retailer TEXT NOT NULL,
+                product_key TEXT NOT NULL,
+                product_id TEXT,
+                sku TEXT,
+                upc TEXT,
+                model TEXT,
+                title TEXT,
+                brand TEXT,
+                canonical_url TEXT,
+                image_url TEXT,
+                last_seen_price REAL,
+                last_seen_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (retailer, product_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS alert_dedupe (
+                guild_id INTEGER NOT NULL,
+                retailer TEXT NOT NULL,
+                product_key TEXT NOT NULL,
+                alert_key TEXT NOT NULL,
+                channel_id INTEGER,
+                message_id INTEGER,
+                current_price REAL,
+                threshold_price REAL,
+                posted_at TEXT NOT NULL,
+                expires_at TEXT,
+                PRIMARY KEY (guild_id, retailer, product_key, alert_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS store_cache (
+                retailer TEXT NOT NULL,
+                zip_code TEXT NOT NULL,
+                store_id TEXT NOT NULL,
+                label TEXT,
+                address TEXT,
+                city TEXT,
+                state TEXT,
+                distance REAL,
+                url TEXT,
+                source TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT,
+                PRIMARY KEY (retailer, zip_code, store_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS scan_result_cache (
+                scan_key TEXT PRIMARY KEY,
+                retailer TEXT NOT NULL,
+                query TEXT,
+                request_json TEXT,
+                results_json TEXT NOT NULL,
+                total_results INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scan_runs (
+                scan_id TEXT PRIMARY KEY,
+                guild_id INTEGER,
+                user_id INTEGER,
+                retailer TEXT,
+                query TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                duration_ms INTEGER,
+                provider_calls INTEGER NOT NULL DEFAULT 0,
+                cache_hits INTEGER NOT NULL DEFAULT 0,
+                cache_misses INTEGER NOT NULL DEFAULT 0,
+                results_found INTEGER NOT NULL DEFAULT 0,
+                cards_posted INTEGER NOT NULL DEFAULT 0,
+                errors_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'running'
+            );
+
+            CREATE TABLE IF NOT EXISTS query_performance_memory (
+                guild_id INTEGER NOT NULL,
+                retailer TEXT NOT NULL,
+                query TEXT NOT NULL,
+                scans INTEGER NOT NULL DEFAULT 0,
+                returned_products INTEGER NOT NULL DEFAULT 0,
+                verified_hits INTEGER NOT NULL DEFAULT 0,
+                review_hits INTEGER NOT NULL DEFAULT 0,
+                blocked_hits INTEGER NOT NULL DEFAULT 0,
+                avg_discount REAL NOT NULL DEFAULT 0,
+                score REAL NOT NULL DEFAULT 0,
+                last_success_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, retailer, query)
+            );
+
             CREATE TABLE IF NOT EXISTS deal_route_memory (
                 guild_id INTEGER NOT NULL,
                 retailer TEXT NOT NULL,
@@ -266,6 +373,15 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_clearance_seeds_upc ON clearance_seeds(upc);
             CREATE INDEX IF NOT EXISTS idx_price_observations_product_store ON price_observations(retailer, product_key, store_id, observed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_price_observations_product ON price_observations(retailer, product_key, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_provider_response_cache_expires ON provider_response_cache(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_product_identity_sku ON product_identity(retailer, sku);
+            CREATE INDEX IF NOT EXISTS idx_product_identity_upc ON product_identity(retailer, upc);
+            CREATE INDEX IF NOT EXISTS idx_alert_dedupe_product ON alert_dedupe(guild_id, retailer, product_key, posted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_alert_dedupe_expires ON alert_dedupe(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_store_cache_zip ON store_cache(retailer, zip_code, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_scan_result_cache_expires ON scan_result_cache(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_scan_runs_guild_time ON scan_runs(guild_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_query_performance_score ON query_performance_memory(guild_id, retailer, score DESC);
             CREATE INDEX IF NOT EXISTS idx_deal_route_memory_guild_retailer_score ON deal_route_memory(guild_id, retailer, last_score DESC);
             """
         )
@@ -293,10 +409,7 @@ class Database:
             return default_route
 
         conn = self.require_conn()
-        cursor = await conn.execute(
-            "SELECT deals_channel_id FROM guild_settings WHERE guild_id = ?",
-            (guild_id,),
-        )
+        cursor = await conn.execute("SELECT deals_channel_id FROM guild_settings WHERE guild_id = ?", (guild_id,))
         row = await cursor.fetchone()
         return int(row["deals_channel_id"]) if row and row["deals_channel_id"] else None
 
@@ -318,19 +431,13 @@ class Database:
 
     async def get_alert_route(self, guild_id: int, route: str) -> int | None:
         conn = self.require_conn()
-        cursor = await conn.execute(
-            "SELECT channel_id FROM guild_alert_channels WHERE guild_id = ? AND route = ?",
-            (guild_id, route),
-        )
+        cursor = await conn.execute("SELECT channel_id FROM guild_alert_channels WHERE guild_id = ? AND route = ?", (guild_id, route))
         row = await cursor.fetchone()
         return int(row["channel_id"]) if row else None
 
     async def get_all_alert_routes(self, guild_id: int) -> dict[str, int]:
         conn = self.require_conn()
-        cursor = await conn.execute(
-            "SELECT route, channel_id FROM guild_alert_channels WHERE guild_id = ? ORDER BY route",
-            (guild_id,),
-        )
+        cursor = await conn.execute("SELECT route, channel_id FROM guild_alert_channels WHERE guild_id = ? ORDER BY route", (guild_id,))
         rows = await cursor.fetchall()
         return {str(row["route"]): int(row["channel_id"]) for row in rows}
 
@@ -342,7 +449,6 @@ class Database:
 
     async def upsert_deal(self, deal: NormalizedDeal) -> None:
         conn = self.require_conn()
-
         await conn.execute(
             """
             INSERT INTO deals (
@@ -353,14 +459,7 @@ class Database:
                 risk_level, confidence_score, risk_flags_json, alert_tags_json,
                 first_seen_at, last_checked_at, expires_at
             )
-            VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?
-            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(deal_id) DO UPDATE SET
                 current_price = excluded.current_price,
                 typical_price = excluded.typical_price,
@@ -410,6 +509,234 @@ class Database:
                 deal.expires_at,
             ),
         )
+        await conn.commit()
+
+    async def get_provider_cache(self, provider: str, cache_key: str) -> dict[str, Any] | None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        cursor = await conn.execute(
+            """
+            SELECT response_json, created_at, expires_at FROM provider_response_cache
+            WHERE provider = ? AND cache_key = ? AND expires_at > ?
+            """,
+            (provider, cache_key, now),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {"response": json.loads(row["response_json"]), "created_at": row["created_at"], "expires_at": row["expires_at"]}
+
+    async def set_provider_cache(self, provider: str, cache_key: str, response: Any, *, expires_at: str, request: Any | None = None) -> None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        await conn.execute(
+            """
+            INSERT INTO provider_response_cache (provider, cache_key, request_json, response_json, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, cache_key) DO UPDATE SET
+                request_json = excluded.request_json,
+                response_json = excluded.response_json,
+                created_at = excluded.created_at,
+                expires_at = excluded.expires_at
+            """,
+            (provider, cache_key, json.dumps(request) if request is not None else None, json.dumps(response), now, expires_at),
+        )
+        await conn.commit()
+
+    async def set_scan_result_cache(self, scan_key: str, *, retailer: str, results: Any, expires_at: str, query: str | None = None, request: Any | None = None, total_results: int = 0) -> None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        await conn.execute(
+            """
+            INSERT INTO scan_result_cache (scan_key, retailer, query, request_json, results_json, total_results, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(scan_key) DO UPDATE SET
+                retailer = excluded.retailer,
+                query = excluded.query,
+                request_json = excluded.request_json,
+                results_json = excluded.results_json,
+                total_results = excluded.total_results,
+                created_at = excluded.created_at,
+                expires_at = excluded.expires_at
+            """,
+            (scan_key, retailer, query, json.dumps(request) if request is not None else None, json.dumps(results), total_results, now, expires_at),
+        )
+        await conn.commit()
+
+    async def get_scan_result_cache(self, scan_key: str) -> dict[str, Any] | None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        cursor = await conn.execute("SELECT * FROM scan_result_cache WHERE scan_key = ? AND expires_at > ?", (scan_key, now))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["results"] = json.loads(data.pop("results_json"))
+        data["request"] = json.loads(data["request_json"]) if data.get("request_json") else None
+        return data
+
+    async def upsert_product_identity(self, *, retailer: str, product_key: str, product_id: str | None = None, sku: str | None = None, upc: str | None = None, model: str | None = None, title: str | None = None, brand: str | None = None, canonical_url: str | None = None, image_url: str | None = None, last_seen_price: float | None = None) -> None:
+        if not product_key:
+            return
+        conn = self.require_conn()
+        now = utc_now_iso()
+        await conn.execute(
+            """
+            INSERT INTO product_identity (retailer, product_key, product_id, sku, upc, model, title, brand, canonical_url, image_url, last_seen_price, last_seen_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(retailer, product_key) DO UPDATE SET
+                product_id = COALESCE(excluded.product_id, product_identity.product_id),
+                sku = COALESCE(excluded.sku, product_identity.sku),
+                upc = COALESCE(excluded.upc, product_identity.upc),
+                model = COALESCE(excluded.model, product_identity.model),
+                title = COALESCE(excluded.title, product_identity.title),
+                brand = COALESCE(excluded.brand, product_identity.brand),
+                canonical_url = COALESCE(excluded.canonical_url, product_identity.canonical_url),
+                image_url = COALESCE(excluded.image_url, product_identity.image_url),
+                last_seen_price = COALESCE(excluded.last_seen_price, product_identity.last_seen_price),
+                last_seen_at = excluded.last_seen_at,
+                updated_at = excluded.updated_at
+            """,
+            (retailer, product_key, product_id, sku, upc, model, title, brand, canonical_url, image_url, last_seen_price, now if last_seen_price is not None else None, now, now),
+        )
+        await conn.commit()
+
+    async def get_product_identity(self, retailer: str, product_key: str) -> dict[str, Any] | None:
+        conn = self.require_conn()
+        cursor = await conn.execute("SELECT * FROM product_identity WHERE retailer = ? AND product_key = ?", (retailer, product_key))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def record_alert_dedupe(self, *, guild_id: int, retailer: str, product_key: str, alert_key: str, current_price: float | None = None, channel_id: int | None = None, message_id: int | None = None, threshold_price: float | None = None, expires_at: str | None = None) -> None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        await conn.execute(
+            """
+            INSERT INTO alert_dedupe (guild_id, retailer, product_key, alert_key, channel_id, message_id, current_price, threshold_price, posted_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, retailer, product_key, alert_key) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                message_id = excluded.message_id,
+                current_price = excluded.current_price,
+                threshold_price = excluded.threshold_price,
+                posted_at = excluded.posted_at,
+                expires_at = excluded.expires_at
+            """,
+            (guild_id, retailer, product_key, alert_key, channel_id, message_id, current_price, threshold_price, now, expires_at),
+        )
+        await conn.commit()
+
+    async def find_recent_alert(self, *, guild_id: int, retailer: str, product_key: str, current_price: float | None = None) -> dict[str, Any] | None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        cursor = await conn.execute(
+            """
+            SELECT * FROM alert_dedupe
+            WHERE guild_id = ? AND retailer = ? AND product_key = ? AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY posted_at DESC
+            LIMIT 1
+            """,
+            (guild_id, retailer, product_key, now),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        previous_price = data.get("current_price")
+        data["same_or_higher_price"] = bool(current_price is not None and previous_price is not None and current_price >= float(previous_price))
+        return data
+
+    async def upsert_store_cache(self, *, retailer: str, zip_code: str, store_id: str, label: str | None = None, address: str | None = None, city: str | None = None, state: str | None = None, distance: float | None = None, url: str | None = None, source: str | None = None, expires_at: str | None = None) -> None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        await conn.execute(
+            """
+            INSERT INTO store_cache (retailer, zip_code, store_id, label, address, city, state, distance, url, source, created_at, updated_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(retailer, zip_code, store_id) DO UPDATE SET
+                label = COALESCE(excluded.label, store_cache.label),
+                address = COALESCE(excluded.address, store_cache.address),
+                city = COALESCE(excluded.city, store_cache.city),
+                state = COALESCE(excluded.state, store_cache.state),
+                distance = COALESCE(excluded.distance, store_cache.distance),
+                url = COALESCE(excluded.url, store_cache.url),
+                source = COALESCE(excluded.source, store_cache.source),
+                updated_at = excluded.updated_at,
+                expires_at = excluded.expires_at
+            """,
+            (retailer, zip_code, store_id, label, address, city, state, distance, url, source, now, now, expires_at),
+        )
+        await conn.commit()
+
+    async def list_store_cache(self, *, retailer: str, zip_code: str, limit: int = 10) -> list[dict[str, Any]]:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        cursor = await conn.execute(
+            """
+            SELECT * FROM store_cache
+            WHERE retailer = ? AND zip_code = ? AND (expires_at IS NULL OR expires_at > ?)
+            ORDER BY distance IS NULL, distance ASC, updated_at DESC
+            LIMIT ?
+            """,
+            (retailer, zip_code, now, max(1, min(limit, 25))),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def start_scan_run(self, *, guild_id: int | None = None, user_id: int | None = None, retailer: str | None = None, query: str | None = None) -> str:
+        conn = self.require_conn()
+        scan_id = uuid4().hex
+        await conn.execute(
+            """
+            INSERT INTO scan_runs (scan_id, guild_id, user_id, retailer, query, started_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'running')
+            """,
+            (scan_id, guild_id, user_id, retailer, query, utc_now_iso()),
+        )
+        await conn.commit()
+        return scan_id
+
+    async def finish_scan_run(self, scan_id: str, *, status: str = "finished", duration_ms: int | None = None, provider_calls: int = 0, cache_hits: int = 0, cache_misses: int = 0, results_found: int = 0, cards_posted: int = 0, errors: list[str] | None = None) -> None:
+        conn = self.require_conn()
+        await conn.execute(
+            """
+            UPDATE scan_runs
+            SET finished_at = ?, duration_ms = ?, provider_calls = ?, cache_hits = ?, cache_misses = ?, results_found = ?, cards_posted = ?, errors_json = ?, status = ?
+            WHERE scan_id = ?
+            """,
+            (utc_now_iso(), duration_ms, provider_calls, cache_hits, cache_misses, results_found, cards_posted, json.dumps(errors or []), status, scan_id),
+        )
+        await conn.commit()
+
+    async def record_query_performance(self, *, guild_id: int, retailer: str, query: str, returned_products: int = 0, verified_hits: int = 0, review_hits: int = 0, blocked_hits: int = 0, avg_discount: float = 0.0) -> None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        score = (verified_hits * 10) + (review_hits * 4) - (blocked_hits * 2) + min(returned_products, 20) + avg_discount
+        await conn.execute(
+            """
+            INSERT INTO query_performance_memory (guild_id, retailer, query, scans, returned_products, verified_hits, review_hits, blocked_hits, avg_discount, score, last_success_at, created_at, updated_at)
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, retailer, query) DO UPDATE SET
+                scans = query_performance_memory.scans + 1,
+                returned_products = query_performance_memory.returned_products + excluded.returned_products,
+                verified_hits = query_performance_memory.verified_hits + excluded.verified_hits,
+                review_hits = query_performance_memory.review_hits + excluded.review_hits,
+                blocked_hits = query_performance_memory.blocked_hits + excluded.blocked_hits,
+                avg_discount = ((query_performance_memory.avg_discount * query_performance_memory.scans) + excluded.avg_discount) / (query_performance_memory.scans + 1),
+                score = query_performance_memory.score + excluded.score,
+                last_success_at = COALESCE(excluded.last_success_at, query_performance_memory.last_success_at),
+                updated_at = excluded.updated_at
+            """,
+            (guild_id, retailer, query, returned_products, verified_hits, review_hits, blocked_hits, avg_discount, score, now if verified_hits or review_hits else None, now, now),
+        )
+        await conn.commit()
+
+    async def prune_expired_cache(self) -> None:
+        conn = self.require_conn()
+        now = utc_now_iso()
+        await conn.execute("DELETE FROM provider_response_cache WHERE expires_at <= ?", (now,))
+        await conn.execute("DELETE FROM scan_result_cache WHERE expires_at <= ?", (now,))
+        await conn.execute("DELETE FROM alert_dedupe WHERE expires_at IS NOT NULL AND expires_at <= ?", (now,))
+        await conn.execute("DELETE FROM store_cache WHERE expires_at IS NOT NULL AND expires_at <= ?", (now,))
         await conn.commit()
 
     async def record_price_observation(
@@ -480,13 +807,7 @@ class Database:
             rows = await self._fetch_price_observations(retailer=retailer, product_key=product_key, store_id=None, limit=limit)
             scope = "all-stores"
         if len(rows) < min_observations:
-            return {
-                "ready": False,
-                "observation_count": len(rows),
-                "needed": min_observations,
-                "scope": scope,
-                "source": "SniperPlug learning mode",
-            }
+            return {"ready": False, "observation_count": len(rows), "needed": min_observations, "scope": scope, "source": "SniperPlug learning mode"}
 
         prices = sorted(float(row["current_price"]) for row in rows if row["current_price"] is not None and float(row["current_price"]) > 0)
         if len(prices) < min_observations:
@@ -571,22 +892,7 @@ class Database:
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                seed_id,
-                guild_id,
-                user_id,
-                retailer,
-                title,
-                sku,
-                upc,
-                product_url,
-                store_id,
-                zip_code,
-                observed_price,
-                notes,
-                now,
-                now,
-            ),
+            (seed_id, guild_id, user_id, retailer, title, sku, upc, product_url, store_id, zip_code, observed_price, notes, now, now),
         )
         await conn.commit()
         return seed_id
@@ -595,25 +901,9 @@ class Database:
         conn = self.require_conn()
         safe_limit = max(1, min(limit, 25))
         if retailer:
-            cursor = await conn.execute(
-                """
-                SELECT * FROM clearance_seeds
-                WHERE guild_id = ? AND retailer = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (guild_id, retailer, safe_limit),
-            )
+            cursor = await conn.execute("SELECT * FROM clearance_seeds WHERE guild_id = ? AND retailer = ? ORDER BY created_at DESC LIMIT ?", (guild_id, retailer, safe_limit))
         else:
-            cursor = await conn.execute(
-                """
-                SELECT * FROM clearance_seeds
-                WHERE guild_id = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (guild_id, safe_limit),
-            )
+            cursor = await conn.execute("SELECT * FROM clearance_seeds WHERE guild_id = ? ORDER BY created_at DESC LIMIT ?", (guild_id, safe_limit))
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
@@ -628,31 +918,19 @@ class Database:
             raise ValueError("Invalid table name.")
 
         conn = self.require_conn()
-        await conn.execute(
-            f"""
-            INSERT OR IGNORE INTO {table} (guild_id, user_id, deal_id, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (guild_id, user_id, deal_id, utc_now_iso()),
-        )
+        await conn.execute(f"INSERT OR IGNORE INTO {table} (guild_id, user_id, deal_id, created_at) VALUES (?, ?, ?, ?)", (guild_id, user_id, deal_id, utc_now_iso()))
         await conn.commit()
 
     async def stats(self, guild_id: int) -> dict[str, Any]:
         conn = self.require_conn()
 
-        settings_cursor = await conn.execute(
-            "SELECT deals_channel_id FROM guild_settings WHERE guild_id = ?",
-            (guild_id,),
-        )
+        settings_cursor = await conn.execute("SELECT deals_channel_id FROM guild_settings WHERE guild_id = ?", (guild_id,))
         settings = await settings_cursor.fetchone()
 
         deals_cursor = await conn.execute("SELECT COUNT(*) AS count FROM deals")
         deals_count = (await deals_cursor.fetchone())["count"]
 
-        reports_cursor = await conn.execute(
-            "SELECT COUNT(*) AS count FROM dead_reports WHERE guild_id = ?",
-            (guild_id,),
-        )
+        reports_cursor = await conn.execute("SELECT COUNT(*) AS count FROM dead_reports WHERE guild_id = ?", (guild_id,))
         reports_count = (await reports_cursor.fetchone())["count"]
 
         return {

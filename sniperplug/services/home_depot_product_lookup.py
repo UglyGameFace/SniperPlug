@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -34,6 +35,7 @@ REFERENCE_PRICE_KEYS = (
     "before_price",
     "beforePrice",
 )
+PRODUCT_DETAIL_CACHE_MINUTES = 20
 
 
 @dataclass(frozen=True)
@@ -94,39 +96,74 @@ class HomeDepotProductDetail:
         return None
 
 
-async def fetch_home_depot_product_detail(product_id: str, *, zip_code: str | None = None, store_id: str | None = None) -> HomeDepotProductDetail | None:
-    return await asyncio.to_thread(_fetch_home_depot_product_detail_sync, product_id, zip_code=zip_code, store_id=store_id)
+async def fetch_home_depot_product_detail(product_id: str, *, zip_code: str | None = None, store_id: str | None = None, db: Any = None) -> HomeDepotProductDetail | None:
+    params = _product_params(product_id, zip_code=zip_code, store_id=store_id)
+    cache_key = _cache_key(params)
+    if db is not None:
+        try:
+            cached = await db.get_provider_cache("home_depot_product_serpapi", cache_key)
+            if cached:
+                detail = _detail_from_payload(product_id, cached["response"])
+                if detail:
+                    return _with_warning(detail, "Product detail cache hit: reused recent Home Depot Product API payload.")
+        except Exception:
+            # Cache should speed us up, never break stock checks.
+            pass
+
+    payload = await asyncio.to_thread(_fetch_product_payload_sync, params)
+    if db is not None and isinstance(payload, dict) and not payload.get("_sniperplug_error") and not payload.get("error"):
+        try:
+            await db.set_provider_cache(
+                "home_depot_product_serpapi",
+                cache_key,
+                payload,
+                request=_safe_params(params),
+                expires_at=_expires_at(PRODUCT_DETAIL_CACHE_MINUTES),
+            )
+        except Exception:
+            pass
+    return _detail_from_payload(product_id, payload)
 
 
-def _fetch_home_depot_product_detail_sync(product_id: str, *, zip_code: str | None = None, store_id: str | None = None) -> HomeDepotProductDetail | None:
+def _product_params(product_id: str, *, zip_code: str | None = None, store_id: str | None = None) -> dict[str, str]:
     key = os.getenv("SERPAPI_API_KEY", "").strip()
-    if not key:
-        return HomeDepotProductDetail(product_id=product_id, warnings=("SERPAPI_API_KEY is not configured for Home Depot Product API detail lookup.",))
-
     params = {"engine": "home_depot_product", "product_id": product_id, "api_key": key, "no_cache": "false"}
     if zip_code:
         params["delivery_zip"] = zip_code
     if store_id:
         params["store_id"] = store_id
+    return params
 
+
+def _fetch_home_depot_product_detail_sync(product_id: str, *, zip_code: str | None = None, store_id: str | None = None) -> HomeDepotProductDetail | None:
+    return _detail_from_payload(product_id, _fetch_product_payload_sync(_product_params(product_id, zip_code=zip_code, store_id=store_id)))
+
+
+def _fetch_product_payload_sync(params: dict[str, str]) -> dict[str, Any]:
+    product_id = params.get("product_id") or ""
+    if not params.get("api_key"):
+        return {"_sniperplug_error": "SERPAPI_API_KEY is not configured for Home Depot Product API detail lookup.", "product_id": product_id}
     try:
         with urllib.request.urlopen(f"{SERPAPI_URL}?{urllib.parse.urlencode(params)}", timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")[:300]
-        return HomeDepotProductDetail(product_id=product_id, warnings=(f"Home Depot Product API HTTP {exc.code}: {body}",))
+        return {"_sniperplug_error": f"Home Depot Product API HTTP {exc.code}: {body}", "product_id": product_id}
     except Exception as exc:
-        return HomeDepotProductDetail(product_id=product_id, warnings=(f"Home Depot Product API lookup failed: {exc}",))
+        return {"_sniperplug_error": f"Home Depot Product API lookup failed: {exc}", "product_id": product_id}
+    return payload if isinstance(payload, dict) else {"_sniperplug_error": "Home Depot Product API returned an unexpected payload.", "product_id": product_id}
 
+
+def _detail_from_payload(product_id: str, payload: dict[str, Any]) -> HomeDepotProductDetail | None:
     if not isinstance(payload, dict):
         return HomeDepotProductDetail(product_id=product_id, warnings=("Home Depot Product API returned an unexpected payload.",))
+    if payload.get("_sniperplug_error"):
+        return HomeDepotProductDetail(product_id=product_id, warnings=(str(payload["_sniperplug_error"]),))
     if payload.get("error"):
         return HomeDepotProductDetail(product_id=product_id, warnings=(f"Home Depot Product API error: {payload['error']}",))
-
     item = payload.get("product_results")
     if not isinstance(item, dict):
         return HomeDepotProductDetail(product_id=product_id, warnings=("Home Depot Product API returned no product_results block.",), raw_keys=tuple(payload.keys()))
-
     return _detail_from_product_results(product_id, item, payload)
 
 
@@ -238,6 +275,42 @@ def _first_image(item: dict[str, Any]) -> str | None:
             if value:
                 return value
     return None
+
+
+def _with_warning(detail: HomeDepotProductDetail, warning: str) -> HomeDepotProductDetail:
+    return HomeDepotProductDetail(
+        product_id=detail.product_id,
+        title=detail.title,
+        link=detail.link,
+        image_url=detail.image_url,
+        price=detail.price,
+        original_price=detail.original_price,
+        reference_price_source=detail.reference_price_source,
+        upc=detail.upc,
+        model_number=detail.model_number,
+        store_sku_number=detail.store_sku_number,
+        brand=detail.brand,
+        rating=detail.rating,
+        reviews=detail.reviews,
+        fulfillment_store=detail.fulfillment_store,
+        fulfillment_quantity=detail.fulfillment_quantity,
+        fulfillment_options=detail.fulfillment_options,
+        warnings=detail.warnings + (warning,),
+        raw_keys=detail.raw_keys,
+    )
+
+
+def _cache_key(params: dict[str, str]) -> str:
+    safe = _safe_params(params)
+    return json.dumps(safe, sort_keys=True, separators=(",", ":"))
+
+
+def _safe_params(params: dict[str, str]) -> dict[str, str]:
+    return {key: value for key, value in params.items() if key != "api_key"}
+
+
+def _expires_at(minutes: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
 
 
 def _clean(value: Any) -> str | None:

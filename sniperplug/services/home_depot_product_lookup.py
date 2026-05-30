@@ -12,6 +12,28 @@ from typing import Any
 
 
 SERPAPI_URL = "https://serpapi.com/search.json"
+REFERENCE_PRICE_KEYS = (
+    "original",
+    "original_price",
+    "originalPrice",
+    "price_was",
+    "priceWas",
+    "was_price",
+    "wasPrice",
+    "list_price",
+    "listPrice",
+    "regular_price",
+    "regularPrice",
+    "retail_price",
+    "retailPrice",
+    "strikethrough_price",
+    "strikeThroughPrice",
+    "comparison_price",
+    "comparisonPrice",
+    "msrp",
+    "before_price",
+    "beforePrice",
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +65,7 @@ class HomeDepotProductDetail:
     image_url: str | None = None
     price: float | None = None
     original_price: float | None = None
+    reference_price_source: str | None = None
     upc: str | None = None
     model_number: str | None = None
     store_sku_number: str | None = None
@@ -80,12 +103,7 @@ def _fetch_home_depot_product_detail_sync(product_id: str, *, zip_code: str | No
     if not key:
         return HomeDepotProductDetail(product_id=product_id, warnings=("SERPAPI_API_KEY is not configured for Home Depot Product API detail lookup.",))
 
-    params = {
-        "engine": "home_depot_product",
-        "product_id": product_id,
-        "api_key": key,
-        "no_cache": "false",
-    }
+    params = {"engine": "home_depot_product", "product_id": product_id, "api_key": key, "no_cache": "false"}
     if zip_code:
         params["delivery_zip"] = zip_code
     if store_id:
@@ -113,7 +131,6 @@ def _fetch_home_depot_product_detail_sync(product_id: str, *, zip_code: str | No
 
 
 def _detail_from_product_results(product_id: str, item: dict[str, Any], payload: dict[str, Any]) -> HomeDepotProductDetail:
-    promotion = item.get("promotion") if isinstance(item.get("promotion"), dict) else {}
     brand = item.get("brand")
     brand_name = _clean(brand.get("name")) if isinstance(brand, dict) else _clean(brand)
     fulfillment = item.get("fulfillment") if isinstance(item.get("fulfillment"), dict) else {}
@@ -123,13 +140,19 @@ def _detail_from_product_results(product_id: str, item: dict[str, Any], payload:
     if status and status != "Success":
         warnings.append(f"SerpApi status: {status}")
 
+    current_price = _number(item.get("price"))
+    reference_price, reference_source = _reference_price_from_item(item, current_price)
+    if current_price is not None and reference_price is None:
+        warnings.append("Home Depot Product API did not return a trustworthy was/MSRP/reference price for this item.")
+
     return HomeDepotProductDetail(
         product_id=_clean(item.get("product_id")) or product_id,
         title=_clean(item.get("title")),
         link=_clean(item.get("link")) or f"https://www.homedepot.com/p/{product_id}",
         image_url=_first_image(item),
-        price=_number(item.get("price")),
-        original_price=_number(promotion.get("original")),
+        price=current_price,
+        original_price=reference_price,
+        reference_price_source=reference_source,
         upc=_clean(item.get("upc")),
         model_number=_clean(item.get("model_number")),
         store_sku_number=_clean(item.get("store_sku_number")),
@@ -144,6 +167,49 @@ def _detail_from_product_results(product_id: str, item: dict[str, Any], payload:
     )
 
 
+def _reference_price_from_item(item: dict[str, Any], current_price: float | None) -> tuple[float | None, str | None]:
+    for key in REFERENCE_PRICE_KEYS:
+        parsed = _number(item.get(key))
+        if _valid_reference_price(parsed, current_price):
+            return parsed, key
+    for key in ("promotion", "pricing", "price_info", "priceInfo", "offer", "offers", "primary_offer"):
+        parsed, source = _nested_reference_price(item.get(key), current_price, prefix=key)
+        if parsed is not None:
+            return parsed, source
+    return None, None
+
+
+def _nested_reference_price(value: Any, current_price: float | None, *, prefix: str) -> tuple[float | None, str | None]:
+    if value is None:
+        return None, None
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            parsed, source = _nested_reference_price(item, current_price, prefix=f"{prefix}[{index}]")
+            if parsed is not None:
+                return parsed, source
+        return None, None
+    if not isinstance(value, dict):
+        return None, None
+    for key in REFERENCE_PRICE_KEYS:
+        parsed = _number(value.get(key))
+        if _valid_reference_price(parsed, current_price):
+            return parsed, f"{prefix}.{key}"
+    for key, nested in value.items():
+        if isinstance(nested, (dict, list)):
+            parsed, source = _nested_reference_price(nested, current_price, prefix=f"{prefix}.{key}")
+            if parsed is not None:
+                return parsed, source
+    return None, None
+
+
+def _valid_reference_price(value: float | None, current_price: float | None) -> bool:
+    if value is None or value <= 0:
+        return False
+    if current_price is None:
+        return True
+    return value > current_price
+
+
 def _fulfillment_options(raw: Any) -> tuple[HomeDepotFulfillmentOption, ...]:
     if not isinstance(raw, list):
         return ()
@@ -156,15 +222,7 @@ def _fulfillment_options(raw: Any) -> tuple[HomeDepotFulfillmentOption, ...]:
             date = ", ".join(str(v).strip() for v in arrival if str(v).strip())
         else:
             date = _clean(arrival) or _clean(option.get("delivery_date"))
-        parsed.append(
-            HomeDepotFulfillmentOption(
-                type=_clean(option.get("type")) or "Fulfillment",
-                title=_clean(option.get("title")),
-                date=date,
-                bottom=_clean(option.get("bottom")),
-                quantity=_int(option.get("quantity")),
-            )
-        )
+        parsed.append(HomeDepotFulfillmentOption(type=_clean(option.get("type")) or "Fulfillment", title=_clean(option.get("title")), date=date, bottom=_clean(option.get("bottom")), quantity=_int(option.get("quantity"))))
     return tuple(parsed)
 
 
@@ -176,10 +234,7 @@ def _first_image(item: dict[str, Any]) -> str | None:
     images = item.get("images")
     if isinstance(images, list):
         for image in images:
-            if isinstance(image, dict):
-                value = _clean(image.get("link") or image.get("url") or image.get("image"))
-            else:
-                value = _clean(image)
+            value = _clean(image.get("link") or image.get("url") or image.get("image")) if isinstance(image, dict) else _clean(image)
             if value:
                 return value
     return None

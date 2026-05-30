@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.cogs.home_depot_search import home_depot_link_block, money, price_ending, trim_title
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
@@ -16,7 +17,6 @@ from sniperplug.services.home_depot_product_lookup import HomeDepotProductDetail
 from sniperplug.services.home_depot_store_finder import HomeDepotStoreChoice, find_home_depot_stores
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
-from sniperplug.cogs.home_depot_search import home_depot_link_block, money, price_ending, trim_title
 
 
 ZIP_RE = re.compile(r"^\d{5}$")
@@ -109,7 +109,6 @@ class HomeDepotLocalCog(commands.Cog):
 
         if not cleaned_store_id:
             stores = await find_home_depot_stores(cleaned_zip, max_results=8)
-
             if stores:
                 embed = discord.Embed(
                     title="🏚️ Pick a Home Depot store",
@@ -121,11 +120,7 @@ class HomeDepotLocalCog(commands.Cog):
                     ),
                     color=discord.Color.orange(),
                 )
-                embed.add_field(
-                    name="Nearby stores found",
-                    value="\n".join(f"• **{store.short_label}**" for store in stores[:8]),
-                    inline=False,
-                )
+                embed.add_field(name="Nearby stores found", value="\n".join(f"• **{store.short_label}**" for store in stores[:8]), inline=False)
                 embed.set_footer(text="Pick a store first. SniperPlug will not use ZIP-only local stock proof.")
                 await interaction.followup.send(embed=embed, view=HomeDepotStoreSelectView(interaction.user.id, cleaned_sku, cleaned_zip, stores), ephemeral=True)
                 return
@@ -178,8 +173,16 @@ class HomeDepotLocalCog(commands.Cog):
         if not quota.allowed:
             await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
             return
-        result = await provider.scan(ProviderScanRequest(source_key="home_depot_serpapi", query="clearance", max_results=24, metadata={"zip_code": cleaned_zip, "requested_by": str(interaction.user.id), "scan_type": "hd_penny_zip"}))
-        quota_after = serpapi_quota_guard.record(interaction.user.id, cost=1)
+        result = await provider.scan(
+            ProviderScanRequest(
+                source_key="home_depot_serpapi",
+                query="clearance",
+                max_results=24,
+                metadata={"zip_code": cleaned_zip, "requested_by": str(interaction.user.id), "scan_type": "hd_penny_zip", "db": self.bot.db},
+            )
+        )
+        quota_cost = 0 if result.metadata.get("cache_hit") else 1
+        quota_after = serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)
         candidates = tuple(sorted(result.candidates, key=_penny_sort_key, reverse=True))[:8]
         await interaction.followup.send(embed=build_hd_penny_zip_embed(cleaned_zip, candidates, result.warnings, quota_after.daily_used, quota_after.daily_limit), ephemeral=True)
 
@@ -191,15 +194,16 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, st
     health = await provider.healthcheck()
     if health.status != ProviderStatus.READY:
         return HomeDepotLocalScan(sku, zip_code, sku, (), (health.message,), "SerpApi unavailable", requested_store_id=store_id)
-    quota = serpapi_quota_guard.check(user_id, cost=2)
-    if not quota.allowed:
-        return HomeDepotLocalScan(sku, zip_code, sku, (), (f"SerpApi 2-pass scan blocked: {quota.reason}",), "SerpApi blocked", requested_store_id=store_id)
 
-    metadata = {"zip_code": zip_code, "requested_by": str(user_id), "scan_type": "hd_stock"}
+    quota = serpapi_quota_guard.check(user_id, cost=2)
+    cache_only = not quota.allowed
+    metadata = {"zip_code": zip_code, "requested_by": str(user_id), "scan_type": "hd_stock", "db": db}
     if store_id:
         metadata["store_id"] = store_id
-    result = await provider.scan(ProviderScanRequest(source_key="home_depot_serpapi", query=sku, max_results=24, metadata=metadata))
+    if cache_only:
+        metadata["cache_only"] = True
 
+    result = await provider.scan(ProviderScanRequest(source_key="home_depot_serpapi", query=sku, max_results=24, metadata=metadata))
     candidates = _exact_sku_candidates(result.candidates, sku)
     match_mode = "exact_search_match"
     match_note = "Search proof: requested value matched returned product ID/SKU/UPC/URL token."
@@ -209,33 +213,52 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, st
             match_mode = "single_search_result"
             match_note = "Search fallback: Home Depot search returned exactly one product for the requested value. Detail lookup still required."
         else:
-            quota_after = serpapi_quota_guard.record(user_id, cost=1)
+            if cache_only:
+                warnings = tuple(result.warnings) + (f"Live SerpApi scan was blocked by quota guard: {quota.reason}",)
+                return HomeDepotLocalScan(sku, zip_code, sku, (), warnings, "SerpApi cache miss • live scan blocked", requested_store_id=store_id, returned_count=len(result.candidates), returned_candidates=tuple(result.candidates), match_mode="blocked", match_note="Blocked: quota guard stopped the live scan and no cached result was available.")
+            search_cost = 0 if result.metadata.get("cache_hit") else 1
+            quota_after = serpapi_quota_guard.record(user_id, cost=search_cost)
             return HomeDepotLocalScan(sku, zip_code, sku, (), result.warnings, f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today", requested_store_id=store_id, returned_count=len(result.candidates), returned_candidates=tuple(result.candidates), match_mode="blocked", match_note="Blocked: no exact ID proof and no single-result fallback.")
 
     candidate = candidates[0]
-    detail = None
+    detail: HomeDepotProductDetail | None = None
     detail_lookup_used = False
     product_id = candidate.product_id or candidate.sku
-    if product_id:
+    if product_id and not cache_only:
         detail_lookup_used = True
-        detail = await fetch_home_depot_product_detail(product_id, zip_code=zip_code, store_id=store_id)
-        merged = _merge_detail_candidate(candidate, detail)
-        if db is not None:
-            merged = await _apply_price_history_reference(merged, db=db, store_id=store_id, zip_code=zip_code)
-        candidates = (merged,)
-        match_mode, match_note = _detail_match_mode(sku, candidate, detail, prior_mode=match_mode, store_id=store_id)
-    elif db is not None:
-        candidate = await _apply_price_history_reference(candidate, db=db, store_id=store_id, zip_code=zip_code)
-        candidates = (candidate,)
+        detail = await fetch_home_depot_product_detail(product_id, zip_code=zip_code, store_id=store_id, db=db)
+        candidate = _merge_detail_candidate(candidate, detail)
+        match_mode, match_note = _detail_match_mode(sku, candidates[0], detail, prior_mode=match_mode, store_id=store_id)
+    elif cache_only:
+        attrs = dict(candidate.variant_attributes or {})
+        attrs["observed_price_reference_status"] = "Live SerpApi quota was blocked, so SniperPlug used cached search proof without refreshing Product API detail."
+        candidate.variant_attributes = attrs
+        match_note += " Cached result was used because the live quota guard would have blocked this scan."
 
-    quota_after = serpapi_quota_guard.record(user_id, cost=2 if detail_lookup_used else 1)
+    if db is not None:
+        candidate = await _apply_price_history_reference(candidate, db=db, store_id=store_id, zip_code=zip_code)
+    candidates = (candidate,)
+
     warnings = list(result.warnings) + list(detail.warnings if detail else ())
-    applied = candidates[0].variant_attributes if candidates else {}
+    applied = candidate.variant_attributes or {}
     if applied.get("observed_price_reference_status"):
         warnings.append(applied["observed_price_reference_status"])
     if detail and detail.fulfillment_store and not store_id:
         warnings.append(f"ZIP-only Product API returned provider-selected store `{detail.fulfillment_store}`. This is not trusted store-specific proof until a store_id is provided.")
-    return HomeDepotLocalScan(sku, zip_code, sku, candidates, tuple(warnings), f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today", requested_store_id=store_id, returned_count=len(result.candidates), returned_candidates=tuple(result.candidates), match_mode=match_mode, match_note=match_note, detail=detail, detail_lookup_used=detail_lookup_used)
+
+    if cache_only:
+        quota_text = f"SerpApi cache used • live scan blocked: {quota.reason}"
+    else:
+        search_cost = 0 if result.metadata.get("cache_hit") else 1
+        detail_cost = 0
+        if detail_lookup_used:
+            detail_cost = 0 if detail and any("cache hit" in warning.lower() for warning in detail.warnings) else 1
+        quota_after = serpapi_quota_guard.record(user_id, cost=search_cost + detail_cost)
+        quota_text = f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today"
+        if search_cost + detail_cost == 0:
+            quota_text += " • served fully from cache"
+
+    return HomeDepotLocalScan(sku, zip_code, sku, candidates, tuple(warnings), quota_text, requested_store_id=store_id, returned_count=len(result.candidates), returned_candidates=tuple(result.candidates), match_mode=match_mode, match_note=match_note, detail=detail, detail_lookup_used=detail_lookup_used)
 
 
 def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
@@ -270,12 +293,7 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     embed.add_field(name="Proof status", value=_trim_field(f"**{_confidence_label(scan)}**\n{scan.match_note}"), inline=False)
     if scan.warnings:
         embed.add_field(name="Provider notes", value=_trim_field("\n".join(f"• {w}" for w in scan.warnings[:5])), inline=False)
-    embed.set_footer(
-        text=(
-            f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} "
-            "• ZIP-only stock proof is blocked unless a real store_id is used."
-        )
-    )
+    embed.set_footer(text=f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} • ZIP-only stock proof is blocked unless a real store_id is used.")
     return embed
 
 
@@ -437,12 +455,7 @@ def _local_price_block(candidate: SourceCandidate) -> str:
         savings = candidate.typical_price - candidate.current_price
         pct = savings / candidate.typical_price * 100
         return f"Now: **{money(candidate.current_price)}**\nWas/MSRP: **{money(candidate.typical_price)}**\nSave: **{money(savings)} ({pct:.0f}%)**{source_text}{ending_text}"
-    return (
-        f"Now: **{money(candidate.current_price)}**\n"
-        f"Was/MSRP: **Not returned by Home Depot/SerpApi**\n"
-        f"Discount proof: **Blocked — no trusted reference price**"
-        f"{ending_text}"
-    )
+    return f"Now: **{money(candidate.current_price)}**\nWas/MSRP: **Not returned by Home Depot/SerpApi**\nDiscount proof: **Blocked — no trusted reference price**{ending_text}"
 
 
 def _local_stock_block(candidate: SourceCandidate, scan: HomeDepotLocalScan) -> str:

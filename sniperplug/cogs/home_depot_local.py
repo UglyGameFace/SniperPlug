@@ -27,6 +27,7 @@ class HomeDepotLocalScan:
     candidates: tuple[SourceCandidate, ...]
     warnings: tuple[str, ...]
     quota_text: str
+    returned_count: int = 0
 
     @property
     def best_candidate(self) -> SourceCandidate | None:
@@ -52,10 +53,9 @@ class HomeDepotLocalCog(commands.Cog):
             return
 
         scan = await run_home_depot_local_scan(interaction.user.id, cleaned_sku, cleaned_zip)
-        embed = build_hd_stock_embed(scan)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=build_hd_stock_embed(scan), ephemeral=True)
 
-    @app_commands.command(name="hd_penny_zip", description="Start a ZIP-anchored Home Depot penny/clearance scan using targeted default searches.")
+    @app_commands.command(name="hd_penny_zip", description="Start a ZIP-anchored Home Depot penny/clearance scan using a safe default search.")
     @app_commands.describe(zip_code="5-digit ZIP code to anchor the penny/clearance scan.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def hd_penny_zip(self, interaction: discord.Interaction, zip_code: str) -> None:
@@ -116,32 +116,34 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str) -> Ho
         )
     )
     quota_after = serpapi_quota_guard.record(user_id, cost=1)
-    candidates = _rank_sku_candidates(result.candidates, sku)
+    candidates = _exact_sku_candidates(result.candidates, sku)
     quota_text = f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today"
-    return HomeDepotLocalScan(sku, zip_code, sku, candidates, result.warnings, quota_text)
+    return HomeDepotLocalScan(sku, zip_code, sku, candidates, result.warnings, quota_text, returned_count=len(result.candidates))
 
 
 def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     candidate = scan.best_candidate
-    title = f"🏚️ Home Depot Stock Check • SKU {scan.sku}"
     embed = discord.Embed(
-        title=title,
+        title=f"🏚️ Home Depot Stock Check • SKU {scan.sku}",
         description=(
             f"ZIP: `{scan.zip_code}`\n"
-            "This is SniperPlug's first local-stock style checker. It uses Home Depot/SerpApi local context and must be treated as **store verification**, not register proof."
+            "Hard rule: SniperPlug only shows a stock card when the returned product ID/SKU exactly matches your requested SKU."
         ),
         color=discord.Color.orange(),
     )
 
     if not candidate:
         embed.add_field(
-            name="No product match returned",
-            value="Try the Home Depot Internet #, exact SKU, or product title. If Home Depot/SerpApi returns no product card, SniperPlug will not invent stock data.",
+            name="No exact SKU proof returned",
+            value=(
+                f"SerpApi/Home Depot returned `{scan.returned_count}` product result(s), but none exactly matched requested SKU `{scan.sku}`.\n"
+                "SniperPlug blocked the card instead of showing a possibly wrong product. Try the Home Depot Internet # from the product page, the store SKU, UPC, or a tighter product title."
+            ),
             inline=False,
         )
         if scan.warnings:
             embed.add_field(name="Provider notes", value="\n".join(f"• {w}" for w in scan.warnings[:5]), inline=False)
-        embed.set_footer(text=scan.quota_text)
+        embed.set_footer(text=f"{scan.quota_text} • No guessed SKU matches.")
         return embed
 
     if candidate.image_url:
@@ -162,12 +164,12 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
         ),
         inline=False,
     )
-    reasons = list(penny.reasons[:3]) + [s for s in candidate.signals[:5] if s]
+    reasons = [f"Exact SKU/Product ID match for `{scan.sku}`"] + list(penny.reasons[:3]) + [s for s in candidate.signals[:5] if s]
     if reasons:
         embed.add_field(name="Why it showed up", value="\n".join(f"• {reason}" for reason in reasons[:6]), inline=False)
     if scan.warnings:
         embed.add_field(name="Provider notes", value="\n".join(f"• {w}" for w in scan.warnings[:5]), inline=False)
-    embed.set_footer(text=f"{scan.quota_text} • Local inventory may be stale. Call/check before driving.")
+    embed.set_footer(text=f"{scan.quota_text} • Exact SKU match required. Local inventory may be stale. Call/check before driving.")
     return embed
 
 
@@ -219,19 +221,15 @@ def _local_stock_block(candidate: SourceCandidate) -> str:
     return "\n".join(lines[:5]) if lines else "Local stock not returned"
 
 
-def _rank_sku_candidates(candidates: tuple[SourceCandidate, ...], sku: str) -> tuple[SourceCandidate, ...]:
+def _exact_sku_candidates(candidates: tuple[SourceCandidate, ...], sku: str) -> tuple[SourceCandidate, ...]:
     normalized = _normalize_id(sku)
-    return tuple(sorted(candidates, key=lambda c: _sku_match_score(c, normalized), reverse=True))
+    exact = [candidate for candidate in candidates if _is_exact_sku_match(candidate, normalized)]
+    return tuple(sorted(exact, key=lambda c: score_penny_candidate(c, has_store_id=True).score, reverse=True))
 
 
-def _sku_match_score(candidate: SourceCandidate, normalized_sku: str) -> int:
+def _is_exact_sku_match(candidate: SourceCandidate, normalized_sku: str) -> bool:
     ids = {_normalize_id(v) for v in (candidate.sku, candidate.product_id, candidate.upc) if v}
-    if normalized_sku in ids:
-        return 1000
-    title_score = 50 if normalized_sku and normalized_sku in _normalize_id(candidate.title) else 0
-    penny = score_penny_candidate(candidate, has_store_id=True).score
-    price_score = 20 if candidate.current_price is not None else 0
-    return title_score + penny + price_score
+    return bool(normalized_sku and normalized_sku in ids)
 
 
 def _penny_sort_key(candidate: SourceCandidate) -> tuple[int, int]:

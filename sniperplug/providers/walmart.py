@@ -399,7 +399,7 @@ def _current_price_candidates(item: dict) -> list[tuple[str, float | None]]:
 
 
 def _trusted_reference_price(item: dict, title: str, current_price: float | None) -> tuple[float | None, str | None]:
-    references = _reference_price_candidates(item)
+    references = _reference_price_candidates(item, current_price=current_price)
     ignored: list[str] = []
     if current_price is None or current_price <= 0:
         value, source = _first_trusted_reference(references, title=title, current_price=current_price)
@@ -424,7 +424,7 @@ def _trusted_reference_price(item: dict, title: str, current_price: float | None
 
 
 def _trusted_reference_source(*, item: dict, title: str, current_price: float | None, reference_price: float) -> str | None:
-    for source, value in _reference_price_candidates(item):
+    for source, value in _reference_price_candidates(item, current_price=current_price):
         if value is None or abs(value - reference_price) > 0.005:
             continue
         if _reference_price_is_trusted(source=source, title=title, current_price=current_price, reference_price=value):
@@ -435,7 +435,7 @@ def _trusted_reference_source(*, item: dict, title: str, current_price: float | 
 def _best_reference_context_price(*, item: dict, current_price: float | None) -> tuple[float | None, str | None]:
     best_price: float | None = None
     best_source: str | None = None
-    for source, value in _reference_price_candidates(item):
+    for source, value in _reference_price_candidates(item, current_price=current_price):
         if value is None or value <= 0:
             continue
         if current_price is not None and value <= current_price:
@@ -446,7 +446,7 @@ def _best_reference_context_price(*, item: dict, current_price: float | None) ->
     return best_price, best_source
 
 
-def _reference_price_candidates(item: dict) -> list[tuple[str, float | None]]:
+def _reference_price_candidates(item: dict, current_price: float | None = None) -> list[tuple[str, float | None]]:
     references = _price_candidates_for_names(
         item,
         (
@@ -500,6 +500,8 @@ def _reference_price_candidates(item: dict) -> list[tuple[str, float | None]]:
             "price_info.msrp",
         ),
     )
+    if current_price is not None and current_price > 0:
+        references.extend(_was_price_from_product_savings(item, current_price=current_price))
     references.extend(_best_marketplace_reference_prices(item))
     return _dedupe_price_candidates(references)
 
@@ -571,10 +573,10 @@ def _price_from_path(item: dict, dotted_path: str, *, allow_unit_price: bool = F
 
 
 def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
-    coupon = _promotion_amount(item, include_terms=("coupon",), exclude_terms=("cash", "reward"))
+    coupon = _promotion_amount(item, include_terms=("coupon",), exclude_terms=("cash", "reward", "savings", "yousave", "wasprice"))
     walmart_cash = _direct_walmart_cash_amount(item)
     if walmart_cash is None:
-        walmart_cash = _promotion_amount(item, include_terms=("walmart cash", "walmartcash", "cash reward", "cashoffer", "reward"), exclude_terms=())
+        walmart_cash = _promotion_amount(item, include_terms=("walmart cash", "walmartcash", "cash reward", "cashoffer", "reward", "extrasavings"), exclude_terms=("wasprice", "strikethrough", "unitprice"))
     attrs: dict[str, str] = {}
     if coupon and coupon > 0:
         attrs["couponSavings"] = f"{coupon:.2f}"
@@ -584,7 +586,7 @@ def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
 
 
 def _direct_walmart_cash_amount(item: dict[str, Any]) -> float | None:
-    """Extract common Walmart Cash shapes before falling back to the generic walker."""
+    """Extract common Walmart Cash/extra value shapes before falling back to the generic walker."""
     for key in (
         "walmartCashOffer",
         "walmart_cash_offer",
@@ -594,6 +596,8 @@ def _direct_walmart_cash_amount(item: dict[str, Any]) -> float | None:
         "cash_offer",
         "cashRewards",
         "cash_rewards",
+        "extraSavings",
+        "extra_savings",
     ):
         payload = item.get(key)
         if payload is None:
@@ -632,6 +636,43 @@ def _promotion_amount(value: Any, *, include_terms: tuple[str, ...], exclude_ter
             continue
         best = max(best or 0, parsed)
     return best
+
+
+def _was_price_from_product_savings(item: dict[str, Any], *, current_price: float) -> list[tuple[str, float | None]]:
+    candidates: list[tuple[str, float | None]] = []
+    for key_path, candidate in _walk_payload(item):
+        normalized = key_path.lower().replace("_", "").replace("-", "")
+        if _is_unit_price_path(normalized) or _is_promotion_or_cash_path(normalized):
+            continue
+        if "savings" not in normalized and "yousave" not in normalized:
+            continue
+        parsed = _price_from_value(candidate, allow_unit_price=False, path=key_path)
+        if parsed is None:
+            parsed = _first_money_amount(str(candidate))
+        if parsed is None or parsed <= 0:
+            continue
+        reference = round(current_price + parsed, 2)
+        if reference > current_price:
+            candidates.append((f"wasPriceFromSavings.{key_path}", reference))
+    return _dedupe_price_candidates(candidates)
+
+
+def _is_promotion_or_cash_path(path: str) -> bool:
+    normalized = path.lower().replace("_", "").replace("-", "").replace(".", "")
+    blocked = (
+        "coupon",
+        "walmartcash",
+        "cashoffer",
+        "cashreward",
+        "cashrewards",
+        "rewardamount",
+        "cashamount",
+        "extrasavings",
+        "promotion",
+        "promo",
+        "giftcard",
+    )
+    return any(token in normalized for token in blocked)
 
 
 def _walk_payload(value: Any, prefix: str = ""):
@@ -802,104 +843,29 @@ def _is_unit_price_path(path: str) -> bool:
 
 
 def _reference_price_looks_suspicious(*, source: str, title: str, current_price: float, reference_price: float) -> bool:
-    ratio = reference_price / current_price
-    if ratio <= 1:
-        return True
+    ratio = reference_price / current_price if current_price > 0 else 0
     source_key = source.lower().replace("_", "")
-    title_text = title.lower()
-    explicit_sale_source = any(token in source_key for token in ("wasprice", "regularprice", "strikethrough", "comparisonprice", "originalprice"))
-    if _is_consumable_or_size_sensitive(title_text):
-        if ratio >= 8:
-            return True
-        if current_price <= 15 and reference_price >= 50 and not explicit_sale_source:
-            return True
-    if current_price <= 10 and reference_price >= 150:
+    if "waspricefromsavings" in source_key:
+        return False
+    if ratio >= 8:
         return True
-    if ratio >= 20 and not explicit_sale_source:
-        return True
+    lowered_title = title.lower()
+    if any(token in source_key for token in ("msrp", "listprice", "retailprice")):
+        if _is_cheap_consumable(lowered_title) and ratio >= 2.0:
+            return True
+        if not _is_durable_or_electronics(lowered_title) and ratio >= 4.0:
+            return True
     return False
 
 
-def _is_consumable_or_size_sensitive(title: str) -> bool:
-    keywords = (
-        "toilet paper",
-        "toilet tissue",
-        "bath tissue",
-        "paper towel",
-        "paper towels",
-        "tissue",
-        "napkin",
-        "detergent",
-        "laundry",
-        "trash bag",
-        "dish soap",
-        "cleaner",
-        "cleaning",
-        "wipes",
-        "diaper",
-        "razor",
-        "disposable",
-        "shampoo",
-        "conditioner",
-        "body wash",
-        "soap",
-        "toothpaste",
-        "toothbrush",
-        "deodorant",
-        "car wash",
-        "wash",
-        "wax",
-        "turtle wax",
-        "armor all",
-        "meguiar",
-        "chemical guys",
-        "spray",
-        "fluid",
-        "oz",
-        "fl oz",
-        "ounce",
-        "count",
-        "ct",
-        "pack",
-        "refill",
-        "bottle",
-        "jug",
-        "gallon",
-        "beef",
-        "chicken",
-        "turkey",
-        "meat",
-        "lb",
-        "pound",
-    )
+def _is_cheap_consumable(title: str) -> bool:
+    keywords = ("detergent", "soap", "paper", "toilet", "tissue", "wipes", "diaper", "food", "snack", "candy", "soda", "water", "car wash", "shampoo", "conditioner", "toothpaste")
     return any(keyword in title for keyword in keywords)
 
 
 def _is_durable_or_electronics(title: str) -> bool:
-    keywords = (
-        "tv",
-        "television",
-        "monitor",
-        "laptop",
-        "desktop",
-        "computer",
-        "tablet",
-        "phone",
-        "smartphone",
-        "headset",
-        "keyboard",
-        "mouse",
-        "speaker",
-        "soundbar",
-        "camera",
-        "console",
-        "gaming",
-        "printer",
-        "projector",
-        "appliance",
-        "tool",
-    )
-    return any(re.search(rf"\b{re.escape(keyword)}\b", title) for keyword in keywords)
+    keywords = ("tv", "monitor", "laptop", "computer", "tablet", "phone", "headset", "keyboard", "mouse", "vacuum", "tool", "knife", "knives", "appliance", "furniture", "mattress", "speaker", "camera", "watch", "console")
+    return any(keyword in title for keyword in keywords)
 
 
 def _float_or_none(value) -> float | None:
@@ -907,10 +873,10 @@ def _float_or_none(value) -> float | None:
         return None
     if isinstance(value, str):
         text = value.replace("$", "").replace(",", "").strip()
-        money_match = re.search(r"-?\d+(?:\.\d+)?", text)
-        if not money_match:
+        match = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not match:
             return None
-        value = money_match.group(0)
+        value = match.group(0)
     try:
         return float(value)
     except (TypeError, ValueError):

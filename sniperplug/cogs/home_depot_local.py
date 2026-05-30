@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
 from dataclasses import dataclass
 
 import discord
@@ -86,11 +87,10 @@ class HomeDepotLocalCog(commands.Cog):
             await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
             return
 
-        query = "clearance"
         result = await provider.scan(
             ProviderScanRequest(
                 source_key="home_depot_serpapi",
-                query=query,
+                query="clearance",
                 max_results=24,
                 metadata={"zip_code": cleaned_zip, "requested_by": str(interaction.user.id), "scan_type": "hd_penny_zip"},
             )
@@ -135,14 +135,13 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str) -> Ho
             match_note = "Search fallback: Home Depot search returned exactly one product for the requested value. Detail lookup still required."
         else:
             quota_after = serpapi_quota_guard.record(user_id, cost=1)
-            quota_text = f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today"
             return HomeDepotLocalScan(
                 sku,
                 zip_code,
                 sku,
                 (),
                 result.warnings,
-                quota_text,
+                f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today",
                 returned_count=len(result.candidates),
                 returned_candidates=tuple(result.candidates),
                 match_mode="blocked",
@@ -160,7 +159,6 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str) -> Ho
         match_mode, match_note = _detail_match_mode(sku, candidate, detail, prior_mode=match_mode)
 
     quota_after = serpapi_quota_guard.record(user_id, cost=2 if detail_lookup_used else 1)
-    quota_text = f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today"
     warnings = tuple(result.warnings) + tuple(detail.warnings if detail else ())
     return HomeDepotLocalScan(
         sku,
@@ -168,7 +166,7 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str) -> Ho
         sku,
         candidates,
         warnings,
-        quota_text,
+        f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today",
         returned_count=len(result.candidates),
         returned_candidates=tuple(result.candidates),
         match_mode=match_mode,
@@ -197,27 +195,31 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
         )
         closest = scan.returned_candidates[0] if scan.returned_candidates else None
         if closest:
-            if closest.image_url:
-                embed.set_thumbnail(url=closest.image_url)
-            embed.add_field(name="Closest returned result", value=_candidate_summary(closest, scan.sku), inline=False)
+            thumbnail = _safe_image_url(closest.image_url)
+            if thumbnail:
+                embed.set_thumbnail(url=thumbnail)
+            embed.add_field(name="Closest returned result", value=_trim_field(_candidate_summary(closest, scan.sku)), inline=False)
             embed.add_field(name="Review link", value=home_depot_link_block(closest), inline=False)
         if scan.warnings:
-            embed.add_field(name="Provider notes", value="\n".join(f"• {w}" for w in scan.warnings[:5]), inline=False)
-        embed.add_field(name="Proof status", value=scan.match_note, inline=False)
+            embed.add_field(name="Provider notes", value=_trim_field("\n".join(f"• {w}" for w in scan.warnings[:5])), inline=False)
+        embed.add_field(name="Proof status", value=_trim_field(scan.match_note), inline=False)
         embed.set_footer(text=f"{scan.quota_text} • Blocked because usable proof was missing.")
         return embed
 
-    if candidate.image_url:
-        embed.set_thumbnail(url=candidate.image_url)
-    embed.url = candidate.product_url
-    embed.add_field(name="Product proof", value=_product_proof_block(scan, candidate), inline=False)
-    embed.add_field(name="Price proof", value=_local_price_block(candidate), inline=True)
-    embed.add_field(name="Local availability", value=_local_stock_block(candidate), inline=True)
-    embed.add_field(name="Links", value=home_depot_link_block(candidate), inline=False)
-    embed.add_field(name="Proof status", value=f"**{_confidence_label(scan)}**\n{scan.match_note}", inline=False)
+    thumbnail = _safe_image_url(candidate.image_url)
+    if thumbnail:
+        embed.set_thumbnail(url=thumbnail)
+    safe_url = _safe_url(candidate.product_url)
+    if safe_url:
+        embed.url = safe_url
+    embed.add_field(name="Product proof", value=_trim_field(_product_proof_block(scan, candidate)), inline=False)
+    embed.add_field(name="Price proof", value=_trim_field(_local_price_block(candidate)), inline=True)
+    embed.add_field(name="Local availability", value=_trim_field(_local_stock_block(candidate)), inline=True)
+    embed.add_field(name="Links", value=_trim_field(home_depot_link_block(candidate)), inline=False)
+    embed.add_field(name="Proof status", value=_trim_field(f"**{_confidence_label(scan)}**\n{scan.match_note}"), inline=False)
 
     if scan.warnings:
-        embed.add_field(name="Provider notes", value="\n".join(f"• {w}" for w in scan.warnings[:5]), inline=False)
+        embed.add_field(name="Provider notes", value=_trim_field("\n".join(f"• {w}" for w in scan.warnings[:5])), inline=False)
     embed.set_footer(text=f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} • Verify before driving/posting.")
     return embed
 
@@ -241,9 +243,9 @@ def build_hd_penny_zip_embed(zip_code: str, candidates: tuple[SourceCandidate, .
                 f"**{idx}. {trim_title(candidate.title, 55)}**\n"
                 f"Price: **{money(candidate.current_price)}** • Score: `{score}/100` • SKU: `{candidate.sku or candidate.product_id or 'n/a'}`"
             )
-        embed.add_field(name="Top candidates", value="\n\n".join(lines), inline=False)
+        embed.add_field(name="Top candidates", value=_trim_field("\n\n".join(lines)), inline=False)
     if warnings:
-        embed.add_field(name="Provider notes", value="\n".join(f"• {w}" for w in warnings[:5]), inline=False)
+        embed.add_field(name="Provider notes", value=_trim_field("\n".join(f"• {w}" for w in warnings[:5])), inline=False)
     embed.set_footer(text=f"SerpApi used: {used}/{limit} today • Verify in store before posting.")
     return embed
 
@@ -281,7 +283,7 @@ def _merge_detail_candidate(candidate: SourceCandidate, detail: HomeDepotProduct
         product_url=detail.link or candidate.product_url,
         current_price=detail.price if detail.price is not None else candidate.current_price,
         typical_price=detail.original_price if detail.original_price is not None else candidate.typical_price,
-        image_url=detail.image_url or candidate.image_url,
+        image_url=_safe_image_url(detail.image_url) or _safe_image_url(candidate.image_url),
         product_id=detail.product_id or candidate.product_id,
         product_id_type=candidate.product_id_type,
         sku=detail.store_sku_number or candidate.sku,
@@ -444,6 +446,32 @@ def _candidate_match_ids(candidate: SourceCandidate) -> set[str]:
         if normalized:
             ids.add(normalized)
     return ids
+
+
+def _safe_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    url = str(value).strip()
+    if not url:
+        return None
+    if url.startswith("//"):
+        url = f"https:{url}"
+    elif url.startswith("/"):
+        url = f"https://www.homedepot.com{url}"
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or any(ch.isspace() for ch in url):
+        return None
+    return url
+
+
+def _safe_image_url(value: str | None) -> str | None:
+    return _safe_url(value)
+
+
+def _trim_field(value: str, limit: int = 1024) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
 
 
 def _penny_sort_key(candidate: SourceCandidate) -> tuple[int, int]:

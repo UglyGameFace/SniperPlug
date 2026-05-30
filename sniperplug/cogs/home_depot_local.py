@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import urllib.parse
 from dataclasses import dataclass
+from typing import Any
 
 import discord
 from discord import app_commands
@@ -70,8 +71,9 @@ class HomeDepotStoreSelect(discord.ui.Select):
             return
         store_id = self.values[0]
         store = self.stores_by_id.get(store_id)
+        db = getattr(interaction.client, "db", None)
         await interaction.response.defer(ephemeral=True)
-        scan = await run_home_depot_local_scan(interaction.user.id, self.sku, self.zip_code, store_id=store_id)
+        scan = await run_home_depot_local_scan(interaction.user.id, self.sku, self.zip_code, store_id=store_id, db=db)
         embed = build_hd_stock_embed(scan)
         if store:
             embed.add_field(name="Selected store", value=f"{store.short_label}\n{store.url}", inline=False)
@@ -125,11 +127,7 @@ class HomeDepotLocalCog(commands.Cog):
                     inline=False,
                 )
                 embed.set_footer(text="Pick a store first. SniperPlug will not use ZIP-only local stock proof.")
-                await interaction.followup.send(
-                    embed=embed,
-                    view=HomeDepotStoreSelectView(interaction.user.id, cleaned_sku, cleaned_zip, stores),
-                    ephemeral=True,
-                )
+                await interaction.followup.send(embed=embed, view=HomeDepotStoreSelectView(interaction.user.id, cleaned_sku, cleaned_zip, stores), ephemeral=True)
                 return
 
             store_search_url = f"https://www.homedepot.com/l/search/{cleaned_zip}"
@@ -156,7 +154,7 @@ class HomeDepotLocalCog(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        scan = await run_home_depot_local_scan(interaction.user.id, cleaned_sku, cleaned_zip, store_id=cleaned_store_id)
+        scan = await run_home_depot_local_scan(interaction.user.id, cleaned_sku, cleaned_zip, store_id=cleaned_store_id, db=self.bot.db)
         await interaction.followup.send(embed=build_hd_stock_embed(scan), ephemeral=True)
 
     @app_commands.command(name="hd_penny_zip", description="Start a ZIP-anchored Home Depot penny/clearance scan using a safe default search.")
@@ -186,7 +184,7 @@ class HomeDepotLocalCog(commands.Cog):
         await interaction.followup.send(embed=build_hd_penny_zip_embed(cleaned_zip, candidates, result.warnings, quota_after.daily_used, quota_after.daily_limit), ephemeral=True)
 
 
-async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, store_id: str | None = None) -> HomeDepotLocalScan:
+async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, store_id: str | None = None, db: Any = None) -> HomeDepotLocalScan:
     provider = provider_registry.get("home_depot_serpapi")
     if provider is None:
         return HomeDepotLocalScan(sku, zip_code, sku, (), ("Home Depot SerpApi provider is not registered yet.",), "SerpApi unavailable", requested_store_id=store_id)
@@ -221,10 +219,20 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, st
     if product_id:
         detail_lookup_used = True
         detail = await fetch_home_depot_product_detail(product_id, zip_code=zip_code, store_id=store_id)
-        candidates = (_merge_detail_candidate(candidate, detail),)
+        merged = _merge_detail_candidate(candidate, detail)
+        if db is not None:
+            merged = await _apply_price_history_reference(merged, db=db, store_id=store_id, zip_code=zip_code)
+        candidates = (merged,)
         match_mode, match_note = _detail_match_mode(sku, candidate, detail, prior_mode=match_mode, store_id=store_id)
+    elif db is not None:
+        candidate = await _apply_price_history_reference(candidate, db=db, store_id=store_id, zip_code=zip_code)
+        candidates = (candidate,)
+
     quota_after = serpapi_quota_guard.record(user_id, cost=2 if detail_lookup_used else 1)
     warnings = list(result.warnings) + list(detail.warnings if detail else ())
+    applied = candidates[0].variant_attributes if candidates else {}
+    if applied.get("observed_price_reference_status"):
+        warnings.append(applied["observed_price_reference_status"])
     if detail and detail.fulfillment_store and not store_id:
         warnings.append(f"ZIP-only Product API returned provider-selected store `{detail.fulfillment_store}`. This is not trusted store-specific proof until a store_id is provided.")
     return HomeDepotLocalScan(sku, zip_code, sku, candidates, tuple(warnings), f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today", requested_store_id=store_id, returned_count=len(result.candidates), returned_candidates=tuple(result.candidates), match_mode=match_mode, match_note=match_note, detail=detail, detail_lookup_used=detail_lookup_used)
@@ -282,6 +290,64 @@ def build_hd_penny_zip_embed(zip_code: str, candidates: tuple[SourceCandidate, .
         embed.add_field(name="Provider notes", value=_trim_field("\n".join(f"• {w}" for w in warnings[:5])), inline=False)
     embed.set_footer(text=f"SerpApi used: {used}/{limit} today • Verify in store before posting.")
     return embed
+
+
+async def _apply_price_history_reference(candidate: SourceCandidate, *, db: Any, store_id: str | None, zip_code: str | None) -> SourceCandidate:
+    product_key = _price_history_key(candidate)
+    if not product_key or candidate.current_price is None or candidate.current_price <= 0:
+        return candidate
+    attrs = dict(candidate.variant_attributes or {})
+    try:
+        reference = await db.get_price_reference(retailer="Home Depot", product_key=product_key, store_id=store_id, current_price=candidate.current_price)
+        if reference and reference.get("ready") and reference.get("reference_price"):
+            observed_ref = float(reference["reference_price"])
+            api_ref = candidate.typical_price or 0
+            if observed_ref > candidate.current_price and observed_ref >= api_ref:
+                candidate.typical_price = observed_ref
+                attrs["reference_price_source"] = str(reference.get("source") or "SniperPlug observed price history")
+                attrs["observed_reference_high"] = str(reference.get("highest_price", observed_ref))
+                attrs["observed_reference_median"] = str(reference.get("median_price", ""))
+                attrs["observed_reference_low"] = str(reference.get("lowest_price", ""))
+                attrs["observed_reference_samples"] = str(reference.get("observation_count", ""))
+        elif reference:
+            attrs["observed_price_reference_status"] = _learning_status(reference)
+        candidate.variant_attributes = attrs
+        await db.record_price_observation(
+            retailer="Home Depot",
+            product_key=product_key,
+            product_id=candidate.product_id,
+            sku=candidate.sku,
+            upc=candidate.upc,
+            store_id=store_id,
+            zip_code=zip_code,
+            title=candidate.title,
+            product_url=candidate.product_url,
+            current_price=float(candidate.current_price),
+            reference_price=candidate.typical_price,
+            reference_source=attrs.get("reference_price_source"),
+            source_key=candidate.source_key,
+        )
+    except Exception as exc:
+        attrs["observed_price_reference_status"] = f"Price history skipped: {exc}"
+        candidate.variant_attributes = attrs
+    return candidate
+
+
+def _learning_status(reference: dict[str, Any]) -> str:
+    if not reference.get("ready") and reference.get("observation_count") is not None:
+        needed = reference.get("needed", 3)
+        count = reference.get("observation_count", 0)
+        reason = reference.get("reason")
+        if reason:
+            return f"SniperPlug price history has {count}/{needed}+ samples, but {reason}"
+        return f"SniperPlug price history learning mode: {count}/{needed} samples collected."
+    return "SniperPlug price history learning mode: collecting baseline."
+
+
+def _price_history_key(candidate: SourceCandidate) -> str | None:
+    value = candidate.product_id or candidate.upc or candidate.sku
+    normalized = _normalize_id(value)
+    return normalized or None
 
 
 def _merge_detail_candidate(candidate: SourceCandidate, detail: HomeDepotProductDetail | None) -> SourceCandidate:

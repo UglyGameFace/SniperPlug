@@ -21,82 +21,33 @@ class ProductCompIdentity:
 
 
 STOP_WORDS = {
-    "for",
-    "with",
-    "and",
-    "the",
-    "new",
-    "brand",
-    "walmart",
-    "free",
-    "shipping",
-    "online",
-    "only",
+    "for", "with", "and", "the", "new", "brand", "walmart", "free", "shipping", "online", "only",
+    "spray", "price", "purchased", "when", "arrives", "returns",
 }
 
-FRAGRANCE_TERMS = {
-    "fragrance",
-    "cologne",
-    "perfume",
-    "parfum",
-    "edp",
-    "edt",
-    "toilette",
-    "homme",
-    "spray",
-}
-
-TECH_TERMS = {
-    "tv",
-    "monitor",
-    "laptop",
-    "phone",
-    "tablet",
-    "ssd",
-    "gpu",
-    "graphics",
-    "headset",
-    "keyboard",
-    "mouse",
-    "smartphone",
-}
-
-HOME_TERMS = {
-    "vanity",
-    "faucet",
-    "appliance",
-    "vacuum",
-    "air",
-    "fryer",
-    "coffee",
-    "patio",
-    "furniture",
-    "mattress",
-}
-
-APPAREL_TERMS = {
-    "shoe",
-    "shoes",
-    "sneaker",
-    "shirt",
-    "hoodie",
-    "jacket",
-    "jeans",
-    "nike",
-    "adidas",
-    "puma",
-}
+FRAGRANCE_TERMS = {"fragrance", "cologne", "perfume", "parfum", "edp", "edt", "toilette", "homme", "eau", "intense"}
+TECH_TERMS = {"tv", "monitor", "laptop", "phone", "tablet", "ssd", "gpu", "graphics", "headset", "keyboard", "mouse", "smartphone"}
+HOME_TERMS = {"vanity", "faucet", "appliance", "vacuum", "air", "fryer", "coffee", "patio", "furniture", "mattress"}
+APPAREL_TERMS = {"shoe", "shoes", "sneaker", "shirt", "hoodie", "jacket", "jeans", "nike", "adidas", "puma"}
 
 
-def build_comp_identity(
-    *,
-    title: str,
-    brand: str | None = None,
-    upc: str | None = None,
-    model: str | None = None,
-    sku: str | None = None,
-    category: str | None = None,
-) -> ProductCompIdentity:
+KNOWN_RETAILER_HOSTS = (
+    "amazon.com",
+    "target.com",
+    "ebay.com",
+    "macys.com",
+    "ulta.com",
+    "sephora.com",
+    "fragrancenet.com",
+    "jomashop.com",
+    "bestbuy.com",
+    "bhphotovideo.com",
+    "homedepot.com",
+    "lowes.com",
+)
+
+
+def build_comp_identity(*, title: str, brand: str | None = None, upc: str | None = None, model: str | None = None, sku: str | None = None, category: str | None = None) -> ProductCompIdentity:
     clean_title = normalize_title(title)
     brand_text = normalize_title(brand or "")
     model_text = normalize_identifier(model)
@@ -106,7 +57,7 @@ def build_comp_identity(
     tokens = compact_tokens(clean_title)
     if brand_text and brand_text.lower() not in clean_title.lower():
         tokens = compact_tokens(f"{brand_text} {' '.join(tokens)}")
-    query = " ".join(tokens[:12]).strip() or clean_title or brand_text or upc_text or model_text or sku_text
+    query = " ".join(tokens[:14]).strip() or clean_title or brand_text or upc_text or model_text or sku_text
 
     identifiers = tuple(value for value in dedupe([upc_text, model_text]) if value)
     exact_parts = [query]
@@ -118,22 +69,15 @@ def build_comp_identity(
     return ProductCompIdentity(query=query, exact_query=exact_query or query, identifiers=identifiers, category_hint=hint)
 
 
-def build_free_comp_links(
-    *,
-    title: str,
-    brand: str | None = None,
-    upc: str | None = None,
-    model: str | None = None,
-    sku: str | None = None,
-    category: str | None = None,
-    max_links: int = 7,
-) -> tuple[CompLink, ...]:
+def build_free_comp_links(*, title: str, brand: str | None = None, upc: str | None = None, model: str | None = None, sku: str | None = None, category: str | None = None, max_links: int = 7) -> tuple[CompLink, ...]:
     identity = build_comp_identity(title=title, brand=brand, upc=upc, model=model, sku=sku, category=category)
     query = identity.exact_query or identity.query
     links: list[CompLink] = [
         CompLink("Google Shopping", google_shopping_url(query)),
         CompLink("Google Web", google_web_url(query)),
+        CompLink("Google Retailers", google_web_url(build_retailer_group_query(query))),
         CompLink("eBay Sold", ebay_sold_url(query)),
+        CompLink("eBay Active", ebay_active_url(query)),
     ]
 
     if identity.identifiers:
@@ -160,8 +104,17 @@ def ebay_sold_url(query: str) -> str:
     return "https://www.ebay.com/sch/i.html?_nkw=" + quote(query) + "&LH_Sold=1&LH_Complete=1"
 
 
+def ebay_active_url(query: str) -> str:
+    return "https://www.ebay.com/sch/i.html?_nkw=" + quote(query)
+
+
 def retailer_search_url(retailer_host: str, query: str) -> str:
     return google_web_url(f"site:{retailer_host} {query}")
+
+
+def build_retailer_group_query(query: str) -> str:
+    hosts = " OR ".join(f"site:{host}" for host in KNOWN_RETAILER_HOSTS[:8])
+    return f"({hosts}) {query} price"
 
 
 def category_specific_links(identity: ProductCompIdentity) -> list[CompLink]:
@@ -194,12 +147,9 @@ def category_specific_links(identity: ProductCompIdentity) -> list[CompLink]:
             CompLink("Nike/adidas", google_web_url(f"Nike Adidas Puma {query}")),
             CompLink("StockX", retailer_search_url("stockx.com", query)),
             CompLink("GOAT", retailer_search_url("goat.com", query)),
-            CompLink("eBay Active", "https://www.ebay.com/sch/i.html?_nkw=" + quote(query)),
+            CompLink("eBay Active", ebay_active_url(query)),
         ]
-    return [
-        CompLink("Amazon", retailer_search_url("amazon.com", query)),
-        CompLink("Target", retailer_search_url("target.com", query)),
-    ]
+    return [CompLink("Amazon", retailer_search_url("amazon.com", query)), CompLink("Target", retailer_search_url("target.com", query))]
 
 
 def category_hint(title: str, *, category: str | None = None) -> str | None:

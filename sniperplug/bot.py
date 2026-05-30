@@ -11,6 +11,7 @@ from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
 from sniperplug.cogs.auto_scan_runner import AutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_scanner import DealScannerCog
+from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.public_alerts import PublicAlertsCog
@@ -54,6 +55,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(LocalInventoryCog(self))
         await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))
+        await self.add_cog(HomeDepotLocalCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
         await self.add_cog(PublicAlertsCog(self))
         await self.add_cog(ActiveDealsCog(self))
@@ -93,13 +95,8 @@ class SniperPlugBot(commands.Bot):
 
 
 async def run() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    )
-
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     settings = Settings.from_env()
     bot = SniperPlugBot(settings)
-
     async with bot:
         await bot.start(settings.discord_token)

@@ -36,6 +36,7 @@ REFERENCE_PRICE_KEYS = (
     "beforePrice",
 )
 PRODUCT_DETAIL_CACHE_MINUTES = 20
+_CACHE_DB: Any = None
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,13 @@ class HomeDepotProductDetail:
         return None
 
 
+def configure_home_depot_product_detail_cache(db: Any) -> None:
+    global _CACHE_DB
+    _CACHE_DB = db
+
+
 async def fetch_home_depot_product_detail(product_id: str, *, zip_code: str | None = None, store_id: str | None = None, db: Any = None) -> HomeDepotProductDetail | None:
+    db = db or _CACHE_DB
     params = _product_params(product_id, zip_code=zip_code, store_id=store_id)
     cache_key = _cache_key(params)
     if db is not None:
@@ -107,7 +114,6 @@ async def fetch_home_depot_product_detail(product_id: str, *, zip_code: str | No
                 if detail:
                     return _with_warning(detail, "Product detail cache hit: reused recent Home Depot Product API payload.")
         except Exception:
-            # Cache should speed us up, never break stock checks.
             pass
 
     payload = await asyncio.to_thread(_fetch_product_payload_sync, params)

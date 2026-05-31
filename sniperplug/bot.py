@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -26,6 +27,13 @@ from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, co
 from sniperplug.providers.walmart import WalmartProvider
 from sniperplug.services.deal_finder_install import install_unified_deal_finder
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
+from sniperplug.services.error_logging import (
+    configure_runtime_logging,
+    ensure_error_logging_table,
+    install_asyncio_exception_handler,
+    install_discord_error_handlers,
+    install_global_exception_hooks,
+)
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
 from sniperplug.services.raw_price_review_patch import install_raw_price_review_patch
@@ -52,6 +60,9 @@ class SniperPlugBot(commands.Bot):
         await self.db.connect()
         log.info("Database connected backend=%s", getattr(self.db, "backend", "unknown"))
         await self.db.init()
+        await ensure_error_logging_table(self.db)
+        install_discord_error_handlers(self)
+        install_asyncio_exception_handler(asyncio.get_running_loop(), lambda: self.db)
         log.info("Database schema ready backend=%s", getattr(self.db, "backend", "unknown"))
         configure_home_depot_product_detail_cache(self.db)
         configure_home_depot_search_cache(self.db)
@@ -119,7 +130,8 @@ class SniperPlugBot(commands.Bot):
 
 
 async def run() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    configure_runtime_logging()
+    install_global_exception_hooks()
     settings = Settings.from_env()
     bot = SniperPlugBot(settings)
     async with bot:

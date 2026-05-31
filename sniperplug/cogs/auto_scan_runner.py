@@ -11,6 +11,7 @@ from discord.ext import commands, tasks
 
 from sniperplug.cogs.deal_scanner import DealCard, provider_health_error_message
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
+from sniperplug.services.deal_search_modes import MODE_BEST, rank_for_search_mode
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_posts import PublicPostResult, maybe_post_public_deal_cards
@@ -24,6 +25,7 @@ AUTO_SCAN_RETAILER = "walmart"
 AUTO_SCAN_SOURCE_LABEL = "autoscan:walmart_discovery"
 AUTO_SCAN_PUBLIC_LIMIT = 5
 AUTO_SCAN_CATEGORY_ROTATION = ("tech", "beauty", "home", "toys", "auto_tools", "essentials")
+AUTO_SCAN_PUBLIC_MODE = MODE_BEST
 _AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -41,6 +43,8 @@ class AutoScanReport:
     settings: dict | None = None
     category_key: str = ""
     category_label: str = ""
+    min_discount: int = 0
+    public_mode: str = "Best Picks"
     products_checked: int = 0
     searches_checked: int = 0
     total_cards: int = 0
@@ -58,6 +62,8 @@ class AutoScanReport:
             "reason": compact_log_text(self.reason),
             "category": self.category_key,
             "category_label": self.category_label,
+            "threshold": self.min_discount,
+            "public_mode": self.public_mode,
             "checked": self.products_checked,
             "searches": self.searches_checked,
             "total_cards": self.total_cards,
@@ -81,6 +87,7 @@ class AutoScanReport:
         category = f"{self.category_label or self.category_key or 'unknown'}"
         return (
             f"Category: **{category}**\n"
+            f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**\n"
             f"Checked **{self.products_checked}** products across **{self.searches_checked}** searches.\n"
             f"Verified candidates: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
             f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}** • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
@@ -185,7 +192,7 @@ class AutoScanRunnerCog(commands.Cog):
         warnings = list(result.warnings)
 
         unique_cards = dedupe_cards(result.cards)
-        unique_cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
+        unique_cards = rank_for_search_mode(unique_cards, [], AUTO_SCAN_PUBLIC_MODE, limit=max(len(unique_cards), AUTO_SCAN_PUBLIC_LIMIT)).verified
         fresh_selection = await select_fresh_deal_cards(
             self.bot.db,
             guild_id=guild.guild_id,
@@ -207,6 +214,8 @@ class AutoScanRunnerCog(commands.Cog):
                 settings=settings,
                 category_key=preset.key,
                 category_label=preset.label,
+                min_discount=result.min_discount,
+                public_mode="Best Picks",
                 products_checked=result.products_checked,
                 searches_checked=result.searches_attempted,
                 total_cards=len(unique_cards),
@@ -232,6 +241,8 @@ class AutoScanRunnerCog(commands.Cog):
             settings=settings,
             category_key=preset.key,
             category_label=preset.label,
+            min_discount=result.min_discount,
+            public_mode="Best Picks",
             products_checked=result.products_checked,
             searches_checked=result.searches_attempted,
             total_cards=len(unique_cards),

@@ -37,7 +37,6 @@ from sniperplug.services.error_logging import (
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.manual_posting_explainer import install_manual_posting_explainer_patch
-from sniperplug.services.public_alert_text_id_patch import install_public_alert_text_id_patch
 from sniperplug.services.raw_price_review_patch import install_raw_price_review_patch
 from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
 from sniperplug.services.walmart_cash_guard import install_strict_walmart_cash_guard
@@ -82,7 +81,6 @@ class SniperPlugBot(commands.Bot):
         install_raw_price_review_patch()
         install_unified_deal_finder()
         install_manual_posting_explainer_patch()
-        install_public_alert_text_id_patch()
         install_walmart_discovery_expansion()
         install_verified_discount_hunt()
 

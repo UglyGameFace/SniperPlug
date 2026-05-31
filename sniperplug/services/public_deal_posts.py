@@ -5,22 +5,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import discord
-
 from sniperplug.services.embed_delivery import sanitize_embed
+from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_channel_id
 from sniperplug.services.public_posting import normalize_retailer_key
 
 
 ALERT_DEDUPE_DAYS = 30
 PUBLIC_ALERT_KEY = "public_alert:v1"
-PUBLIC_CHANNEL_NAME_FALLBACKS = (
-    "walmart-deals",
-    "deals",
-    "deal-alerts",
-    "price-glitch",
-    "price-glitches",
-    "sniperplug-deals",
-)
+PUBLIC_CHANNEL_NAME_FALLBACKS = ("walmart-deals", "deals", "deal-alerts", "sniperplug-deals")
 
 
 @dataclass(frozen=True)
@@ -57,13 +49,6 @@ async def maybe_post_public_deal_cards(
     fallback_retailer: str | None = None,
     min_alert_score: int = 90,
 ) -> PublicPostResult:
-    """Cache active deal cards and post alertable cards to the configured public channel.
-
-    Manual scans and auto scans both use this path. Auto-scan interval gates only
-    protect provider calls; public posting is controlled by /public_alerts and a
-    separate duplicate guard so the same deal/offer/product cannot be blasted at
-    the same or a worse price.
-    """
     if guild_id is None or not cards:
         return PublicPostResult()
 
@@ -73,21 +58,15 @@ async def maybe_post_public_deal_cards(
         return PublicPostResult(attempted=attempted, errors=("public posting skipped: bot database unavailable",))
 
     fallback_key = normalize_retailer_key(fallback_retailer)
-    cached_active = await cache_active_deal_cards(
-        db,
-        guild_id=guild_id,
-        cards=cards,
-        source_label=source_label,
-        fallback_retailer=fallback_key,
-    )
+    cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cards, source_label=source_label, fallback_retailer=fallback_key)
 
-    config = await get_public_post_config(db, guild_id)
+    config = await get_public_alert_config(db, guild_id)
     if not config["enabled"] or not config["channel_id"]:
         return PublicPostResult(attempted=attempted, skipped_disabled=attempted, cached_active=cached_active)
 
-    channel, channel_error = await resolve_public_alert_channel(bot, db, guild_id=guild_id, configured_channel_id=config["channel_id"])
+    channel, channel_note = await resolve_public_alert_channel(bot, db, guild_id=guild_id, configured_channel_id=config["channel_id"])
     if channel is None:
-        return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(channel_error or "public channel lookup failed",))
+        return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(channel_note or "public channel lookup failed",))
     if not hasattr(channel, "send"):
         return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(f"configured public alert channel <#{getattr(channel, 'id', config['channel_id'])}> is not sendable",))
 
@@ -96,15 +75,16 @@ async def maybe_post_public_deal_cards(
     skipped_duplicate = 0
     skipped_not_alertable = 0
     skipped_wrong_retailer = 0
-    errors: list[str] = []
-    if channel_error:
-        errors.append(channel_error)
+    notes: list[str] = []
+    if channel_note:
+        notes.append(channel_note)
 
     for card in cards:
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or fallback_key
         if retailer not in allowed_retailers:
             skipped_wrong_retailer += 1
             continue
+
         should_alert = getattr(card, "should_alert", None)
         if should_alert is None:
             should_alert = int(getattr(card, "score", 0) or 0) >= min_alert_score
@@ -124,11 +104,12 @@ async def maybe_post_public_deal_cards(
         if not reserved:
             skipped_duplicate += 1
             continue
+
         try:
             message = await channel.send(embed=sanitize_embed(card.embed))
-        except Exception as exc:  # pragma: no cover - Discord network/runtime path
+        except Exception as exc:  # pragma: no cover
             await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
-            errors.append(f"public post failed for {retailer} in <#{getattr(channel, 'id', config['channel_id'])}>: {exc}")
+            notes.append(f"public post failed for {retailer} in <#{getattr(channel, 'id', config['channel_id'])}>: {exc}")
             continue
 
         await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
@@ -145,7 +126,7 @@ async def maybe_post_public_deal_cards(
                 expires_at=alert_expires_at(),
             )
         except Exception as exc:
-            errors.append(f"alert dedupe write failed for {retailer}: {exc}")
+            notes.append(f"alert dedupe write failed for {retailer}: {exc}")
         posted += 1
 
     return PublicPostResult(
@@ -156,39 +137,35 @@ async def maybe_post_public_deal_cards(
         skipped_disabled=0,
         skipped_wrong_retailer=skipped_wrong_retailer,
         cached_active=cached_active,
-        errors=tuple(errors[:5]),
+        errors=tuple(notes[:5]),
     )
 
 
-async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, configured_channel_id: int) -> tuple[Any | None, str | None]:
-    """Resolve configured public channel safely inside the configured guild.
+async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, configured_channel_id: int | str) -> tuple[Any | None, str | None]:
+    channel_id = decode_channel_id(configured_channel_id)
+    if channel_id is None:
+        return None, f"stored public alert channel id is invalid: `{configured_channel_id}`"
 
-    A Discord channel mention in an embed can still render for the user even when
-    the bot has a stale/wrong channel ID in the DB. This resolver uses the guild
-    cache first, verifies the channel belongs to the guild, verifies send/embed
-    permission, and can repair the DB if the old ID is stale but a clearly named
-    deal channel exists in the guild.
-    """
     guild = bot.get_guild(guild_id)
     if guild is None:
         return None, f"public channel lookup failed: bot is not currently connected to guild `{guild_id}`"
 
-    channel = guild.get_channel(configured_channel_id)
+    channel = guild.get_channel(channel_id)
     if channel is not None:
         permission_error = public_channel_permission_error(guild, channel)
         return (None, permission_error) if permission_error else (channel, None)
 
     fetch_error: str | None = None
     try:
-        fetched = await bot.fetch_channel(configured_channel_id)
+        fetched = await bot.fetch_channel(channel_id)
         fetched_guild_id = getattr(getattr(fetched, "guild", None), "id", None)
         if fetched_guild_id is not None and int(fetched_guild_id) != int(guild_id):
-            fetch_error = f"stored public alert channel <#{configured_channel_id}> belongs to another guild (`{fetched_guild_id}`), not this one (`{guild_id}`)"
+            fetch_error = f"stored public alert channel <#{channel_id}> belongs to another guild (`{fetched_guild_id}`), not this one (`{guild_id}`)"
         else:
             permission_error = public_channel_permission_error(guild, fetched)
             return (None, permission_error) if permission_error else (fetched, None)
-    except Exception as exc:  # pragma: no cover - Discord network/runtime path
-        fetch_error = f"stored public alert channel <#{configured_channel_id}> could not be fetched: {exc}"
+    except Exception as exc:  # pragma: no cover
+        fetch_error = f"stored public alert channel <#{channel_id}> could not be fetched: {exc}"
 
     repaired = await find_named_public_channel(guild)
     if repaired is None:
@@ -198,8 +175,8 @@ async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, conf
     if permission_error:
         return None, permission_error
 
-    await update_public_alert_channel_id(db, guild_id=guild_id, channel_id=repaired.id)
-    return repaired, f"Public alert channel auto-repaired from stale <#{configured_channel_id}> to live <#{repaired.id}> (`#{repaired.name}`)."
+    await set_public_alert_channel_id(db, guild_id=guild_id, channel_id=repaired.id)
+    return repaired, f"Public alert channel auto-repaired from stale <#{channel_id}> to live <#{repaired.id}> (`#{repaired.name}`)."
 
 
 async def find_named_public_channel(guild: Any) -> Any | None:
@@ -228,12 +205,6 @@ def public_channel_permission_error(guild: Any, channel: Any) -> str | None:
     if missing:
         return f"bot is missing {', '.join(missing)} in <#{getattr(channel, 'id', 'unknown')}>"
     return None
-
-
-async def update_public_alert_channel_id(db: Any, *, guild_id: int, channel_id: int) -> None:
-    conn = db.require_conn()
-    await conn.execute("UPDATE guild_public_alert_settings SET channel_id = ?, updated_at = ? WHERE guild_id = ?", (channel_id, datetime.now(timezone.utc).isoformat(), guild_id))
-    await conn.commit()
 
 
 def card_deal_key(card: Any, *, retailer: str) -> str:
@@ -270,9 +241,6 @@ def public_post_key(
     score: int | None = None,
     discount: float | None = None,
 ) -> str:
-    # Prefer product/offer + exact price. When exact price is not stored on the
-    # card yet, include discount/score so a future lower-price result can still
-    # make a new public post instead of being suppressed forever by URL only.
     identity = selected_offer_id or sku or upc or canonical_url_key(url)
     if current_price is not None:
         price_part = price_key(current_price)
@@ -378,41 +346,8 @@ async def cache_active_deal_cards(db, *, guild_id: int, cards: list[Any], source
     return cached
 
 
-async def get_public_post_config(db, guild_id: int) -> dict:
-    await ensure_public_post_tables(db)
-    conn = db.require_conn()
-    cursor = await conn.execute(
-        "SELECT enabled, retailers_json, channel_id FROM guild_public_alert_settings WHERE guild_id = ?",
-        (guild_id,),
-    )
-    row = await cursor.fetchone()
-    if not row:
-        return {"enabled": False, "retailers": (), "channel_id": None}
-    try:
-        retailers = tuple(normalize_retailer_key(value) for value in json.loads(row["retailers_json"] or "[]"))
-    except Exception:
-        retailers = ()
-    return {
-        "enabled": bool(row["enabled"]),
-        "retailers": retailers,
-        "channel_id": int(row["channel_id"]) if row["channel_id"] else None,
-    }
-
-
 async def ensure_public_post_tables(db) -> None:
     conn = db.require_conn()
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS guild_public_alert_settings (
-            guild_id INTEGER PRIMARY KEY,
-            enabled INTEGER NOT NULL DEFAULT 0,
-            retailers_json TEXT NOT NULL DEFAULT '[]',
-            channel_id INTEGER,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS guild_public_deal_posts (
@@ -483,3 +418,15 @@ async def release_public_deal_reservation(db, *, guild_id: int, deal_key: str) -
         (guild_id, deal_key),
     )
     await conn.commit()
+
+
+def decode_channel_id(value: int | str | None) -> int | None:
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if text.startswith("ch:"):
+        text = text[3:]
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None

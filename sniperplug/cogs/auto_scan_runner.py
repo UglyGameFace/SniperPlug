@@ -11,7 +11,8 @@ from discord.ext import commands, tasks
 from sniperplug.cogs.deal_scanner import HUNT_PRESETS, DealCard, provider_health_error_message, run_preset_hunt
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
-from sniperplug.services.public_deal_posts import PublicPostResult, get_public_post_config, maybe_post_public_deal_cards
+from sniperplug.services.public_alert_config import get_public_alert_config
+from sniperplug.services.public_deal_posts import PublicPostResult, maybe_post_public_deal_cards
 from sniperplug.services.public_result_explainer import explain_public_post_result
 
 
@@ -106,7 +107,7 @@ class AutoScanRunnerCog(commands.Cog):
 
         await interaction.response.send_message("Auto-scan started. I’ll post the result here when it finishes. Duplicate clicks are blocked while this runs.", ephemeral=True)
         async with lock:
-            config = await get_public_post_config(self.bot.db, interaction.guild_id)
+            config = await get_public_alert_config(self.bot.db, interaction.guild_id)
             if not config.get("enabled") or not config.get("channel_id"):
                 await interaction.followup.send("Public alerts are not configured yet. Run `/public_alerts enabled:true retailers:walmart channel:#your-channel` first.", ephemeral=True)
                 return
@@ -200,12 +201,6 @@ class AutoScanRunnerCog(commands.Cog):
             limit=AUTO_SCAN_PUBLIC_LIMIT,
         )
 
-        # Important: active deal cache is not the same as public-post history.
-        # Manual scans can fill active cache before a public alert ever posts.
-        # If active-cache freshness says "nothing new", still send the best
-        # candidates through the public posting guard so alert_dedupe decides.
-        # This fixes waking up to nothing because manual/private scans marked
-        # everything as repeated before the background poster could alert it.
         shown_cards = fresh_selection.fresh
         used_repeat_fallback = False
         if not shown_cards and unique_cards:
@@ -279,28 +274,16 @@ def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:
 
 async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
     conn = db.require_conn()
-    await conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS guild_public_alert_settings (
-            guild_id INTEGER PRIMARY KEY,
-            enabled INTEGER NOT NULL DEFAULT 0,
-            retailers_json TEXT NOT NULL DEFAULT '[]',
-            channel_id INTEGER,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-    """
-    )
-    await conn.commit()
     cursor = await conn.execute(
-        "SELECT guild_id, channel_id FROM guild_public_alert_settings WHERE enabled = 1 AND channel_id IS NOT NULL"
+        "SELECT guild_id FROM guild_public_alert_settings WHERE enabled = 1 AND channel_id IS NOT NULL"
     )
     rows = await cursor.fetchall()
     guilds: list[AutoScanGuild] = []
     for row in rows:
-        config = await get_public_post_config(db, int(row["guild_id"]))
-        if AUTO_SCAN_RETAILER in set(config.get("retailers") or ()):
-            guilds.append(AutoScanGuild(guild_id=int(row["guild_id"]), channel_id=int(row["channel_id"])))
+        guild_id = int(row["guild_id"])
+        config = await get_public_alert_config(db, guild_id)
+        if AUTO_SCAN_RETAILER in set(config.get("retailers") or ()) and config.get("channel_id"):
+            guilds.append(AutoScanGuild(guild_id=guild_id, channel_id=int(config["channel_id"])))
     return guilds
 
 

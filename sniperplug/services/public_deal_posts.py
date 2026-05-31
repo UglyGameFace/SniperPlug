@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_posting import normalize_retailer_key
+
+
+ALERT_DEDUPE_DAYS = 30
+PUBLIC_ALERT_KEY = "public_alert:v1"
 
 
 @dataclass(frozen=True)
@@ -46,7 +51,8 @@ async def maybe_post_public_deal_cards(
 
     Manual scans and auto scans both use this path. Auto-scan interval gates only
     protect provider calls; public posting is controlled by /public_alerts and a
-    separate duplicate guard so the same deal/offer/price cannot be blasted twice.
+    separate duplicate guard so the same deal/offer/product cannot be blasted at
+    the same or a worse price.
     """
     if guild_id is None or not cards:
         return PublicPostResult()
@@ -96,18 +102,41 @@ async def maybe_post_public_deal_cards(
         if not bool(should_alert):
             skipped_not_alertable += 1
             continue
+
+        current_price = _float_or_none(getattr(card, "current_price", None))
+        product_key = card_product_key(card, retailer=retailer)
+        recent_alert = await safe_find_recent_alert(db, guild_id=guild_id, retailer=retailer, product_key=product_key, current_price=current_price)
+        if recent_alert and should_suppress_recent_alert(recent_alert, current_price):
+            skipped_duplicate += 1
+            continue
+
         deal_key = getattr(card, "public_post_key", None) or card_deal_key(card, retailer=retailer)
         reserved = await reserve_public_deal_post(db, guild_id=guild_id, retailer=retailer, deal_key=deal_key, source_label=source_label)
         if not reserved:
             skipped_duplicate += 1
             continue
         try:
-            await channel.send(embed=card.embed)
+            message = await channel.send(embed=sanitize_embed(card.embed))
         except Exception as exc:  # pragma: no cover - Discord network/runtime path
             await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
             errors.append(f"public post failed for {retailer}: {exc}")
             continue
+
         await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
+        try:
+            await db.record_alert_dedupe(
+                guild_id=guild_id,
+                retailer=retailer,
+                product_key=product_key,
+                alert_key=PUBLIC_ALERT_KEY,
+                current_price=current_price,
+                channel_id=getattr(channel, "id", config["channel_id"]),
+                message_id=getattr(message, "id", None),
+                threshold_price=current_price,
+                expires_at=alert_expires_at(),
+            )
+        except Exception as exc:
+            errors.append(f"alert dedupe write failed for {retailer}: {exc}")
         posted += 1
 
     return PublicPostResult(
@@ -132,6 +161,16 @@ def card_deal_key(card: Any, *, retailer: str) -> str:
         upc=getattr(card, "upc", None),
         score=getattr(card, "score", None),
         discount=getattr(card, "discount", None),
+    )
+
+
+def card_product_key(card: Any, *, retailer: str) -> str:
+    return active_cache_key(
+        retailer=retailer,
+        url=getattr(card, "url", ""),
+        selected_offer_id=getattr(card, "selected_offer_id", None),
+        sku=getattr(card, "sku", None),
+        upc=getattr(card, "upc", None),
     )
 
 
@@ -172,6 +211,35 @@ def price_key(value: float | None) -> str:
 def canonical_url_key(url: str) -> str:
     text = (url or "").strip()
     return text.split("?", 1)[0].rstrip("/") or "unknown"
+
+
+async def safe_find_recent_alert(db, *, guild_id: int, retailer: str, product_key: str, current_price: float | None) -> dict[str, Any] | None:
+    try:
+        return await db.find_recent_alert(guild_id=guild_id, retailer=retailer, product_key=product_key, current_price=current_price)
+    except Exception:
+        return None
+
+
+def should_suppress_recent_alert(recent_alert: dict[str, Any], current_price: float | None) -> bool:
+    if not recent_alert:
+        return False
+    previous_price = _float_or_none(recent_alert.get("current_price"))
+    if current_price is None or previous_price is None:
+        return True
+    return current_price >= previous_price
+
+
+def alert_expires_at(days: int = ALERT_DEDUPE_DAYS) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 async def cache_active_deal_cards(db, *, guild_id: int, cards: list[Any], source_label: str, fallback_retailer: str | None = None) -> int:

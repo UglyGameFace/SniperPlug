@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from sniperplug.cogs.deal_scanner import HUNT_PRESETS, DealCard, provider_health_error_message, run_preset_hunt
+from sniperplug.cogs.deal_scanner import DealCard, provider_health_error_message
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_posts import PublicPostResult, maybe_post_public_deal_cards
 from sniperplug.services.public_result_explainer import explain_public_post_result
+from sniperplug.services.verified_discount_hunt import HUNT_PRESETS, VerifiedHuntResult, collect_verified_discount_cards
 
 
 log = logging.getLogger("sniperplug.autoscan")
@@ -21,6 +23,7 @@ AUTO_SCAN_INTERVAL_MINUTES = 15
 AUTO_SCAN_RETAILER = "walmart"
 AUTO_SCAN_SOURCE_LABEL = "autoscan:walmart_discovery"
 AUTO_SCAN_PUBLIC_LIMIT = 5
+AUTO_SCAN_CATEGORY_ROTATION = ("tech", "beauty", "home", "toys", "auto_tools", "essentials")
 _AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -36,6 +39,8 @@ class AutoScanReport:
     allowed: bool
     reason: str = ""
     settings: dict | None = None
+    category_key: str = ""
+    category_label: str = ""
     products_checked: int = 0
     searches_checked: int = 0
     total_cards: int = 0
@@ -51,6 +56,8 @@ class AutoScanReport:
             "guild": self.guild_id,
             "allowed": self.allowed,
             "reason": compact_log_text(self.reason),
+            "category": self.category_key,
+            "category_label": self.category_label,
             "checked": self.products_checked,
             "searches": self.searches_checked,
             "total_cards": self.total_cards,
@@ -71,9 +78,11 @@ class AutoScanReport:
         if not self.allowed:
             return f"Auto-scan did not run: {self.reason}"
         result = self.public_result
+        category = f"{self.category_label or self.category_key or 'unknown'}"
         return (
+            f"Category: **{category}**\n"
             f"Checked **{self.products_checked}** products across **{self.searches_checked}** searches.\n"
-            f"Candidates: **{self.total_cards}** • Active-cache fresh: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
+            f"Verified candidates: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
             f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}** • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
             f"Repeat fallback used: **{'yes' if self.used_repeat_fallback else 'no'}**\n"
             f"Fresh filter: {self.repeat_summary or 'n/a'}"
@@ -121,7 +130,7 @@ class AutoScanRunnerCog(commands.Cog):
             embed.add_field(name="Warnings", value="\n".join(f"• {warning}" for warning in report.warnings[:5]), inline=False)
         if report.public_result.errors:
             embed.add_field(name="Errors", value="\n".join(f"• {error}" for error in report.public_result.errors[:5]), inline=False)
-        embed.set_footer(text="This uses the same auto-scan path as the background loop.")
+        embed.set_footer(text="This uses the same direct verified auto-scan path as the background loop.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @autoscan_now.error
@@ -171,27 +180,11 @@ class AutoScanRunnerCog(commands.Cog):
         else:
             settings = {"forced": True, "retailer": AUTO_SCAN_RETAILER}
 
-        all_cards: list[DealCard] = []
-        warnings: list[str] = []
-        products_checked = 0
-        searches_checked = 0
+        preset = select_autoscan_preset(guild.guild_id)
+        result = await run_autoscan_verified_category(self.bot.db, guild.guild_id, preset=preset)
+        warnings = list(result.warnings)
 
-        for preset in HUNT_PRESETS.values():
-            try:
-                cards, pages_checked, checked, preset_warnings, _shown_discount = await run_preset_hunt(
-                    preset,
-                    requested_by="autoscan",
-                )
-            except Exception as exc:  # pragma: no cover - runtime/provider guard
-                warnings.append(f"{preset.key}: {exc}")
-                log.exception("Auto-scan preset failed guild=%s preset=%s", guild.guild_id, preset.key)
-                continue
-            searches_checked += pages_checked
-            products_checked += checked
-            warnings.extend(w for w in preset_warnings if w not in warnings)
-            all_cards.extend(cards[:3])
-
-        unique_cards = dedupe_cards(all_cards)
+        unique_cards = dedupe_cards(result.cards)
         unique_cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
         fresh_selection = await select_fresh_deal_cards(
             self.bot.db,
@@ -202,10 +195,6 @@ class AutoScanRunnerCog(commands.Cog):
         )
 
         shown_cards = fresh_selection.fresh
-        used_repeat_fallback = False
-        if not shown_cards and unique_cards:
-            shown_cards = unique_cards[:AUTO_SCAN_PUBLIC_LIMIT]
-            used_repeat_fallback = True
 
         if not force:
             await record_auto_scan_run(self.bot.db, guild.guild_id, AUTO_SCAN_RETAILER, scan_key=scan_key)
@@ -214,42 +203,67 @@ class AutoScanRunnerCog(commands.Cog):
             report = AutoScanReport(
                 guild_id=guild.guild_id,
                 allowed=True,
-                reason="Auto-scan completed with no candidate cards.",
+                reason="Auto-scan completed with no new/lower-price verified cards.",
                 settings=settings,
-                products_checked=products_checked,
-                searches_checked=searches_checked,
+                category_key=preset.key,
+                category_label=preset.label,
+                products_checked=result.products_checked,
+                searches_checked=result.searches_attempted,
                 total_cards=len(unique_cards),
                 fresh_cards=0,
                 cards_attempted_for_public=0,
+                used_repeat_fallback=False,
                 repeat_summary=fresh_selection.summary_line(),
                 warnings=tuple(warnings),
             )
-            log.info("Auto-scan completed with no cards %s", report.log_fields())
+            log.info("Auto-scan completed with no fresh public cards %s", report.log_fields())
             return report
 
-        result = await maybe_post_public_deal_cards(
+        public_result = await maybe_post_public_deal_cards(
             bot=self.bot,
             guild_id=guild.guild_id,
             cards=shown_cards,
-            source_label=AUTO_SCAN_SOURCE_LABEL,
+            source_label=f"{AUTO_SCAN_SOURCE_LABEL}:{preset.key}",
             fallback_retailer=AUTO_SCAN_RETAILER,
         )
         report = AutoScanReport(
             guild_id=guild.guild_id,
             allowed=True,
             settings=settings,
-            products_checked=products_checked,
-            searches_checked=searches_checked,
+            category_key=preset.key,
+            category_label=preset.label,
+            products_checked=result.products_checked,
+            searches_checked=result.searches_attempted,
             total_cards=len(unique_cards),
             fresh_cards=len(fresh_selection.fresh),
             cards_attempted_for_public=len(shown_cards),
-            used_repeat_fallback=used_repeat_fallback,
+            used_repeat_fallback=False,
             repeat_summary=fresh_selection.summary_line(),
-            public_result=result,
+            public_result=public_result,
             warnings=tuple(warnings),
         )
-        log.info("Auto-scan completed %s reason=%s", report.log_fields(), compact_log_text(explain_public_post_result(result)))
+        log.info("Auto-scan completed %s reason=%s", report.log_fields(), compact_log_text(explain_public_post_result(public_result)))
         return report
+
+
+def select_autoscan_preset(guild_id: int):
+    """Rotate one verified category per scheduled run instead of hammering every preset."""
+    if not AUTO_SCAN_CATEGORY_ROTATION:
+        return HUNT_PRESETS["tech"]
+    bucket = int(time.time() // (AUTO_SCAN_INTERVAL_MINUTES * 60))
+    index = (bucket + int(guild_id)) % len(AUTO_SCAN_CATEGORY_ROTATION)
+    key = AUTO_SCAN_CATEGORY_ROTATION[index]
+    return HUNT_PRESETS.get(key) or next(iter(HUNT_PRESETS.values()))
+
+
+async def run_autoscan_verified_category(db, guild_id: int, *, preset) -> VerifiedHuntResult:
+    return await collect_verified_discount_cards(
+        requested_by="autoscan",
+        preset=preset,
+        db=db,
+        guild_id=guild_id,
+        use_price_memory=True,
+    )
 
 
 def autoscan_lock(guild_id: int) -> asyncio.Lock:

@@ -16,6 +16,7 @@ REMOVED_MONKEY_PATCH_MODULES = {
     "walmart_discovery_expansion.py",
     "command_error_bridge.py",
     "walmart_renderer_install.py",
+    "walmart_marketplace_comp_guard.py",
 }
 REMOVED_STARTUP_HOOKS = {
     "install_manual_posting_explainer_patch",
@@ -25,6 +26,7 @@ REMOVED_STARTUP_HOOKS = {
     "install_walmart_discovery_expansion",
     "install_local_command_error_bridges",
     "install_walmart_renderer",
+    "install_walmart_marketplace_comp_guard",
 }
 REMOVED_PUBLIC_POST_CONFIG_NAMES = {
     "get_public_post_config",

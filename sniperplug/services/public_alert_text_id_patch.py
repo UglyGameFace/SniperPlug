@@ -21,21 +21,30 @@ def install_public_alert_text_id_patch() -> None:
     made the saved #walmart-deals channel become Unknown Channel.
     """
     try:
-        from sniperplug.cogs import public_alerts
+        from sniperplug.cogs import auto_scan_runner, public_alerts
         from sniperplug.services import public_deal_posts
     except Exception as exc:
         log.warning("Could not install public alert text-ID patch: %s", exc)
         return
 
     if getattr(public_alerts, PATCH_ATTR, False):
+        # Still patch imported aliases in case a module was reloaded/imported later.
+        auto_scan_runner.get_public_post_config = get_public_alert_config
+        public_deal_posts.get_public_post_config = get_public_alert_config
+        public_deal_posts.update_public_alert_channel_id = update_public_alert_channel_id
         return
 
     public_alerts.get_public_alert_config = get_public_alert_config
     public_alerts.set_public_alert_config = set_public_alert_config
     public_deal_posts.get_public_post_config = get_public_alert_config
     public_deal_posts.update_public_alert_channel_id = update_public_alert_channel_id
+    # auto_scan_runner imported get_public_post_config directly at module import
+    # time, so patch that module global too. Otherwise it keeps calling the old
+    # int(row["channel_id"]) version and crashes on safe IDs like ch:123.
+    auto_scan_runner.get_public_post_config = get_public_alert_config
     setattr(public_alerts, PATCH_ATTR, True)
     setattr(public_deal_posts, PATCH_ATTR, True)
+    setattr(auto_scan_runner, PATCH_ATTR, True)
     log.info("Installed public alert text channel-id patch.")
 
 

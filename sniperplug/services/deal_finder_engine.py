@@ -10,6 +10,7 @@ from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_ro
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
 from sniperplug.services.deal_route_memory import RETAILER_WALMART, memory_boost_queries, record_route_memory, top_route_memory, update_from_route_stats
 from sniperplug.services.low_price_scout import scout_low_price_leads
+from sniperplug.services.scan_result_accelerator import cached_provider_scan_or_run
 from sniperplug.services.search_expansion import SearchPlan, expand_walmart_query
 from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
 
@@ -40,14 +41,32 @@ class DealFinderResult:
     route_stats: tuple[SearchRouteStats, ...] = ()
     boosted_routes: tuple[str, ...] = ()
     scout_lead_count: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    force_refresh: bool = False
 
     @property
     def has_any_cards(self) -> bool:
         return bool(self.verified_cards or self.review_candidates.cards)
 
 
-async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_discount: int = 50, max_queries: int = 10, pages_per_query: int = QUERY_PAGES, db=None, guild_id: int | None = None) -> DealFinderResult:
-    """Run a deep Walmart query search and return verified + review/flip/scout cards."""
+async def find_walmart_deals_for_query(
+    *,
+    query: str,
+    requested_by: str,
+    min_discount: int = 50,
+    max_queries: int = 10,
+    pages_per_query: int = QUERY_PAGES,
+    db=None,
+    guild_id: int | None = None,
+    force_refresh: bool = False,
+) -> DealFinderResult:
+    """Run a deep Walmart query search and return verified + review/flip/scout cards.
+
+    Uses a short DB-backed exact-route cache so repeated scans and mode buttons
+    can reuse fresh provider responses without going blind to new glitches.
+    `force_refresh=True` bypasses the cache for the explicit Fresh Scan path.
+    """
     memory_records = await top_route_memory(db, guild_id=guild_id, retailer=RETAILER_WALMART, limit=8)
     boosted_routes = memory_boost_queries(memory_records, limit=3)
     plan = expand_walmart_query(query, max_queries=max_queries, boosted_queries=boosted_routes)
@@ -56,13 +75,30 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
     route_stats: list[SearchRouteStats] = []
     pages_checked = 0
     searches_attempted = 0
+    cache_hits = 0
+    cache_misses = 0
     semaphore = asyncio.Semaphore(QUERY_CONCURRENCY)
 
-    async def scan_one(search_query: str, page: int, sort_value: str | None, order_value: str | None) -> tuple[str, ProviderScanResult]:
-        nonlocal searches_attempted
+    async def scan_one(search_query: str, page: int, sort_value: str | None, order_value: str | None) -> tuple[str, ProviderScanResult, bool]:
+        nonlocal searches_attempted, cache_hits, cache_misses
         async with semaphore:
-            searches_attempted += 1
-            return search_query, await deal_scanner.run_walmart_scan(search_query, page, QUERY_RESULTS_PER_PAGE, sort_value, order_value, requested_by)
+            outcome = await cached_provider_scan_or_run(
+                db,
+                retailer=RETAILER_WALMART,
+                query=search_query,
+                page=page,
+                max_results=QUERY_RESULTS_PER_PAGE,
+                sort_value=sort_value,
+                order_value=order_value,
+                force_refresh=force_refresh,
+                runner=lambda: deal_scanner.run_walmart_scan(search_query, page, QUERY_RESULTS_PER_PAGE, sort_value, order_value, requested_by),
+            )
+            if outcome.cache_hit:
+                cache_hits += 1
+            else:
+                cache_misses += 1
+                searches_attempted += 1
+            return search_query, outcome.result, outcome.cache_hit
 
     tasks = [
         scan_one(search_query, page, sort_value, order_value)
@@ -82,12 +118,15 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
                 warnings.append(text)
             route_stats.append(SearchRouteStats(query="unknown", pages_checked=1, returned_products=0, warnings=(text,)))
             continue
-        search_query, result = item
+        search_query, result, cache_hit = item
         candidates = list(result.candidates)
         tag_candidates_with_route(candidates, query=search_query)
         all_candidates.extend(candidates)
-        warnings.extend(w for w in result.warnings if w not in warnings)
-        route_stats.append(SearchRouteStats(query=search_query, pages_checked=1, returned_products=len(candidates), warnings=tuple(result.warnings)))
+        route_warnings = tuple(result.warnings)
+        warnings.extend(w for w in route_warnings if w not in warnings)
+        if cache_hit:
+            route_warnings = (*route_warnings, "cache hit")
+        route_stats.append(SearchRouteStats(query=search_query, pages_checked=1, returned_products=len(candidates), warnings=route_warnings))
         total_results = result.total_results if result.total_results is not None else total_results
         has_next_page = has_next_page or bool(result.has_next_page)
 
@@ -108,7 +147,13 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
         page_size=len(all_candidates),
         start_index=1,
         has_next_page=has_next_page,
-        metadata={"query": query, "expanded_queries": ",".join(plan.queries)},
+        metadata={
+            "query": query,
+            "expanded_queries": ",".join(plan.queries),
+            "cache_hits": str(cache_hits),
+            "cache_misses": str(cache_misses),
+            "force_refresh": "yes" if force_refresh else "no",
+        },
     )
     verified = deal_scanner.build_walmart_cards(aggregate, min_discount=min_discount, alerts_only=False)
     verified = deal_scanner.dedupe_cards(verified) if hasattr(deal_scanner, "dedupe_cards") else _dedupe_cards(verified)
@@ -133,6 +178,9 @@ async def find_walmart_deals_for_query(*, query: str, requested_by: str, min_dis
         route_stats=merged_route_stats,
         boosted_routes=boosted_routes,
         scout_lead_count=len(scout_cards),
+        cache_hits=cache_hits,
+        cache_misses=cache_misses,
+        force_refresh=force_refresh,
     )
 
 

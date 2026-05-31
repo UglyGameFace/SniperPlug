@@ -53,9 +53,16 @@ log = logging.getLogger("sniperplug")
 class SniperPlugBot(commands.Bot):
     def __init__(self, settings: Settings):
         intents = discord.Intents.default()
-        super().__init__(command_prefix="!", intents=intents)
+        # discord.ext.commands warns when message_content is missing, even when
+        # the bot mainly uses slash commands. Keep it enabled by default so the
+        # warning is gone and any legacy mention/prefix commands remain safe.
+        # If Discord Developer Portal does not have Message Content Intent enabled,
+        # set ENABLE_MESSAGE_CONTENT_INTENT=false in Discloud to boot without it.
+        intents.message_content = env_enabled("ENABLE_MESSAGE_CONTENT_INTENT", default=True)
+        super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self.settings = settings
         self.db = Database(settings.database_path)
+        log.info("Discord intents configured: message_content=%s", intents.message_content)
 
     async def setup_hook(self) -> None:
         await self.db.connect()
@@ -143,5 +150,8 @@ async def run() -> None:
         await bot.start(settings.discord_token)
 
 
-def env_enabled(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+def env_enabled(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

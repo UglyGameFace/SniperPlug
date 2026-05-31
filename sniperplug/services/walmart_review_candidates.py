@@ -12,6 +12,7 @@ from sniperplug.services.comp_discovery_links import build_free_comp_links, comp
 from sniperplug.services.direct_search_rescue import direct_match_score
 from sniperplug.services.price_proof import verified_deal_value
 from sniperplug.services.safe_links import product_link_choices
+from sniperplug.services.walmart_marketplace_comp import is_marketplace_comp_source, marketplace_api_lines
 
 
 REVIEW_CANDIDATE_LIMIT = 25
@@ -151,7 +152,10 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
                 lines.append(f"Rough spread before fees/tax/shipping: **{money(context_profit)}** / **{context_margin:.0%} margin**")
         elif ignored_context_price:
             lines.append(f"Ignored reference: **{money(ignored_context_price)}** `{context_source or 'unknown'}`")
-            lines.append("Reference math: **blocked as low-trust/suspicious**")
+            if is_marketplace_comp_source(str(context_source or "")):
+                lines.append("Reference math: **blocked because marketplace comp is flip research only**")
+            else:
+                lines.append("Reference math: **blocked as low-trust/suspicious**")
         else:
             lines.append("Was/reference: **not returned or not trusted by Walmart API**")
     if coupon:
@@ -206,6 +210,7 @@ def api_lines(candidate: SourceCandidate, deal) -> list[str]:
     for label, value in (("SKU", deal.sku), ("UPC", deal.upc), ("Offer ID", deal.selected_offer_id), ("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")), ("Condition", candidate.condition or deal.condition or attrs.get("condition")), ("Fulfillment", candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")), ("Stock", candidate.stock_status), ("Available online", attrs.get("availableOnline")), ("Offer type", attrs.get("offerType")), ("Max order qty", attrs.get("maxOrderQty"))):
         if value:
             lines.append(f"• {label}: **{str(value)[:90]}**")
+    lines.extend(marketplace_api_lines(current_price=deal.current_price, attrs=attrs))
     return lines
 
 
@@ -216,6 +221,8 @@ def safe_markdown_signal(candidate: SourceCandidate) -> bool:
 
 def trusted_context_price(*, current_price: float, context_price: float | None, context_source: str, title: str) -> float | None:
     if context_price is None or context_price <= current_price:
+        return None
+    if is_marketplace_comp_source(context_source):
         return None
     source_key = context_source.lower().replace("_", "")
     if source_key in LOW_TRUST_REFERENCE_SOURCES:

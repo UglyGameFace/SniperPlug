@@ -14,6 +14,7 @@ REMOVED_MONKEY_PATCH_MODULES = {
     "public_alert_text_id_patch.py",
     "walmart_flip_research_patch.py",
     "walmart_discovery_expansion.py",
+    "command_error_bridge.py",
 }
 REMOVED_STARTUP_HOOKS = {
     "install_manual_posting_explainer_patch",
@@ -21,6 +22,7 @@ REMOVED_STARTUP_HOOKS = {
     "install_public_alert_text_id_patch",
     "install_walmart_flip_research_patch",
     "install_walmart_discovery_expansion",
+    "install_local_command_error_bridges",
 }
 
 

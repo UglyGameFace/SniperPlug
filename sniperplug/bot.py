@@ -12,20 +12,19 @@ from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
 from sniperplug.cogs.auto_scan_runner import AutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
-from sniperplug.cogs.deal_scanner import DealScannerCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.public_alerts import PublicAlertsCog
 from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
+from sniperplug.cogs.unified_deal_scanner import UnifiedDealScannerCog
 from sniperplug.cogs.workflow import WorkflowCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartProvider
-from sniperplug.services.deal_finder_install import install_unified_deal_finder
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
@@ -66,7 +65,6 @@ class SniperPlugBot(commands.Bot):
 
         install_safe_followup_send_patch()
         log.info("Discord embed sanitizer installed: followup_send=true")
-        install_unified_deal_finder()
         install_verified_discount_hunt()
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
@@ -76,7 +74,7 @@ class SniperPlugBot(commands.Bot):
 
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(WorkflowCog(self))
-        await self.add_cog(DealScannerCog(self))
+        await self.add_cog(UnifiedDealScannerCog(self))
         await self.add_cog(LocalInventoryCog(self))
         await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))

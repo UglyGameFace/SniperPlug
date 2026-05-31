@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sniperplug.models.deal import NormalizedDeal
-from sniperplug.services.walmart_cash_guard import walmart_cash_amount_is_sane
+from sniperplug.services.walmart_cash import walmart_cash_amount_is_sane
 
 
 @dataclass(frozen=True)

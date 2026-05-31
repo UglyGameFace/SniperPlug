@@ -27,10 +27,15 @@ REMOVED_STARTUP_HOOKS = {
     "install_local_command_error_bridges",
     "install_walmart_renderer",
     "install_walmart_marketplace_comp_guard",
+    "install_strict_walmart_cash_guard",
 }
 REMOVED_PUBLIC_POST_CONFIG_NAMES = {
     "get_public_post_config",
     "update_public_alert_channel_id",
+}
+REMOVED_WALMART_CASH_PATCH_NAMES = {
+    "_direct_walmart_cash_amount",
+    "walmart_provider._walmart_promotion_proof",
 }
 
 
@@ -63,6 +68,14 @@ def test_removed_public_post_config_names_stay_removed() -> None:
         source = path.read_text(encoding="utf-8")
         for name in REMOVED_PUBLIC_POST_CONFIG_NAMES:
             assert name not in source, f"{path} still references removed public_deal_posts config helper {name!r}"
+
+
+def test_removed_walmart_cash_patch_names_stay_removed() -> None:
+    """Walmart Cash proof now lives in walmart_cash.py and the provider calls it directly."""
+    for path in (PROJECT_ROOT / "sniperplug").rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        for name in REMOVED_WALMART_CASH_PATCH_NAMES:
+            assert name not in source, f"{path} still references removed Walmart Cash patch name {name!r}"
 
 
 def test_removed_monkey_patch_modules_stay_removed() -> None:

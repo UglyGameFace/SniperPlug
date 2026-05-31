@@ -238,7 +238,6 @@ class AutoScanRunnerCog(commands.Cog):
             cards=shown_cards,
             source_label=AUTO_SCAN_SOURCE_LABEL,
             fallback_retailer=AUTO_SCAN_RETAILER,
-            max_posts=AUTO_SCAN_PUBLIC_LIMIT,
         )
         report = AutoScanReport(
             guild_id=guild.guild_id,
@@ -290,7 +289,7 @@ async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
-        """
+    """
     )
     await conn.commit()
     cursor = await conn.execute(

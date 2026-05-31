@@ -5,7 +5,7 @@ from typing import Any
 
 import discord
 
-from sniperplug.services.embed_delivery import SAFE_EMBED_MESSAGE_LIMIT, batch_embeds_for_limit, embed_text_size
+from sniperplug.services.embed_delivery import SAFE_EMBED_MESSAGE_LIMIT, batch_embeds_for_limit, embed_text_size, sanitize_embed, sanitize_embeds
 
 
 _PATCH_ATTR = "_sniperplug_safe_followup_send_installed"
@@ -13,18 +13,11 @@ _ORIGINAL_ATTR = "_sniperplug_original_send"
 
 
 def install_safe_followup_send_patch() -> None:
-    """Protect all interaction followup sends from Discord's 6000-char embed cap.
+    """Protect interaction/webhook sends from Discord embed validation failures.
 
-    Several scan paths historically called `followup.send(embeds=[summary] + cards)`.
-    Discord validates the combined text from every embed in one message, so a few
-    rich proof cards can reject the whole response. This wrapper keeps existing
-    command code stable while safely splitting oversized embed payloads into:
-
-    1. first safe embed batch
-    2. later safe embed batches
-
-    The view is attached only to the final batch so action buttons remain visible
-    after all product cards are sent.
+    This wrapper handles both classes of 50035 issues:
+    - combined embed text over 6000 chars
+    - individual embed field/name/description/footer limits, including 1024-char field values
     """
     webhook_cls = discord.Webhook
     if getattr(webhook_cls.send, _PATCH_ATTR, False):
@@ -35,6 +28,13 @@ def install_safe_followup_send_patch() -> None:
     async def safe_send(self, *args: Any, **kwargs: Any):
         embeds = kwargs.get("embeds")
         embed = kwargs.get("embed")
+        if embed is not None:
+            embed = sanitize_embed(embed) if isinstance(embed, discord.Embed) else embed
+            kwargs["embed"] = embed
+        if embeds is not None:
+            embeds = sanitize_embeds(embeds)
+            kwargs["embeds"] = embeds
+
         if embeds is None and embed is not None:
             embeds = [embed]
             kwargs.pop("embed", None)
@@ -43,9 +43,10 @@ def install_safe_followup_send_patch() -> None:
         if not should_split_embeds(embeds):
             return await original_send(self, *args, **kwargs)
 
-        embed_list = list(embeds)
+        embed_list = [sanitize_embed(item) for item in list(embeds) if isinstance(item, discord.Embed)]
         batches = batch_embeds_for_limit(embed_list, limit=SAFE_EMBED_MESSAGE_LIMIT)
         if len(batches) <= 1:
+            kwargs["embeds"] = batches[0] if batches else []
             return await original_send(self, *args, **kwargs)
 
         view = kwargs.pop("view", None)

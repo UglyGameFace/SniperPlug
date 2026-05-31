@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import DealProvider, ProviderCapability, ProviderHealth, ProviderScanRequest, ProviderScanResult, ProviderStatus
 from sniperplug.services.variant_proof import extract_variant_proof
+from sniperplug.services.walmart_cash import strict_walmart_promotion_proof
+from sniperplug.services.walmart_marketplace_comp import is_marketplace_comp_source, marketplace_comp_from_item
 
 
 @dataclass(frozen=True)
@@ -520,16 +522,18 @@ def _reference_price_is_trusted(*, source: str, title: str, current_price: float
     if _reference_price_trust(source) == "high":
         return True
     source_key = source.lower().replace("_", "")
+    if is_marketplace_comp_source(source_key):
+        return False
     if "msrp" in source_key and _is_durable_or_electronics(title.lower()):
         return True
     return False
 
 
 def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | None]]:
-    best_marketplace = item.get("bestMarketplacePrice") or item.get("best_marketplace_price")
-    if not isinstance(best_marketplace, dict):
+    attrs = marketplace_comp_from_item(item)
+    if not attrs.get("marketplaceCompPrice"):
         return []
-    return [("bestMarketplacePrice.price", _float_or_none(best_marketplace.get("price") or best_marketplace.get("amount") or best_marketplace.get("value")))]
+    return [(attrs.get("marketplaceCompSource") or "bestMarketplacePrice.price", _float_or_none(attrs.get("marketplaceCompPrice")))]
 
 
 def _first_trusted_reference(references: list[tuple[str, float | None]], *, title: str, current_price: float | None) -> tuple[float | None, str | None]:
@@ -573,46 +577,13 @@ def _price_from_path(item: dict, dotted_path: str, *, allow_unit_price: bool = F
 
 
 def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
-    coupon = _promotion_amount(item, include_terms=("coupon",), exclude_terms=("cash", "reward", "savings", "yousave", "wasprice"))
-    walmart_cash = _direct_walmart_cash_amount(item)
-    if walmart_cash is None:
-        walmart_cash = _promotion_amount(item, include_terms=("walmart cash", "walmartcash", "cash reward", "cashoffer", "reward", "extrasavings"), exclude_terms=("wasprice", "strikethrough", "unitprice"))
-    attrs: dict[str, str] = {}
-    if coupon and coupon > 0:
-        attrs["couponSavings"] = f"{coupon:.2f}"
-    if walmart_cash and walmart_cash > 0:
-        attrs["walmartCashSavings"] = f"{walmart_cash:.2f}"
-    return attrs
-
-
-def _direct_walmart_cash_amount(item: dict[str, Any]) -> float | None:
-    """Extract common Walmart Cash/extra value shapes before falling back to the generic walker."""
-    for key in (
-        "walmartCashOffer",
-        "walmart_cash_offer",
-        "walmartCash",
-        "walmart_cash",
-        "cashOffer",
-        "cash_offer",
-        "cashRewards",
-        "cash_rewards",
-        "extraSavings",
-        "extra_savings",
-    ):
-        payload = item.get(key)
-        if payload is None:
-            continue
-        parsed = _price_from_value(payload, allow_unit_price=False, path=key)
-        if parsed is None and isinstance(payload, dict):
-            for amount_key in ("amount", "value", "savings", "rewardAmount", "cashAmount"):
-                parsed = _float_or_none(payload.get(amount_key))
-                if parsed is not None:
-                    break
-        if parsed is None:
-            parsed = _first_money_amount(str(payload))
-        if parsed and parsed > 0:
-            return parsed
-    return None
+    current_price, _ = _trusted_current_price(item)
+    coupon = _promotion_amount(
+        item,
+        include_terms=("coupon",),
+        exclude_terms=("cash", "reward", "walmart cash", "savings", "yousave", "wasprice"),
+    )
+    return strict_walmart_promotion_proof(item, current_price=current_price, coupon_amount=coupon)
 
 
 def _promotion_amount(value: Any, *, include_terms: tuple[str, ...], exclude_terms: tuple[str, ...]) -> float | None:
@@ -742,6 +713,7 @@ def _seller_name_is_walmart(seller_name: str | None) -> bool:
 
 def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str], selected_offer: dict[str, str | None] | None = None, promotions: dict[str, str] | None = None) -> dict[str, str]:
     attrs: dict[str, str] = dict(variant_attrs)
+    attrs.update(marketplace_comp_from_item(item))
     for key, label in (
         ("brandName", "brand"),
         ("manufacturer", "manufacturer"),
@@ -845,6 +817,8 @@ def _is_unit_price_path(path: str) -> bool:
 def _reference_price_looks_suspicious(*, source: str, title: str, current_price: float, reference_price: float) -> bool:
     ratio = reference_price / current_price if current_price > 0 else 0
     source_key = source.lower().replace("_", "")
+    if is_marketplace_comp_source(source_key):
+        return True
     if "waspricefromsavings" in source_key:
         return False
     if _reference_price_trust(source) == "high":

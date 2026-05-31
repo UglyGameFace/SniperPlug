@@ -26,6 +26,10 @@ REMOVED_STARTUP_HOOKS = {
     "install_local_command_error_bridges",
     "install_walmart_renderer",
 }
+REMOVED_PUBLIC_POST_CONFIG_NAMES = {
+    "get_public_post_config",
+    "update_public_alert_channel_id",
+}
 
 
 def test_all_sniperplug_python_files_parse() -> None:
@@ -49,6 +53,14 @@ def test_public_post_call_kwargs_match_signature() -> None:
                 if keyword.arg is None:
                     continue
                 assert keyword.arg in allowed_kwargs, f"{path}:{node.lineno} passes unsupported maybe_post_public_deal_cards kwarg {keyword.arg!r}"
+
+
+def test_removed_public_post_config_names_stay_removed() -> None:
+    """Public alert config now lives in public_alert_config.py, not public_deal_posts.py."""
+    for path in (PROJECT_ROOT / "sniperplug").rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        for name in REMOVED_PUBLIC_POST_CONFIG_NAMES:
+            assert name not in source, f"{path} still references removed public_deal_posts config helper {name!r}"
 
 
 def test_removed_monkey_patch_modules_stay_removed() -> None:

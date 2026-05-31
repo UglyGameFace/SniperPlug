@@ -8,6 +8,20 @@ from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REMOVED_MONKEY_PATCH_MODULES = {
+    "manual_posting_explainer.py",
+    "raw_price_review_patch.py",
+    "public_alert_text_id_patch.py",
+    "walmart_flip_research_patch.py",
+    "walmart_discovery_expansion.py",
+}
+REMOVED_STARTUP_HOOKS = {
+    "install_manual_posting_explainer_patch",
+    "install_raw_price_review_patch",
+    "install_public_alert_text_id_patch",
+    "install_walmart_flip_research_patch",
+    "install_walmart_discovery_expansion",
+}
 
 
 def test_all_sniperplug_python_files_parse() -> None:
@@ -33,8 +47,21 @@ def test_public_post_call_kwargs_match_signature() -> None:
                 assert keyword.arg in allowed_kwargs, f"{path}:{node.lineno} passes unsupported maybe_post_public_deal_cards kwarg {keyword.arg!r}"
 
 
+def test_removed_monkey_patch_modules_stay_removed() -> None:
+    service_dir = PROJECT_ROOT / "sniperplug" / "services"
+    existing = {path.name for path in service_dir.glob("*.py")}
+    assert not (existing & REMOVED_MONKEY_PATCH_MODULES)
+
+
+def test_removed_startup_hooks_stay_removed() -> None:
+    bot_source = (PROJECT_ROOT / "sniperplug" / "bot.py").read_text(encoding="utf-8")
+    for hook in REMOVED_STARTUP_HOOKS:
+        assert hook not in bot_source
+
+
 def test_recent_runtime_modules_import() -> None:
     import sniperplug.cogs.auto_scan_runner  # noqa: F401
+    import sniperplug.services.public_alert_config  # noqa: F401
     import sniperplug.services.public_deal_posts  # noqa: F401
     import sniperplug.services.error_logging  # noqa: F401
     import sniperplug.services.embed_delivery_patch  # noqa: F401

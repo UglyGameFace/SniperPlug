@@ -305,12 +305,14 @@ class NewSinceScanButton(discord.ui.Button):
         if not isinstance(self.view, DealSearchModeView) or self.view.freshness is None:
             await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         freshness = self.view.freshness
         cards = [*freshness.price_drop_cards[:5], *freshness.new_cards[:5]][:5]
-        await interaction.response.send_message(
-            embeds=[build_new_since_scan_embed(self.view.query, freshness)] + [card.embed for card in cards],
-            ephemeral=True,
-        )
+        await interaction.followup.send(embed=build_new_since_scan_embed(self.view.query, freshness), ephemeral=True)
+        if not cards:
+            return
+        for card in cards:
+            await interaction.followup.send(embed=card.embed, ephemeral=True)
 
 
 async def send_deal_mode_controls(interaction: discord.Interaction, view: DealSearchModeView, ranked: ModeRankedCards, freshness: ScanFreshness | None = None) -> None:

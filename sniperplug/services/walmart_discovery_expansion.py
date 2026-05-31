@@ -182,8 +182,8 @@ EXPANDED_PRESETS: dict[str, HuntPreset] = {
 def install_walmart_discovery_expansion() -> None:
     """Check more official Walmart API results while keeping strict proof rules.
 
-    This installer is already called on startup, so it also wires the DB-backed
-    Walmart cache without touching bot startup registration.
+    The cache layer must never break /deals. If it fails, the original Walmart
+    scan path is used as a safety fallback.
     """
     if not getattr(deal_scanner, "_sniperplug_walmart_discovery_expanded", False):
         existing_resale = deal_scanner.HUNT_PRESETS.get(RESALE_HUNT_KEY)
@@ -215,21 +215,44 @@ async def run_cached_walmart_scan(query: str, page: int, max_results: int, sort_
     original_scan = getattr(deal_scanner, "_sniperplug_original_run_walmart_scan", None)
     provider = provider_registry.get("walmart")
     if db is None or provider is None:
-        if original_scan is not None:
-            return await original_scan(query, page, max_results, sort_value, order_value, requested_by)
-        return ProviderScanResult(provider_key="walmart", candidates=(), warnings=("Walmart cache runtime is not ready yet.",))
-    cached_provider = provider if isinstance(provider, CachedWalmartProvider) else CachedWalmartProvider(db, provider)
-    return await cached_provider.scan(
-        ProviderScanRequest(
-            source_key="walmart",
-            query=query.strip(),
-            max_results=max_results,
-            page=page,
-            sort=sort_value,
-            order=order_value,
-            metadata={"requested_by": requested_by},
+        return await _fallback_original_scan(original_scan, query, page, max_results, sort_value, order_value, requested_by, "Walmart cache runtime was not ready.")
+
+    try:
+        cached_provider = provider if isinstance(provider, CachedWalmartProvider) else CachedWalmartProvider(db, provider)
+        return await cached_provider.scan(
+            ProviderScanRequest(
+                source_key="walmart",
+                query=query.strip(),
+                max_results=max_results,
+                page=page,
+                sort=sort_value,
+                order=order_value,
+                metadata={"requested_by": requested_by},
+            )
         )
-    )
+    except Exception as exc:
+        return await _fallback_original_scan(original_scan, query, page, max_results, sort_value, order_value, requested_by, f"Walmart DB cache failed and was bypassed: {exc}")
+
+
+async def _fallback_original_scan(original_scan: Any, query: str, page: int, max_results: int, sort_value: str | None, order_value: str | None, requested_by: str, warning: str) -> ProviderScanResult:
+    if original_scan is None:
+        return ProviderScanResult(provider_key="walmart", candidates=(), warnings=(warning,))
+    try:
+        result = await original_scan(query, page, max_results, sort_value, order_value, requested_by)
+        warnings = tuple(dict.fromkeys((*result.warnings, warning)))
+        return ProviderScanResult(
+            provider_key=result.provider_key,
+            candidates=result.candidates,
+            warnings=warnings,
+            total_results=result.total_results,
+            page=result.page,
+            page_size=result.page_size,
+            start_index=result.start_index,
+            has_next_page=result.has_next_page,
+            metadata={**result.metadata, "cache_bypassed": True},
+        )
+    except Exception as exc:
+        return ProviderScanResult(provider_key="walmart", candidates=(), warnings=(warning, f"Original Walmart scan also failed: {exc}"))
 
 
 async def run_expanded_preset_hunt(preset: HuntPreset, requested_by: str) -> tuple[list[deal_scanner.DealCard], int, int, list[str], int]:

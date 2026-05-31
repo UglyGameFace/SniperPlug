@@ -4,7 +4,7 @@ from typing import Any
 
 import discord
 
-from sniperplug.services.public_deal_posts import get_public_post_config
+from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_posting import normalize_retailer_key
 
 
@@ -41,7 +41,7 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
     db = getattr(bot, "db", None)
     if db is None:
         return False, "Bot database is unavailable."
-    config = await get_public_post_config(db, guild_id)
+    config = await get_public_alert_config(db, guild_id)
     channel_id = config.get("channel_id")
     if not channel_id:
         return False, "No public deal channel is configured yet. Set it in public alert settings first."

@@ -25,6 +25,7 @@ from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartProvider
+from sniperplug.services.command_error_bridge import install_local_command_error_bridges
 from sniperplug.services.deal_finder_install import install_unified_deal_finder
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
 from sniperplug.services.error_logging import (
@@ -63,12 +64,14 @@ class SniperPlugBot(commands.Bot):
         await ensure_error_logging_table(self.db)
         install_discord_error_handlers(self)
         install_asyncio_exception_handler(asyncio.get_running_loop(), lambda: self.db)
+        log.info("Error logging installed: discord=true asyncio=true db_table=error_events")
         log.info("Database schema ready backend=%s", getattr(self.db, "backend", "unknown"))
         configure_home_depot_product_detail_cache(self.db)
         configure_home_depot_search_cache(self.db)
         log.info("Home Depot search/detail caches connected backend=%s", getattr(self.db, "backend", "unknown"))
 
         install_safe_followup_send_patch()
+        log.info("Discord embed sanitizer installed: followup_send=true")
         install_walmart_renderer()
         install_strict_walmart_cash_guard()
         install_walmart_marketplace_comp_guard()
@@ -87,6 +90,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(WorkflowCog(self))
         await self.add_cog(DealScannerCog(self))
+        install_local_command_error_bridges(self)
         await self.add_cog(LocalInventoryCog(self))
         await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))
@@ -96,6 +100,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(ActiveDealsCog(self))
         await self.add_cog(SettingsDashboardCog(self))
         await self.add_cog(AutoScanRunnerCog(self))
+        log.info("Runtime safety guards ready: embed_sanitizer=true error_bridge=true provider_count=%s", len(provider_registry.providers))
 
         await self._sync_commands()
 

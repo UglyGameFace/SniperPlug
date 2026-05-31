@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import discord
 from discord import app_commands
@@ -15,8 +13,6 @@ from sniperplug.services.public_posting import (
     SUPPORTED_RETAILERS,
     format_retailers,
     normalize_retailer_key,
-    parse_retailer_list,
-    retailer_credit_note,
 )
 
 
@@ -80,37 +76,6 @@ class PublicAlertsCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
-    @app_commands.command(name="public_alerts", description="Configure whether SniperPlug may post verified deals publicly.")
-    @app_commands.describe(
-        enabled="Turn public posting on or off.",
-        retailers="Comma list: walmart, home_depot, bestbuy, amazon. Leave blank to keep existing stores.",
-        channel="Optional public channel to post deal alerts into.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def public_alerts(
-        self,
-        interaction: discord.Interaction,
-        enabled: bool,
-        retailers: str | None = None,
-        channel: discord.TextChannel | None = None,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which public alert settings to update.", ephemeral=True)
-            return
-        existing = await get_public_alert_config(self.bot.db, interaction.guild_id)
-        parsed_retailers = parse_retailer_list(retailers) if retailers is not None else existing["retailers"]
-        if enabled and not parsed_retailers:
-            await interaction.followup.send("Public posting needs at least one enabled store. Example: `/public_alerts enabled:true retailers:walmart channel:#your-channel`", ephemeral=True)
-            return
-        channel_id = channel.id if channel else existing["channel_id"]
-        if enabled and not channel_id:
-            await interaction.followup.send("Public posting needs a channel. Pick one with the `channel` option first.", ephemeral=True)
-            return
-        await set_public_alert_config(self.bot.db, guild_id=interaction.guild_id, enabled=enabled, retailers=parsed_retailers, channel_id=channel_id)
-        threshold = await get_starting_deal_percent(self.bot.db, interaction.guild_id)
-        await interaction.followup.send(embed=public_alert_status_embed(enabled=enabled, retailers=parsed_retailers, channel_id=channel_id, threshold=threshold), ephemeral=True)
-
     @app_commands.command(name="public_alerts_status", description="Show SniperPlug public posting and auto-scan settings for this server.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def public_alerts_status(self, interaction: discord.Interaction) -> None:
@@ -121,64 +86,16 @@ class PublicAlertsCog(commands.Cog):
         config = await get_public_alert_config(self.bot.db, interaction.guild_id)
         auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         threshold = await get_starting_deal_percent(self.bot.db, interaction.guild_id)
-        await interaction.followup.send(embed=public_alert_status_embed(enabled=config["enabled"], retailers=config["retailers"], channel_id=config["channel_id"], auto_scan=auto_scan, threshold=threshold), ephemeral=True)
-
-    @app_commands.command(name="retailer_autoscan", description="Toggle stores SniperPlug may scan automatically to protect API credits.")
-    @app_commands.describe(
-        retailer="Store to toggle: walmart, home_depot, bestbuy, amazon.",
-        enabled="Allow this store in automatic multi-store scans. Manual commands still work.",
-        interval_hours="Minimum hours between automatic scans for this store. Use 0 for no interval gate on supported official APIs.",
-        daily_limit="Max automatic scans per day for this store. Use 0 for no daily gate on supported official APIs.",
-        unlimited="Bypass interval/daily gates for supported official APIs like Walmart. Not allowed for paid-credit providers.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def retailer_autoscan(
-        self,
-        interaction: discord.Interaction,
-        retailer: str,
-        enabled: bool,
-        interval_hours: app_commands.Range[int, 0, 168] | None = None,
-        daily_limit: app_commands.Range[int, 0, 500] | None = None,
-        unlimited: bool = False,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which retailer auto-scan setting to update.", ephemeral=True)
-            return
-        key = normalize_retailer_key(retailer)
-        if key not in SUPPORTED_RETAILERS:
-            await interaction.followup.send(f"Unknown retailer `{retailer}`. Supported: {format_retailers(tuple(sorted(SUPPORTED_RETAILERS)))}", ephemeral=True)
-            return
-        if unlimited and key not in UNMETERED_OFFICIAL_RETAILERS:
-            await interaction.followup.send(f"Unlimited auto-scan is only allowed for supported official/unmetered providers right now: {format_retailers(tuple(sorted(UNMETERED_OFFICIAL_RETAILERS)))}. Keep paid-credit providers interval/daily protected.", ephemeral=True)
-            return
-        if unlimited:
-            interval_hours = UNLIMITED_AUTOSCAN_INTERVAL_HOURS
-            daily_limit = UNLIMITED_AUTOSCAN_DAILY_LIMIT
-        await set_retailer_auto_scan(self.bot.db, interaction.guild_id, key, enabled, interval_hours=interval_hours, daily_limit=daily_limit)
-        settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
-        updated = settings[key]
-        embed = retailer_auto_scan_embed(settings)
-        embed.add_field(
-            name="Updated",
-            value=(
-                f"`{key}` auto-scan is now **{'on' if updated['enabled'] else 'off'}**.\n"
-                f"Interval: **{format_interval(updated['interval_hours'])}**\n"
-                f"Daily limit: **{format_daily_limit(updated['daily_limit'])}**\n"
-                f"{retailer_credit_note(key)}"
+        await interaction.followup.send(
+            embed=public_alert_status_embed(
+                enabled=config["enabled"],
+                retailers=config["retailers"],
+                channel_id=config["channel_id"],
+                auto_scan=auto_scan,
+                threshold=threshold,
             ),
-            inline=False,
+            ephemeral=True,
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="retailer_autoscan_status", description="Show which stores are allowed in automatic multi-store scans.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def retailer_autoscan_status(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which settings to show.", ephemeral=True)
-            return
-        await interaction.followup.send(embed=retailer_auto_scan_embed(await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)), ephemeral=True)
 
 
 def autoscan_setup_complete_embed(*, channel_id: int | str, threshold: int, auto_scan: dict[str, dict]) -> discord.Embed:
@@ -203,7 +120,11 @@ def autoscan_setup_complete_embed(*, channel_id: int | str, threshold: int, auto
 
 
 def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None, auto_scan: dict[str, dict] | None = None, threshold: int | None = None) -> discord.Embed:
-    embed = discord.Embed(title="📣 Public Alert Settings", description="Public posting only applies to verified alertable deals. Weak proof and staff-review candidates stay private.", color=discord.Color.green() if enabled else discord.Color.dark_gold())
+    embed = discord.Embed(
+        title="📣 Public Alert Settings",
+        description="This is the simple view. Use `/autoscan_setup` to change setup and `/deal_threshold` to adjust the markdown threshold.",
+        color=discord.Color.green() if enabled else discord.Color.dark_gold(),
+    )
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
     embed.add_field(name="Public stores", value=format_retailers(retailers), inline=True)
     embed.add_field(name="Channel", value=f"<#{channel_id}>" if channel_id else "not set", inline=True)
@@ -212,16 +133,7 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
     if auto_scan is not None:
         embed.add_field(name="Auto-scan stores", value=format_auto_scan_status(auto_scan), inline=False)
     embed.add_field(name="Posting logic", value="Auto-scan uses Best Picks ranking, then the public guard blocks same-price duplicates, weak proof, and non-alertable cards. Lower-price repeats can post again.", inline=False)
-    embed.add_field(name="Credit safety", value="Public posting and auto-scanning are separate. A store can be allowed for public posting while still blocked from automatic scans that spend credits. Walmart can be set unlimited because it is official/unmetered for this bot, but paid-credit providers stay protected.", inline=False)
-    embed.set_footer(text="Use /autoscan_setup for one-command Walmart setup. /autoscan_now is only for manual testing.")
-    return embed
-
-
-def retailer_auto_scan_embed(settings: dict[str, dict]) -> discord.Embed:
-    embed = discord.Embed(title="🧭 Retailer Auto-Scan Settings", description="Controls which stores SniperPlug may include in automatic multi-store scans. Manual store-specific commands still work even when auto-scan is off.", color=discord.Color.blue())
-    embed.add_field(name="Stores", value=format_auto_scan_status(settings), inline=False)
-    embed.add_field(name="Why this exists", value="This protects free tiers and paid/limited APIs. Walmart can bypass interval/daily gates if you choose because it is official/unmetered here; keep paid-credit APIs protected.", inline=False)
-    embed.add_field(name="Fast setup", value="Use `/autoscan_setup` for Walmart. Use this command only when you need per-store control.", inline=False)
+    embed.set_footer(text="Advanced public-alert commands are hidden; backend controls stay available through setup/status.")
     return embed
 
 

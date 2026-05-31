@@ -5,12 +5,22 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import discord
+
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_posting import normalize_retailer_key
 
 
 ALERT_DEDUPE_DAYS = 30
 PUBLIC_ALERT_KEY = "public_alert:v1"
+PUBLIC_CHANNEL_NAME_FALLBACKS = (
+    "walmart-deals",
+    "deals",
+    "deal-alerts",
+    "price-glitch",
+    "price-glitches",
+    "sniperplug-deals",
+)
 
 
 @dataclass(frozen=True)
@@ -75,14 +85,11 @@ async def maybe_post_public_deal_cards(
     if not config["enabled"] or not config["channel_id"]:
         return PublicPostResult(attempted=attempted, skipped_disabled=attempted, cached_active=cached_active)
 
-    channel = bot.get_channel(config["channel_id"])
+    channel, channel_error = await resolve_public_alert_channel(bot, db, guild_id=guild_id, configured_channel_id=config["channel_id"])
     if channel is None:
-        try:
-            channel = await bot.fetch_channel(config["channel_id"])
-        except Exception as exc:  # pragma: no cover - Discord network/runtime path
-            return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(f"public channel lookup failed: {exc}",))
+        return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(channel_error or "public channel lookup failed",))
     if not hasattr(channel, "send"):
-        return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=("configured public alert channel is not sendable",))
+        return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(f"configured public alert channel <#{getattr(channel, 'id', config['channel_id'])}> is not sendable",))
 
     allowed_retailers = set(config["retailers"])
     posted = 0
@@ -90,6 +97,8 @@ async def maybe_post_public_deal_cards(
     skipped_not_alertable = 0
     skipped_wrong_retailer = 0
     errors: list[str] = []
+    if channel_error:
+        errors.append(channel_error)
 
     for card in cards:
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or fallback_key
@@ -119,7 +128,7 @@ async def maybe_post_public_deal_cards(
             message = await channel.send(embed=sanitize_embed(card.embed))
         except Exception as exc:  # pragma: no cover - Discord network/runtime path
             await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
-            errors.append(f"public post failed for {retailer}: {exc}")
+            errors.append(f"public post failed for {retailer} in <#{getattr(channel, 'id', config['channel_id'])}>: {exc}")
             continue
 
         await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
@@ -149,6 +158,82 @@ async def maybe_post_public_deal_cards(
         cached_active=cached_active,
         errors=tuple(errors[:5]),
     )
+
+
+async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, configured_channel_id: int) -> tuple[Any | None, str | None]:
+    """Resolve configured public channel safely inside the configured guild.
+
+    A Discord channel mention in an embed can still render for the user even when
+    the bot has a stale/wrong channel ID in the DB. This resolver uses the guild
+    cache first, verifies the channel belongs to the guild, verifies send/embed
+    permission, and can repair the DB if the old ID is stale but a clearly named
+    deal channel exists in the guild.
+    """
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return None, f"public channel lookup failed: bot is not currently connected to guild `{guild_id}`"
+
+    channel = guild.get_channel(configured_channel_id)
+    if channel is not None:
+        permission_error = public_channel_permission_error(guild, channel)
+        return (None, permission_error) if permission_error else (channel, None)
+
+    fetch_error: str | None = None
+    try:
+        fetched = await bot.fetch_channel(configured_channel_id)
+        fetched_guild_id = getattr(getattr(fetched, "guild", None), "id", None)
+        if fetched_guild_id is not None and int(fetched_guild_id) != int(guild_id):
+            fetch_error = f"stored public alert channel <#{configured_channel_id}> belongs to another guild (`{fetched_guild_id}`), not this one (`{guild_id}`)"
+        else:
+            permission_error = public_channel_permission_error(guild, fetched)
+            return (None, permission_error) if permission_error else (fetched, None)
+    except Exception as exc:  # pragma: no cover - Discord network/runtime path
+        fetch_error = f"stored public alert channel <#{configured_channel_id}> could not be fetched: {exc}"
+
+    repaired = await find_named_public_channel(guild)
+    if repaired is None:
+        return None, f"{fetch_error}. Re-run `/public_alerts enabled:true retailers:walmart channel:#walmart-deals` to save the live channel ID."
+
+    permission_error = public_channel_permission_error(guild, repaired)
+    if permission_error:
+        return None, permission_error
+
+    await update_public_alert_channel_id(db, guild_id=guild_id, channel_id=repaired.id)
+    return repaired, f"Public alert channel auto-repaired from stale <#{configured_channel_id}> to live <#{repaired.id}> (`#{repaired.name}`)."
+
+
+async def find_named_public_channel(guild: Any) -> Any | None:
+    text_channels = list(getattr(guild, "text_channels", []) or [])
+    for name in PUBLIC_CHANNEL_NAME_FALLBACKS:
+        for channel in text_channels:
+            if getattr(channel, "name", "") == name:
+                return channel
+    return None
+
+
+def public_channel_permission_error(guild: Any, channel: Any) -> str | None:
+    if not hasattr(channel, "send"):
+        return f"configured public alert channel <#{getattr(channel, 'id', 'unknown')}> is not a sendable text channel"
+    me = getattr(guild, "me", None)
+    if me is None or not hasattr(channel, "permissions_for"):
+        return None
+    perms = channel.permissions_for(me)
+    missing: list[str] = []
+    if not getattr(perms, "view_channel", True):
+        missing.append("View Channel")
+    if not getattr(perms, "send_messages", True):
+        missing.append("Send Messages")
+    if not getattr(perms, "embed_links", True):
+        missing.append("Embed Links")
+    if missing:
+        return f"bot is missing {', '.join(missing)} in <#{getattr(channel, 'id', 'unknown')}>"
+    return None
+
+
+async def update_public_alert_channel_id(db: Any, *, guild_id: int, channel_id: int) -> None:
+    conn = db.require_conn()
+    await conn.execute("UPDATE guild_public_alert_settings SET channel_id = ?, updated_at = ? WHERE guild_id = ?", (channel_id, datetime.now(timezone.utc).isoformat(), guild_id))
+    await conn.commit()
 
 
 def card_deal_key(card: Any, *, retailer: str) -> str:

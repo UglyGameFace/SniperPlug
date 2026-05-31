@@ -121,7 +121,7 @@ class UnifiedDealScannerCog(DealScannerCog):
             )
             deal_scanner.add_public_posting_field(summary, public_result)
             summary.add_field(name="Product links", value="Each verified card includes its own **App/Web** and **Browser Search** links.", inline=False)
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.verified], view=view, ephemeral=True)
+            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.verified], ephemeral=True)
             if ranked.has_review:
                 await interaction.followup.send(
                     content="🟨 Extra review/raw/flip/scout leads — private only. Staff can manually publish one after checking it.",
@@ -129,14 +129,17 @@ class UnifiedDealScannerCog(DealScannerCog):
                     view=ManualReviewShareView(ranked.review),
                     ephemeral=True,
                 )
+            await send_deal_mode_controls(interaction, view, ranked)
             return
 
         if ranked.has_review:
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.review], view=view, ephemeral=True)
+            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.review], ephemeral=True)
+            await send_deal_mode_controls(interaction, view, ranked)
             return
 
         summary.add_field(name="Nothing useful found yet", value=deal_scanner.no_match_help(query, starting_discount, page, simple_mode), inline=False)
-        await interaction.followup.send(embed=summary, view=view, ephemeral=True)
+        await interaction.followup.send(embed=summary, ephemeral=True)
+        await send_deal_mode_controls(interaction, view, ranked)
 
 
 class DealSearchModeView(discord.ui.View):
@@ -208,7 +211,7 @@ class DealSearchModeView(discord.ui.View):
         )
         if ranked.has_verified:
             summary.add_field(name="Mode switched", value="Re-ranked the same scan results without spending another API search.", inline=False)
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.verified], view=view, ephemeral=True)
+            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.verified], ephemeral=True)
             if ranked.has_review:
                 await interaction.followup.send(
                     content="🟨 Extra review/raw/flip/scout leads — private only. Staff can manually publish one after checking it.",
@@ -216,12 +219,15 @@ class DealSearchModeView(discord.ui.View):
                     view=ManualReviewShareView(ranked.review),
                     ephemeral=True,
                 )
+            await send_deal_mode_controls(interaction, view, ranked)
             return
         if ranked.has_review:
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.review], view=view, ephemeral=True)
+            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.review], ephemeral=True)
+            await send_deal_mode_controls(interaction, view, ranked)
             return
         summary.add_field(name="No cards for this mode", value="Try another mode or refresh the search.", inline=False)
-        await interaction.followup.send(embed=summary, view=view, ephemeral=True)
+        await interaction.followup.send(embed=summary, ephemeral=True)
+        await send_deal_mode_controls(interaction, view, ranked)
 
 
 class DealModeButton(discord.ui.Button):
@@ -246,6 +252,43 @@ class RefreshDealModeButton(discord.ui.Button):
             await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
             return
         await self.view.show_mode(interaction, self.view.mode, refresh=True)
+
+
+async def send_deal_mode_controls(interaction: discord.Interaction, view: DealSearchModeView, ranked: ModeRankedCards) -> None:
+    await interaction.followup.send(embed=build_deal_mode_menu_embed(view.query, ranked), view=view, ephemeral=True)
+
+
+def build_deal_mode_menu_embed(query: str, ranked: ModeRankedCards) -> discord.Embed:
+    mode = ranked.mode
+    embed = discord.Embed(
+        title=f"⚙️ Deal result menu • {mode.display_name}",
+        description=(
+            f"Search: **{query}**\n"
+            f"Current mode: **{mode.label}**\n\n"
+            "Tap a mode below to re-rank these same scan results. "
+            "**Fresh Scan** reruns the Walmart search and spends another API pass."
+        ),
+        color=discord.Color.blurple() if mode.public_safe else discord.Color.dark_gold(),
+    )
+    embed.add_field(
+        name="Modes",
+        value=(
+            "🔥 **Best Picks** — balanced default\n"
+            "🏷️ **Popular Brands** — known brands/trusted sellers first\n"
+            "🧪 **Hidden Gems** — offbrand/scout/review-only leads\n"
+            "💸 **Cheapest** — lowest current price first\n"
+            "📉 **Biggest Markdown** — strongest verified markdowns"
+        ),
+        inline=False,
+    )
+    if not mode.public_safe:
+        embed.add_field(
+            name="Private review mode",
+            value="Hidden Gem results are broad and stay private unless staff manually shares one.",
+            inline=False,
+        )
+    embed.set_footer(text="Buttons live here so Discord embed splitting cannot hide the menu.")
+    return embed
 
 
 def build_deal_finder_summary(result: DealFinderResult, *, ranked: ModeRankedCards | None = None) -> discord.Embed:

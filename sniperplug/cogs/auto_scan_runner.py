@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -19,6 +20,7 @@ AUTO_SCAN_INTERVAL_MINUTES = 15
 AUTO_SCAN_RETAILER = "walmart"
 AUTO_SCAN_SOURCE_LABEL = "autoscan:walmart_discovery"
 AUTO_SCAN_PUBLIC_LIMIT = 5
+_AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
 @dataclass(frozen=True)
@@ -93,18 +95,26 @@ class AutoScanRunnerCog(commands.Cog):
     @app_commands.describe(force="Bypass interval/daily gate for this manual test. Public alerts still must be configured.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def autoscan_now(self, interaction: discord.Interaction, force: bool = True) -> None:
-        await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which auto-scan settings to test.", ephemeral=True)
+            await interaction.response.send_message("Use this in a server so I know which auto-scan settings to test.", ephemeral=True)
             return
-        config = await get_public_post_config(self.bot.db, interaction.guild_id)
-        if not config.get("enabled") or not config.get("channel_id"):
-            await interaction.followup.send("Public alerts are not configured yet. Run `/public_alerts enabled:true retailers:walmart channel:#your-channel` first.", ephemeral=True)
+
+        lock = autoscan_lock(interaction.guild_id)
+        if lock.locked():
+            await interaction.response.send_message("Auto-scan is already running for this server. I blocked the duplicate run so the bot does not hang or double-post.", ephemeral=True)
             return
-        if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):  # public config controls where auto-scan may post
-            await interaction.followup.send("Public alerts are enabled, but Walmart is not in the public retailer list. Add `walmart` with `/public_alerts`.", ephemeral=True)
-            return
-        report = await self._run_guild_walmart_discovery(AutoScanGuild(interaction.guild_id, config.get("channel_id")), force=force)
+
+        await interaction.response.send_message("Auto-scan started. I’ll post the result here when it finishes. Duplicate clicks are blocked while this runs.", ephemeral=True)
+        async with lock:
+            config = await get_public_post_config(self.bot.db, interaction.guild_id)
+            if not config.get("enabled") or not config.get("channel_id"):
+                await interaction.followup.send("Public alerts are not configured yet. Run `/public_alerts enabled:true retailers:walmart channel:#your-channel` first.", ephemeral=True)
+                return
+            if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):  # public config controls where auto-scan may post
+                await interaction.followup.send("Public alerts are enabled, but Walmart is not in the public retailer list. Add `walmart` with `/public_alerts`.", ephemeral=True)
+                return
+            report = await self._run_guild_walmart_discovery(AutoScanGuild(interaction.guild_id, config.get("channel_id")), force=force)
+
         embed = discord.Embed(title="🧭 Auto-scan test result", description=report.discord_summary(), color=discord.Color.green() if report.public_result.posted else discord.Color.orange())
         if report.warnings:
             embed.add_field(name="Warnings", value="\n".join(f"• {warning}" for warning in report.warnings[:5]), inline=False)
@@ -133,7 +143,12 @@ class AutoScanRunnerCog(commands.Cog):
             log.info("Auto-scan skipped: %s", health_error)
             return
         for guild in guilds:
-            await self._run_guild_walmart_discovery(guild)
+            lock = autoscan_lock(guild.guild_id)
+            if lock.locked():
+                log.info("Auto-scan skipped guild=%s because another auto-scan is already running", guild.guild_id)
+                continue
+            async with lock:
+                await self._run_guild_walmart_discovery(guild)
 
     @auto_scan_loop.before_loop
     async def before_auto_scan_loop(self) -> None:
@@ -223,6 +238,7 @@ class AutoScanRunnerCog(commands.Cog):
             cards=shown_cards,
             source_label=AUTO_SCAN_SOURCE_LABEL,
             fallback_retailer=AUTO_SCAN_RETAILER,
+            max_posts=AUTO_SCAN_PUBLIC_LIMIT,
         )
         report = AutoScanReport(
             guild_id=guild.guild_id,
@@ -240,6 +256,14 @@ class AutoScanRunnerCog(commands.Cog):
         )
         log.info("Auto-scan completed %s reason=%s", report.log_fields(), compact_log_text(explain_public_post_result(result)))
         return report
+
+
+def autoscan_lock(guild_id: int) -> asyncio.Lock:
+    lock = _AUTOSCAN_LOCKS.get(guild_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _AUTOSCAN_LOCKS[guild_id] = lock
+    return lock
 
 
 def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:

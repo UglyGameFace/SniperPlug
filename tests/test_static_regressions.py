@@ -75,6 +75,11 @@ def test_removed_startup_hooks_stay_removed() -> None:
         assert hook not in bot_source
 
 
+def test_bot_startup_imports() -> None:
+    """Catch Discloud-style offline crashes from `from sniperplug.bot import run`."""
+    from sniperplug.bot import run  # noqa: F401
+
+
 def test_recent_runtime_modules_import() -> None:
     import sniperplug.cogs.auto_scan_runner  # noqa: F401
     import sniperplug.services.public_alert_config  # noqa: F401

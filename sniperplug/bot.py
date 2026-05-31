@@ -18,7 +18,7 @@ from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.public_alerts import PublicAlertsCog
 from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
-from sniperplug.cogs.unified_deal_scanner import UnifiedDealScannerCog
+from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
 from sniperplug.cogs.workflow import WorkflowCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
@@ -34,7 +34,6 @@ from sniperplug.services.error_logging import (
     install_global_exception_hooks,
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
-from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
 from sniperplug.storage.db import Database
 
 
@@ -65,7 +64,6 @@ class SniperPlugBot(commands.Bot):
 
         install_safe_followup_send_patch()
         log.info("Discord embed sanitizer installed: followup_send=true")
-        install_verified_discount_hunt()
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
         provider_registry.register(WalmartProvider(configured=False))
@@ -74,7 +72,7 @@ class SniperPlugBot(commands.Bot):
 
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(WorkflowCog(self))
-        await self.add_cog(UnifiedDealScannerCog(self))
+        await self.add_cog(VerifiedDealScannerCog(self))
         await self.add_cog(LocalInventoryCog(self))
         await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))

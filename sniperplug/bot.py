@@ -36,7 +36,6 @@ from sniperplug.services.error_logging import (
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.verified_discount_hunt import install_verified_discount_hunt
-from sniperplug.services.walmart_cash_guard import install_strict_walmart_cash_guard
 from sniperplug.storage.db import Database
 
 
@@ -67,7 +66,6 @@ class SniperPlugBot(commands.Bot):
 
         install_safe_followup_send_patch()
         log.info("Discord embed sanitizer installed: followup_send=true")
-        install_strict_walmart_cash_guard()
         install_unified_deal_finder()
         install_verified_discount_hunt()
 

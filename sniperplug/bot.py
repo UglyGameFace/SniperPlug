@@ -12,6 +12,7 @@ from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
 from sniperplug.cogs.auto_scan_runner import AutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
+from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
@@ -85,6 +86,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(PublicAlertsCog(self))
         await self.add_cog(ActiveDealsCog(self))
         await self.add_cog(SettingsDashboardCog(self))
+        await self.add_cog(DealFeedbackAdminCog(self))
         await self.add_cog(AutoScanRunnerCog(self))
         log.info("Runtime safety guards ready: embed_sanitizer=true provider_count=%s", len(provider_registry.providers))
 

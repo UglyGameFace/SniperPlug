@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from sniperplug.services.deal_feedback import ensure_deal_feedback_tables
+
+
+RESET_SCOPES = ("all", "products", "brands", "events")
 
 
 class DealFeedbackAdminCog(commands.Cog):
@@ -32,6 +35,55 @@ class DealFeedbackAdminCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
+    @app_commands.command(name="feedback_learning_reset", description="Reset SniperPlug feedback learning for this server.")
+    @app_commands.describe(
+        scope="What to clear: all, products, brands, or raw feedback events.",
+        confirm="Must be true so this cannot be clicked by accident.",
+    )
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="Everything", value="all"),
+            app_commands.Choice(name="Product learning only", value="products"),
+            app_commands.Choice(name="Brand learning only", value="brands"),
+            app_commands.Choice(name="Raw feedback click history only", value="events"),
+        ]
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def feedback_learning_reset(
+        self,
+        interaction: discord.Interaction,
+        scope: app_commands.Choice[str],
+        confirm: bool = False,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which learning data to reset.", ephemeral=True)
+            return
+        scope_value = normalize_reset_scope(scope.value)
+        if not confirm:
+            await interaction.followup.send(
+                f"Reset blocked. Re-run with `confirm:true` to clear **{scope_value}** feedback learning. Example: `/feedback_learning_reset scope:{scope_value} confirm:true`",
+                ephemeral=True,
+            )
+            return
+        result = await reset_feedback_learning(self.bot.db, interaction.guild_id, scope=scope_value)
+        embed = discord.Embed(
+            title="🧹 Feedback Learning Reset",
+            description=f"Cleared **{scope_value}** feedback learning for this server.",
+            color=discord.Color.orange(),
+        )
+        embed.add_field(name="Deleted rows", value="\n".join(f"`{name}`: **{count}**" for name, count in result.items()), inline=False)
+        embed.set_footer(text="Existing public buttons can still collect new feedback after this reset.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @feedback_learning_reset.error
+    async def feedback_learning_reset_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = "You need **Manage Server** permission to reset feedback learning." if isinstance(error, app_commands.MissingPermissions) else f"Feedback learning reset hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
 
 async def build_feedback_learning_status_embed(db, guild_id: int, *, limit: int = 5) -> discord.Embed:
     await ensure_deal_feedback_tables(db)
@@ -51,8 +103,41 @@ async def build_feedback_learning_status_embed(db, guild_id: int, *, limit: int 
     embed.add_field(name="📉 Penalized products", value=format_product_rows(bad_products) or "No penalized products yet.", inline=False)
     embed.add_field(name="🏷️ Boosted brands", value=format_brand_rows(top_brands) or "No boosted brands yet.", inline=False)
     embed.add_field(name="🚫 Penalized brands", value=format_brand_rows(bad_brands) or "No penalized brands yet.", inline=False)
-    embed.set_footer(text="Feedback affects auto-scan ranking, but threshold, confidence, duplicate, and proof gates still protect public posts.")
+    embed.set_footer(text="Feedback affects auto-scan ranking, but threshold, confidence, duplicate, and proof gates still protect public posts. Use /feedback_learning_reset if learning goes sideways.")
     return embed
+
+
+async def reset_feedback_learning(db, guild_id: int, *, scope: str) -> dict[str, int]:
+    await ensure_deal_feedback_tables(db)
+    conn = db.require_conn()
+    scope_value = normalize_reset_scope(scope)
+    deleted: dict[str, int] = {}
+
+    async def delete_from(table: str) -> None:
+        cursor = await conn.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
+        deleted[table] = max(0, int(getattr(cursor, "rowcount", 0) or 0))
+
+    if scope_value in {"all", "products"}:
+        await delete_from("guild_deal_feedback_summary")
+    if scope_value in {"all", "brands"}:
+        await delete_from("guild_deal_brand_feedback_summary")
+    if scope_value in {"all", "events"}:
+        await delete_from("guild_deal_feedback_events")
+    if scope_value == "all":
+        # Keep active button targets only when not doing a full wipe. Full reset
+        # intentionally removes old target tokens so stale public posts stop
+        # feeding the old learning batch after a hard reset.
+        await delete_from("guild_deal_feedback_targets")
+
+    await conn.commit()
+    return deleted
+
+
+def normalize_reset_scope(scope: str) -> Literal["all", "products", "brands", "events"]:
+    value = str(scope or "all").strip().lower()
+    if value not in RESET_SCOPES:
+        return "all"
+    return value  # type: ignore[return-value]
 
 
 async def count_feedback_events(db, guild_id: int) -> int:

@@ -270,6 +270,7 @@ async def record_deal_feedback(db, *, guild_id: int, target: DealFeedbackTarget,
             (guild_id, target.target_key, user_key, feedback.key, retailer, target.brand_hint[:120], now),
         )
 
+    await normalize_feedback_summaries_for_target(conn, guild_id=guild_id, target=target, retailer=retailer)
     await conn.commit()
     prefix = "Updated your vote." if changed_vote else feedback.response
     return FeedbackRecordResult(True, False, changed_vote, f"{feedback.emoji} {prefix}")
@@ -343,6 +344,64 @@ async def apply_feedback_delta(conn: Any, *, guild_id: int, target: DealFeedback
             """,
             (guild_id, retailer, target.brand_hint[:120], good, bad, bad_brand, flip, weak, score_delta, updated_at),
         )
+
+
+async def normalize_feedback_summaries_for_target(conn: Any, *, guild_id: int, target: DealFeedbackTarget, retailer: str) -> None:
+    await normalize_product_feedback_summary(conn, guild_id=guild_id, target_key=target.target_key)
+    if target.brand_hint:
+        await normalize_brand_feedback_summary(conn, guild_id=guild_id, retailer=retailer, brand_hint=target.brand_hint[:120])
+
+
+async def normalize_product_feedback_summary(conn: Any, *, guild_id: int, target_key: str) -> None:
+    cursor = await conn.execute(
+        "SELECT good_count, bad_count, bad_brand_count, flip_count, weak_count FROM guild_deal_feedback_summary WHERE guild_id = ? AND target_key = ?",
+        (guild_id, target_key),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return
+    good, bad, bad_brand, flip, weak = normalized_counts(row)
+    await conn.execute(
+        """
+        UPDATE guild_deal_feedback_summary
+        SET good_count = ?, bad_count = ?, bad_brand_count = ?, flip_count = ?, weak_count = ?, total_score = ?
+        WHERE guild_id = ? AND target_key = ?
+        """,
+        (good, bad, bad_brand, flip, weak, feedback_total_score(good, bad, bad_brand, flip, weak), guild_id, target_key),
+    )
+
+
+async def normalize_brand_feedback_summary(conn: Any, *, guild_id: int, retailer: str, brand_hint: str) -> None:
+    cursor = await conn.execute(
+        "SELECT good_count, bad_count, bad_brand_count, flip_count, weak_count FROM guild_deal_brand_feedback_summary WHERE guild_id = ? AND retailer = ? AND brand_hint = ?",
+        (guild_id, retailer, brand_hint),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return
+    good, bad, bad_brand, flip, weak = normalized_counts(row)
+    await conn.execute(
+        """
+        UPDATE guild_deal_brand_feedback_summary
+        SET good_count = ?, bad_count = ?, bad_brand_count = ?, flip_count = ?, weak_count = ?, total_score = ?
+        WHERE guild_id = ? AND retailer = ? AND brand_hint = ?
+        """,
+        (good, bad, bad_brand, flip, weak, feedback_total_score(good, bad, bad_brand, flip, weak), guild_id, retailer, brand_hint),
+    )
+
+
+def normalized_counts(row: Any) -> tuple[int, int, int, int, int]:
+    return (
+        max(0, int(row["good_count"] or 0)),
+        max(0, int(row["bad_count"] or 0)),
+        max(0, int(row["bad_brand_count"] or 0)),
+        max(0, int(row["flip_count"] or 0)),
+        max(0, int(row["weak_count"] or 0)),
+    )
+
+
+def feedback_total_score(good: int, bad: int, bad_brand: int, flip: int, weak: int) -> int:
+    return good * 2 - bad * 2 - bad_brand * 3 + flip * 3 - weak
 
 
 async def apply_feedback_learning_to_cards(db, *, guild_id: int | None, cards: list[Any], fallback_retailer: str = "walmart") -> list[Any]:

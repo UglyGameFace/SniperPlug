@@ -11,6 +11,7 @@ from discord.ext import commands, tasks
 
 from sniperplug.cogs.deal_scanner import DealCard, provider_health_error_message
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
+from sniperplug.services.autoscan_history import save_autoscan_report
 from sniperplug.services.deal_confidence import DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR, select_confident_public_cards
 from sniperplug.services.deal_search_modes import MODE_BEST, rank_for_search_mode
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
@@ -189,8 +190,10 @@ class AutoScanRunnerCog(commands.Cog):
                 scan_key=scan_key,
             )
             if not allowed:
+                report = AutoScanReport(guild_id=guild.guild_id, allowed=False, reason=reason, settings=settings)
+                await persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
                 log.debug("Auto-scan blocked guild=%s retailer=%s reason=%s", guild.guild_id, AUTO_SCAN_RETAILER, reason)
-                return AutoScanReport(guild_id=guild.guild_id, allowed=False, reason=reason, settings=settings)
+                return report
         else:
             settings = {"forced": True, "retailer": AUTO_SCAN_RETAILER}
 
@@ -235,6 +238,7 @@ class AutoScanRunnerCog(commands.Cog):
                 repeat_summary=fresh_selection.summary_line(),
                 warnings=tuple(warnings),
             )
+            await persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
             log.info("Auto-scan completed with no fresh public-confidence cards %s", report.log_fields())
             return report
 
@@ -265,6 +269,7 @@ class AutoScanRunnerCog(commands.Cog):
             public_result=public_result,
             warnings=tuple(warnings),
         )
+        await persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
         log.info("Auto-scan completed %s reason=%s", report.log_fields(), compact_log_text(explain_public_post_result(public_result)))
         return report
 
@@ -287,6 +292,19 @@ async def run_autoscan_verified_category(db, guild_id: int, *, preset) -> Verifi
         guild_id=guild_id,
         use_price_memory=True,
     )
+
+
+async def persist_autoscan_report(db, report: AutoScanReport, *, scan_key: str) -> None:
+    try:
+        await save_autoscan_report(
+            db,
+            guild_id=report.guild_id,
+            retailer=AUTO_SCAN_RETAILER,
+            scan_key=scan_key,
+            payload=report.log_fields(),
+        )
+    except Exception as exc:
+        log.warning("Failed to persist auto-scan report guild=%s: %s", report.guild_id, exc)
 
 
 def autoscan_lock(guild_id: int) -> asyncio.Lock:

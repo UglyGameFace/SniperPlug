@@ -21,6 +21,7 @@ DEFAULT_AUTOSCAN_DAILY_LIMIT = 25
 UNLIMITED_AUTOSCAN_INTERVAL_HOURS = 0
 UNLIMITED_AUTOSCAN_DAILY_LIMIT = 0
 UNMETERED_OFFICIAL_RETAILERS = {"walmart"}
+WALMART_AUTOSCAN_SCAN_KEY = "autoscan:walmart_discovery"
 
 
 class PublicAlertsCog(commands.Cog):
@@ -97,6 +98,23 @@ class PublicAlertsCog(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="autoscan_health", description="Check whether Walmart auto-scan can post and what happened recently.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def autoscan_health(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which auto-scan settings to check.", ephemeral=True)
+            return
+        await interaction.followup.send(embed=await build_autoscan_health_embed(self.bot, interaction.guild_id), ephemeral=True)
+
+    @autoscan_health.error
+    async def autoscan_health_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = "You need **Manage Server** permission to check auto-scan health." if isinstance(error, app_commands.MissingPermissions) else f"Auto-scan health check hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
 
 def autoscan_setup_complete_embed(*, channel_id: int | str, threshold: int, auto_scan: dict[str, dict]) -> discord.Embed:
     embed = discord.Embed(
@@ -110,19 +128,19 @@ def autoscan_setup_complete_embed(*, channel_id: int | str, threshold: int, auto
     embed.add_field(
         name="What gets posted?",
         value=(
-            "Auto-scan uses **Best Picks** ranking, then posts only cards that pass public-alert proof, duplicate checks, and fresh/new/lower-price checks. "
+            "Auto-scan uses **Best Picks** ranking, then posts only cards that pass public-alert proof, duplicate checks, confidence, and fresh/new/lower-price checks. "
             "Weak proof and staff-review candidates stay private."
         ),
         inline=False,
     )
-    embed.add_field(name="Optional test", value="Use `/autoscan_now` only when you want an immediate debug run. Normal auto-scan runs by itself.", inline=False)
+    embed.add_field(name="Optional test", value="Use `/autoscan_now` only when you want an immediate debug run. Use `/autoscan_health` to see whether setup/channel/runs look healthy.", inline=False)
     return embed
 
 
 def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None, auto_scan: dict[str, dict] | None = None, threshold: int | None = None) -> discord.Embed:
     embed = discord.Embed(
         title="📣 Public Alert Settings",
-        description="This is the simple view. Use `/autoscan_setup` to change setup and `/deal_threshold` to adjust the markdown threshold.",
+        description="This is the simple view. Use `/autoscan_setup` to change setup, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.",
         color=discord.Color.green() if enabled else discord.Color.dark_gold(),
     )
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
@@ -132,9 +150,141 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
         embed.add_field(name="Deal threshold", value=f"{threshold}%+ verified markdown", inline=True)
     if auto_scan is not None:
         embed.add_field(name="Auto-scan stores", value=format_auto_scan_status(auto_scan), inline=False)
-    embed.add_field(name="Posting logic", value="Auto-scan uses Best Picks ranking, then the public guard blocks same-price duplicates, weak proof, and non-alertable cards. Lower-price repeats can post again.", inline=False)
+    embed.add_field(name="Posting logic", value="Auto-scan uses Best Picks ranking, then the public guard blocks same-price duplicates, weak proof, non-alertable cards, and low-confidence cards. Lower-price repeats can post again.", inline=False)
     embed.set_footer(text="Advanced public-alert commands are hidden; backend controls stay available through setup/status.")
     return embed
+
+
+async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> discord.Embed:
+    db = bot.db
+    config = await get_public_alert_config(db, guild_id)
+    auto_scan = await list_retailer_auto_scan_settings(db, guild_id)
+    threshold = await get_starting_deal_percent(db, guild_id)
+    allowed, reason, walmart_settings = await auto_scan_allowed(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
+    last_run = await latest_auto_scan_run(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
+    posts_today = await count_public_posts_today(db, guild_id)
+    active_cached = await count_active_cached_deals(db, guild_id)
+    channel_status = public_alert_channel_status(bot, guild_id, config.get("channel_id"))
+
+    critical_ok = bool(config.get("enabled")) and "walmart" in set(config.get("retailers") or ()) and channel_status.startswith("✅") and bool(walmart_settings.get("enabled")) and allowed
+    embed = discord.Embed(
+        title="🩺 Walmart Auto-Scan Health",
+        description="This checks setup, channel permissions, schedule gates, and recent posting memory.",
+        color=discord.Color.green() if critical_ok else discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Setup",
+        value=(
+            f"Public alerts: **{'on' if config.get('enabled') else 'off'}**\n"
+            f"Public stores: {format_retailers(tuple(config.get('retailers') or ())) }\n"
+            f"Threshold: **{threshold}%+ verified markdown**\n"
+            f"Walmart auto-scan: **{'on' if walmart_settings.get('enabled') else 'off'}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Channel", value=channel_status, inline=False)
+    embed.add_field(
+        name="Schedule gate",
+        value=(
+            f"Allowed now: **{'yes' if allowed else 'no'}**\n"
+            f"Reason: {reason}\n"
+            f"Interval: **{format_interval(int(walmart_settings.get('interval_hours', DEFAULT_AUTOSCAN_INTERVAL_HOURS)))}**\n"
+            f"Daily limit: **{format_daily_limit(int(walmart_settings.get('daily_limit', DEFAULT_AUTOSCAN_DAILY_LIMIT)))}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Recent memory",
+        value=(
+            f"Last scheduled run: **{last_run or 'not logged yet'}**\n"
+            f"Public posts today: **{posts_today}**\n"
+            f"Active cached deals: **{active_cached}**"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="How to read this",
+        value="If setup/channel/gate are green but posts stay at 0, SniperPlug is scanning but the current candidates are being blocked by duplicate, confidence, threshold, or proof rules. Use `/autoscan_now` only when you want an immediate debug run.",
+        inline=False,
+    )
+    return embed
+
+
+def public_alert_channel_status(bot: commands.Bot, guild_id: int, channel_id: int | str | None) -> str:
+    if not channel_id:
+        return "⛔ No public channel saved. Run `/autoscan_setup channel:#walmart-deals`."
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return f"⛔ Bot is not connected to guild `{guild_id}` right now."
+    decoded = decode_channel_id(channel_id)
+    if decoded is None:
+        return f"⛔ Saved channel ID is invalid: `{channel_id}`. Re-run `/autoscan_setup`."
+    channel = guild.get_channel(decoded)
+    if channel is None:
+        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. Re-run `/autoscan_setup` with the live channel."
+    if not hasattr(channel, "send"):
+        return f"⛔ Saved channel <#{decoded}> is not a sendable text channel."
+    me = getattr(guild, "me", None)
+    if me is not None and hasattr(channel, "permissions_for"):
+        perms = channel.permissions_for(me)
+        missing = []
+        if not getattr(perms, "view_channel", True):
+            missing.append("View Channel")
+        if not getattr(perms, "send_messages", True):
+            missing.append("Send Messages")
+        if not getattr(perms, "embed_links", True):
+            missing.append("Embed Links")
+        if missing:
+            return f"⛔ <#{decoded}> is saved, but bot is missing: {', '.join(missing)}."
+    return f"✅ <#{decoded}> is saved and sendable."
+
+
+def decode_channel_id(value: int | str | None) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip().replace("<#", "").replace(">", "")
+    if text.startswith("ch:"):
+        text = text[3:]
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+async def latest_auto_scan_run(db, guild_id: int, retailer: str, *, scan_key: str) -> str | None:
+    try:
+        await ensure_retailer_auto_scan_run_table(db)
+        conn = db.require_conn()
+        key = normalize_retailer_key(retailer)
+        cursor = await conn.execute(
+            "SELECT ran_at FROM guild_retailer_auto_scan_runs WHERE guild_id = ? AND retailer = ? AND scan_key = ? ORDER BY ran_at DESC LIMIT 1",
+            (guild_id, key, scan_key),
+        )
+        row = await cursor.fetchone()
+        return str(row["ran_at"]) if row and row["ran_at"] else None
+    except Exception:
+        return None
+
+
+async def count_public_posts_today(db, guild_id: int) -> int:
+    try:
+        conn = db.require_conn()
+        since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        cursor = await conn.execute("SELECT COUNT(*) AS count FROM guild_public_deal_posts WHERE guild_id = ? AND status = 'posted' AND created_at >= ?", (guild_id, since))
+        row = await cursor.fetchone()
+        return int(row["count"] if row and row["count"] is not None else 0)
+    except Exception:
+        return 0
+
+
+async def count_active_cached_deals(db, guild_id: int) -> int:
+    try:
+        conn = db.require_conn()
+        cursor = await conn.execute("SELECT COUNT(*) AS count FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active'", (guild_id,))
+        row = await cursor.fetchone()
+        return int(row["count"] if row and row["count"] is not None else 0)
+    except Exception:
+        return 0
 
 
 def format_auto_scan_status(settings: dict[str, dict]) -> str:

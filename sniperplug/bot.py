@@ -25,6 +25,7 @@ from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartProvider
+from sniperplug.services.deal_feedback import register_persistent_feedback_views
 from sniperplug.services.embed_delivery_patch import install_safe_followup_send_patch
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
@@ -64,6 +65,9 @@ class SniperPlugBot(commands.Bot):
 
         install_safe_followup_send_patch()
         log.info("Discord embed sanitizer installed: followup_send=true")
+
+        feedback_views = await register_persistent_feedback_views(self)
+        log.info("Persistent deal feedback views registered: %s", feedback_views)
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
         provider_registry.register(WalmartProvider(configured=False))

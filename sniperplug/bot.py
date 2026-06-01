@@ -36,6 +36,7 @@ from sniperplug.services.error_logging import (
     install_global_exception_hooks,
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
+from sniperplug.services.storage_maintenance import run_storage_maintenance
 from sniperplug.storage.db import Database
 
 
@@ -63,6 +64,9 @@ class SniperPlugBot(commands.Bot):
         configure_home_depot_product_detail_cache(self.db)
         configure_home_depot_search_cache(self.db)
         log.info("Home Depot search/detail caches connected backend=%s", getattr(self.db, "backend", "unknown"))
+
+        maintenance = await run_storage_maintenance(self.db)
+        log.info("Storage maintenance completed: %s", maintenance.log_fields())
 
         install_safe_followup_send_patch()
         log.info("Discord embed sanitizer installed: followup_send=true")

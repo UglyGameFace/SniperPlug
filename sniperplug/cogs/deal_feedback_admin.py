@@ -9,7 +9,7 @@ from discord.ext import commands
 from sniperplug.services.deal_feedback import ensure_deal_feedback_tables
 
 
-RESET_SCOPES = ("all", "products", "brands", "events")
+RESET_SCOPES = ("all", "products", "brands", "events", "votes")
 
 
 class DealFeedbackAdminCog(commands.Cog):
@@ -37,7 +37,7 @@ class DealFeedbackAdminCog(commands.Cog):
 
     @app_commands.command(name="feedback_learning_reset", description="Reset SniperPlug feedback learning for this server.")
     @app_commands.describe(
-        scope="What to clear: all, products, brands, or raw feedback events.",
+        scope="What to clear: all, products, brands, raw feedback events, or active votes.",
         confirm="Must be true so this cannot be clicked by accident.",
     )
     @app_commands.choices(
@@ -46,6 +46,7 @@ class DealFeedbackAdminCog(commands.Cog):
             app_commands.Choice(name="Product learning only", value="products"),
             app_commands.Choice(name="Brand learning only", value="brands"),
             app_commands.Choice(name="Raw feedback click history only", value="events"),
+            app_commands.Choice(name="Active vote ledger only", value="votes"),
         ]
     )
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -72,8 +73,8 @@ class DealFeedbackAdminCog(commands.Cog):
             description=f"Cleared **{scope_value}** feedback learning for this server.",
             color=discord.Color.orange(),
         )
-        embed.add_field(name="Deleted rows", value="\n".join(f"`{name}`: **{count}**" for name, count in result.items()), inline=False)
-        embed.set_footer(text="Existing public buttons can still collect new feedback after this reset.")
+        embed.add_field(name="Deleted rows", value="\n".join(f"`{name}`: **{count}**" for name, count in result.items()) or "No rows were deleted.", inline=False)
+        embed.set_footer(text="Existing public buttons can still collect new feedback unless you used scope:all and wiped old target tokens.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @feedback_learning_reset.error
@@ -88,6 +89,8 @@ class DealFeedbackAdminCog(commands.Cog):
 async def build_feedback_learning_status_embed(db, guild_id: int, *, limit: int = 5) -> discord.Embed:
     await ensure_deal_feedback_tables(db)
     total_events = await count_feedback_events(db, guild_id)
+    active_votes = await count_feedback_votes(db, guild_id)
+    active_targets = await count_feedback_targets(db, guild_id)
     top_products = await feedback_rows(db, guild_id, table="guild_deal_feedback_summary", positive=True, limit=limit)
     bad_products = await feedback_rows(db, guild_id, table="guild_deal_feedback_summary", positive=False, limit=limit)
     top_brands = await feedback_rows(db, guild_id, table="guild_deal_brand_feedback_summary", positive=True, limit=limit)
@@ -98,7 +101,15 @@ async def build_feedback_learning_status_embed(db, guild_id: int, *, limit: int 
         description="Shows what SniperPlug is currently boosting or penalizing from feedback buttons.",
         color=discord.Color.blue(),
     )
-    embed.add_field(name="Feedback events", value=f"Total saved clicks: **{total_events}**", inline=False)
+    embed.add_field(
+        name="Feedback ledger",
+        value=(
+            f"Raw saved clicks: **{total_events}**\n"
+            f"Active unique votes: **{active_votes}**\n"
+            f"Restart-safe feedback targets: **{active_targets}**"
+        ),
+        inline=False,
+    )
     embed.add_field(name="📈 Boosted products", value=format_product_rows(top_products) or "No boosted products yet.", inline=False)
     embed.add_field(name="📉 Penalized products", value=format_product_rows(bad_products) or "No penalized products yet.", inline=False)
     embed.add_field(name="🏷️ Boosted brands", value=format_brand_rows(top_brands) or "No boosted brands yet.", inline=False)
@@ -123,17 +134,18 @@ async def reset_feedback_learning(db, guild_id: int, *, scope: str) -> dict[str,
         await delete_from("guild_deal_brand_feedback_summary")
     if scope_value in {"all", "events"}:
         await delete_from("guild_deal_feedback_events")
+    if scope_value in {"all", "votes"}:
+        await delete_from("guild_deal_feedback_user_votes")
     if scope_value == "all":
-        # Keep active button targets only when not doing a full wipe. Full reset
-        # intentionally removes old target tokens so stale public posts stop
-        # feeding the old learning batch after a hard reset.
+        # Full reset removes old target tokens so stale public posts cannot keep
+        # feeding the wiped learning batch after a hard reset.
         await delete_from("guild_deal_feedback_targets")
 
     await conn.commit()
     return deleted
 
 
-def normalize_reset_scope(scope: str) -> Literal["all", "products", "brands", "events"]:
+def normalize_reset_scope(scope: str) -> Literal["all", "products", "brands", "events", "votes"]:
     value = str(scope or "all").strip().lower()
     if value not in RESET_SCOPES:
         return "all"
@@ -141,8 +153,22 @@ def normalize_reset_scope(scope: str) -> Literal["all", "products", "brands", "e
 
 
 async def count_feedback_events(db, guild_id: int) -> int:
+    return await count_rows(db, "guild_deal_feedback_events", guild_id)
+
+
+async def count_feedback_votes(db, guild_id: int) -> int:
+    return await count_rows(db, "guild_deal_feedback_user_votes", guild_id)
+
+
+async def count_feedback_targets(db, guild_id: int) -> int:
+    return await count_rows(db, "guild_deal_feedback_targets", guild_id)
+
+
+async def count_rows(db, table: str, guild_id: int) -> int:
+    if table not in {"guild_deal_feedback_events", "guild_deal_feedback_user_votes", "guild_deal_feedback_targets"}:
+        return 0
     conn = db.require_conn()
-    cursor = await conn.execute("SELECT COUNT(*) AS count FROM guild_deal_feedback_events WHERE guild_id = ?", (guild_id,))
+    cursor = await conn.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE guild_id = ?", (guild_id,))
     row = await cursor.fetchone()
     return int(row["count"] if row and row["count"] is not None else 0)
 
@@ -171,9 +197,9 @@ def format_product_rows(rows: list[dict[str, Any]]) -> str:
     for row in rows:
         title = clean_inline(str(row.get("title") or "deal"), max_len=58)
         score = int(row.get("total_score") or 0)
-        good = int(row.get("good_count") or 0)
-        bad = int(row.get("bad_count") or 0) + int(row.get("bad_brand_count") or 0) + int(row.get("weak_count") or 0)
-        flip = int(row.get("flip_count") or 0)
+        good = safe_count(row.get("good_count"))
+        bad = safe_count(row.get("bad_count")) + safe_count(row.get("bad_brand_count")) + safe_count(row.get("weak_count"))
+        flip = safe_count(row.get("flip_count"))
         lines.append(f"`{score:+}` **{title}** — 👍 {good} • 💰 {flip} • 👎 {bad}")
     return "\n".join(lines[:10])
 
@@ -184,11 +210,18 @@ def format_brand_rows(rows: list[dict[str, Any]]) -> str:
         brand = clean_inline(str(row.get("brand_hint") or "unknown"), max_len=32)
         retailer = clean_inline(str(row.get("retailer") or "store"), max_len=18)
         score = int(row.get("total_score") or 0)
-        good = int(row.get("good_count") or 0)
-        bad = int(row.get("bad_count") or 0) + int(row.get("bad_brand_count") or 0) + int(row.get("weak_count") or 0)
-        flip = int(row.get("flip_count") or 0)
+        good = safe_count(row.get("good_count"))
+        bad = safe_count(row.get("bad_count")) + safe_count(row.get("bad_brand_count")) + safe_count(row.get("weak_count"))
+        flip = safe_count(row.get("flip_count"))
         lines.append(f"`{score:+}` **{brand}** `{retailer}` — 👍 {good} • 💰 {flip} • 👎 {bad}")
     return "\n".join(lines[:10])
+
+
+def safe_count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def clean_inline(value: str, *, max_len: int) -> str:

@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from sniperplug.models.deal import utc_now_iso
+from sniperplug.services.autoscan_history import format_latest_report_line, latest_autoscan_report
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent, set_starting_deal_percent
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_config
 from sniperplug.services.public_posting import (
@@ -162,6 +163,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     threshold = await get_starting_deal_percent(db, guild_id)
     allowed, reason, walmart_settings = await auto_scan_allowed(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
     last_run = await latest_auto_scan_run(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
+    latest_report = await latest_autoscan_report(db, guild_id=guild_id, retailer="walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
     posts_today = await count_public_posts_today(db, guild_id)
     active_cached = await count_active_cached_deals(db, guild_id)
     channel_status = public_alert_channel_status(bot, guild_id, config.get("channel_id"))
@@ -169,7 +171,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     critical_ok = bool(config.get("enabled")) and "walmart" in set(config.get("retailers") or ()) and channel_status.startswith("✅") and bool(walmart_settings.get("enabled")) and allowed
     embed = discord.Embed(
         title="🩺 Walmart Auto-Scan Health",
-        description="This checks setup, channel permissions, schedule gates, and recent posting memory.",
+        description="This checks setup, channel permissions, schedule gates, and the exact last run decision trail.",
         color=discord.Color.green() if critical_ok else discord.Color.orange(),
     )
     embed.add_field(
@@ -202,9 +204,10 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
         ),
         inline=False,
     )
+    embed.add_field(name="Last run decision", value=trim_field(format_latest_report_line(latest_report), 1024), inline=False)
     embed.add_field(
         name="How to read this",
-        value="If setup/channel/gate are green but posts stay at 0, SniperPlug is scanning but the current candidates are being blocked by duplicate, confidence, threshold, or proof rules. Use `/autoscan_now` only when you want an immediate debug run.",
+        value="If setup/channel/gate are green but posts stay at 0, check Last run decision. It will show whether threshold, confidence, fresh filter, duplicate, not-alertable, or disabled guards blocked the candidates.",
         inline=False,
     )
     return embed
@@ -285,6 +288,11 @@ async def count_active_cached_deals(db, guild_id: int) -> int:
         return int(row["count"] if row and row["count"] is not None else 0)
     except Exception:
         return 0
+
+
+def trim_field(value: str, limit: int = 1024) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def format_auto_scan_status(settings: dict[str, dict]) -> str:

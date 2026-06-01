@@ -4,7 +4,9 @@ from typing import Any
 
 import discord
 
+from sniperplug.services.deal_feedback import DealFeedbackView, build_feedback_target, ensure_deal_feedback_tables
 from sniperplug.services.public_alert_config import get_public_alert_config
+from sniperplug.services.public_deal_posts import card_product_key
 from sniperplug.services.public_posting import normalize_retailer_key
 
 
@@ -41,10 +43,11 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
     db = getattr(bot, "db", None)
     if db is None:
         return False, "Bot database is unavailable."
+    await ensure_deal_feedback_tables(db)
     config = await get_public_alert_config(db, guild_id)
     channel_id = config.get("channel_id")
     if not channel_id:
-        return False, "No public deal channel is configured yet. Set it in public alert settings first."
+        return False, "No public deal channel is configured yet. Set it with `/autoscan_setup channel:#your-channel` first."
     retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
     if retailer not in set(config.get("retailers") or ()): 
         return False, f"Public posting is not enabled for `{retailer}` in this server."
@@ -59,5 +62,7 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
         value="Manually shared from a private SniperPlug review card. Recheck price, seller, exact variant, and comps before buying.",
         inline=False,
     )
-    await channel.send(embed=embed)
-    return True, "Posted that review lead to the public deal channel."
+    product_key = card_product_key(card, retailer=retailer)
+    target = build_feedback_target(card, target_key=product_key, retailer=retailer, source_label="staff_shared_review")
+    await channel.send(embed=embed, view=DealFeedbackView(target))
+    return True, "Posted that review lead to the public deal channel with feedback buttons."

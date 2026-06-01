@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
@@ -17,6 +18,8 @@ POPULAR_BRAND_TERMS = {
     "nike", "adidas", "puma", "reebok", "under armour", "levi", "calvin klein", "tommy hilfiger", "dolce", "gabbana", "versace", "gucci", "ysl", "armani", "dior", "burberry", "coach", "polo", "ralph lauren",
     "cerave", "cetaphil", "neutrogena", "olay", "dove", "gillette", "tide", "gain", "persil", "bounty", "charmin", "scott", "huggies", "pampers",
 }
+
+FEEDBACK_TARGET_DAYS = 45
 
 
 @dataclass(frozen=True)
@@ -69,43 +72,148 @@ FEEDBACK_ACTIONS: dict[str, FeedbackAction] = {
 
 
 class DealFeedbackView(discord.ui.View):
-    """Per-message deal feedback buttons.
+    """Per-message feedback buttons with optional persistent token support."""
 
-    This is normal view code, not a runtime patch. The feedback is saved to DB
-    so future ranking can learn from staff/public judgement.
-    """
-
-    def __init__(self, target: DealFeedbackTarget):
-        super().__init__(timeout=86400)
+    def __init__(self, target: DealFeedbackTarget | None = None, *, token: str | None = None, persistent: bool = False):
+        super().__init__(timeout=None if persistent else 86400)
         self.target = target
+        self.token = token or ""
         for action in FEEDBACK_ACTIONS.values():
-            self.add_item(DealFeedbackButton(action))
+            self.add_item(DealFeedbackButton(action, token=self.token if persistent else None))
 
 
 class DealFeedbackButton(discord.ui.Button):
-    def __init__(self, action: FeedbackAction):
+    def __init__(self, action: FeedbackAction, *, token: str | None = None):
         style = discord.ButtonStyle.success if action.key in {"good", "flip"} else discord.ButtonStyle.secondary
         if action.key in {"bad", "bad_brand"}:
             style = discord.ButtonStyle.danger
-        super().__init__(label=action.label, emoji=action.emoji, style=style, custom_id=f"deal_feedback:{action.key}")
+        custom_id = f"deal_feedback:{action.key}:{token}" if token else f"deal_feedback:{action.key}"
+        super().__init__(label=action.label, emoji=action.emoji, style=style, custom_id=custom_id[:100])
         self.action = action
+        self.token = token or ""
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if not isinstance(self.view, DealFeedbackView):
-            await interaction.response.send_message("This feedback panel is no longer active.", ephemeral=True)
-            return
         db = getattr(interaction.client, "db", None)
         if db is None or interaction.guild_id is None:
             await interaction.response.send_message("Feedback could not be saved because the bot database/server context is unavailable.", ephemeral=True)
             return
+        target = getattr(self.view, "target", None) if isinstance(self.view, DealFeedbackView) else None
+        if target is None and self.token:
+            target = await get_feedback_target(db, token=self.token, guild_id=interaction.guild_id)
+        if target is None:
+            await interaction.response.send_message("This feedback target is no longer available. Newer deal posts will keep working across restarts.", ephemeral=True)
+            return
         await record_deal_feedback(
             db,
             guild_id=interaction.guild_id,
-            target=self.view.target,
+            target=target,
             action=self.action.key,
             user_id=getattr(interaction.user, "id", None),
         )
         await interaction.response.send_message(f"{self.action.emoji} {self.action.response}", ephemeral=True)
+
+
+async def build_deal_feedback_view(db, *, guild_id: int, target: DealFeedbackTarget) -> DealFeedbackView:
+    token = await save_feedback_target(db, guild_id=guild_id, target=target)
+    return DealFeedbackView(target, token=token, persistent=True)
+
+
+async def register_persistent_feedback_views(bot: Any) -> int:
+    db = getattr(bot, "db", None)
+    if db is None:
+        return 0
+    targets = await recent_feedback_targets(db)
+    registered = 0
+    for token, target in targets:
+        try:
+            bot.add_view(DealFeedbackView(target, token=token, persistent=True))
+            registered += 1
+        except Exception:
+            continue
+    return registered
+
+
+async def save_feedback_target(db, *, guild_id: int, target: DealFeedbackTarget) -> str:
+    await ensure_deal_feedback_tables(db)
+    conn = db.require_conn()
+    token = feedback_token(guild_id=guild_id, target=target)
+    now = datetime.now(timezone.utc).isoformat()
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=FEEDBACK_TARGET_DAYS)).isoformat()
+    await conn.execute(
+        """
+        INSERT INTO guild_deal_feedback_targets (
+            token, guild_id, target_key, retailer, title, url, brand_hint, source_label, created_at, expires_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(token) DO UPDATE SET
+            title = excluded.title,
+            url = excluded.url,
+            brand_hint = excluded.brand_hint,
+            source_label = excluded.source_label,
+            expires_at = excluded.expires_at
+        """,
+        (
+            token,
+            guild_id,
+            target.target_key,
+            normalize_retailer_key(target.retailer),
+            target.title[:300],
+            target.url[:800],
+            target.brand_hint[:120],
+            target.source_label[:120],
+            now,
+            expires_at,
+        ),
+    )
+    await conn.commit()
+    return token
+
+
+async def get_feedback_target(db, *, token: str, guild_id: int | None = None) -> DealFeedbackTarget | None:
+    await ensure_deal_feedback_tables(db)
+    conn = db.require_conn()
+    params: tuple[Any, ...]
+    query = "SELECT * FROM guild_deal_feedback_targets WHERE token = ? AND expires_at > ?"
+    params = (token, datetime.now(timezone.utc).isoformat())
+    if guild_id is not None:
+        query += " AND guild_id = ?"
+        params = (*params, guild_id)
+    cursor = await conn.execute(query, params)
+    row = await cursor.fetchone()
+    if not row:
+        return None
+    return row_to_feedback_target(row)
+
+
+async def recent_feedback_targets(db, *, limit: int = 750) -> list[tuple[str, DealFeedbackTarget]]:
+    await ensure_deal_feedback_tables(db)
+    conn = db.require_conn()
+    cursor = await conn.execute(
+        """
+        SELECT * FROM guild_deal_feedback_targets
+        WHERE expires_at > ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (datetime.now(timezone.utc).isoformat(), max(1, min(int(limit), 2000))),
+    )
+    rows = await cursor.fetchall()
+    return [(str(row["token"]), row_to_feedback_target(row)) for row in rows]
+
+
+def row_to_feedback_target(row: Any) -> DealFeedbackTarget:
+    return DealFeedbackTarget(
+        target_key=str(row["target_key"]),
+        retailer=str(row["retailer"]),
+        title=str(row["title"]),
+        url=str(row["url"]),
+        source_label=str(row["source_label"]),
+        brand_hint=str(row["brand_hint"] or ""),
+    )
+
+
+def feedback_token(*, guild_id: int, target: DealFeedbackTarget) -> str:
+    raw = f"{guild_id}|{normalize_retailer_key(target.retailer)}|{target.target_key}|{target.source_label}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:22]
 
 
 async def record_deal_feedback(db, *, guild_id: int, target: DealFeedbackTarget, action: str, user_id: int | None) -> None:
@@ -201,12 +309,6 @@ async def record_deal_feedback(db, *, guild_id: int, target: DealFeedbackTarget,
 
 
 async def apply_feedback_learning_to_cards(db, *, guild_id: int | None, cards: list[Any], fallback_retailer: str = "walmart") -> list[Any]:
-    """Sort cards using saved deal/brand feedback.
-
-    Good/Flip feedback boosts future similar cards. Bad/Bad Brand/Too Weak
-    lowers future cards. The original card score still matters; feedback only
-    nudges the already-ranked list instead of taking over completely.
-    """
     if db is None or guild_id is None or not cards:
         return cards
     adjusted: list[tuple[float, int, Any]] = []
@@ -251,6 +353,22 @@ async def get_feedback_adjustment(db, *, guild_id: int, card: Any, fallback_reta
 
 async def ensure_deal_feedback_tables(db) -> None:
     conn = db.require_conn()
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS guild_deal_feedback_targets (
+            token TEXT PRIMARY KEY,
+            guild_id INTEGER NOT NULL,
+            target_key TEXT NOT NULL,
+            retailer TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            brand_hint TEXT,
+            source_label TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+        """
+    )
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS guild_deal_feedback_events (
@@ -306,6 +424,7 @@ async def ensure_deal_feedback_tables(db) -> None:
         )
         """
     )
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_feedback_targets_expiry ON guild_deal_feedback_targets (expires_at)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_feedback_events_guild_created ON guild_deal_feedback_events (guild_id, created_at)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_deal_feedback_summary_guild_score ON guild_deal_feedback_summary (guild_id, total_score)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_brand_feedback_summary_guild_score ON guild_deal_brand_feedback_summary (guild_id, total_score)")

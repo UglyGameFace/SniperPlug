@@ -11,6 +11,7 @@ from discord.ext import commands, tasks
 
 from sniperplug.cogs.deal_scanner import DealCard, provider_health_error_message
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
+from sniperplug.services.deal_confidence import DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR, select_confident_public_cards
 from sniperplug.services.deal_search_modes import MODE_BEST, rank_for_search_mode
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_alert_config import get_public_alert_config
@@ -26,6 +27,7 @@ AUTO_SCAN_SOURCE_LABEL = "autoscan:walmart_discovery"
 AUTO_SCAN_PUBLIC_LIMIT = 5
 AUTO_SCAN_CATEGORY_ROTATION = ("tech", "beauty", "home", "toys", "auto_tools", "essentials")
 AUTO_SCAN_PUBLIC_MODE = MODE_BEST
+AUTOSCAN_CONFIDENCE_FLOOR = DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR
 _AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -45,6 +47,8 @@ class AutoScanReport:
     category_label: str = ""
     min_discount: int = 0
     public_mode: str = "Best Picks"
+    confidence_floor: int = AUTOSCAN_CONFIDENCE_FLOOR
+    confidence_summary: str = ""
     products_checked: int = 0
     searches_checked: int = 0
     total_cards: int = 0
@@ -64,6 +68,8 @@ class AutoScanReport:
             "category_label": self.category_label,
             "threshold": self.min_discount,
             "public_mode": self.public_mode,
+            "confidence_floor": self.confidence_floor,
+            "confidence_summary": compact_log_text(self.confidence_summary),
             "checked": self.products_checked,
             "searches": self.searches_checked,
             "total_cards": self.total_cards,
@@ -85,9 +91,10 @@ class AutoScanReport:
             return f"Auto-scan did not run: {self.reason}"
         result = self.public_result
         category = f"{self.category_label or self.category_key or 'unknown'}"
+        confidence = f"\nConfidence: **{self.confidence_floor}/100 floor** • {self.confidence_summary}" if self.confidence_summary else f"\nConfidence: **{self.confidence_floor}/100 floor**"
         return (
             f"Category: **{category}**\n"
-            f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**\n"
+            f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**{confidence}\n"
             f"Checked **{self.products_checked}** products across **{self.searches_checked}** searches.\n"
             f"Verified candidates: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
             f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}** • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
@@ -125,10 +132,10 @@ class AutoScanRunnerCog(commands.Cog):
         async with lock:
             config = await get_public_alert_config(self.bot.db, interaction.guild_id)
             if not config.get("enabled") or not config.get("channel_id"):
-                await interaction.followup.send("Public alerts are not configured yet. Run `/public_alerts enabled:true retailers:walmart channel:#your-channel` first.", ephemeral=True)
+                await interaction.followup.send("Public alerts are not configured yet. Run `/autoscan_setup channel:#your-channel` first.", ephemeral=True)
                 return
             if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):  # public config controls where auto-scan may post
-                await interaction.followup.send("Public alerts are enabled, but Walmart is not in the public retailer list. Add `walmart` with `/public_alerts`.", ephemeral=True)
+                await interaction.followup.send("Public alerts are enabled, but Walmart is not in the public retailer list. Run `/autoscan_setup channel:#your-channel` to repair it.", ephemeral=True)
                 return
             report = await self._run_guild_walmart_discovery(AutoScanGuild(interaction.guild_id, config.get("channel_id")), force=force)
 
@@ -193,10 +200,11 @@ class AutoScanRunnerCog(commands.Cog):
 
         unique_cards = dedupe_cards(result.cards)
         unique_cards = rank_for_search_mode(unique_cards, [], AUTO_SCAN_PUBLIC_MODE, limit=max(len(unique_cards), AUTO_SCAN_PUBLIC_LIMIT)).verified
+        confidence_selection = select_confident_public_cards(unique_cards, floor=AUTOSCAN_CONFIDENCE_FLOOR)
         fresh_selection = await select_fresh_deal_cards(
             self.bot.db,
             guild_id=guild.guild_id,
-            cards=unique_cards,
+            cards=confidence_selection.cards,
             fallback_retailer=AUTO_SCAN_RETAILER,
             limit=AUTO_SCAN_PUBLIC_LIMIT,
         )
@@ -210,12 +218,14 @@ class AutoScanRunnerCog(commands.Cog):
             report = AutoScanReport(
                 guild_id=guild.guild_id,
                 allowed=True,
-                reason="Auto-scan completed with no new/lower-price verified cards.",
+                reason="Auto-scan completed with no new/lower-price verified public-confidence cards.",
                 settings=settings,
                 category_key=preset.key,
                 category_label=preset.label,
                 min_discount=result.min_discount,
                 public_mode="Best Picks",
+                confidence_floor=AUTOSCAN_CONFIDENCE_FLOOR,
+                confidence_summary=confidence_selection.summary_line(),
                 products_checked=result.products_checked,
                 searches_checked=result.searches_attempted,
                 total_cards=len(unique_cards),
@@ -225,7 +235,7 @@ class AutoScanRunnerCog(commands.Cog):
                 repeat_summary=fresh_selection.summary_line(),
                 warnings=tuple(warnings),
             )
-            log.info("Auto-scan completed with no fresh public cards %s", report.log_fields())
+            log.info("Auto-scan completed with no fresh public-confidence cards %s", report.log_fields())
             return report
 
         public_result = await maybe_post_public_deal_cards(
@@ -243,6 +253,8 @@ class AutoScanRunnerCog(commands.Cog):
             category_label=preset.label,
             min_discount=result.min_discount,
             public_mode="Best Picks",
+            confidence_floor=AUTOSCAN_CONFIDENCE_FLOOR,
+            confidence_summary=confidence_selection.summary_line(),
             products_checked=result.products_checked,
             searches_checked=result.searches_attempted,
             total_cards=len(unique_cards),

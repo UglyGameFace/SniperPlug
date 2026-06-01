@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sniperplug.services.deal_feedback import DealFeedbackView, build_feedback_target
+from sniperplug.services.deal_feedback import build_deal_feedback_view, build_feedback_target
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_channel_id
 from sniperplug.services.public_posting import normalize_retailer_key
@@ -108,7 +108,8 @@ async def maybe_post_public_deal_cards(
 
         try:
             target = build_feedback_target(card, target_key=product_key, retailer=retailer, source_label=source_label)
-            message = await channel.send(embed=sanitize_embed(card.embed), view=DealFeedbackView(target))
+            feedback_view = await build_deal_feedback_view(db, guild_id=guild_id, target=target)
+            message = await channel.send(embed=sanitize_embed(card.embed), view=feedback_view)
         except Exception as exc:  # pragma: no cover
             await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
             notes.append(f"public post failed for {retailer} in <#{getattr(channel, 'id', config['channel_id'])}>: {exc}")

@@ -13,6 +13,7 @@ from sniperplug.cogs.deal_scanner import DealCard, provider_health_error_message
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.autoscan_history import save_autoscan_report
 from sniperplug.services.deal_confidence import DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR, select_confident_public_cards
+from sniperplug.services.deal_feedback import apply_feedback_learning_to_cards
 from sniperplug.services.deal_search_modes import MODE_BEST, rank_for_search_mode
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_alert_config import get_public_alert_config
@@ -50,6 +51,7 @@ class AutoScanReport:
     public_mode: str = "Best Picks"
     confidence_floor: int = AUTOSCAN_CONFIDENCE_FLOOR
     confidence_summary: str = ""
+    feedback_learning_summary: str = ""
     products_checked: int = 0
     searches_checked: int = 0
     total_cards: int = 0
@@ -71,6 +73,7 @@ class AutoScanReport:
             "public_mode": self.public_mode,
             "confidence_floor": self.confidence_floor,
             "confidence_summary": compact_log_text(self.confidence_summary),
+            "feedback_learning": compact_log_text(self.feedback_learning_summary),
             "checked": self.products_checked,
             "searches": self.searches_checked,
             "total_cards": self.total_cards,
@@ -93,9 +96,10 @@ class AutoScanReport:
         result = self.public_result
         category = f"{self.category_label or self.category_key or 'unknown'}"
         confidence = f"\nConfidence: **{self.confidence_floor}/100 floor** • {self.confidence_summary}" if self.confidence_summary else f"\nConfidence: **{self.confidence_floor}/100 floor**"
+        feedback = f"\nLearning: {self.feedback_learning_summary}" if self.feedback_learning_summary else ""
         return (
             f"Category: **{category}**\n"
-            f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**{confidence}\n"
+            f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**{confidence}{feedback}\n"
             f"Checked **{self.products_checked}** products across **{self.searches_checked}** searches.\n"
             f"Verified candidates: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
             f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}** • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
@@ -203,6 +207,8 @@ class AutoScanRunnerCog(commands.Cog):
 
         unique_cards = dedupe_cards(result.cards)
         unique_cards = rank_for_search_mode(unique_cards, [], AUTO_SCAN_PUBLIC_MODE, limit=max(len(unique_cards), AUTO_SCAN_PUBLIC_LIMIT)).verified
+        unique_cards = await apply_feedback_learning_to_cards(self.bot.db, guild_id=guild.guild_id, cards=unique_cards, fallback_retailer=AUTO_SCAN_RETAILER)
+        feedback_summary = summarize_feedback_learning(unique_cards)
         confidence_selection = select_confident_public_cards(unique_cards, floor=AUTOSCAN_CONFIDENCE_FLOOR)
         fresh_selection = await select_fresh_deal_cards(
             self.bot.db,
@@ -229,6 +235,7 @@ class AutoScanRunnerCog(commands.Cog):
                 public_mode="Best Picks",
                 confidence_floor=AUTOSCAN_CONFIDENCE_FLOOR,
                 confidence_summary=confidence_selection.summary_line(),
+                feedback_learning_summary=feedback_summary,
                 products_checked=result.products_checked,
                 searches_checked=result.searches_attempted,
                 total_cards=len(unique_cards),
@@ -259,6 +266,7 @@ class AutoScanRunnerCog(commands.Cog):
             public_mode="Best Picks",
             confidence_floor=AUTOSCAN_CONFIDENCE_FLOOR,
             confidence_summary=confidence_selection.summary_line(),
+            feedback_learning_summary=feedback_summary,
             products_checked=result.products_checked,
             searches_checked=result.searches_attempted,
             total_cards=len(unique_cards),
@@ -325,6 +333,15 @@ def dedupe_cards(cards: list[DealCard]) -> list[DealCard]:
         seen.add(key)
         unique.append(card)
     return unique
+
+
+def summarize_feedback_learning(cards: list[DealCard]) -> str:
+    adjusted = [int(getattr(card, "feedback_learning_score", 0) or 0) for card in cards]
+    boosted = sum(1 for value in adjusted if value > 0)
+    penalized = sum(1 for value in adjusted if value < 0)
+    if not boosted and not penalized:
+        return "no saved feedback adjustments yet"
+    return f"boosted **{boosted}** • penalized **{penalized}** from saved feedback"
 
 
 async def list_public_alert_guilds(db) -> list[AutoScanGuild]:

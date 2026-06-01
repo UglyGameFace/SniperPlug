@@ -4,7 +4,7 @@ from typing import Any
 
 import discord
 
-from sniperplug.services.deal_feedback import DealFeedbackView, build_feedback_target, ensure_deal_feedback_tables
+from sniperplug.services.deal_feedback import build_deal_feedback_view, build_feedback_target, ensure_deal_feedback_tables
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_posts import card_product_key
 from sniperplug.services.public_posting import normalize_retailer_key
@@ -64,5 +64,6 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
     )
     product_key = card_product_key(card, retailer=retailer)
     target = build_feedback_target(card, target_key=product_key, retailer=retailer, source_label="staff_shared_review")
-    await channel.send(embed=embed, view=DealFeedbackView(target))
-    return True, "Posted that review lead to the public deal channel with feedback buttons."
+    feedback_view = await build_deal_feedback_view(db, guild_id=guild_id, target=target)
+    await channel.send(embed=embed, view=feedback_view)
+    return True, "Posted that review lead to the public deal channel with persistent feedback buttons."

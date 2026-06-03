@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import discord
 from discord import app_commands
@@ -14,6 +15,7 @@ from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_ru
 from sniperplug.services.autoscan_history import save_autoscan_report
 from sniperplug.services.deal_confidence import DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR, select_confident_public_cards
 from sniperplug.services.deal_feedback import apply_feedback_learning_to_cards
+from sniperplug.services.deal_finder_telemetry import top_route_lines
 from sniperplug.services.deal_search_modes import MODE_BEST, rank_for_search_mode
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_alert_config import get_public_alert_config
@@ -52,9 +54,14 @@ class AutoScanReport:
     confidence_floor: int = AUTOSCAN_CONFIDENCE_FLOOR
     confidence_summary: str = ""
     feedback_learning_summary: str = ""
+    verification_failure_summary: str = ""
+    review_candidate_summary: str = ""
+    route_summary: str = ""
+    price_memory_summary: str = ""
     products_checked: int = 0
     searches_checked: int = 0
     total_cards: int = 0
+    verified_before_memory: int = 0
     fresh_cards: int = 0
     cards_attempted_for_public: int = 0
     used_repeat_fallback: bool = False
@@ -74,9 +81,14 @@ class AutoScanReport:
             "confidence_floor": self.confidence_floor,
             "confidence_summary": compact_log_text(self.confidence_summary),
             "feedback_learning": compact_log_text(self.feedback_learning_summary),
+            "verification_failure_summary": compact_log_text(self.verification_failure_summary, limit=900),
+            "review_candidate_summary": compact_log_text(self.review_candidate_summary, limit=900),
+            "route_summary": compact_log_text(self.route_summary, limit=900),
+            "price_memory_summary": compact_log_text(self.price_memory_summary, limit=500),
             "checked": self.products_checked,
             "searches": self.searches_checked,
             "total_cards": self.total_cards,
+            "verified_before_memory": self.verified_before_memory,
             "fresh_cards": self.fresh_cards,
             "public_attempt": self.cards_attempted_for_public,
             "repeat_fallback": self.used_repeat_fallback,
@@ -97,11 +109,13 @@ class AutoScanReport:
         category = f"{self.category_label or self.category_key or 'unknown'}"
         confidence = f"\nConfidence: **{self.confidence_floor}/100 floor** • {self.confidence_summary}" if self.confidence_summary else f"\nConfidence: **{self.confidence_floor}/100 floor**"
         feedback = f"\nLearning: {self.feedback_learning_summary}" if self.feedback_learning_summary else ""
+        verification = f"\nVerification trail: {self.verification_failure_summary}" if self.verification_failure_summary else ""
+        memory = f"\nPrice memory: {self.price_memory_summary}" if self.price_memory_summary else ""
         return (
             f"Category: **{category}**\n"
-            f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**{confidence}{feedback}\n"
+            f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**{confidence}{feedback}{memory}{verification}\n"
             f"Checked **{self.products_checked}** products across **{self.searches_checked}** searches.\n"
-            f"Verified candidates: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
+            f"Verified before memory: **{self.verified_before_memory}** • Verified after memory/ranking: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
             f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}** • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
             f"Repeat fallback used: **{'yes' if self.used_repeat_fallback else 'no'}**\n"
             f"Fresh filter: {self.repeat_summary or 'n/a'}"
@@ -144,7 +158,11 @@ class AutoScanRunnerCog(commands.Cog):
                 return
             report = await self._run_guild_walmart_discovery(AutoScanGuild(interaction.guild_id, config.get("channel_id")), force=force)
 
-        embed = discord.Embed(title="🧭 Auto-scan test result", description=report.discord_summary(), color=discord.Color.green() if report.public_result.posted else discord.Color.orange())
+        embed = discord.Embed(title="🧭 Auto-scan test result", description=report.discord_summary()[:4000], color=discord.Color.green() if report.public_result.posted else discord.Color.orange())
+        if report.review_candidate_summary:
+            embed.add_field(name="Review-only diagnostics", value=trim_discord_value(report.review_candidate_summary), inline=False)
+        if report.route_summary:
+            embed.add_field(name="Top search routes", value=trim_discord_value(report.route_summary), inline=False)
         if report.warnings:
             embed.add_field(name="Warnings", value="\n".join(f"• {warning}" for warning in report.warnings[:5]), inline=False)
         if report.public_result.errors:
@@ -204,6 +222,7 @@ class AutoScanRunnerCog(commands.Cog):
         preset = select_autoscan_preset(guild.guild_id)
         result = await run_autoscan_verified_category(self.bot.db, guild.guild_id, preset=preset)
         warnings = list(result.warnings)
+        diagnostics = autoscan_diagnostics(result)
 
         unique_cards = dedupe_cards(result.cards)
         unique_cards = rank_for_search_mode(unique_cards, [], AUTO_SCAN_PUBLIC_MODE, limit=max(len(unique_cards), AUTO_SCAN_PUBLIC_LIMIT)).verified
@@ -236,9 +255,14 @@ class AutoScanRunnerCog(commands.Cog):
                 confidence_floor=AUTOSCAN_CONFIDENCE_FLOOR,
                 confidence_summary=confidence_selection.summary_line(),
                 feedback_learning_summary=feedback_summary,
+                verification_failure_summary=diagnostics["verification_failure_summary"],
+                review_candidate_summary=diagnostics["review_candidate_summary"],
+                route_summary=diagnostics["route_summary"],
+                price_memory_summary=diagnostics["price_memory_summary"],
                 products_checked=result.products_checked,
                 searches_checked=result.searches_attempted,
                 total_cards=len(unique_cards),
+                verified_before_memory=result.total_verified_cards,
                 fresh_cards=0,
                 cards_attempted_for_public=0,
                 used_repeat_fallback=False,
@@ -267,9 +291,14 @@ class AutoScanRunnerCog(commands.Cog):
             confidence_floor=AUTOSCAN_CONFIDENCE_FLOOR,
             confidence_summary=confidence_selection.summary_line(),
             feedback_learning_summary=feedback_summary,
+            verification_failure_summary=diagnostics["verification_failure_summary"],
+            review_candidate_summary=diagnostics["review_candidate_summary"],
+            route_summary=diagnostics["route_summary"],
+            price_memory_summary=diagnostics["price_memory_summary"],
             products_checked=result.products_checked,
             searches_checked=result.searches_attempted,
             total_cards=len(unique_cards),
+            verified_before_memory=result.total_verified_cards,
             fresh_cards=len(fresh_selection.fresh),
             cards_attempted_for_public=len(shown_cards),
             used_repeat_fallback=False,
@@ -344,6 +373,71 @@ def summarize_feedback_learning(cards: list[DealCard]) -> str:
     return f"boosted **{boosted}** • penalized **{penalized}** from saved feedback"
 
 
+def autoscan_diagnostics(result: VerifiedHuntResult) -> dict[str, str]:
+    review = result.review_candidates
+    review_summary = review.summary_line() if review else "review diagnostics unavailable"
+    route_lines = top_route_lines(result.route_stats, limit=4)
+    route_summary = "\n".join(route_lines) if route_lines else "No route stats saved for this run."
+    price_memory_summary = summarize_price_memory(result)
+    return {
+        "verification_failure_summary": build_verification_failure_summary(result),
+        "review_candidate_summary": review_summary,
+        "route_summary": route_summary,
+        "price_memory_summary": price_memory_summary,
+    }
+
+
+def build_verification_failure_summary(result: VerifiedHuntResult) -> str:
+    review = result.review_candidates
+    verified_before_memory = int(result.total_verified_cards or 0)
+    verified_after_memory = len(result.cards or [])
+    if verified_before_memory > 0 and verified_after_memory == 0:
+        return "Verified markdown cards existed, but price-memory/fresh filtering hid same-price repeats. A lower-price repeat can still post again."
+    if verified_before_memory > 0:
+        return "Verified markdown cards existed; later gates decide public posting: feedback ranking, confidence floor, fresh/lower-price filter, duplicate guard, and public-alert proof."
+    if review is None:
+        return "0 verified markdown cards. Review diagnostics were not available for this run."
+
+    blockers = [
+        ("missing trusted was/reference", int(review.missing_reference_count or 0)),
+        ("weak/ignored reference", int(review.weak_reference_count or 0)),
+        ("under threshold", int(review.under_threshold_count or 0)),
+        ("missing current price", int(review.missing_current_count or 0)),
+        ("no coupon/cash/comp/value signal", int(review.no_value_signal_count or 0)),
+        ("bad coupon/cash/value rejected", int(review.rejected_bad_value_count or 0)),
+    ]
+    top = [(label, count) for label, count in sorted(blockers, key=lambda item: item[1], reverse=True) if count > 0][:4]
+    if not top:
+        return "0 verified markdown cards. Walmart returned products, but none produced trusted markdown proof at the current threshold."
+    bits = " • ".join(f"{label}: **{count}**" for label, count in top)
+    extras = []
+    if review.cards:
+        extras.append(f"review-only leads: **{len(review.cards)}**")
+    if review.exact_match_count:
+        extras.append(f"exact-match rescues: **{review.exact_match_count}**")
+    extra_text = f" • {' • '.join(extras)}" if extras else ""
+    return f"0 verified markdown cards. Main blockers: {bits}{extra_text}"
+
+
+def summarize_price_memory(result: VerifiedHuntResult) -> str:
+    memory = result.price_memory
+    if memory is None:
+        return "not used"
+    pieces: list[str] = []
+    for attr, label in (
+        ("fresh_count", "fresh/new"),
+        ("lower_price_count", "lower-price repeats"),
+        ("same_or_higher_count", "same/higher hidden"),
+        ("shown_count", "shown after memory"),
+    ):
+        value = getattr(memory, attr, None)
+        if value is not None:
+            pieces.append(f"{label}: **{int(value)}**")
+    if pieces:
+        return " • ".join(pieces)
+    return str(memory)
+
+
 async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
     conn = db.require_conn()
     cursor = await conn.execute(
@@ -359,5 +453,12 @@ async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
     return guilds
 
 
-def compact_log_text(value: str) -> str:
-    return " | ".join(str(value).splitlines())[:500]
+def compact_log_text(value: str, *, limit: int = 500) -> str:
+    return " | ".join(str(value).splitlines())[:limit]
+
+
+def trim_discord_value(value: str, *, limit: int = 1024) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text or "n/a"
+    return text[: limit - 1].rstrip() + "…"

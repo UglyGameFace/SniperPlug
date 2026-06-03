@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import discord
 from discord import app_commands
@@ -11,16 +14,78 @@ from sniperplug.services.public_posting import SUPPORTED_RETAILERS, format_retai
 
 
 DEFAULT_STALE_AFTER_HOURS = 24
+ACTIVE_DEALS_MAX_PAGE_SIZE = 15
+ACTIVE_DEALS_DEFAULT_PAGE_SIZE = 10
+ACTIVE_DEAL_SORTS = {
+    "recent": "last_seen_at DESC",
+    "discount": "discount DESC, last_seen_at DESC",
+    "score": "score DESC, last_seen_at DESC",
+    "price_low": "current_price ASC, last_seen_at DESC",
+    "price_high": "current_price DESC, last_seen_at DESC",
+}
+
+
+@dataclass(frozen=True)
+class ActiveDealPage:
+    rows: list[dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+    retailer: str | None = None
+    query: str | None = None
+    min_discount: int | None = None
+    sort: str = "recent"
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, math.ceil(self.total / max(1, self.page_size)))
+
+    @property
+    def clamped_page(self) -> int:
+        return max(1, min(self.page, self.total_pages))
+
+    @property
+    def has_previous(self) -> bool:
+        return self.clamped_page > 1
+
+    @property
+    def has_next(self) -> bool:
+        return self.clamped_page < self.total_pages
 
 
 class ActiveDealsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="active_deals", description="Show deals SniperPlug has recently cached as active.")
-    @app_commands.describe(retailer="Optional store filter.", limit="How many cached deals to show. Max 15.")
+    @app_commands.command(name="active_deals", description="Page through SniperPlug's recent active deal cache.")
+    @app_commands.describe(
+        retailer="Optional store filter.",
+        limit="Rows per page. Max 15.",
+        page="Page number to open.",
+        search="Optional title/source search.",
+        min_discount="Only show cached rows at or above this markdown percent.",
+        sort="How to sort cached rows.",
+    )
+    @app_commands.choices(
+        sort=[
+            app_commands.Choice(name="Most recent", value="recent"),
+            app_commands.Choice(name="Biggest discount", value="discount"),
+            app_commands.Choice(name="Highest score", value="score"),
+            app_commands.Choice(name="Lowest price", value="price_low"),
+            app_commands.Choice(name="Highest price", value="price_high"),
+        ]
+    )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def active_deals(self, interaction: discord.Interaction, retailer: str | None = None, limit: app_commands.Range[int, 1, 15] = 10) -> None:
+    async def active_deals(
+        self,
+        interaction: discord.Interaction,
+        retailer: str | None = None,
+        limit: app_commands.Range[int, 1, ACTIVE_DEALS_MAX_PAGE_SIZE] = ACTIVE_DEALS_DEFAULT_PAGE_SIZE,
+        page: app_commands.Range[int, 1, 999] = 1,
+        search: str | None = None,
+        min_discount: app_commands.Range[int, 0, 95] | None = None,
+        sort: app_commands.Choice[str] | None = None,
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is None:
             await interaction.followup.send("Use this in a server so I know which active deal cache to read.", ephemeral=True)
@@ -30,8 +95,19 @@ class ActiveDealsCog(commands.Cog):
             await interaction.followup.send(f"Unknown retailer `{retailer}`. Supported: {format_retailers(tuple(sorted(SUPPORTED_RETAILERS)))}", ephemeral=True)
             return
         await mark_stale_deals(self.bot.db, interaction.guild_id, stale_after_hours=DEFAULT_STALE_AFTER_HOURS)
-        deals = await list_active_deals(self.bot.db, interaction.guild_id, retailer=key, limit=int(limit))
-        await interaction.followup.send(embed=build_active_deals_embed(interaction.guild_id, deals, retailer=key, limit=int(limit)), ephemeral=True)
+        sort_key = normalize_sort(sort.value if sort else None)
+        page_data = await list_active_deals(
+            self.bot.db,
+            interaction.guild_id,
+            retailer=key,
+            limit=int(limit),
+            page=int(page),
+            search=search,
+            min_discount=int(min_discount) if min_discount is not None else None,
+            sort=sort_key,
+        )
+        view = ActiveDealsPageView(page_data) if page_data.total_pages > 1 else None
+        await interaction.followup.send(embed=build_active_deals_embed(interaction.guild_id, page_data), view=view, ephemeral=True)
 
     @app_commands.command(name="active_deals_cleanup", description="Mark old cached deals stale.")
     @app_commands.describe(stale_after_hours="Mark deals stale if not seen again after this many hours.")
@@ -45,16 +121,103 @@ class ActiveDealsCog(commands.Cog):
         await interaction.followup.send(f"Marked **{updated}** cached deal(s) stale if SniperPlug has not seen them again in **{stale_after_hours}h**.", ephemeral=True)
 
 
-async def list_active_deals(db, guild_id: int, *, retailer: str | None = None, limit: int = 10) -> list[dict]:
+class ActiveDealsPageView(discord.ui.View):
+    def __init__(self, page_data: ActiveDealPage):
+        super().__init__(timeout=300)
+        self.page_data = page_data
+        self.previous_page.disabled = not page_data.has_previous
+        self.next_page.disabled = not page_data.has_next
+
+    @discord.ui.button(label="Previous", emoji="⬅️", style=discord.ButtonStyle.secondary)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.show_page(interaction, self.page_data.clamped_page - 1)
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary)
+    async def refresh_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.show_page(interaction, self.page_data.clamped_page)
+
+    @discord.ui.button(label="Next", emoji="➡️", style=discord.ButtonStyle.primary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.show_page(interaction, self.page_data.clamped_page + 1)
+
+    async def show_page(self, interaction: discord.Interaction, page: int) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message("Use this in a server so I know which active deal cache to read.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        db = getattr(interaction.client, "db", None)
+        if db is None:
+            await interaction.followup.send("Database is unavailable right now.", ephemeral=True)
+            return
+        page_data = await list_active_deals(
+            db,
+            interaction.guild_id,
+            retailer=self.page_data.retailer,
+            limit=self.page_data.page_size,
+            page=page,
+            search=self.page_data.query,
+            min_discount=self.page_data.min_discount,
+            sort=self.page_data.sort,
+        )
+        await interaction.edit_original_response(embed=build_active_deals_embed(interaction.guild_id, page_data), view=ActiveDealsPageView(page_data) if page_data.total_pages > 1 else None)
+
+
+async def list_active_deals(
+    db,
+    guild_id: int,
+    *,
+    retailer: str | None = None,
+    limit: int = ACTIVE_DEALS_DEFAULT_PAGE_SIZE,
+    page: int = 1,
+    search: str | None = None,
+    min_discount: int | None = None,
+    sort: str = "recent",
+) -> ActiveDealPage:
     await ensure_public_post_tables(db)
     conn = db.require_conn()
-    safe_limit = max(1, min(int(limit), 15))
+    safe_limit = max(1, min(int(limit), ACTIVE_DEALS_MAX_PAGE_SIZE))
+    safe_sort = normalize_sort(sort)
+    filters = ["guild_id = ?", "status = 'active'"]
+    params: list[Any] = [guild_id]
     if retailer:
-        cursor = await conn.execute("SELECT retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at FROM guild_active_deal_cache WHERE guild_id = ? AND retailer = ? AND status = 'active' ORDER BY last_seen_at DESC LIMIT ?", (guild_id, retailer, safe_limit))
-    else:
-        cursor = await conn.execute("SELECT retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active' ORDER BY last_seen_at DESC LIMIT ?", (guild_id, safe_limit))
+        filters.append("retailer = ?")
+        params.append(retailer)
+    if min_discount is not None:
+        filters.append("discount IS NOT NULL AND discount >= ?")
+        params.append(int(min_discount))
+    clean_search = " ".join(str(search or "").split())
+    if clean_search:
+        filters.append("(LOWER(title) LIKE ? OR LOWER(source_label) LIKE ? OR LOWER(retailer) LIKE ?)")
+        pattern = f"%{clean_search.lower()}%"
+        params.extend([pattern, pattern, pattern])
+    where = " AND ".join(filters)
+    cursor = await conn.execute(f"SELECT COUNT(*) AS count FROM guild_active_deal_cache WHERE {where}", tuple(params))
+    row = await cursor.fetchone()
+    total = int(row["count"] if row and row["count"] is not None else 0)
+    total_pages = max(1, math.ceil(total / safe_limit))
+    safe_page = max(1, min(int(page), total_pages))
+    offset = (safe_page - 1) * safe_limit
+    cursor = await conn.execute(
+        f"""
+        SELECT retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+        FROM guild_active_deal_cache
+        WHERE {where}
+        ORDER BY {ACTIVE_DEAL_SORTS[safe_sort]}
+        LIMIT ? OFFSET ?
+        """,
+        tuple([*params, safe_limit, offset]),
+    )
     rows = await cursor.fetchall()
-    return [dict(row) for row in rows]
+    return ActiveDealPage(
+        rows=[dict(row) for row in rows],
+        total=total,
+        page=safe_page,
+        page_size=safe_limit,
+        retailer=retailer,
+        query=clean_search or None,
+        min_discount=min_discount,
+        sort=safe_sort,
+    )
 
 
 async def active_deal_counts(db, guild_id: int) -> dict[str, int]:
@@ -74,18 +237,51 @@ async def mark_stale_deals(db, guild_id: int, *, stale_after_hours: int = DEFAUL
     return int(getattr(cursor, "rowcount", 0) or 0)
 
 
-def build_active_deals_embed(guild_id: int, deals: list[dict], *, retailer: str | None, limit: int) -> discord.Embed:
-    embed = discord.Embed(title="🟢 Active Deals Cache", description=f"Server: `{guild_id}`\nRetailer: `{retailer or 'all'}`\nShowing up to: **{limit}**\nRecheck before buying because prices can change.", color=discord.Color.green() if deals else discord.Color.dark_gold())
-    if not deals:
-        embed.add_field(name="No active deals cached yet", value="Run `/discover`, `/hunt`, `/deals`, or wait for enabled auto-scan.", inline=False)
+def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discord.Embed:
+    filters = []
+    if page_data.retailer:
+        filters.append(f"retailer `{page_data.retailer}`")
+    if page_data.query:
+        filters.append(f"search `{page_data.query}`")
+    if page_data.min_discount is not None:
+        filters.append(f"{page_data.min_discount}%+ markdown")
+    filter_text = " • ".join(filters) if filters else "none"
+    embed = discord.Embed(
+        title="🟢 Active Deals Cache",
+        description=(
+            f"Server: `{guild_id}`\n"
+            f"Page: **{page_data.clamped_page}/{page_data.total_pages}** • Total matching active cached rows: **{page_data.total}**\n"
+            f"Filters: {filter_text} • Sort: `{page_data.sort}`\n\n"
+            "Cache means SniperPlug recently saw this row. It is **not** the same as public-ready. Public posts still require verified markdown, confidence, fresh/lower-price, duplicate, and proof gates."
+        ),
+        color=discord.Color.green() if page_data.rows else discord.Color.dark_gold(),
+    )
+    if not page_data.rows:
+        embed.add_field(name="No active cached rows matched", value="Try lowering filters, changing page to 1, or running `/storage_health` to inspect cache counts.", inline=False)
         return embed
-    for row in deals[:limit]:
+    start_index = (page_data.clamped_page - 1) * page_data.page_size + 1
+    for offset, row in enumerate(page_data.rows):
         discount = row.get("discount")
         discount_text = f"{float(discount):.0f}%" if discount is not None else "n/a"
         score = row.get("score") if row.get("score") is not None else "n/a"
-        embed.add_field(name=f"{row.get('retailer', 'retailer')} • {trim(str(row.get('title') or 'deal'), 80)}", value=f"Price: **{money(row.get('current_price'))}** • Discount: **{discount_text}** • Score: `{score}`\nSource: `{row.get('source_label') or 'unknown'}`\nLast seen: `{row.get('last_seen_at') or 'unknown'}`\n{row.get('url') or ''}", inline=False)
-    embed.set_footer(text="Use /active_deals_cleanup if old deals are hanging around too long.")
+        url = str(row.get("url") or "")
+        open_text = f"[Open deal]({url})" if url.startswith("http") else "No link saved"
+        embed.add_field(
+            name=f"#{start_index + offset} • {row.get('retailer', 'retailer')} • {trim(str(row.get('title') or 'deal'), 72)}",
+            value=(
+                f"Price: **{money(row.get('current_price'))}** • Discount: **{discount_text}** • Score: `{score}`\n"
+                f"Source: `{trim(str(row.get('source_label') or 'unknown'), 42)}` • Last seen: `{row.get('last_seen_at') or 'unknown'}`\n"
+                f"{open_text}"
+            ),
+            inline=False,
+        )
+    embed.set_footer(text="Use the buttons to page. Use /active_deals search:<term> or min_discount:<percent> to narrow 1000+ rows.")
     return embed
+
+
+def normalize_sort(value: str | None) -> str:
+    key = str(value or "recent").strip().lower()
+    return key if key in ACTIVE_DEAL_SORTS else "recent"
 
 
 def money(value) -> str:

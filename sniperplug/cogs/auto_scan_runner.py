@@ -423,19 +423,25 @@ def summarize_price_memory(result: VerifiedHuntResult) -> str:
     memory = result.price_memory
     if memory is None:
         return "not used"
-    pieces: list[str] = []
-    for attr, label in (
-        ("fresh_count", "fresh/new"),
-        ("lower_price_count", "lower-price repeats"),
-        ("same_or_higher_count", "same/higher hidden"),
-        ("shown_count", "shown after memory"),
-    ):
-        value = getattr(memory, attr, None)
-        if value is not None:
-            pieces.append(f"{label}: **{int(value)}**")
-    if pieces:
-        return " • ".join(pieces)
-    return str(memory)
+    try:
+        checked = len(getattr(memory, "decisions", []) or [])
+        shown = len(getattr(memory, "shown", []) or [])
+        summary = memory.summary_line() if hasattr(memory, "summary_line") else "price memory used"
+        examples: list[str] = []
+        for decision in getattr(memory, "decisions", []) or []:
+            if not getattr(decision, "should_show", False):
+                continue
+            card = getattr(decision, "card", None)
+            label = trim_text(str(getattr(card, "label", None) or "deal"), 42)
+            status = str(getattr(decision, "status", "shown")).replace("_", " ")
+            examples.append(f"{label} ({status})")
+            if len(examples) >= 2:
+                break
+        example_text = f" • examples: {', '.join(examples)}" if examples else ""
+        return f"checked **{checked}** verified cards • showing **{shown}** • {summary}{example_text}"
+    except Exception as exc:
+        log.warning("Failed to summarize price memory safely: %s", exc)
+        return "used, but summary unavailable"
 
 
 async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
@@ -462,3 +468,8 @@ def trim_discord_value(value: str, *, limit: int = 1024) -> str:
     if len(text) <= limit:
         return text or "n/a"
     return text[: limit - 1].rstrip() + "…"
+
+
+def trim_text(value: str, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"

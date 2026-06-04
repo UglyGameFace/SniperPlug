@@ -59,16 +59,17 @@ async def maybe_post_public_deal_cards(
         return PublicPostResult(attempted=attempted, errors=("public posting skipped: bot database unavailable",))
 
     fallback_key = normalize_retailer_key(fallback_retailer)
-    cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cards, source_label=source_label, fallback_retailer=fallback_key)
-
     config = await get_public_alert_config(db, guild_id)
     if not config["enabled"] or not config["channel_id"]:
+        cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cards, source_label=source_label, fallback_retailer=fallback_key)
         return PublicPostResult(attempted=attempted, skipped_disabled=attempted, cached_active=cached_active)
 
     channel, channel_note = await resolve_public_alert_channel(bot, db, guild_id=guild_id, configured_channel_id=config["channel_id"])
     if channel is None:
+        cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cards, source_label=source_label, fallback_retailer=fallback_key)
         return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(channel_note or "public channel lookup failed",))
     if not hasattr(channel, "send"):
+        cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cards, source_label=source_label, fallback_retailer=fallback_key)
         return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(f"configured public alert channel <#{getattr(channel, 'id', config['channel_id'])}> is not sendable",))
 
     allowed_retailers = set(config["retailers"])
@@ -77,6 +78,7 @@ async def maybe_post_public_deal_cards(
     skipped_not_alertable = 0
     skipped_wrong_retailer = 0
     notes: list[str] = []
+    cache_after_posting: list[Any] = []
     if channel_note:
         notes.append(channel_note)
 
@@ -130,7 +132,12 @@ async def maybe_post_public_deal_cards(
             )
         except Exception as exc:
             notes.append(f"alert dedupe write failed for {retailer}: {exc}")
+        cache_after_posting.append(card)
         posted += 1
+
+    cached_active = 0
+    if cache_after_posting:
+        cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cache_after_posting, source_label=source_label, fallback_retailer=fallback_key)
 
     return PublicPostResult(
         attempted=attempted,

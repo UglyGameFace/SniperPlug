@@ -273,7 +273,10 @@ async def count_public_posts_today(db, guild_id: int) -> int:
     try:
         conn = db.require_conn()
         since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        cursor = await conn.execute("SELECT COUNT(*) AS count FROM guild_public_deal_posts WHERE guild_id = ? AND status = 'posted' AND created_at >= ?", (guild_id, since))
+        cursor = await conn.execute(
+            "SELECT COUNT(*) AS count FROM guild_public_deal_posts WHERE guild_id = ? AND status = 'posted' AND posted_at IS NOT NULL AND posted_at >= ?",
+            (guild_id, since),
+        )
         row = await cursor.fetchone()
         return int(row["count"] if row and row["count"] is not None else 0)
     except Exception:

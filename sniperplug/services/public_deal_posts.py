@@ -14,6 +14,7 @@ from sniperplug.services.public_posting import normalize_retailer_key
 ALERT_DEDUPE_DAYS = 30
 PUBLIC_ALERT_KEY = "public_alert:v1"
 PUBLIC_CHANNEL_NAME_FALLBACKS = ("walmart-deals", "deals", "deal-alerts", "sniperplug-deals")
+RESERVATION_STALE_MINUTES = 20
 
 
 @dataclass(frozen=True)
@@ -114,7 +115,7 @@ async def maybe_post_public_deal_cards(
             message = await channel.send(embed=sanitize_embed(card.embed), view=feedback_view)
         except Exception as exc:  # pragma: no cover
             await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
-            notes.append(f"public post failed for {retailer} in <#{getattr(channel, 'id', config['channel_id'])}>: {exc}")
+            notes.append(f"public post failed for {retailer} in <#{getattr(channel, 'id', config['channel_id'])}>: {clean_error_text(exc)}")
             continue
 
         await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
@@ -131,7 +132,7 @@ async def maybe_post_public_deal_cards(
                 expires_at=alert_expires_at(),
             )
         except Exception as exc:
-            notes.append(f"alert dedupe write failed for {retailer}: {exc}")
+            notes.append(f"alert dedupe write failed for {retailer}: {clean_error_text(exc)}")
         cache_after_posting.append(card)
         posted += 1
 
@@ -175,7 +176,7 @@ async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, conf
             permission_error = public_channel_permission_error(guild, fetched)
             return (None, permission_error) if permission_error else (fetched, None)
     except Exception as exc:  # pragma: no cover
-        fetch_error = f"stored public alert channel <#{channel_id}> could not be fetched: {exc}"
+        fetch_error = f"stored public alert channel <#{channel_id}> could not be fetched: {clean_error_text(exc)}"
 
     repaired = await find_named_public_channel(guild)
     if repaired is None:
@@ -392,6 +393,8 @@ async def ensure_public_post_tables(db) -> None:
         """
     )
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_public_deal_posts_guild_retailer ON guild_public_deal_posts (guild_id, retailer)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_public_deal_posts_status_seen ON guild_public_deal_posts (guild_id, status, first_seen_at)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_public_deal_posts_posted ON guild_public_deal_posts (guild_id, status, posted_at)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_active_deal_cache_guild_retailer ON guild_active_deal_cache (guild_id, retailer, status)")
     await conn.commit()
 
@@ -399,7 +402,13 @@ async def ensure_public_post_tables(db) -> None:
 async def reserve_public_deal_post(db, *, guild_id: int, retailer: str, deal_key: str, source_label: str) -> bool:
     await ensure_public_post_tables(db)
     conn = db.require_conn()
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    stale_before = (now_dt - timedelta(minutes=RESERVATION_STALE_MINUTES)).isoformat()
+    await conn.execute(
+        "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'reserved' AND first_seen_at < ?",
+        (guild_id, deal_key, stale_before),
+    )
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO guild_public_deal_posts (guild_id, deal_key, retailer, source_label, status, first_seen_at)
@@ -440,3 +449,10 @@ def decode_channel_id(value: int | str | None) -> int | None:
         return int(text)
     except (TypeError, ValueError):
         return None
+
+
+def clean_error_text(exc: BaseException | object, *, limit: int = 180) -> str:
+    text = str(exc or "error")
+    cleaned = "".join(ch if (ch.isprintable() and (ch == "\n" or ch == "\t" or ord(ch) >= 32)) else " " for ch in text)
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:limit].rstrip() + ("…" if len(cleaned) > limit else "")

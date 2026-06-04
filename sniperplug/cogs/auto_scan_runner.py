@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from sniperplug.cogs.deal_scanner import DealCard, provider_health_error_message
+from sniperplug.cogs.deal_scanner import DealCard, HuntPreset, provider_health_error_message
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.autoscan_history import save_autoscan_report
 from sniperplug.services.deal_confidence import DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR, select_confident_public_cards
@@ -32,6 +32,10 @@ AUTO_SCAN_PUBLIC_LIMIT = 5
 AUTO_SCAN_CATEGORY_ROTATION = ("tech", "beauty", "home", "toys", "auto_tools", "essentials")
 AUTO_SCAN_PUBLIC_MODE = MODE_BEST
 AUTOSCAN_CONFIDENCE_FLOOR = DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR
+AUTO_SCAN_FAST_QUERY_COUNT = 4
+AUTO_SCAN_DEEP_QUERY_COUNT = 8
+AUTO_SCAN_MANUAL_QUERY_COUNT = 10
+AUTO_SCAN_DEEP_EVERY_BUCKETS = 8
 _AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -95,9 +99,11 @@ class AutoScanReport:
             "repeat_summary": compact_log_text(self.repeat_summary),
             "posted": self.public_result.posted,
             "dupes": self.public_result.skipped_duplicate,
+            "recent_dupes": getattr(self.public_result, "skipped_recent_alert_duplicate", 0),
+            "reserved_dupes": getattr(self.public_result, "skipped_reserved_duplicate", 0),
             "not_alertable": self.public_result.skipped_not_alertable,
             "disabled": self.public_result.skipped_disabled,
-            "errors": self.public_result.errors,
+            "errors": tuple(clean_log_text(error) for error in self.public_result.errors),
             "settings": self.settings or {},
             "warnings": self.warnings[:3],
         }
@@ -111,12 +117,13 @@ class AutoScanReport:
         feedback = f"\nLearning: {self.feedback_learning_summary}" if self.feedback_learning_summary else ""
         verification = f"\nVerification trail: {self.verification_failure_summary}" if self.verification_failure_summary else ""
         memory = f"\nPrice memory: {self.price_memory_summary}" if self.price_memory_summary else ""
+        duplicate_breakdown = duplicate_breakdown_text(result)
         return (
             f"Category: **{category}**\n"
             f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**{confidence}{feedback}{memory}{verification}\n"
             f"Checked **{self.products_checked}** products across **{self.searches_checked}** searches.\n"
             f"Verified before memory: **{self.verified_before_memory}** • Verified after memory/ranking: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
-            f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}** • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
+            f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}**{duplicate_breakdown} • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
             f"Repeat fallback used: **{'yes' if self.used_repeat_fallback else 'no'}**\n"
             f"Fresh filter: {self.repeat_summary or 'n/a'}"
         )
@@ -166,7 +173,7 @@ class AutoScanRunnerCog(commands.Cog):
         if report.warnings:
             embed.add_field(name="Warnings", value="\n".join(f"• {warning}" for warning in report.warnings[:5]), inline=False)
         if report.public_result.errors:
-            embed.add_field(name="Errors", value="\n".join(f"• {error}" for error in report.public_result.errors[:5]), inline=False)
+            embed.add_field(name="Errors", value="\n".join(f"• {clean_log_text(error)}" for error in report.public_result.errors[:5]), inline=False)
         embed.set_footer(text="This uses the same direct verified auto-scan path as the background loop.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -219,9 +226,9 @@ class AutoScanRunnerCog(commands.Cog):
         else:
             settings = {"forced": True, "retailer": AUTO_SCAN_RETAILER}
 
-        preset = select_autoscan_preset(guild.guild_id)
+        preset = select_autoscan_preset(guild.guild_id, force=force)
         result = await run_autoscan_verified_category(self.bot.db, guild.guild_id, preset=preset)
-        warnings = list(result.warnings)
+        warnings = clean_warning_list(result.warnings)
         diagnostics = autoscan_diagnostics(result)
 
         unique_cards = dedupe_cards(result.cards)
@@ -235,6 +242,7 @@ class AutoScanRunnerCog(commands.Cog):
             cards=confidence_selection.cards,
             fallback_retailer=AUTO_SCAN_RETAILER,
             limit=AUTO_SCAN_PUBLIC_LIMIT,
+            hide_active_cache_repeats=False,
         )
 
         shown_cards = fresh_selection.fresh
@@ -311,17 +319,41 @@ class AutoScanRunnerCog(commands.Cog):
         return report
 
 
-def select_autoscan_preset(guild_id: int):
-    """Rotate one verified category per scheduled run instead of hammering every preset."""
+def select_autoscan_preset(guild_id: int, *, force: bool = False) -> HuntPreset:
+    """Rotate categories and query slices so coverage is preserved without hammering Discord/API.
+
+    Each scheduled run scans a small slice of the current category. The slice
+    rotates every run, so long query lists still get covered over time. Every
+    eighth scheduled bucket runs a wider slice. Manual `/autoscan_now` uses the
+    widest slice so staff can debug without waiting for rotation.
+    """
     if not AUTO_SCAN_CATEGORY_ROTATION:
-        return HUNT_PRESETS["tech"]
+        base = HUNT_PRESETS["tech"]
+    else:
+        bucket = int(time.time() // (AUTO_SCAN_INTERVAL_MINUTES * 60))
+        index = (bucket + int(guild_id)) % len(AUTO_SCAN_CATEGORY_ROTATION)
+        key = AUTO_SCAN_CATEGORY_ROTATION[index]
+        base = HUNT_PRESETS.get(key) or next(iter(HUNT_PRESETS.values()))
+    if force:
+        query_count = AUTO_SCAN_MANUAL_QUERY_COUNT
+    else:
+        bucket = int(time.time() // (AUTO_SCAN_INTERVAL_MINUTES * 60))
+        query_count = AUTO_SCAN_DEEP_QUERY_COUNT if bucket % AUTO_SCAN_DEEP_EVERY_BUCKETS == 0 else AUTO_SCAN_FAST_QUERY_COUNT
+    queries = rotated_query_slice(base.queries, guild_id=guild_id, query_count=query_count)
+    return HuntPreset(base.key, base.label, base.emoji, f"{base.description} Auto-scan slice preserves coverage over rotation.", queries, base.min_discount)
+
+
+def rotated_query_slice(queries: tuple[str, ...], *, guild_id: int, query_count: int) -> tuple[str, ...]:
+    if not queries:
+        return queries
+    count = max(1, min(int(query_count), len(queries)))
     bucket = int(time.time() // (AUTO_SCAN_INTERVAL_MINUTES * 60))
-    index = (bucket + int(guild_id)) % len(AUTO_SCAN_CATEGORY_ROTATION)
-    key = AUTO_SCAN_CATEGORY_ROTATION[index]
-    return HUNT_PRESETS.get(key) or next(iter(HUNT_PRESETS.values()))
+    start = ((bucket + int(guild_id)) * count) % len(queries)
+    rotated = [queries[(start + offset) % len(queries)] for offset in range(count)]
+    return tuple(rotated)
 
 
-async def run_autoscan_verified_category(db, guild_id: int, *, preset) -> VerifiedHuntResult:
+async def run_autoscan_verified_category(db, guild_id: int, *, preset: HuntPreset) -> VerifiedHuntResult:
     return await collect_verified_discount_cards(
         requested_by="autoscan",
         preset=preset,
@@ -457,6 +489,38 @@ async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
         if AUTO_SCAN_RETAILER in set(config.get("retailers") or ()) and config.get("channel_id"):
             guilds.append(AutoScanGuild(guild_id=guild_id, channel_id=int(config["channel_id"])))
     return guilds
+
+
+def duplicate_breakdown_text(result: PublicPostResult) -> str:
+    recent = int(getattr(result, "skipped_recent_alert_duplicate", 0) or 0)
+    reserved = int(getattr(result, "skipped_reserved_duplicate", 0) or 0)
+    pieces: list[str] = []
+    if recent:
+        pieces.append(f"recent posted same/higher: **{recent}**")
+    if reserved:
+        pieces.append(f"active reservation: **{reserved}**")
+    return f" ({' • '.join(pieces)})" if pieces else ""
+
+
+def clean_warning_list(values: list[str] | tuple[str, ...]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = clean_log_text(value, limit=220)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+        if len(cleaned) >= 5:
+            break
+    return cleaned
+
+
+def clean_log_text(value: Any, *, limit: int = 220) -> str:
+    text = str(value or "")
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in text)
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:limit].rstrip() + ("…" if len(cleaned) > limit else "")
 
 
 def compact_log_text(value: str, *, limit: int = 500) -> str:

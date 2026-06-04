@@ -22,6 +22,8 @@ class PublicPostResult:
     attempted: int = 0
     posted: int = 0
     skipped_duplicate: int = 0
+    skipped_recent_alert_duplicate: int = 0
+    skipped_reserved_duplicate: int = 0
     skipped_not_alertable: int = 0
     skipped_disabled: int = 0
     skipped_wrong_retailer: int = 0
@@ -34,6 +36,8 @@ class PublicPostResult:
             self.attempted
             or self.posted
             or self.skipped_duplicate
+            or self.skipped_recent_alert_duplicate
+            or self.skipped_reserved_duplicate
             or self.skipped_not_alertable
             or self.skipped_disabled
             or self.skipped_wrong_retailer
@@ -75,7 +79,8 @@ async def maybe_post_public_deal_cards(
 
     allowed_retailers = set(config["retailers"])
     posted = 0
-    skipped_duplicate = 0
+    skipped_recent_alert_duplicate = 0
+    skipped_reserved_duplicate = 0
     skipped_not_alertable = 0
     skipped_wrong_retailer = 0
     notes: list[str] = []
@@ -100,13 +105,13 @@ async def maybe_post_public_deal_cards(
         product_key = card_product_key(card, retailer=retailer)
         recent_alert = await safe_find_recent_alert(db, guild_id=guild_id, retailer=retailer, product_key=product_key, current_price=current_price)
         if recent_alert and should_suppress_recent_alert(recent_alert, current_price):
-            skipped_duplicate += 1
+            skipped_recent_alert_duplicate += 1
             continue
 
         deal_key = getattr(card, "public_post_key", None) or card_deal_key(card, retailer=retailer)
         reserved = await reserve_public_deal_post(db, guild_id=guild_id, retailer=retailer, deal_key=deal_key, source_label=source_label)
         if not reserved:
-            skipped_duplicate += 1
+            skipped_reserved_duplicate += 1
             continue
 
         try:
@@ -140,10 +145,13 @@ async def maybe_post_public_deal_cards(
     if cache_after_posting:
         cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cache_after_posting, source_label=source_label, fallback_retailer=fallback_key)
 
+    skipped_duplicate = skipped_recent_alert_duplicate + skipped_reserved_duplicate
     return PublicPostResult(
         attempted=attempted,
         posted=posted,
         skipped_duplicate=skipped_duplicate,
+        skipped_recent_alert_duplicate=skipped_recent_alert_duplicate,
+        skipped_reserved_duplicate=skipped_reserved_duplicate,
         skipped_not_alertable=skipped_not_alertable,
         skipped_disabled=0,
         skipped_wrong_retailer=skipped_wrong_retailer,

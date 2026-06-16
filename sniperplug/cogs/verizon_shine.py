@@ -100,11 +100,11 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
 
         await interaction.followup.send(
             f"Verizon Shine alerts are now **{'enabled' if enabled else 'disabled'}** in {alert_channel.mention}.\n"
-            "Safe mode: read-only alerts only. No Verizon login, no auto-claiming, no CAPTCHA bypass.",
+            "This saves the Discord alert destination. Use `/verizon watch` next to connect an automatic source.",
             ephemeral=True,
         )
 
-    @app_commands.command(name="status", description="Show Verizon Shine alert setup and recent reward count.")
+    @app_commands.command(name="status", description="Show Verizon Shine alert setup and source status.")
     async def status(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -114,11 +114,12 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         config = await self.store.get_config(interaction.guild_id)
         rewards = await self.store.list_rewards(interaction.guild_id, limit=5)
         embed = discord.Embed(title="Verizon Shine Alert Status", color=discord.Color.gold())
-        embed.add_field(name="Enabled", value="Yes" if config.enabled else "No", inline=True)
+        embed.add_field(name="Discord alerts", value="Enabled" if config.enabled else "Disabled", inline=True)
         embed.add_field(name="Alert channel", value=f"<#{config.alert_channel_id}>" if config.alert_channel_id else "Not set", inline=True)
         embed.add_field(name="Reminders", value="On" if config.reminders_enabled else "Off", inline=True)
         embed.add_field(name="Reminder offsets", value=", ".join(f"{m}m" for m in config.reminder_offsets), inline=True)
         embed.add_field(name="Priority keywords", value=", ".join(config.priority_keywords[:15]) or "None", inline=False)
+        embed.add_field(name="Automatic source", value=self._source_status_text(), inline=False)
         if rewards:
             embed.add_field(
                 name="Recent rewards",
@@ -128,7 +129,61 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         embed.set_footer(text="SniperPlug Verizon Shine module • read-only alerting")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="scan", description="Scan pasted Verizon Shine/myAccess reward text and post only if it is new or changed.")
+    @app_commands.command(name="watch", description="Show how Verizon Shine can alert automatically without pasted text.")
+    async def watch(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        config = await self.store.get_config(interaction.guild_id)
+        embed = discord.Embed(
+            title="Verizon Shine Watch Sources",
+            description=(
+                "`/verizon scan` is only the manual fallback. For hands-free alerts, SniperPlug needs an outside source "
+                "because Discord cannot see inside the My Verizon app by itself."
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="1. Android notification relay",
+            value=(
+                f"Status: **{'running' if self._relay_started else 'not connected'}**\n"
+                "Best source for app-only Shine drops. Your phone forwards Verizon/Shine notification text to SniperPlug, then SniperPlug dedupes and posts the alert."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="2. Email watcher",
+            value="Status: **not connected yet**\nFuture Gmail/IMAP source for Verizon reward emails, presales, tickets, and sweepstakes.",
+            inline=False,
+        )
+        embed.add_field(
+            name="3. Manual fallback",
+            value="`/verizon scan text:<paste>` saves and dedupes something you already saw. It is not supposed to be the main workflow.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Current Discord destination",
+            value=(
+                f"Alerts: **{'enabled' if config.enabled else 'disabled'}**\n"
+                f"Channel: {f'<#{config.alert_channel_id}>' if config.alert_channel_id else '**not set**'}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Next setup step",
+            value=(
+                "Turn on the Android relay envs on the SniperPlug host, then connect Tasker/MacroDroid/ntfy from your phone. "
+                "Required host envs: `VERIZON_SHINE_RELAY_ENABLED=true`, `VERIZON_SHINE_RELAY_SECRET=<long secret>`, "
+                "and a reachable relay URL."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Safe mode: read-only alerts only. No login, no claiming, no CAPTCHA bypass.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="scan", description="Manual fallback: paste Verizon Shine/myAccess reward text to save or test an alert.")
     @app_commands.describe(text="Paste reward text or a screenshot summary. Phase 1 does not OCR screenshots.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def scan(self, interaction: discord.Interaction, text: str) -> None:
@@ -431,6 +486,16 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
             f"I can see {channel.mention}, but I am missing: **{', '.join(missing)}**.\n"
             "Give SniperPlug those permissions in that channel, then run setup again."
         )
+
+    def _source_status_text(self) -> str:
+        lines = [
+            f"Android relay: **{'running' if self._relay_started else 'not connected'}**",
+            "Email watcher: **not connected yet**",
+            "Manual paste scanner: **available as fallback**",
+        ]
+        if not self._relay_started:
+            lines.append("Run `/verizon watch` for the no-search setup path.")
+        return "\n".join(lines)
 
     def _env_enabled(self, name: str, *, default: bool = False) -> bool:
         raw = os.getenv(name)

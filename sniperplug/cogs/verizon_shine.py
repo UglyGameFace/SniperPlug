@@ -73,10 +73,11 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         if not interaction.guild_id or not interaction.guild:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
 
         missing = self._missing_bot_perms(interaction.guild, alert_channel)
         if missing:
-            await interaction.response.send_message(self._missing_permissions_message(alert_channel, missing), ephemeral=True)
+            await interaction.followup.send(self._missing_permissions_message(alert_channel, missing), ephemeral=True)
             return
 
         config = await self.store.get_config(interaction.guild_id)
@@ -84,7 +85,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         config.enabled = enabled
         await self.store.save_config(config)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Verizon Shine alerts are now **{'enabled' if enabled else 'disabled'}** in {alert_channel.mention}.\n"
             "Safe mode: read-only alerts only. No Verizon login, no auto-claiming, no CAPTCHA bypass.",
             ephemeral=True,
@@ -95,6 +96,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
 
         config = await self.store.get_config(interaction.guild_id)
         rewards = await self.store.list_rewards(interaction.guild_id, limit=5)
@@ -111,7 +113,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
                 inline=False,
             )
         embed.set_footer(text="SniperPlug Verizon Shine module • read-only alerting")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="scan", description="Scan pasted Verizon Shine/myAccess reward text and post only if it is new or changed.")
     @app_commands.describe(text="Paste reward text or a screenshot summary. Phase 1 does not OCR screenshots.")
@@ -163,11 +165,13 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
+
         _, added = await self.store.add_keyword(interaction.guild_id, keyword)
         if added:
-            await interaction.response.send_message(f"Added priority keyword: `{keyword.strip()}`.", ephemeral=True)
+            await interaction.followup.send(f"Added priority keyword: `{keyword.strip()}`.", ephemeral=True)
         else:
-            await interaction.response.send_message(f"`{keyword.strip()}` is already in the priority list.", ephemeral=True)
+            await interaction.followup.send(f"`{keyword.strip()}` is already in the priority list.", ephemeral=True)
 
     @app_commands.command(name="remove-keyword", description="Remove a Verizon Shine priority keyword.")
     @app_commands.describe(keyword="Keyword or phrase to remove.")
@@ -176,22 +180,28 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
+
         _, removed = await self.store.remove_keyword(interaction.guild_id, keyword)
         if removed:
-            await interaction.response.send_message(f"Removed priority keyword: `{keyword.strip()}`.", ephemeral=True)
+            await interaction.followup.send(f"Removed priority keyword: `{keyword.strip()}`.", ephemeral=True)
         else:
-            await interaction.response.send_message(f"`{keyword.strip()}` was not in the priority list.", ephemeral=True)
+            await interaction.followup.send(f"`{keyword.strip()}` was not in the priority list.", ephemeral=True)
 
     @app_commands.command(name="list-keywords", description="List Verizon Shine priority keywords.")
     async def list_keywords(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
+
         config = await self.store.get_config(interaction.guild_id)
-        await interaction.response.send_message(
-            "**Verizon Shine priority keywords:**\n" + "\n".join(f"• `{keyword}`" for keyword in config.priority_keywords),
-            ephemeral=True,
-        )
+        visible_keywords = config.priority_keywords[:50]
+        extra = max(0, len(config.priority_keywords) - len(visible_keywords))
+        body = "**Verizon Shine priority keywords:**\n" + "\n".join(f"• `{keyword}`" for keyword in visible_keywords)
+        if extra:
+            body += f"\n…and {extra} more."
+        await interaction.followup.send(body, ephemeral=True)
 
     @app_commands.command(name="reminders", description="Turn Verizon Shine countdown reminders on or off.")
     @app_commands.describe(enabled="Whether reminder alerts should be sent before available_at.")
@@ -200,16 +210,20 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
+
         config = await self.store.get_config(interaction.guild_id)
         config.reminders_enabled = enabled
         await self.store.save_config(config)
-        await interaction.response.send_message(f"Verizon Shine reminders are now **{'on' if enabled else 'off'}**.", ephemeral=True)
+        await interaction.followup.send(f"Verizon Shine reminders are now **{'on' if enabled else 'off'}**.", ephemeral=True)
 
     @app_commands.command(name="digest", description="Show recent Verizon Shine rewards SniperPlug has seen.")
     async def digest(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
+
         rewards = await self.store.list_rewards(interaction.guild_id, limit=10)
         embed = discord.Embed(title="Verizon Shine Digest", color=discord.Color.gold())
         if not rewards:
@@ -222,7 +236,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
                     inline=False,
                 )
         embed.set_footer(text="Digest is based on saved alerts/manual scans only.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @tasks.loop(minutes=1)
     async def reminder_pump(self) -> None:

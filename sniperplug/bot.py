@@ -20,6 +20,7 @@ from sniperplug.cogs.public_alerts import PublicAlertsCog
 from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.cogs.storage_admin import StorageAdminCog
+from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
 from sniperplug.cogs.workflow import WorkflowCog
 from sniperplug.providers.bestbuy import BestBuyProvider
@@ -93,6 +94,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(SettingsDashboardCog(self))
         await self.add_cog(DealFeedbackAdminCog(self))
         await self.add_cog(StorageAdminCog(self))
+        await self.add_cog(VerizonShineCog(self))
         await self.add_cog(AutoScanRunnerCog(self))
         log.info("Runtime safety guards ready: embed_sanitizer=true provider_count=%s", len(provider_registry.providers))
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -8,6 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from sniperplug.services.verizon_ntfy import DEFAULT_NTFY_SERVER, VerizonNtfySource, VerizonNtfyStore
 from sniperplug.services.verizon_shine import (
     VerizonShineConfig,
     VerizonShineReward,
@@ -37,6 +39,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.store = VerizonShineStore(bot.db)
+        self.ntfy_store = VerizonNtfyStore(bot.db)
         self._relay_runner: Any | None = None
         self._relay_site: Any | None = None
         self._relay_started = False
@@ -45,13 +48,16 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         await self.store.ensure_schema()
+        await self.ntfy_store.ensure_schema()
         if not self.reminder_pump.is_running():
             self.reminder_pump.start()
+        if not self.ntfy_pump.is_running():
+            self.ntfy_pump.start()
         await self._start_optional_relay()
         await self._sync_all_joined_guilds_once(reason="ready")
         guilds = sorted((f"{guild.name}({guild.id})" for guild in self.bot.guilds), key=str.lower)
         log.info(
-            "Verizon Shine alert module ready: reminders=true relay=%s visible_guilds=%s [%s]",
+            "Verizon Shine alert module ready: reminders=true relay=%s ntfy=true visible_guilds=%s [%s]",
             self._relay_started,
             len(guilds),
             ", ".join(guilds[:25]),
@@ -65,6 +71,8 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
     async def cog_unload(self) -> None:
         if self.reminder_pump.is_running():
             self.reminder_pump.cancel()
+        if self.ntfy_pump.is_running():
+            self.ntfy_pump.cancel()
         if self._relay_runner is not None:
             try:
                 await self._relay_runner.cleanup()
@@ -100,7 +108,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
 
         await interaction.followup.send(
             f"Verizon Shine alerts are now **{'enabled' if enabled else 'disabled'}** in {alert_channel.mention}.\n"
-            "This saves the Discord alert destination. Use `/verizon watch` next to connect an automatic source.",
+            "Next: run `/verizon ntfy-setup` so your phone can forward Verizon/Shine notifications automatically.",
             ephemeral=True,
         )
 
@@ -112,6 +120,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         await interaction.response.defer(ephemeral=True)
 
         config = await self.store.get_config(interaction.guild_id)
+        ntfy_source = await self.ntfy_store.get_source(interaction.guild_id)
         rewards = await self.store.list_rewards(interaction.guild_id, limit=5)
         embed = discord.Embed(title="Verizon Shine Alert Status", color=discord.Color.gold())
         embed.add_field(name="Discord alerts", value="Enabled" if config.enabled else "Disabled", inline=True)
@@ -119,7 +128,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         embed.add_field(name="Reminders", value="On" if config.reminders_enabled else "Off", inline=True)
         embed.add_field(name="Reminder offsets", value=", ".join(f"{m}m" for m in config.reminder_offsets), inline=True)
         embed.add_field(name="Priority keywords", value=", ".join(config.priority_keywords[:15]) or "None", inline=False)
-        embed.add_field(name="Automatic source", value=self._source_status_text(), inline=False)
+        embed.add_field(name="Automatic source", value=self._source_status_text(ntfy_source), inline=False)
         if rewards:
             embed.add_field(
                 name="Recent rewards",
@@ -137,20 +146,18 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         await interaction.response.defer(ephemeral=True)
 
         config = await self.store.get_config(interaction.guild_id)
+        ntfy_source = await self.ntfy_store.get_source(interaction.guild_id)
         embed = discord.Embed(
             title="Verizon Shine Watch Sources",
             description=(
-                "`/verizon scan` is only the manual fallback. For hands-free alerts, SniperPlug needs an outside source "
-                "because Discord cannot see inside the My Verizon app by itself."
+                "`/verizon scan` is only the manual fallback. For hands-free alerts, use the ntfy phone relay below. "
+                "SniperPlug cannot see inside the My Verizon app unless your phone forwards the notification text."
             ),
             color=discord.Color.gold(),
         )
         embed.add_field(
-            name="1. Android notification relay",
-            value=(
-                f"Status: **{'running' if self._relay_started else 'not connected'}**\n"
-                "Best source for app-only Shine drops. Your phone forwards Verizon/Shine notification text to SniperPlug, then SniperPlug dedupes and posts the alert."
-            ),
+            name="1. Phone notification relay via ntfy",
+            value=self._ntfy_watch_text(ntfy_source),
             inline=False,
         )
         embed.add_field(
@@ -171,17 +178,74 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
             ),
             inline=False,
         )
+        embed.set_footer(text="Safe mode: read-only alerts only. No login, no claiming, no CAPTCHA bypass.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="ntfy-setup", description="Create a private ntfy topic for automatic phone notification alerts.")
+    @app_commands.describe(server_url="Optional ntfy server. Default is https://ntfy.sh")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ntfy_setup(self, interaction: discord.Interaction, server_url: str | None = None) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        source = await self.ntfy_store.create_or_replace_source(
+            interaction.guild_id,
+            server_url=(server_url or DEFAULT_NTFY_SERVER).strip() or DEFAULT_NTFY_SERVER,
+        )
+        embed = discord.Embed(
+            title="Verizon Shine ntfy Relay Created",
+            description="Use this private topic as the automatic source. Your phone posts Verizon/Shine notifications here; SniperPlug polls it and posts Discord alerts.",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name="Publish URL", value=f"`{source.publish_url}`", inline=False)
+        embed.add_field(name="Topic", value=f"`{source.topic}`", inline=False)
         embed.add_field(
-            name="Next setup step",
+            name="Phone automation",
             value=(
-                "Turn on the Android relay envs on the SniperPlug host, then connect Tasker/MacroDroid/ntfy from your phone. "
-                "Required host envs: `VERIZON_SHINE_RELAY_ENABLED=true`, `VERIZON_SHINE_RELAY_SECRET=<long secret>`, "
-                "and a reachable relay URL."
+                "In Tasker/MacroDroid, create a Notification Received trigger for **My Verizon/Verizon**. "
+                "Add an HTTP Request action: method **POST**, URL = the Publish URL above, body = notification title + text."
             ),
             inline=False,
         )
-        embed.set_footer(text="Safe mode: read-only alerts only. No login, no claiming, no CAPTCHA bypass.")
+        embed.add_field(
+            name="Test it",
+            value="After the phone automation is saved, send a test notification body containing `Verizon Shine Daily Drop gift card available in 30 minutes`.",
+            inline=False,
+        )
+        embed.set_footer(text="Do not share the topic. It is read-only alerting; no Verizon login is used.")
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="ntfy-status", description="Show this server's ntfy automatic source status.")
+    async def ntfy_status(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        source = await self.ntfy_store.get_source(interaction.guild_id)
+        if not source:
+            await interaction.followup.send("No ntfy source is connected yet. Run `/verizon ntfy-setup`.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"ntfy source is **{'enabled' if source.enabled else 'disabled'}**.\nTopic: `{source.topic}`\nPublish URL: `{source.publish_url}`",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="ntfy-disable", description="Disable this server's ntfy automatic source.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ntfy_disable(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        source = await self.ntfy_store.set_enabled(interaction.guild_id, False)
+        if not source:
+            await interaction.followup.send("No ntfy source exists for this server yet.", ephemeral=True)
+            return
+        await interaction.followup.send("Disabled the Verizon Shine ntfy source for this server.", ephemeral=True)
 
     @app_commands.command(name="scan", description="Manual fallback: paste Verizon Shine/myAccess reward text to save or test an alert.")
     @app_commands.describe(text="Paste reward text or a screenshot summary. Phase 1 does not OCR screenshots.")
@@ -336,8 +400,38 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
             except Exception:
                 log.exception("Failed to send Verizon Shine reminder guild=%s reward=%s", guild.id, reward.reward_id)
 
+    @tasks.loop(seconds=45)
+    async def ntfy_pump(self) -> None:
+        try:
+            sources = await self.ntfy_store.list_enabled_sources()
+        except Exception:
+            log.exception("Verizon Shine ntfy source list failed")
+            return
+
+        for source in sources:
+            guild = self.bot.get_guild(source.guild_id)
+            if guild is None:
+                continue
+            config = await self.store.get_config(guild.id)
+            if not config.enabled:
+                continue
+            for payload in await self._fetch_ntfy_messages(source):
+                event_id = str(payload.get("id") or payload.get("time") or hash(json.dumps(payload, sort_keys=True)))
+                if not await self.ntfy_store.mark_seen_once(guild.id, event_id, payload):
+                    continue
+                title = str(payload.get("title") or "")
+                body = str(payload.get("message") or payload.get("body") or "")
+                if not is_relevant_notification(title, body):
+                    continue
+                summary = await self._ingest_text(guild, guild.id, f"{title}\n{body}", source="ntfy_android")
+                log.info("Processed Verizon Shine ntfy notification guild=%s event=%s summary=%s", guild.id, event_id, summary)
+
     @reminder_pump.before_loop
     async def before_reminder_pump(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @ntfy_pump.before_loop
+    async def before_ntfy_pump(self) -> None:
         await self.bot.wait_until_ready()
 
     async def _sync_all_joined_guilds_once(self, *, reason: str) -> None:
@@ -367,6 +461,38 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
             log.warning("Could not sync SniperPlug commands to guild %s (%s): missing access", guild.name, guild.id)
         except Exception:
             log.exception("Failed to sync SniperPlug commands to guild %s (%s)", guild.name, guild.id)
+
+    async def _fetch_ntfy_messages(self, source: VerizonNtfySource) -> list[dict[str, Any]]:
+        try:
+            from aiohttp import ClientSession, ClientTimeout
+        except Exception:
+            log.warning("aiohttp is not installed; Verizon ntfy polling is unavailable")
+            return []
+
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=12)) as session:
+                async with session.get(source.poll_url) as response:
+                    if response.status >= 400:
+                        log.warning("ntfy poll failed guild=%s status=%s url=%s", source.guild_id, response.status, source.poll_url)
+                        return []
+                    body = await response.text()
+        except Exception:
+            log.exception("ntfy poll exception guild=%s url=%s", source.guild_id, source.poll_url)
+            return []
+
+        messages: list[dict[str, Any]] = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("event") != "message":
+                continue
+            messages.append(payload)
+        return messages
 
     async def _ingest_text(
         self,
@@ -487,14 +613,27 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
             "Give SniperPlug those permissions in that channel, then run setup again."
         )
 
-    def _source_status_text(self) -> str:
+    def _ntfy_watch_text(self, source: VerizonNtfySource | None) -> str:
+        if source and source.enabled:
+            return (
+                "Status: **connected**\n"
+                f"Publish URL: `{source.publish_url}`\n"
+                "Your phone should POST Verizon/Shine notification text to this URL."
+            )
+        return (
+            "Status: **not connected**\n"
+            "Run `/verizon ntfy-setup` to create a private topic. Then connect Tasker/MacroDroid to POST My Verizon notification text there."
+        )
+
+    def _source_status_text(self, ntfy_source: VerizonNtfySource | None) -> str:
         lines = [
-            f"Android relay: **{'running' if self._relay_started else 'not connected'}**",
+            f"ntfy phone relay: **{'connected' if ntfy_source and ntfy_source.enabled else 'not connected'}**",
+            f"Android webhook relay: **{'running' if self._relay_started else 'not connected'}**",
             "Email watcher: **not connected yet**",
             "Manual paste scanner: **available as fallback**",
         ]
-        if not self._relay_started:
-            lines.append("Run `/verizon watch` for the no-search setup path.")
+        if not ntfy_source or not ntfy_source.enabled:
+            lines.append("Run `/verizon ntfy-setup` for the no-search setup path.")
         return "\n".join(lines)
 
     def _env_enabled(self, name: str, *, default: bool = False) -> bool:

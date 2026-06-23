@@ -32,7 +32,7 @@ class WorkflowCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="setup_sniperplug", description="Recommended one-step setup for public alerts, retailers, and auto-scan safety.")
+    @app_commands.command(name="setup_sniperplug", description="Recommended one-step setup for public alerts, retailers, and Walmart auto-scan.")
     @app_commands.describe(
         channel="Channel where verified public deal alerts should post.",
         retailers="Stores allowed to public-post. Default: walmart. Example: walmart,home_depot.",
@@ -47,8 +47,8 @@ class WorkflowCog(commands.Cog):
         channel: discord.TextChannel,
         retailers: str = "walmart",
         public_alerts: bool = True,
-        walmart_autoscan: bool = False,
-        walmart_unlimited: bool = False,
+        walmart_autoscan: bool = True,
+        walmart_unlimited: bool = True,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         await self._apply_setup(
@@ -60,7 +60,7 @@ class WorkflowCog(commands.Cog):
             walmart_unlimited=walmart_unlimited,
         )
 
-    @app_commands.command(name="setup_sniperplug_here", description="Setup SniperPlug to post in the channel where you run this command.")
+    @app_commands.command(name="setup_sniperplug_here", description="Setup SniperPlug to post and auto-scan from this channel.")
     @app_commands.describe(
         retailers="Stores allowed to public-post. Default: walmart.",
         public_alerts="Allow verified deals to post publicly into this channel.",
@@ -73,8 +73,8 @@ class WorkflowCog(commands.Cog):
         interaction: discord.Interaction,
         retailers: str = "walmart",
         public_alerts: bool = True,
-        walmart_autoscan: bool = False,
-        walmart_unlimited: bool = False,
+        walmart_autoscan: bool = True,
+        walmart_unlimited: bool = True,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
@@ -155,10 +155,10 @@ class WorkflowCog(commands.Cog):
             description="Use this order so the bot feels simple instead of scattered.",
             color=discord.Color.orange(),
         )
-        embed.add_field(name="1. Setup once", value="Fastest: run `/setup_sniperplug_here` inside the deal channel. Advanced: run `/setup_sniperplug` and choose a channel.", inline=False)
+        embed.add_field(name="1. Setup once", value="Fastest: run `/setup_sniperplug_here` inside the deal channel. Advanced: run `/setup_sniperplug` and choose a channel. Both default to public Walmart posting plus Walmart background auto-scan.", inline=False)
         embed.add_field(name="2. Manual testing", value="Use `/deals` for one item, `/hunt` for category buttons, or `/discover` for broad manual discovery. Manual scans do not depend on auto-scan being enabled.", inline=False)
-        embed.add_field(name="3. Background scanning", value="Use `/retailer_autoscan` only when you want scheduled/background pulls. Keep paid-credit providers protected.", inline=False)
-        embed.add_field(name="4. Troubleshooting", value="Use `/sniperplug_dashboard`, `/active_deals`, and `/sniperplug_commands` to see what is configured, cached, and available.", inline=False)
+        embed.add_field(name="3. Background scanning", value="Use `/retailer_autoscan` when you want to change scheduled/background pulls. Paid-credit providers stay protected; Walmart can run unlimited through official-provider bypass.", inline=False)
+        embed.add_field(name="4. Troubleshooting", value="Use `/autoscan_health`, `/sniperplug_dashboard`, `/active_deals`, and `/sniperplug_commands` to see what is configured, cached, and available.", inline=False)
         embed.set_footer(text="Public posting requires public alerts ON, an alert channel, allowed retailers, and alertable proof.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -169,7 +169,7 @@ def build_setup_complete_embed(channel: discord.TextChannel, public_config: dict
     daily = int(walmart.get("daily_limit") if walmart.get("daily_limit") is not None else DEFAULT_AUTOSCAN_DAILY_LIMIT)
     embed = discord.Embed(
         title="SniperPlug setup complete",
-        description="This sets the default route and public posting rules together so deals do not silently cache without posting.",
+        description="This sets the default route, public posting rules, and Walmart background scan together so deals do not silently cache without posting.",
         color=discord.Color.green(),
     )
     embed.add_field(name="Public alert channel", value=channel.mention, inline=True)
@@ -185,7 +185,7 @@ def build_setup_complete_embed(channel: discord.TextChannel, public_config: dict
         ),
         inline=False,
     )
-    embed.add_field(name="Next test", value="Run `/deals search:turtle wax` or `/discover`. If cards are cached but not posted, check `/active_deals` and `/sniperplug_dashboard`.", inline=False)
+    embed.add_field(name="Next test", value="Run `/autoscan_now force:true`, `/deals search:turtle wax`, or `/discover`. If cards are cached but not posted, check `/autoscan_health`, `/active_deals`, and `/sniperplug_dashboard`.", inline=False)
     return embed
 
 

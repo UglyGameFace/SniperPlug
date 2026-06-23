@@ -4,6 +4,8 @@ from sniperplug.services.candidate_pipeline import evaluate_candidate
 from sniperplug.services.routing import STAFF_REVIEW_ROUTE
 
 
+# Existing Walmart provider behavior tests.
+
 def test_walmart_provider_disabled_until_explicitly_enabled():
     provider = WalmartProvider(WalmartAffiliateConfig())
 
@@ -57,7 +59,9 @@ def test_walmart_payload_maps_to_source_candidate():
     assert candidate.retailer == "Walmart"
     assert candidate.title == "Sceptre 32 inch Smart TV"
     assert candidate.current_price == 108.0
-    assert candidate.typical_price == 179.99
+    assert candidate.typical_price is None
+    assert candidate.variant_attributes["referencePriceTrusted"] == "no"
+    assert candidate.variant_attributes["referenceContextSource"] == "msrp"
     assert candidate.sku == "516833054"
     assert candidate.upc == "792343232896"
     assert candidate.can_add_to_cart is True
@@ -133,7 +137,7 @@ def test_walmart_ignores_suspicious_essential_reference_price():
     assert any("ignored suspicious Walmart msrp reference price" in signal for signal in candidate.signals)
 
 
-def test_walmart_keeps_reasonable_reference_price_for_electronics():
+def test_walmart_msrp_only_is_context_not_verified_discount():
     provider = WalmartProvider(WalmartAffiliateConfig(enabled=True, consumer_id="cid", private_key_b64="fake"))
     item = {
         "itemId": 12345,
@@ -148,8 +152,10 @@ def test_walmart_keeps_reasonable_reference_price_for_electronics():
     candidate = provider._candidate_from_item(item, ProviderScanRequest(source_key="walmart", query="monitor"))
 
     assert candidate is not None
-    assert candidate.typical_price == 179.99
-    assert "Walmart reference price source: msrp" in candidate.signals
+    assert candidate.typical_price is None
+    assert candidate.variant_attributes["referencePriceTrusted"] == "no"
+    assert candidate.variant_attributes["referenceContextSource"] == "msrp"
+    assert any("Walmart reference shown but not counted: msrp=$179.99" in signal for signal in candidate.signals)
 
 
 def test_walmart_reads_nested_current_and_was_prices():

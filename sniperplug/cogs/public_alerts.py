@@ -14,6 +14,7 @@ from sniperplug.services.public_posting import (
     SUPPORTED_RETAILERS,
     format_retailers,
     normalize_retailer_key,
+    parse_retailer_list,
 )
 
 
@@ -73,6 +74,67 @@ class PublicAlertsCog(commands.Cog):
     @autoscan_setup.error
     async def autoscan_setup_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         message = "You need **Manage Server** permission to set up auto-scan alerts." if isinstance(error, app_commands.MissingPermissions) else f"Auto-scan setup hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+    @app_commands.command(name="public_alerts", description="Turn public deal posting on/off and choose the public alert channel.")
+    @app_commands.describe(
+        enabled="Whether verified public deal cards may post publicly.",
+        channel="Channel for public deal cards. Omit to keep the existing channel or use the current channel.",
+        retailers="Comma-separated stores allowed to post publicly. Example: walmart,home_depot",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def public_alerts(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool = True,
+        channel: discord.TextChannel | None = None,
+        retailers: str = "walmart",
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which public-alert settings to save.", ephemeral=True)
+            return
+
+        existing = await get_public_alert_config(self.bot.db, interaction.guild_id)
+        parsed_retailers = parse_retailer_list(retailers) or tuple(existing.get("retailers") or ()) or ("walmart",)
+        unsupported = [piece.strip() for piece in retailers.replace(";", ",").split(",") if piece.strip() and normalize_retailer_key(piece) not in SUPPORTED_RETAILERS]
+        if unsupported:
+            await interaction.followup.send(f"Unsupported retailer(s): `{', '.join(unsupported)}`. Supported: {format_retailers(tuple(sorted(SUPPORTED_RETAILERS)))}", ephemeral=True)
+            return
+
+        chosen_channel = channel
+        if chosen_channel is None and isinstance(interaction.channel, discord.TextChannel):
+            chosen_channel = interaction.channel
+        channel_id = chosen_channel.id if chosen_channel is not None else existing.get("channel_id")
+        if enabled and channel_id is None:
+            await interaction.followup.send("Public alerts need a channel. Re-run this with `channel:#your-deals-channel` or run it inside the channel you want to use.", ephemeral=True)
+            return
+
+        await set_public_alert_config(
+            self.bot.db,
+            guild_id=interaction.guild_id,
+            enabled=bool(enabled),
+            retailers=parsed_retailers,
+            channel_id=channel_id,
+        )
+        config = await get_public_alert_config(self.bot.db, interaction.guild_id)
+        auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
+        embed = public_alert_status_embed(
+            enabled=config["enabled"],
+            retailers=config["retailers"],
+            channel_id=config["channel_id"],
+            auto_scan=auto_scan,
+            threshold=await get_starting_deal_percent(self.bot.db, interaction.guild_id),
+        )
+        embed.title = "📣 Public Alerts Updated"
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @public_alerts.error
+    async def public_alerts_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = "You need **Manage Server** permission to change public alerts." if isinstance(error, app_commands.MissingPermissions) else f"Public alerts hit an error: `{error}`"
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:
@@ -231,7 +293,7 @@ def autoscan_setup_complete_embed(*, channel_id: int | str, threshold: int, auto
 def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None, auto_scan: dict[str, dict] | None = None, threshold: int | None = None) -> discord.Embed:
     embed = discord.Embed(
         title="📣 Public Alert Settings",
-        description="This is the simple view. Use `/autoscan_setup` to change setup, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.",
+        description="This is the simple view. Use `/public_alerts` to update posting, `/autoscan_setup` for Walmart one-shot setup, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.",
         color=discord.Color.green() if enabled else discord.Color.dark_gold(),
     )
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)

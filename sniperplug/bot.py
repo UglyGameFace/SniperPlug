@@ -40,6 +40,7 @@ from sniperplug.services.error_logging import (
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.storage_maintenance import run_storage_maintenance
+from sniperplug.services.walmart_savings_reference_patch import install_walmart_savings_reference_patch
 from sniperplug.storage.db import Database
 
 
@@ -73,6 +74,8 @@ class SniperPlugBot(commands.Bot):
 
         install_safe_followup_send_patch()
         log.info("Discord embed sanitizer installed: followup_send=true")
+        install_walmart_savings_reference_patch()
+        log.info("Walmart visible-savings reference guard installed: msrp/list/context_not_public_math=true")
 
         feedback_views = await register_persistent_feedback_views(self)
         log.info("Persistent deal feedback views registered: %s", feedback_views)

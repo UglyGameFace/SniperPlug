@@ -29,7 +29,8 @@ AUTO_SCAN_INTERVAL_MINUTES = 15
 AUTO_SCAN_RETAILER = "walmart"
 AUTO_SCAN_SOURCE_LABEL = "autoscan:walmart_discovery"
 AUTO_SCAN_PUBLIC_LIMIT = 5
-AUTO_SCAN_CATEGORY_ROTATION = ("tech", "beauty", "home", "toys", "auto_tools", "essentials")
+AUTO_SCAN_REVIEW_FALLBACK_LIMIT = 3
+AUTO_SCAN_CATEGORY_ROTATION = ("deal_week", "tech", "deal_week", "beauty", "home", "deal_week", "toys", "auto_tools", "essentials")
 AUTO_SCAN_PUBLIC_MODE = MODE_BEST
 AUTOSCAN_CONFIDENCE_FLOOR = DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR
 AUTO_SCAN_FAST_QUERY_COUNT = 4
@@ -246,6 +247,12 @@ class AutoScanRunnerCog(commands.Cog):
         )
 
         shown_cards = fresh_selection.fresh
+        watchlist_cards: list[DealCard] = []
+        if not shown_cards:
+            watchlist_cards = prepare_review_watchlist_cards(result, limit=AUTO_SCAN_REVIEW_FALLBACK_LIMIT)
+            if watchlist_cards:
+                shown_cards = watchlist_cards
+                warnings.append("No verified public-confidence cards passed; posted top Walmart Deal Week watchlist/review leads instead.")
 
         if not force:
             await record_auto_scan_run(self.bot.db, guild.guild_id, AUTO_SCAN_RETAILER, scan_key=scan_key)
@@ -285,7 +292,7 @@ class AutoScanRunnerCog(commands.Cog):
             bot=self.bot,
             guild_id=guild.guild_id,
             cards=shown_cards,
-            source_label=f"{AUTO_SCAN_SOURCE_LABEL}:{preset.key}",
+            source_label=f"{AUTO_SCAN_SOURCE_LABEL}:{preset.key}{':watchlist' if watchlist_cards else ''}",
             fallback_retailer=AUTO_SCAN_RETAILER,
         )
         report = AutoScanReport(
@@ -309,8 +316,8 @@ class AutoScanRunnerCog(commands.Cog):
             verified_before_memory=result.total_verified_cards,
             fresh_cards=len(fresh_selection.fresh),
             cards_attempted_for_public=len(shown_cards),
-            used_repeat_fallback=False,
-            repeat_summary=fresh_selection.summary_line(),
+            used_repeat_fallback=bool(watchlist_cards),
+            repeat_summary=watchlist_repeat_summary(fresh_selection.summary_line(), watchlist_cards),
             public_result=public_result,
             warnings=tuple(warnings),
         )
@@ -375,6 +382,53 @@ async def persist_autoscan_report(db, report: AutoScanReport, *, scan_key: str) 
     except Exception as exc:
         log.warning("Failed to persist auto-scan report guild=%s: %s", report.guild_id, exc)
 
+
+
+def prepare_review_watchlist_cards(result: VerifiedHuntResult, *, limit: int = AUTO_SCAN_REVIEW_FALLBACK_LIMIT) -> list[DealCard]:
+    """Promote the best review/scout cards into a clearly labeled watchlist fallback.
+
+    This is not pretending weak proof is a verified public-confidence deal. It is
+    the wake-up lane for sale weeks: if the strict threshold/floor hides
+    everything, SniperPlug still surfaces the strongest leads with a big manual
+    verification warning.
+    """
+    review = result.review_candidates
+    if review is None or not review.cards:
+        return []
+
+    cards: list[DealCard] = []
+    for card in review.cards[: max(1, int(limit))]:
+        setattr(card, "should_alert", True)
+        try:
+            card.score = max(int(getattr(card, "score", 0) or 0), 90)
+        except Exception:
+            setattr(card, "score", 90)
+        key = getattr(card, "selected_offer_id", None) or getattr(card, "sku", None) or getattr(card, "upc", None) or getattr(card, "url", "") or getattr(card, "label", "watchlist")
+        price = getattr(card, "current_price", None)
+        setattr(card, "public_post_key", f"watchlist:{key}:price:{price}")
+
+        embed = getattr(card, "embed", None)
+        if isinstance(embed, discord.Embed):
+            title = str(embed.title or "Walmart watchlist lead")
+            if not title.startswith("🟨 Watchlist"):
+                embed.title = trim_text(f"🟨 Watchlist • {title}", 256)
+            if not any(str(field.name or "") == "🟨 Walmart Deal Week Watchlist" for field in embed.fields):
+                embed.add_field(
+                    name="🟨 Walmart Deal Week Watchlist",
+                    value=(
+                        f"Strict public threshold is **{result.min_discount}%+**, but this was one of the strongest review/flip/scout leads.\n"
+                        "This is a wake-up candidate, not a blind-buy guarantee. Verify Walmart app price, selected option, seller, and stock before buying/posting."
+                    ),
+                    inline=False,
+                )
+        cards.append(card)
+    return cards
+
+
+def watchlist_repeat_summary(base_summary: str, watchlist_cards: list[DealCard]) -> str:
+    if not watchlist_cards:
+        return base_summary
+    return f"{base_summary} • Deal Week watchlist fallback posted **{len(watchlist_cards)}** review lead(s)"
 
 def autoscan_lock(guild_id: int) -> asyncio.Lock:
     lock = _AUTOSCAN_LOCKS.get(guild_id)

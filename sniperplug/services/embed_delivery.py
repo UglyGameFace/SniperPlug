@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import discord
@@ -115,6 +116,17 @@ def _shrink_last_field(data: dict[str, Any], shrink_by: int) -> bool:
             return True
     return False
 
+
+
+def should_split_embeds(embeds: Any) -> bool:
+    if not embeds or not isinstance(embeds, Sequence):
+        return False
+    if len(embeds) <= 1:
+        return False
+    if not all(isinstance(embed, discord.Embed) for embed in embeds):
+        return False
+    total = sum(embed_text_size(embed) for embed in embeds)
+    return total > SAFE_EMBED_MESSAGE_LIMIT
 
 def batch_embeds_for_limit(embeds: list[discord.Embed], *, limit: int = SAFE_EMBED_MESSAGE_LIMIT) -> list[list[discord.Embed]]:
     safe_embeds = [sanitize_embed(embed) for embed in embeds if isinstance(embed, discord.Embed)]

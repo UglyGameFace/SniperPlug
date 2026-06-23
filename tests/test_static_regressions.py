@@ -17,6 +17,7 @@ REMOVED_MONKEY_PATCH_MODULES = {
     "command_error_bridge.py",
     "walmart_renderer_install.py",
     "walmart_marketplace_comp_guard.py",
+    "embed_delivery_patch.py",
 }
 REMOVED_STARTUP_HOOKS = {
     "install_manual_posting_explainer_patch",
@@ -28,6 +29,7 @@ REMOVED_STARTUP_HOOKS = {
     "install_walmart_renderer",
     "install_walmart_marketplace_comp_guard",
     "install_strict_walmart_cash_guard",
+    "install_safe_followup_send_patch",
 }
 REMOVED_PUBLIC_POST_CONFIG_NAMES = {
     "get_public_post_config",
@@ -100,4 +102,3 @@ def test_recent_runtime_modules_import() -> None:
     import sniperplug.services.public_alert_config  # noqa: F401
     import sniperplug.services.public_deal_posts  # noqa: F401
     import sniperplug.services.error_logging  # noqa: F401
-    import sniperplug.services.embed_delivery_patch  # noqa: F401

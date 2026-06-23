@@ -1,7 +1,6 @@
 import discord
 
-from sniperplug.services.embed_delivery import SAFE_EMBED_MESSAGE_LIMIT, embed_text_size
-from sniperplug.services.embed_delivery_patch import should_split_embeds
+from sniperplug.services.embed_delivery import SAFE_EMBED_MESSAGE_LIMIT, embed_text_size, should_split_embeds
 
 
 def make_embed(size: int) -> discord.Embed:

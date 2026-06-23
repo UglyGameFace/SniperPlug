@@ -9,6 +9,7 @@ from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import DealCard, HuntPreset
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
+from sniperplug.services.embed_delivery import batch_cards_for_limit, sanitize_embed
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route, top_route_lines
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
 from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT, get_starting_deal_percent, normalize_starting_deal_percent
@@ -402,12 +403,20 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
 
 
 async def send_card_batches(interaction: discord.Interaction, *, summary: discord.Embed, cards: list[DealCard], review_cards: list[DealCard] | None = None) -> None:
-    await interaction.followup.send(embed=summary, ephemeral=True)
-    for batch in chunked(cards, 5):
-        await interaction.followup.send(embeds=[card.embed for card in batch], view=deal_scanner.PresetResultView(batch), ephemeral=True)
-    for batch in chunked(review_cards or [], 5):
-        await interaction.followup.send(content="🟨 Review/flip/scout API leads — private only, not public-posted as verified deals.", embeds=[card.embed for card in batch], view=deal_scanner.PresetResultView(batch), ephemeral=True)
-
+    await interaction.followup.send(embed=sanitize_embed(summary), ephemeral=True)
+    for batch in batch_cards_for_limit(cards):
+        await interaction.followup.send(
+            embeds=[sanitize_embed(card.embed) for card in batch],
+            view=deal_scanner.PresetResultView(batch),
+            ephemeral=True,
+        )
+    for batch in batch_cards_for_limit(review_cards or []):
+        await interaction.followup.send(
+            content="🟨 Review/flip/scout API leads — private only, not public-posted as verified deals.",
+            embeds=[sanitize_embed(card.embed) for card in batch],
+            view=deal_scanner.PresetResultView(batch),
+            ephemeral=True,
+        )
 
 def merge_review_and_scout_cards(review: ReviewCandidateResult, scout_cards: list[DealCard], *, limit: int = REVIEW_LEAD_LIMIT) -> ReviewCandidateResult:
     merged: list[DealCard] = []

@@ -68,7 +68,8 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         if proof.discount_percent is not None and proof.discount_percent >= 50:
             continue
 
-        match_score = direct_match_score(query or "", deal.title, sku=deal.sku, upc=deal.upc, product_id=candidate.product_id) if query else 0.0
+        route_query = review_match_query(candidate, query)
+        match_score = direct_match_score(route_query, deal.title, sku=deal.sku, upc=deal.upc, product_id=candidate.product_id) if route_query else 0.0
         is_exact_search_match = match_score >= 0.45
         if is_exact_search_match:
             exact_match_count += 1
@@ -114,6 +115,23 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
     scored.sort(key=lambda item: item[0], reverse=True)
     return ReviewCandidateResult(cards=[card for _, card in scored[:limit]], under_threshold_count=under_threshold, missing_reference_count=missing_reference, weak_reference_count=weak_reference, missing_current_count=missing_current, no_value_signal_count=no_value_signal, rejected_bad_value_count=rejected_bad_value, exact_match_count=exact_match_count)
 
+
+
+def review_match_query(candidate: SourceCandidate, query: str | None) -> str:
+    explicit = (query or "").strip()
+    if explicit:
+        return explicit
+
+    attrs = candidate.variant_attributes or {}
+    source_query = str(attrs.get("finderSourceQuery") or "").strip()
+    if source_query:
+        return source_query
+
+    source_queries = str(attrs.get("finderSourceQueries") or "").strip()
+    if source_queries:
+        return source_queries.split(" | ")[0].strip()
+
+    return ""
 
 def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price: float | None, context_discount: float | None, ignored_context_price: float | None, coupon: float, cash: float, direct_match_score: float = 0.0, context_profit: float | None = None, context_margin: float | None = None) -> DealCard:
     if context_profit is None:
@@ -207,6 +225,9 @@ def attr_text(attrs: dict[str, Any], *keys: str) -> str | None:
 def api_lines(candidate: SourceCandidate, deal) -> list[str]:
     attrs = deal.variant_attributes or {}
     lines: list[str] = []
+    finder_query = attr_text(attrs, "finderSourceQuery")
+    if finder_query:
+        lines.append(f"• Finder query: **{finder_query[:90]}**")
     for label, value in (("SKU", deal.sku), ("UPC", deal.upc), ("Offer ID", deal.selected_offer_id), ("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")), ("Condition", candidate.condition or deal.condition or attrs.get("condition")), ("Fulfillment", candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")), ("Stock", candidate.stock_status), ("Available online", attrs.get("availableOnline")), ("Offer type", attrs.get("offerType")), ("Max order qty", attrs.get("maxOrderQty"))):
         if value:
             lines.append(f"• {label}: **{str(value)[:90]}**")

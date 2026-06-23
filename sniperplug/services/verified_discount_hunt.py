@@ -94,41 +94,107 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
     "deal_week": (
         "Walmart Deal Week Watchlist",
         "🔥",
-        "High-signal Walmart sale-week searches for the exact kinds of things SniperPlug should not miss.",
+        "High-signal Walmart sale-week searches for exact products, brands, and flip categories SniperPlug should not miss.",
         (
-            "walmart deals",
+            # Walmart sale surfaces
             "walmart deal week",
+            "walmart deals",
             "walmart deals electronics",
-            "rollback electronics",
+            "walmart rollback deals",
+            "walmart clearance deals",
+            "walmart special buy",
+
+            # Monitors / tech
             "gaming monitor deals",
+            "gaming monitor rollback",
             "gaming monitor clearance",
-            "gaming headset deals",
-            "wireless headset rollback",
-            "laptop deals",
-            "laptop clearance",
-            "ssd rollback",
             "computer monitor deals",
-            "tv deals",
+            "computer monitor rollback",
+            "24 inch monitor rollback",
+            "27 inch monitor rollback",
+            "32 inch monitor rollback",
+            "dell monitor deals",
+            "sceptre monitor deals",
+            "onn monitor deals",
+            "samsung monitor rollback",
+            "lg monitor rollback",
+
+            # Gaming / headsets / PC accessories
+            "gaming headset deals",
+            "wireless gaming headset rollback",
+            "hyperx headset rollback",
+            "razer headset rollback",
+            "logitech headset rollback",
+            "corsair headset rollback",
+            "gaming keyboard mouse combo",
+            "mechanical keyboard rollback",
+            "ssd rollback",
+            "nvme ssd rollback",
+            "external hard drive rollback",
+
+            # TVs / devices
             "4k tv rollback",
+            "smart tv deals",
+            "onn tv deals",
+            "samsung tv rollback",
+            "tcl tv rollback",
+            "roku tv rollback",
+            "tablet rollback",
+            "laptop deals",
+            "laptop rollback",
+            "chromebook rollback",
+            "prepaid phone clearance",
+            "straight talk phone deals",
+
+            # Toys / collectibles
             "lego deals",
-            "toy deals",
+            "lego clearance",
             "pokemon cards deals",
+            "pokemon clearance",
+            "board game clearance",
+            "video game clearance",
+            "collectible clearance",
+
+            # Home / appliances
             "air fryer rollback",
+            "ninja air fryer rollback",
             "vacuum rollback",
+            "shark vacuum rollback",
             "coffee maker rollback",
+            "keurig rollback",
             "patio furniture clearance",
+            "furniture clearance",
+            "mattress rollback",
+
+            # Tools / auto
             "tool rollback",
-            "dewalt rollback",
-            "milwaukee clearance",
+            "tool clearance",
             "hart tools deals",
+            "hart tools clearance",
+            "dewalt rollback",
+            "dewalt clearance",
+            "milwaukee clearance",
+            "hyper tough tools deals",
             "tire inflator rollback",
             "motor oil rollback",
+            "synthetic motor oil rollback",
+            "mobil 1 rollback",
+            "castrol rollback",
             "car care deals",
-            "cologne clearance",
-            "designer cologne",
+
+            # Fragrance / jewelry
+            "designer cologne clearance",
+            "designer fragrance clearance",
             "dolce gabbana cologne",
+            "dolce gabbana the one",
+            "dolce gabbana the one men",
+            "versace cologne",
+            "armani cologne",
+            "calvin klein cologne",
             "gold chain",
+            "gold chain clearance",
             "jewelry clearance",
+            "mens jewelry clearance",
         ),
     ),
     "tech": ("Tech & Gaming", "🎮", "Electronics, gaming, TVs, monitors, phones, laptops, and restored tech.", ("electronics clearance", "electronics rollback", "gaming clearance", "laptop clearance", "tv clearance", "monitor clearance", "phone clearance", "prepaid phone clearance", "straight talk phone", "open box electronics", "restored electronics", "refurbished laptop")),
@@ -232,7 +298,9 @@ async def collect_verified_discount_cards(
     pages_checked = 0
     searches_attempted = 0
     semaphore = asyncio.Semaphore(SCAN_CONCURRENCY)
-    memory_seeds = await remembered_walmart_search_seeds(db, guild_id=guild_id, limit=MEMORY_RECHECK_LIMIT)
+    memory_seeds: tuple[str, ...] = ()
+    if use_price_memory and db is not None and guild_id is not None:
+        memory_seeds = await remembered_walmart_search_seeds(db, guild_id=guild_id, limit=MEMORY_RECHECK_LIMIT)
     preset_queries = tuple(dedupe_strings([*preset.queries, *memory_seeds]))
 
     async def scan_one(query: str, page: int, sort_value: str | None, order_value: str | None) -> tuple[str, ProviderScanResult]:

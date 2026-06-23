@@ -9,6 +9,16 @@ from discord.ext import commands
 from sniperplug.models.deal import utc_now_iso
 from sniperplug.services.autoscan_history import format_latest_report_line, latest_autoscan_report
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent, set_starting_deal_percent
+from sniperplug.services.deal_category_preferences import (
+    CATEGORY_MODE_MUTED,
+    CATEGORY_MODE_NORMAL,
+    CATEGORY_MODE_PRIORITY,
+    format_category_catalog,
+    get_category_preferences,
+    normalize_category_mode,
+    set_category_preference,
+    valid_category_keys,
+)
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_config
 from sniperplug.services.public_deal_posts import ensure_public_post_tables
 from sniperplug.services.public_posting import (
@@ -187,6 +197,73 @@ class PublicAlertsCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
+    @app_commands.command(name="deal_categories", description="Show deal categories and whether each one is priority, normal, or muted.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def deal_categories(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which category preferences to show.", ephemeral=True)
+            return
+        preferences = await get_category_preferences(self.bot.db, interaction.guild_id)
+        catalog = format_category_catalog(preferences)
+        chunks = [catalog[i:i + 3900] for i in range(0, len(catalog), 3900)] or ["No categories found."]
+        embed = discord.Embed(
+            title="🏷️ Deal Categories",
+            description=(
+                "Modes: ⭐ priority = boost/rank higher • ▫️ normal = regular • 🙈 muted = hide normal deals, but extreme markdowns still override so SniperPlug does not miss nuclear finds."
+            ),
+            color=discord.Color.blue(),
+        )
+        embed.add_field(name="How to change one", value="Use `/deal_category category:mobile_accessories mode:priority|normal|muted`.", inline=False)
+        embed.add_field(name="Categories", value=chunks[0], inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk, ephemeral=True)
+
+    @deal_categories.error
+    async def deal_categories_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = "You need **Manage Server** permission to view deal categories." if isinstance(error, app_commands.MissingPermissions) else f"Deal categories hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+    @app_commands.command(name="deal_category", description="Set a deal category to priority, normal, or muted.")
+    @app_commands.describe(
+        category="Category key from /deal_categories, like mobile_accessories or fragrance_beauty.",
+        mode="priority boosts it, normal uses regular logic, muted hides normal deals but extreme deals still override.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def deal_category(self, interaction: discord.Interaction, category: str, mode: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which category preference to save.", ephemeral=True)
+            return
+
+        key = str(category or "").strip().lower()
+        safe_mode = normalize_category_mode(mode)
+        if key not in valid_category_keys():
+            await interaction.followup.send(
+                f"Unknown category `{category}`. Run `/deal_categories` and copy one of the category keys.",
+                ephemeral=True,
+            )
+            return
+
+        await set_category_preference(self.bot.db, interaction.guild_id, key, safe_mode)
+        label = "⭐ priority" if safe_mode == CATEGORY_MODE_PRIORITY else "🙈 muted" if safe_mode == CATEGORY_MODE_MUTED else "▫️ normal"
+        await interaction.followup.send(
+            f"Saved `{key}` as **{label}**. Muted categories hide normal deals, but extreme/nuclear markdowns can still override so SniperPlug does not miss them.",
+            ephemeral=True,
+        )
+
+    @deal_category.error
+    async def deal_category_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = "You need **Manage Server** permission to change deal categories." if isinstance(error, app_commands.MissingPermissions) else f"Deal category update hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
     @app_commands.command(name="public_alerts_status", description="Show SniperPlug public posting and auto-scan settings for this server.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def public_alerts_status(self, interaction: discord.Interaction) -> None:
@@ -286,7 +363,7 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
         embed.add_field(name="Deal threshold", value=f"{threshold}%+ verified markdown", inline=True)
     if auto_scan is not None:
         embed.add_field(name="Auto-scan stores", value=format_auto_scan_status(auto_scan), inline=False)
-    embed.add_field(name="Posting logic", value="Auto-scan uses Best Picks ranking, then the public guard blocks same-price duplicates, weak proof, non-alertable cards, and low-confidence cards. Lower-price repeats can post again.", inline=False)
+    embed.add_field(name="Posting logic", value="Auto-scan uses Best Picks ranking plus category preferences. Priority categories rank higher; muted categories hide normal deals, but extreme/nuclear markdowns still override so SniperPlug does not miss amazing finds. The public guard still blocks same-price duplicates, weak proof, non-alertable cards, and low-confidence cards.", inline=False)
     embed.set_footer(text="Advanced public-alert controls are available through /retailer_autoscan and /retailer_autoscan_status.")
     return embed
 
@@ -344,7 +421,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     embed.add_field(name="Last run decision", value=trim_field(format_latest_report_line(latest_report), 1024), inline=False)
     embed.add_field(
         name="How to read this",
-        value="If setup/channel/gate are green but posts stay at 0, check Last run decision. It will show whether threshold, confidence, fresh filter, duplicate, not-alertable, or disabled guards blocked the candidates.",
+        value="If setup/channel/gate are green but posts stay at 0, check Last run decision. It will show whether threshold, confidence, fresh filter, category preference, duplicate, not-alertable, or disabled guards blocked the candidates.",
         inline=False,
     )
     return embed

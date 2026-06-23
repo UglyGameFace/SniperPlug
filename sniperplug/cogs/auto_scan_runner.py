@@ -14,6 +14,7 @@ from sniperplug.cogs.deal_scanner import DealCard, HuntPreset, provider_health_e
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.autoscan_history import save_autoscan_report
 from sniperplug.services.deal_confidence import DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR, select_confident_public_cards
+from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
 from sniperplug.services.deal_feedback import apply_feedback_learning_to_cards
 from sniperplug.services.deal_finder_telemetry import top_route_lines
 from sniperplug.services.deal_search_modes import MODE_BEST, rank_for_search_mode
@@ -349,6 +350,16 @@ class AutoScanRunnerCog(commands.Cog):
             await persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
             log.info("Auto-scan completed with no fresh public-confidence cards %s", report.log_fields())
             return report
+
+        category_preferences = await get_category_preferences(self.bot.db, guild.guild_id)
+        shown_cards, category_suppressed_cards, category_notes = apply_category_preferences(shown_cards, category_preferences)
+        if category_suppressed_cards:
+            warnings.append(
+                f"Category preferences suppressed **{len(category_suppressed_cards)}** normal lead(s). Extreme/nuclear deals still override muted categories."
+            )
+        for note in category_notes[:4]:
+            if note not in warnings:
+                warnings.append(note)
 
         public_result = await maybe_post_public_deal_cards(
             bot=self.bot,

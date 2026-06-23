@@ -24,6 +24,7 @@ from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
 from sniperplug.cogs.workflow import WorkflowCog
 from sniperplug.providers.bestbuy import BestBuyProvider
+from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
@@ -77,7 +78,7 @@ class SniperPlugBot(commands.Bot):
         log.info("Persistent deal feedback views registered: %s", feedback_views)
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
-        provider_registry.register(WalmartProvider(configured=False))
+        provider_registry.register(CachedWalmartProvider(self.db, WalmartProvider(configured=False)))
         provider_registry.register(HomeDepotProvider())
         provider_registry.register(SerpApiHomeDepotProvider())
 

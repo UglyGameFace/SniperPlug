@@ -17,15 +17,13 @@ from sniperplug.services.home_depot_product_lookup import HomeDepotProductDetail
 from sniperplug.services.home_depot_store_finder import HomeDepotStoreChoice, find_home_depot_stores
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
+from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
 
 
 ZIP_RE = re.compile(r"^\d{5}$")
 SKU_RE = re.compile(r"^[A-Za-z0-9-]{4,24}$")
 STORE_ID_RE = re.compile(r"^\d{3,6}$")
 ID_TOKEN_RE = re.compile(r"[A-Za-z0-9-]{4,}")
-DEFAULT_HOME_DEPOT_STORE_IDS_BY_ZIP = {
-    "06610": "6213",
-}
 
 
 @dataclass(frozen=True)
@@ -73,11 +71,18 @@ class HomeDepotStoreSelect(discord.ui.Select):
         store = self.stores_by_id.get(store_id)
         db = getattr(interaction.client, "db", None)
         await interaction.response.defer(ephemeral=True)
-        scan = await run_home_depot_local_scan(interaction.user.id, self.sku, self.zip_code, store_id=store_id, db=db)
-        embed = build_hd_stock_embed(scan)
-        if store:
-            embed.add_field(name="Selected store", value=f"{store.short_label}\n{store.url}", inline=False)
-        await interaction.edit_original_response(embed=embed, view=None)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hd_stock_store_select", query=self.sku, preset=store_id)
+        if not await scan_operation_locks.acquire(lock_key):
+            await interaction.followup.send("That Home Depot store check is already running. I blocked the duplicate tap so it does not spend another SerpApi credit.", ephemeral=True)
+            return
+        try:
+            scan = await run_home_depot_local_scan(interaction.user.id, self.sku, self.zip_code, store_id=store_id, db=db)
+            embed = build_hd_stock_embed(scan)
+            if store:
+                embed.add_field(name="Selected store", value=f"{store.short_label}\n{store.url}", inline=False)
+            await interaction.edit_original_response(embed=embed, view=None)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
 
 class HomeDepotStoreSelectView(discord.ui.View):
@@ -94,14 +99,14 @@ class HomeDepotLocalCog(commands.Cog):
     @app_commands.describe(
         sku="Home Depot SKU / Internet #, like 334851114.",
         zip_code="5-digit ZIP code to find nearby stores.",
-        store_id="Optional Home Depot store ID. Leave blank to use saved default or pick from nearby stores.",
+        store_id="Optional Home Depot store ID. Leave blank to pick from nearby stores.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def hd_stock(self, interaction: discord.Interaction, sku: str, zip_code: str, store_id: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True)
         cleaned_sku = _clean_sku(sku)
         cleaned_zip = _clean_zip(zip_code)
-        cleaned_store_id = _clean_store_id(store_id) or DEFAULT_HOME_DEPOT_STORE_IDS_BY_ZIP.get(cleaned_zip)
+        cleaned_store_id = _clean_store_id(store_id)
         error = _validation_error(cleaned_sku, cleaned_zip, cleaned_store_id)
         if error:
             await interaction.followup.send(error, ephemeral=True)
@@ -149,8 +154,15 @@ class HomeDepotLocalCog(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        scan = await run_home_depot_local_scan(interaction.user.id, cleaned_sku, cleaned_zip, store_id=cleaned_store_id, db=self.bot.db)
-        await interaction.followup.send(embed=build_hd_stock_embed(scan), ephemeral=True)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hd_stock", query=cleaned_sku, preset=cleaned_store_id)
+        if not await scan_operation_locks.acquire(lock_key):
+            await interaction.followup.send("That Home Depot stock check is already running. I blocked the duplicate tap so it does not spend another SerpApi credit.", ephemeral=True)
+            return
+        try:
+            scan = await run_home_depot_local_scan(interaction.user.id, cleaned_sku, cleaned_zip, store_id=cleaned_store_id, db=self.bot.db)
+            await interaction.followup.send(embed=build_hd_stock_embed(scan), ephemeral=True)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
     @app_commands.command(name="hd_penny_zip", description="Start a ZIP-anchored Home Depot penny/clearance scan using a safe default search.")
     @app_commands.describe(zip_code="5-digit ZIP code to anchor the penny/clearance scan.")
@@ -169,22 +181,29 @@ class HomeDepotLocalCog(commands.Cog):
         if health.status != ProviderStatus.READY:
             await interaction.followup.send(health.message, ephemeral=True)
             return
-        quota = serpapi_quota_guard.check(interaction.user.id, cost=1)
-        if not quota.allowed:
-            await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hd_penny_zip", query="clearance", preset=cleaned_zip)
+        if not await scan_operation_locks.acquire(lock_key):
+            await interaction.followup.send("That Home Depot ZIP scan is already running. I blocked the duplicate tap so it does not spend another SerpApi credit.", ephemeral=True)
             return
-        result = await provider.scan(
-            ProviderScanRequest(
-                source_key="home_depot_serpapi",
-                query="clearance",
-                max_results=24,
-                metadata={"zip_code": cleaned_zip, "requested_by": str(interaction.user.id), "scan_type": "hd_penny_zip", "db": self.bot.db},
+        try:
+            quota = serpapi_quota_guard.check(interaction.user.id, cost=1)
+            if not quota.allowed:
+                await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
+                return
+            result = await provider.scan(
+                ProviderScanRequest(
+                    source_key="home_depot_serpapi",
+                    query="clearance",
+                    max_results=24,
+                    metadata={"zip_code": cleaned_zip, "requested_by": str(interaction.user.id), "scan_type": "hd_penny_zip", "db": self.bot.db},
+                )
             )
-        )
-        quota_cost = 0 if result.metadata.get("cache_hit") else 1
-        quota_after = serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)
-        candidates = tuple(sorted(result.candidates, key=_penny_sort_key, reverse=True))[:8]
-        await interaction.followup.send(embed=build_hd_penny_zip_embed(cleaned_zip, candidates, result.warnings, quota_after.daily_used, quota_after.daily_limit), ephemeral=True)
+            quota_cost = 0 if result.metadata.get("cache_hit") else 1
+            quota_after = serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)
+            candidates = tuple(sorted(result.candidates, key=_penny_sort_key, reverse=True))[:8]
+            await interaction.followup.send(embed=build_hd_penny_zip_embed(cleaned_zip, candidates, result.warnings, quota_after.daily_used, quota_after.daily_limit), ephemeral=True)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
 
 async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, store_id: str | None = None, db: Any = None) -> HomeDepotLocalScan:

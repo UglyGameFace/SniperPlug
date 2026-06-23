@@ -40,6 +40,11 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
             "reduced price",
             "special buy",
             "walmart deals",
+            "walmart cash eligible",
+            "walmart cash offers",
+            "walmart cash",
+            "onepay cash rewards",
+            "cash back walmart",
             "online clearance",
             "overstock clearance",
             "wireless charging station",
@@ -110,6 +115,12 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
             # Walmart sale surfaces
             "walmart deal week",
             "walmart deals",
+            "walmart cash eligible",
+            "walmart cash offers",
+            "walmart cash beauty",
+            "walmart cash personal care",
+            "walmart cash household",
+            "walmart cash grocery",
             "walmart deals electronics",
             "walmart rollback deals",
             "walmart clearance deals",
@@ -318,7 +329,7 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
     "home": ("Home & Kitchen", "🏠", "Kitchen, home, furniture, patio, appliances, and storage.", ("home clearance", "home rollback", "kitchen clearance", "appliance clearance", "furniture clearance", "patio clearance", "vacuum clearance", "air fryer clearance", "coffee maker clearance", "mattress clearance")),
     "toys": ("Toys & Gifts", "🧸", "Toys, LEGO, games, collectibles, and giftable markdowns.", ("toy clearance", "toy rollback", "lego clearance", "pokemon cards", "board game clearance", "collectible clearance", "video game clearance", "barbie clearance")),
     "auto_tools": ("Auto & Tools", "🛠️", "Tools, garage, car care, oil, and DIY markdowns.", ("tool clearance", "tool rollback", "auto clearance", "drill clearance", "dewalt clearance", "milwaukee clearance", "hart tools clearance", "pressure washer clearance", "car care clearance", "motor oil rollback")),
-    "essentials": ("Daily Essentials", "🧼", "Household, grocery, personal care, baby, pet, and coupon/cash value checks.", ("household clearance", "household rollback", "grocery clearance", "cleaning supplies clearance", "laundry detergent rollback", "paper goods rollback", "toilet paper rollback", "personal care clearance", "diaper clearance", "baby clearance", "pet clearance")),
+    "essentials": ("Daily Essentials", "🧼", "Household, grocery, personal care, baby, pet, and coupon/cash value checks.", ("walmart cash eligible", "walmart cash offers", "household clearance", "household rollback", "grocery clearance", "cleaning supplies clearance", "laundry detergent rollback", "paper goods rollback", "toilet paper rollback", "personal care clearance", "diaper clearance", "baby clearance", "pet clearance")),
 }
 
 DISCOVERY_QUERIES = CATEGORY_ROUTES["all"][3]

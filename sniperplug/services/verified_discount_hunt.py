@@ -13,6 +13,7 @@ from sniperplug.services.embed_delivery import batch_cards_for_limit, sanitize_e
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route, top_route_lines
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
 from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT, get_starting_deal_percent, normalize_starting_deal_percent
+from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
 from sniperplug.services.low_price_scout import scout_low_price_leads
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
@@ -529,16 +530,31 @@ async def verified_hunt_button_callback(self, interaction: discord.Interaction) 
             guild_id=interaction.guild_id,
             use_price_memory=True,
         )
+        posted_cards = list(result.cards)
+        category_suppressed_cards = []
+        category_notes = []
+        db = getattr(interaction.client, "db", None)
+        if db is not None and interaction.guild_id is not None:
+            category_preferences = await get_category_preferences(db, interaction.guild_id)
+            posted_cards, category_suppressed_cards, category_notes = apply_category_preferences(posted_cards, category_preferences)
+
         summary = build_verified_hunt_result_embed(result)
+        if category_notes or category_suppressed_cards:
+            lines = []
+            if category_suppressed_cards:
+                lines.append(f"Muted category settings hid **{len(category_suppressed_cards)}** normal public lead(s). Extreme/nuclear deals still break through.")
+            lines.extend(f"• {note}" for note in category_notes[:3])
+            summary.add_field(name="🎛️ Deal Feed Controls", value="\n".join(lines)[:1024], inline=False)
+
         public_result = await maybe_post_public_deal_cards(
             bot=interaction.client,
             guild_id=interaction.guild_id,
-            cards=result.cards,
+            cards=posted_cards,
             source_label=f"hunt:{preset.key}:verified_{result.min_discount}_plus",
             fallback_retailer="walmart",
         )
         deal_scanner.add_public_posting_field(summary, public_result)
-        await send_card_batches(interaction, summary=summary, cards=result.cards, review_cards=result.review_candidates.cards if result.review_candidates else [])
+        await send_card_batches(interaction, summary=summary, cards=posted_cards, review_cards=result.review_candidates.cards if result.review_candidates else [])
     finally:
         await scan_operation_locks.release(lock_key)
 

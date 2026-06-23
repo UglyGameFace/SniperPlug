@@ -98,6 +98,20 @@ class DealScannerCog(commands.Cog):
         summary = build_scan_summary(result, query, min_discount, shown_discount, alerts_only, simple_mode)
         if cards:
             shown_cards = cards[:5]
+            category_suppressed_cards = []
+            category_notes = []
+            db = getattr(self.bot, "db", None)
+            if db is not None and interaction.guild_id is not None:
+                from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
+
+                category_preferences = await get_category_preferences(db, interaction.guild_id)
+                shown_cards, category_suppressed_cards, category_notes = apply_category_preferences(shown_cards, category_preferences)
+            if category_notes or category_suppressed_cards:
+                lines = []
+                if category_suppressed_cards:
+                    lines.append(f"Muted category settings hid **{len(category_suppressed_cards)}** normal public lead(s). Extreme/nuclear deals still break through.")
+                lines.extend(f"• {note}" for note in category_notes[:3])
+                summary.add_field(name="🎛️ Deal Feed Controls", value="\n".join(lines)[:1024], inline=False)
             public_result = await maybe_post_public_deal_cards(
                 bot=self.bot,
                 guild_id=interaction.guild_id,

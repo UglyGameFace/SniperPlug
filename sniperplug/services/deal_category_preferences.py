@@ -267,7 +267,9 @@ def apply_category_preferences(cards: list[DealCard], preferences: dict[str, str
 
         if decision.action == "boost":
             try:
-                card.score = int(getattr(card, "score", 0) or 0) + 25
+                if not bool(getattr(card, "deal_category_boost_applied", False)):
+                    card.score = int(getattr(card, "score", 0) or 0) + 25
+                    setattr(card, "deal_category_boost_applied", True)
             except Exception:
                 pass
             allowed.append(card)

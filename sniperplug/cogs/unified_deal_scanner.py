@@ -29,6 +29,7 @@ from sniperplug.services.deal_search_modes import (
     rank_for_search_mode,
 )
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
+from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
 from sniperplug.services.manual_review_share import ManualReviewShareView
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
@@ -116,8 +117,15 @@ class UnifiedDealScannerCog(DealScannerCog):
             force_refresh=force_refresh,
         )
         ranked = rank_for_search_mode(result.verified_cards, result.review_candidates.cards, mode, limit=5)
+        category_suppressed_cards: list[DealCard] = []
+        category_notes: list[str] = []
+        if db is not None and interaction.guild_id is not None:
+            category_preferences = await get_category_preferences(db, interaction.guild_id)
+            category_allowed_verified, category_suppressed_cards, category_notes = apply_category_preferences(ranked.verified, category_preferences)
+            ranked = ModeRankedCards(ranked.mode, category_allowed_verified, ranked.review, ranked.note)
         freshness = classify_scan_freshness([*result.verified_cards, *result.review_candidates.cards], cached_before, fallback_retailer="walmart")
         summary = build_deal_finder_summary(result, ranked=ranked, freshness=freshness)
+        add_deal_feed_controls_field(summary, suppressed_count=len(category_suppressed_cards), notes=category_notes)
         view = DealSearchModeView(
             cog=self,
             query=query,
@@ -225,7 +233,15 @@ class DealSearchModeView(discord.ui.View):
             return
 
         ranked = rank_for_search_mode(self.result.verified_cards, self.result.review_candidates.cards, mode, limit=5)
+        category_suppressed_cards: list[DealCard] = []
+        category_notes: list[str] = []
+        db = getattr(self.cog.bot, "db", None)
+        if db is not None and interaction.guild_id is not None:
+            category_preferences = await get_category_preferences(db, interaction.guild_id)
+            category_allowed_verified, category_suppressed_cards, category_notes = apply_category_preferences(ranked.verified, category_preferences)
+            ranked = ModeRankedCards(ranked.mode, category_allowed_verified, ranked.review, ranked.note)
         summary = build_deal_finder_summary(self.result, ranked=ranked, freshness=self.freshness)
+        add_deal_feed_controls_field(summary, suppressed_count=len(category_suppressed_cards), notes=category_notes)
         view = DealSearchModeView(
             cog=self.cog,
             query=self.query,
@@ -317,6 +333,18 @@ class NewSinceScanButton(discord.ui.Button):
 
 async def send_deal_mode_controls(interaction: discord.Interaction, view: DealSearchModeView, ranked: ModeRankedCards, freshness: ScanFreshness | None = None) -> None:
     await interaction.followup.send(embed=build_deal_mode_menu_embed(view.query, ranked, freshness), view=view, ephemeral=True)
+
+
+def add_deal_feed_controls_field(embed: discord.Embed, *, suppressed_count: int = 0, notes: list[str] | tuple[str, ...] | None = None) -> None:
+    notes = list(notes or [])
+    if not suppressed_count and not notes:
+        return
+    lines: list[str] = []
+    if suppressed_count:
+        lines.append(f"Muted category settings hid **{suppressed_count}** normal public lead(s). Extreme/nuclear deals still break through.")
+    lines.extend(f"• {note}" for note in notes[:3])
+    embed.add_field(name="🎛️ Deal Feed Controls", value="\n".join(lines)[:1024], inline=False)
+
 
 
 def build_deal_mode_menu_embed(query: str, ranked: ModeRankedCards, freshness: ScanFreshness | None = None) -> discord.Embed:

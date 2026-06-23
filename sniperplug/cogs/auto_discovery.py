@@ -12,6 +12,7 @@ from sniperplug.cogs.public_alerts import (
     list_retailer_auto_scan_settings,
 )
 from sniperplug.services.deal_finder_engine import find_walmart_discovery_deals
+from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_deal_posts import PublicPostResult, maybe_post_public_deal_cards
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
@@ -71,6 +72,8 @@ class AutoDiscoveryCog(commands.Cog):
                 hide_active_cache_repeats=False,
             )
             shown_cards = fresh_selection.fresh
+            category_preferences = await get_category_preferences(self.bot.db, interaction.guild_id)
+            shown_cards, category_suppressed_cards, category_notes = apply_category_preferences(shown_cards, category_preferences)
             public_result = await maybe_post_public_deal_cards(
                 bot=self.bot,
                 guild_id=interaction.guild_id,
@@ -94,6 +97,12 @@ class AutoDiscoveryCog(commands.Cog):
                 color=discord.Color.red() if shown_cards else discord.Color.dark_gold(),
             )
             embed.add_field(name="Auto-scan setting", value=discover_auto_scan_status(gate_settings), inline=False)
+            if category_notes or category_suppressed_cards:
+                lines = []
+                if category_suppressed_cards:
+                    lines.append(f"Muted category settings hid **{len(category_suppressed_cards)}** normal public lead(s). Extreme/nuclear deals still break through.")
+                lines.extend(f"• {note}" for note in category_notes[:3])
+                embed.add_field(name="🎛️ Deal Feed Controls", value="\n".join(lines)[:1024], inline=False)
             if result.price_memory is not None:
                 embed.add_field(name="🧠 Price memory", value=result.price_memory.summary_line(), inline=False)
             if result.review_candidates is not None:

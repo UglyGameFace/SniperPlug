@@ -1,7 +1,9 @@
+from datetime import datetime, timedelta, timezone
+
 import aiosqlite
 import pytest
 
-from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
+from sniperplug.services.fresh_deal_filter import public_post_row_should_block, select_fresh_deal_cards
 from sniperplug.services.public_deal_posts import cache_active_deal_cards, ensure_public_post_tables
 
 
@@ -66,3 +68,25 @@ async def test_fresh_filter_allows_new_product():
         selection = await select_fresh_deal_cards(db, guild_id=1, cards=[new_card], limit=5)
 
         assert selection.fresh == [new_card]
+
+
+def test_posted_public_row_blocks_fresh_filter():
+    assert public_post_row_should_block({"status": "posted", "first_seen_at": datetime.now(timezone.utc).isoformat()}) is True
+
+
+def test_recent_reserved_public_row_blocks_temporarily():
+    row = {"status": "reserved", "first_seen_at": datetime.now(timezone.utc).isoformat()}
+
+    assert public_post_row_should_block(row) is True
+
+
+def test_stale_reserved_public_row_does_not_block_autoscan_forever():
+    row = {"status": "reserved", "first_seen_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()}
+
+    assert public_post_row_should_block(row) is False
+
+
+def test_bad_reserved_timestamp_does_not_block_autoscan_forever():
+    row = {"status": "reserved", "first_seen_at": "not-a-date"}
+
+    assert public_post_row_should_block(row) is False

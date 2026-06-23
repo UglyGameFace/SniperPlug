@@ -314,7 +314,7 @@ class AutoScanRunnerCog(commands.Cog):
             watchlist_cards = prepare_review_watchlist_cards(result, limit=AUTO_SCAN_REVIEW_FALLBACK_LIMIT)
             if watchlist_cards:
                 shown_cards = watchlist_cards
-                warnings.append("No verified public-confidence cards passed; posted top Walmart Deal Week watchlist/review leads instead.")
+                warnings.append("No verified public-confidence cards passed; selected top Walmart Deal Week watchlist/review leads and sent them to the public guard.")
 
         if not force:
             await record_auto_scan_run(self.bot.db, guild.guild_id, AUTO_SCAN_RETAILER, scan_key=scan_key)
@@ -379,7 +379,7 @@ class AutoScanRunnerCog(commands.Cog):
             fresh_cards=len(fresh_selection.fresh),
             cards_attempted_for_public=len(shown_cards),
             used_repeat_fallback=bool(watchlist_cards),
-            repeat_summary=watchlist_repeat_summary(fresh_selection.summary_line(), watchlist_cards),
+            repeat_summary=watchlist_repeat_summary(fresh_selection.summary_line(), watchlist_cards, public_result),
             public_result=public_result,
             warnings=tuple(warnings),
         )
@@ -487,10 +487,16 @@ def prepare_review_watchlist_cards(result: VerifiedHuntResult, *, limit: int = A
     return cards
 
 
-def watchlist_repeat_summary(base_summary: str, watchlist_cards: list[DealCard]) -> str:
+def watchlist_repeat_summary(base_summary: str, watchlist_cards: list[DealCard], public_result: PublicPostResult | None = None) -> str:
     if not watchlist_cards:
         return base_summary
-    return f"{base_summary} • Deal Week watchlist fallback posted **{len(watchlist_cards)}** review lead(s)"
+    if public_result is None:
+        return f"{base_summary} • Deal Week watchlist fallback selected **{len(watchlist_cards)}** review lead(s)"
+    blocked = int(public_result.skipped_duplicate or 0) + int(public_result.skipped_not_alertable or 0) + int(public_result.skipped_disabled or 0) + int(public_result.skipped_wrong_retailer or 0)
+    return (
+        f"{base_summary} • Deal Week watchlist fallback selected **{len(watchlist_cards)}** review lead(s) "
+        f"• public posted **{public_result.posted}** • public blocked **{blocked}**"
+    )
 
 def autoscan_lock(guild_id: int) -> asyncio.Lock:
     lock = _AUTOSCAN_LOCKS.get(guild_id)

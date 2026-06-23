@@ -53,4 +53,4 @@ def test_prepare_review_watchlist_cards_marks_leads_without_hiding_warning():
 
 def test_watchlist_repeat_summary_mentions_fallback():
     card = DealCard(embed=discord.Embed(title="Lead"), url="u", label="Lead")
-    assert "watchlist fallback posted **1**" in watchlist_repeat_summary("fresh: none", [card])
+    assert "watchlist fallback selected **1**" in watchlist_repeat_summary("fresh: none", [card])

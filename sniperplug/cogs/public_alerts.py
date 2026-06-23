@@ -10,6 +10,7 @@ from sniperplug.models.deal import utc_now_iso
 from sniperplug.services.autoscan_history import format_latest_report_line, latest_autoscan_report
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent, set_starting_deal_percent
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_config
+from sniperplug.services.public_deal_posts import ensure_public_post_tables
 from sniperplug.services.public_posting import (
     SUPPORTED_RETAILERS,
     format_retailers,
@@ -225,6 +226,28 @@ class PublicAlertsCog(commands.Cog):
             await interaction.response.send_message(message, ephemeral=True)
 
 
+    @app_commands.command(name="autoscan_clear_cache", description="Clear remembered active deal cache for this server.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def autoscan_clear_cache(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which active deal cache to clear.", ephemeral=True)
+            return
+        cleared = await clear_active_cached_deals(self.bot.db, interaction.guild_id)
+        await interaction.followup.send(
+            f"Cleared **{cleared}** active cached deal record(s). This does not delete Discord posts; it only resets SniperPlug's remembered active-deal cache.",
+            ephemeral=True,
+        )
+
+    @autoscan_clear_cache.error
+    async def autoscan_clear_cache_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = "You need **Manage Server** permission to clear auto-scan cache." if isinstance(error, app_commands.MissingPermissions) else f"Auto-scan cache clear hit an error: `{error}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
+
 
 def public_alert_channel_missing_permissions(channel: discord.TextChannel, member: discord.Member | None) -> list[str]:
     if member is None:
@@ -312,7 +335,9 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
         value=(
             f"Last scheduled run: **{last_run or 'not logged yet'}**\n"
             f"Public posts today: **{posts_today}**\n"
-            f"Active cached deals: **{active_cached}**"
+            f"Active cached deals: **{active_cached}**\n"
+            "Cache note: active cached deals are remembered product cards, not Discord posts. "
+            "Use `/autoscan_clear_cache` if stale cache noise is confusing Deal Week testing."
         ),
         inline=False,
     )
@@ -405,6 +430,27 @@ async def count_active_cached_deals(db, guild_id: int) -> int:
         return int(row["count"] if row and row["count"] is not None else 0)
     except Exception:
         return 0
+
+
+async def clear_active_cached_deals(db, guild_id: int) -> int:
+    try:
+        await ensure_public_post_tables(db)
+        conn = db.require_conn()
+        cursor = await conn.execute(
+            "SELECT COUNT(*) AS count FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active'",
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+        count = int(row["count"] if row and row["count"] is not None else 0)
+        await conn.execute(
+            "UPDATE guild_active_deal_cache SET status = 'cleared' WHERE guild_id = ? AND status = 'active'",
+            (guild_id,),
+        )
+        await conn.commit()
+        return count
+    except Exception:
+        return 0
+
 
 
 def trim_field(value: str, limit: int = 1024) -> str:

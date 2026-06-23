@@ -27,3 +27,12 @@ def test_entries_for_audience_filters_owner_commands():
     assert "/sniperplug_dashboard" in names
     assert "/public_alerts" in names
     assert "/deals" not in names
+
+
+def test_command_catalog_excludes_removed_duplicate_commands():
+    names = {entry.name for entry in COMMAND_CATALOG}
+
+    assert "/autoscan_setup" not in names
+    assert "/sniperplug setup" not in names
+    assert "/sniperplug status" not in names
+    assert "/sniperplug providers" not in names

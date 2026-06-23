@@ -158,10 +158,10 @@ class AutoScanRunnerCog(commands.Cog):
         async with lock:
             config = await get_public_alert_config(self.bot.db, interaction.guild_id)
             if not config.get("enabled") or not config.get("channel_id"):
-                await interaction.followup.send("Public alerts are not configured yet. Run `/autoscan_setup channel:#your-channel` first.", ephemeral=True)
+                await interaction.followup.send("Public alerts are not configured yet. Run `/setup_sniperplug_here` first.", ephemeral=True)
                 return
             if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):  # public config controls where auto-scan may post
-                await interaction.followup.send("Public alerts are enabled, but Walmart is not in the public retailer list. Run `/autoscan_setup channel:#your-channel` to repair it.", ephemeral=True)
+                await interaction.followup.send("Public alerts are enabled, but Walmart is not in the public retailer list. Run `/setup_sniperplug_here` to repair it.", ephemeral=True)
                 return
             report = await self._run_guild_walmart_discovery(AutoScanGuild(interaction.guild_id, config.get("channel_id")), force=force)
 

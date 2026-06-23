@@ -189,7 +189,7 @@ async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, conf
 
     repaired = await find_named_public_channel(guild)
     if repaired is None:
-        return None, f"{fetch_error}. Re-run `/autoscan_setup channel:#walmart-deals` to save the live channel ID."
+        return None, f"{fetch_error}. Re-run `/setup_sniperplug_here` to save the live channel ID."
 
     permission_error = public_channel_permission_error(guild, repaired)
     if permission_error:

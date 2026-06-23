@@ -30,55 +30,6 @@ class PublicAlertsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="autoscan_setup", description="One-command setup for Walmart public auto-scan alerts.")
-    @app_commands.describe(
-        channel="Public channel where verified Walmart deals should post.",
-        threshold="Minimum verified markdown percent before auto-scan/public alerts consider a deal.",
-        unlimited="For Walmart official scans, bypass interval/daily gates. Paid-credit stores stay protected elsewhere.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def autoscan_setup(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel,
-        threshold: app_commands.Range[int, 0, 95] = 40,
-        unlimited: bool = True,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which auto-scan settings to update.", ephemeral=True)
-            return
-
-        safe_threshold = await set_starting_deal_percent(self.bot.db, interaction.guild_id, int(threshold))
-        await set_public_alert_config(
-            self.bot.db,
-            guild_id=interaction.guild_id,
-            enabled=True,
-            retailers=("walmart",),
-            channel_id=channel.id,
-        )
-        interval_hours = UNLIMITED_AUTOSCAN_INTERVAL_HOURS if unlimited else DEFAULT_AUTOSCAN_INTERVAL_HOURS
-        daily_limit = UNLIMITED_AUTOSCAN_DAILY_LIMIT if unlimited else DEFAULT_AUTOSCAN_DAILY_LIMIT
-        await set_retailer_auto_scan(
-            self.bot.db,
-            interaction.guild_id,
-            "walmart",
-            True,
-            interval_hours=interval_hours,
-            daily_limit=daily_limit,
-        )
-        auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
-        embed = autoscan_setup_complete_embed(channel_id=channel.id, threshold=safe_threshold, auto_scan=auto_scan)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @autoscan_setup.error
-    async def autoscan_setup_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = "You need **Manage Server** permission to set up auto-scan alerts." if isinstance(error, app_commands.MissingPermissions) else f"Auto-scan setup hit an error: `{error}`"
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-
     @app_commands.command(name="public_alerts", description="Turn public deal posting on/off and choose the public alert channel.")
     @app_commands.describe(
         enabled="Whether verified public deal cards may post publicly.",
@@ -112,6 +63,11 @@ class PublicAlertsCog(commands.Cog):
         if enabled and channel_id is None:
             await interaction.followup.send("Public alerts need a channel. Re-run this with `channel:#your-deals-channel` or run it inside the channel you want to use.", ephemeral=True)
             return
+        if enabled and chosen_channel is not None and interaction.guild is not None:
+            missing = public_alert_channel_missing_permissions(chosen_channel, interaction.guild.me)
+            if missing:
+                await interaction.followup.send(public_alert_channel_missing_permissions_message(chosen_channel, missing), ephemeral=True)
+                return
 
         await set_public_alert_config(
             self.bot.db,
@@ -269,31 +225,35 @@ class PublicAlertsCog(commands.Cog):
             await interaction.response.send_message(message, ephemeral=True)
 
 
-def autoscan_setup_complete_embed(*, channel_id: int | str, threshold: int, auto_scan: dict[str, dict]) -> discord.Embed:
-    embed = discord.Embed(
-        title="✅ Walmart Auto-Scan Setup Complete",
-        description="SniperPlug is now configured to scan Walmart automatically and post only verified public-ready deals.",
-        color=discord.Color.green(),
-    )
-    embed.add_field(name="Public posting", value=f"Enabled for `walmart` → <#{channel_id}>", inline=False)
-    embed.add_field(name="Deal threshold", value=f"**{threshold}%+ verified markdown**. This applies to `/deals`, `/hunt`, `/discover`, and auto-scan.", inline=False)
-    embed.add_field(name="Auto-scan", value=format_auto_scan_status(auto_scan), inline=False)
-    embed.add_field(
-        name="What gets posted?",
-        value=(
-            "Auto-scan uses **Best Picks** ranking, then posts only cards that pass public-alert proof, duplicate checks, confidence, and fresh/new/lower-price checks. "
-            "Weak proof and staff-review candidates stay private."
-        ),
-        inline=False,
-    )
-    embed.add_field(name="Optional test", value="Use `/autoscan_now` only when you want an immediate debug run. Use `/autoscan_health` to see whether setup/channel/runs look healthy.", inline=False)
-    return embed
 
+def public_alert_channel_missing_permissions(channel: discord.TextChannel, member: discord.Member | None) -> list[str]:
+    if member is None:
+        return []
+    perms = channel.permissions_for(member)
+    missing: list[str] = []
+    if not getattr(perms, "view_channel", False):
+        missing.append("View Channel")
+    if not getattr(perms, "send_messages", False):
+        missing.append("Send Messages")
+    if not getattr(perms, "embed_links", False):
+        missing.append("Embed Links")
+    if not getattr(perms, "read_message_history", False):
+        missing.append("Read Message History")
+    return missing
+
+
+def public_alert_channel_missing_permissions_message(channel: discord.TextChannel, missing: list[str]) -> str:
+    return (
+        f"SniperPlug cannot post in {channel.mention} yet.\n\n"
+        "Missing channel permissions:\n"
+        + "\n".join(f"• {perm}" for perm in missing)
+        + "\n\nGive the SniperPlug bot/role those permissions, then run `/setup_sniperplug_here` in that channel."
+    )
 
 def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None, auto_scan: dict[str, dict] | None = None, threshold: int | None = None) -> discord.Embed:
     embed = discord.Embed(
         title="📣 Public Alert Settings",
-        description="This is the simple view. Use `/public_alerts` to update posting, `/autoscan_setup` for Walmart one-shot setup, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.",
+        description="This is the simple view. Use `/setup_sniperplug_here` for one-step setup, `/public_alerts` to fine-tune posting, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.",
         color=discord.Color.green() if enabled else discord.Color.dark_gold(),
     )
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
@@ -367,16 +327,16 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
 
 def public_alert_channel_status(bot: commands.Bot, guild_id: int, channel_id: int | str | None) -> str:
     if not channel_id:
-        return "⛔ No public channel saved. Run `/autoscan_setup channel:#walmart-deals`."
+        return "⛔ No public channel saved. Run `/setup_sniperplug_here` inside the channel you want, or `/setup_sniperplug channel:#walmart-deals`."
     guild = bot.get_guild(guild_id)
     if guild is None:
         return f"⛔ Bot is not connected to guild `{guild_id}` right now."
     decoded = decode_channel_id(channel_id)
     if decoded is None:
-        return f"⛔ Saved channel ID is invalid: `{channel_id}`. Re-run `/autoscan_setup`."
+        return f"⛔ Saved channel ID is invalid: `{channel_id}`. Re-run `/setup_sniperplug_here`."
     channel = guild.get_channel(decoded)
     if channel is None:
-        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. Re-run `/autoscan_setup` with the live channel."
+        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. Re-run `/setup_sniperplug_here` with the live channel."
     if not hasattr(channel, "send"):
         return f"⛔ Saved channel <#{decoded}> is not a sendable text channel."
     me = getattr(guild, "me", None)
@@ -389,6 +349,8 @@ def public_alert_channel_status(bot: commands.Bot, guild_id: int, channel_id: in
             missing.append("Send Messages")
         if not getattr(perms, "embed_links", True):
             missing.append("Embed Links")
+        if not getattr(perms, "read_message_history", True):
+            missing.append("Read Message History")
         if missing:
             return f"⛔ <#{decoded}> is saved, but bot is missing: {', '.join(missing)}."
     return f"✅ <#{decoded}> is saved and sendable."

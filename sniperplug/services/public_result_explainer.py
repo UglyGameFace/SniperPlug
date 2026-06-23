@@ -26,7 +26,7 @@ def explain_public_post_result(result: Any) -> str:
 
     lines.append(f"Tried: **{attempted}** • Posted: **{posted}** • Cached active: **{cached}**")
     if disabled:
-        lines.append(f"• **{disabled}** skipped because public alerts are off or no alert channel is set. Run `/autoscan_setup channel:#walmart-deals`.")
+        lines.append(f"• **{disabled}** skipped because public alerts are off or no alert channel is set. Run `/setup_sniperplug_here`.")
     if wrong_retailer:
         lines.append(f"• **{wrong_retailer}** skipped because that retailer is not enabled for public posting.")
     if duplicate:

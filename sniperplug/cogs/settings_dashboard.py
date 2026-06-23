@@ -11,6 +11,7 @@ from sniperplug.cogs.active_deals import active_deal_counts
 from sniperplug.cogs.public_alerts import format_auto_scan_status, get_public_alert_config, list_retailer_auto_scan_settings
 from sniperplug.providers import serpapi_home_depot as home_depot_search_cache_module
 from sniperplug.providers.registry import provider_registry
+from sniperplug.services import embed_delivery as embed_delivery_module
 from sniperplug.services import home_depot_product_lookup as home_depot_detail_cache_module
 from sniperplug.services.command_catalog import COMMAND_AUDIENCE_ORDER, CommandCatalogEntry, entries_for_audience
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent, set_starting_deal_percent
@@ -99,7 +100,7 @@ class SettingsDashboardCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
-    @app_commands.command(name="sniperplug_doctor", description="Run a post-deploy SniperPlug self-check for DB, cache, providers, and safety guards.")
+    @app_commands.command(name="sniperplug_doctor", description="Run a post-deploy SniperPlug self-check for DB, cache, providers, and safety checks.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def sniperplug_doctor(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -119,7 +120,7 @@ class SettingsDashboardCog(commands.Cog):
 
         embed = discord.Embed(
             title=f"SniperPlug Doctor • {status}",
-            description="Post-deploy smoke check for the stuff that keeps biting us: DB, cache, providers, slash commands, safety guards, and recent errors.",
+            description="Post-deploy smoke check for the stuff that keeps biting us: DB, cache, providers, slash commands, safety checks, and recent errors.",
             color=color,
         )
         embed.add_field(name="Core checks", value=format_doctor_checks(checks), inline=False)
@@ -210,7 +211,7 @@ async def build_doctor_checks(bot: commands.Bot, guild_id: int, provider_health:
     checks: list[tuple[str, str, str]] = []
     checks.append(check("Database connection", db is not None and getattr(db, "conn", None) is not None, f"backend={getattr(db, 'backend', 'unknown')}"))
     checks.append(check("error_events table", counts.get("error_events", -1) >= 0, f"rows={counts.get('error_events', 'n/a')}"))
-    checks.append(check("Embed sanitizer", bool(getattr(discord.Webhook.send, "_sniperplug_safe_followup_send_installed", False)), "followup sends protected from field/total limits"))
+    checks.append(check("Native embed delivery", hasattr(embed_delivery_module, "sanitize_embed") and hasattr(embed_delivery_module, "batch_embeds_for_limit"), "safe embed sizing lives in native send helpers; no boot monkey patch required"))
     checks.append(check("Home Depot search cache", getattr(home_depot_search_cache_module, "_CACHE_DB", None) is not None, "shared DB cache installed"))
     checks.append(check("Home Depot detail cache", getattr(home_depot_detail_cache_module, "_CACHE_DB", None) is not None, "shared DB cache installed"))
     required_providers = {"walmart", "home_depot", "home_depot_serpapi"}

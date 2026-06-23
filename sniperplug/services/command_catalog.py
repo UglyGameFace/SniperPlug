@@ -53,17 +53,10 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
-        name="/autoscan_setup",
-        audience="Owner",
-        purpose="One-command Walmart public auto-scan setup.",
-        when_to_use="Use when you want the shortest path to turn on Walmart background discovery and public posting for one channel.",
-        credit_risk="Walmart official API",
-    ),
-    CommandCatalogEntry(
         name="/autoscan_now",
         audience="Owner",
         purpose="Run the Walmart auto-scan immediately and show the exact post/block decision.",
-        when_to_use="Use after deploys or setup changes to confirm whether deals post, duplicate, cache, fail confidence, or fail channel/config gates.",
+        when_to_use="Use after deploys or setup changes to confirm whether deals post, duplicate, cache, fail confidence, or fail channel/config gates. Setup first with `/setup_sniperplug_here`.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
@@ -176,7 +169,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
         name="/sniperplug_doctor",
         audience="Owner",
-        purpose="Post-deploy self-check for DB, providers, caches, slash commands, safety guards, and recent errors.",
+        purpose="Post-deploy self-check for DB, providers, caches, slash commands, safety checks, and recent errors.",
         when_to_use="Run this first after every deploy before testing deal commands.",
     ),
     CommandCatalogEntry(
@@ -192,28 +185,10 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use 30–40% for normal hunting, lower for more results, or higher for stricter glitch-style alerts.",
     ),
     CommandCatalogEntry(
-        name="/sniperplug setup",
-        audience="Owner",
-        purpose="Legacy fallback default alert channel setup.",
-        when_to_use="Prefer `/setup_sniperplug_here` because it also configures public posting and Walmart auto-scan.",
-    ),
-    CommandCatalogEntry(
         name="/sniperplug set_channel",
         audience="Owner",
         purpose="Route a specific alert type to a specific channel.",
         when_to_use="Use when different kinds of deals need different channels.",
-    ),
-    CommandCatalogEntry(
-        name="/sniperplug status",
-        audience="Owner",
-        purpose="Show default channel and route channel status.",
-        when_to_use="Use for old route/channel setup checks. Prefer `/sniperplug_dashboard` for full health.",
-    ),
-    CommandCatalogEntry(
-        name="/sniperplug providers",
-        audience="Owner",
-        purpose="Show provider health only.",
-        when_to_use="Use to check whether Walmart, Home Depot, Best Buy, or other providers are ready/staged/blocked.",
     ),
 )
 

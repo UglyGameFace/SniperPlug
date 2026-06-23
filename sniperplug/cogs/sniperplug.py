@@ -51,28 +51,6 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="setup", description="Set the default channel where SniperPlug should post deal alerts.")
-    @app_commands.describe(channel="The fallback channel for SniperPlug deal alerts.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
-        if not interaction.guild_id or not interaction.guild:
-            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-            return
-
-        missing = self._missing_bot_perms(interaction.guild, channel)
-        if missing:
-            await interaction.response.send_message(
-                self._missing_permissions_message(channel, missing),
-                ephemeral=True,
-            )
-            return
-
-        await self.bot.db.set_guild_deal_channel(interaction.guild_id, channel.id)
-        await interaction.response.send_message(
-            f"SniperPlug default deal alerts will post in {channel.mention}.",
-            ephemeral=True,
-        )
-
     @app_commands.command(name="set_channel", description="Route a SniperPlug alert type to a specific channel.")
     @app_commands.describe(
         route="The SniperPlug alert route to configure.",
@@ -128,66 +106,6 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="status", description="Show the current SniperPlug setup for this server.")
-    async def status(self, interaction: discord.Interaction) -> None:
-        if not interaction.guild_id:
-            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-            return
-
-        stats = await self.bot.db.stats(interaction.guild_id)
-        channel_id = stats.get("deals_channel_id")
-        channel_text = f"<#{channel_id}>" if channel_id else "Not set"
-        routes = stats.get("alert_routes", {})
-
-        configured_routes = []
-        for route in ALERT_ROUTES:
-            route_channel_id = routes.get(route)
-            if route_channel_id:
-                configured_routes.append(f"**{route_label(route)}:** <#{route_channel_id}>")
-
-        embed = discord.Embed(
-            title="SniperPlug Status",
-            color=discord.Color.orange(),
-        )
-        embed.add_field(name="Default deals channel", value=channel_text, inline=False)
-        embed.add_field(
-            name="Configured routes",
-            value="\n".join(configured_routes) if configured_routes else "No route-specific channels set yet.",
-            inline=False,
-        )
-        embed.add_field(name="Deals stored", value=str(stats["deals_count"]), inline=True)
-        embed.add_field(name="Dead reports", value=str(stats["dead_reports_count"]), inline=True)
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="providers", description="Show SniperPlug provider health and configuration state.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def providers(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-
-        healthchecks = await provider_registry.healthchecks()
-        embed = discord.Embed(
-            title="SniperPlug Providers",
-            description="Provider health only. This command does not scan retailers or make deal alerts.",
-            color=discord.Color.orange(),
-        )
-
-        if not healthchecks:
-            embed.add_field(
-                name="No providers registered",
-                value="No provider adapters are loaded yet.",
-                inline=False,
-            )
-        else:
-            for health in healthchecks:
-                embed.add_field(
-                    name=f"{provider_status_label(health.status)} • {health.provider_key}",
-                    value=health.message,
-                    inline=False,
-                )
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="provider_scan", description="Run a provider scan safely without posting public alerts.")
     @app_commands.describe(
@@ -610,13 +528,11 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             + "\n\nGive the SniperPlug bot/role those permissions, then try again."
         )
 
-    @setup.error
     @set_channel.error
     @test_alert.error
     @scan_test.error
     @snipe_plan.error
     @monitor_plan.error
-    @providers.error
     @provider_scan.error
     async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.MissingPermissions):

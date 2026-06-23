@@ -58,13 +58,14 @@ class DealCategoryDashboardView(discord.ui.View):
     def _rebuild_items(self) -> None:
         self.clear_items()
         self.add_item(DealCategorySelect(self))
-        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_PRIORITY, "Turn ON", "⭐", discord.ButtonStyle.success))
-        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_NORMAL, "Normal", "▫️", discord.ButtonStyle.secondary))
-        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_MUTED, "Mute", "🙈", discord.ButtonStyle.danger))
-        self.add_item(DealCategoryPresetButton(self, "deal_week", "Deal Week", "🔥", discord.ButtonStyle.primary))
-        self.add_item(DealCategoryPresetButton(self, "walmart_cash", "Walmart Cash", "💸", discord.ButtonStyle.success))
-        self.add_item(DealCategoryPresetButton(self, "flip_focus", "Flip Focus", "💰", discord.ButtonStyle.primary))
-        self.add_item(DealCategoryPresetButton(self, "daily_essentials", "Essentials", "🧻", discord.ButtonStyle.secondary))
+        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_PRIORITY, "Selected → ON", "⭐", discord.ButtonStyle.success))
+        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_NORMAL, "Selected → Normal", "▫️", discord.ButtonStyle.secondary))
+        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_MUTED, "Selected → Mute", "🙈", discord.ButtonStyle.danger))
+        self.add_item(DealCategoryBestSetupButton(self))
+        self.add_item(DealCategoryPresetButton(self, "deal_week", "Deal Week ON", "🔥", discord.ButtonStyle.primary))
+        self.add_item(DealCategoryPresetButton(self, "walmart_cash", "Cash ON", "💸", discord.ButtonStyle.success))
+        self.add_item(DealCategoryPresetButton(self, "flip_focus", "Flip ON", "💰", discord.ButtonStyle.primary))
+        self.add_item(DealCategoryPresetButton(self, "daily_essentials", "Essentials ON", "🧻", discord.ButtonStyle.secondary))
         self.add_item(DealCategoryResetButton(self))
         self.add_item(DealCategoryPageButton(self, -1, "Prev", "⬅️"))
         self.add_item(DealCategoryPageButton(self, 1, "Next", "➡️"))
@@ -76,17 +77,29 @@ class DealCategoryDashboardView(discord.ui.View):
         embed = discord.Embed(
             title="🎛️ Deal Feed Controls",
             description=(
-                "Control what SniperPlug **boosts**, **keeps normal**, or **quiets down**.\n"
-                "This should make the feed easier to read without missing insane Walmart mistakes."
+                "**Start here:** tap **✅ Best Setup**.\n"
+                "That turns on broad Walmart Deal Week coverage plus Walmart Cash tracking.\n\n"
+                "Only use the dropdown if you want to fine-tune one specific category."
             ),
             color=discord.Color.blue(),
         )
         embed.add_field(
-            name="How modes work",
+            name="What to tap",
             value=(
-                "⭐ **ON / Priority** = rank higher and show faster\n"
-                "▫️ **Normal** = keep regular deal logic\n"
-                "🙈 **Muted** = hide normal deals, but **70%+ / nuclear markdowns still break through**"
+                "✅ **Best Setup** = Deal Week + Walmart Cash together\n"
+                "🔥 **Deal Week ON** = broad Walmart sale coverage\n"
+                "💸 **Cash ON** = Walmart Cash eligible products get boosted\n"
+                "💰 **Flip ON** = resale/value categories\n"
+                "🧻 **Essentials ON** = grocery/household/baby/pet needs"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Manual editing",
+            value=(
+                "1. Open the dropdown and pick a category.\n"
+                "2. Tap **Selected → ON**, **Selected → Normal**, or **Selected → Mute**.\n"
+                "Muted hides normal deals only — **70%+ / nuclear markdowns still break through**."
             ),
             inline=False,
         )
@@ -147,10 +160,25 @@ class DealCategoryModeButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         if not self.dashboard.selected_key:
-            await self.dashboard.refresh(interaction, note="Pick a category first, then choose Turn ON, Normal, or Mute.")
+            await self.dashboard.refresh(interaction, note="For quick setup, tap **✅ Best Setup**. For manual edits, pick a category from the dropdown first, then tap a Selected button.")
             return
         await set_category_preference(self.dashboard.db, self.dashboard.guild_id, self.dashboard.selected_key, self.mode)
         await self.dashboard.refresh(interaction, note=f"`{self.dashboard.selected_key}` is now **{mode_label(self.mode)}**.")
+
+
+class DealCategoryBestSetupButton(discord.ui.Button):
+    def __init__(self, dashboard: DealCategoryDashboardView):
+        super().__init__(label="Best Setup", emoji="✅", style=discord.ButtonStyle.success, row=2)
+        self.dashboard = dashboard
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await apply_preset(self.dashboard.db, self.dashboard.guild_id, "deal_week")
+        await apply_preset(self.dashboard.db, self.dashboard.guild_id, "walmart_cash")
+        await self.dashboard.refresh(
+            interaction,
+            note="Applied **Best Setup**: broad Walmart Deal Week coverage plus Walmart Cash eligible deal boosts.",
+        )
 
 
 class DealCategoryPresetButton(discord.ui.Button):

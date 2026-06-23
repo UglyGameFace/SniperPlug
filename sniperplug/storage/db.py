@@ -74,6 +74,7 @@ class _LibsqlAsyncCursor:
 class _LibsqlAsyncConnection:
     def __init__(self, conn: Any):
         self.conn = conn
+        self._lock = asyncio.Lock()
 
     async def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None) -> _LibsqlAsyncCursor:
         def run() -> _LibsqlAsyncCursor:
@@ -83,7 +84,8 @@ class _LibsqlAsyncConnection:
                 result = self.conn.execute(sql, tuple(params))
             return _LibsqlAsyncCursor(result)
 
-        return await asyncio.to_thread(run)
+        async with self._lock:
+            return await asyncio.to_thread(run)
 
     async def executescript(self, script: str) -> None:
         for statement in _split_sql_script(script):
@@ -92,12 +94,14 @@ class _LibsqlAsyncConnection:
     async def commit(self) -> None:
         commit = getattr(self.conn, "commit", None)
         if callable(commit):
-            await asyncio.to_thread(commit)
+            async with self._lock:
+                await asyncio.to_thread(commit)
 
     async def close(self) -> None:
         close = getattr(self.conn, "close", None)
         if callable(close):
-            await asyncio.to_thread(close)
+            async with self._lock:
+                await asyncio.to_thread(close)
 
 
 class Database:

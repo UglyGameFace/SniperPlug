@@ -45,7 +45,7 @@ def strict_walmart_promotion_proof(item: dict[str, Any], *, current_price: float
     evidence and the amount is sane for the selected item's current price.
     """
     attrs: dict[str, str] = {}
-    if coupon_amount and coupon_amount > 0:
+    if coupon_amount and coupon_amount > 0 and promotion_amount_is_sane(coupon_amount, current_price=current_price):
         attrs["couponSavings"] = f"{coupon_amount:.2f}"
     walmart_cash = walmart_cash_amount(item, current_price=current_price)
     if walmart_cash and walmart_cash > 0:
@@ -91,6 +91,17 @@ def walmart_cash_amount_is_sane(amount: float | None, *, current_price: float | 
     # Real Walmart Cash promos can sometimes cover the whole item value. Allow
     # full-price / tiny-over-price rewards, but block obvious campaign/ID junk.
     return amount <= max(current_price * 1.10, current_price + 5.00)
+
+
+def promotion_amount_is_sane(amount: float | None, *, current_price: float | None) -> bool:
+    """Validate coupon-like values before displaying them on public cards."""
+    if amount is None or amount <= 0:
+        return False
+    if amount >= 10_000:
+        return False
+    if current_price is None or current_price <= 0:
+        return amount < 500
+    return amount <= max(current_price * 1.50, current_price + 25.00)
 
 
 def _has_explicit_walmart_cash(text: str) -> bool:

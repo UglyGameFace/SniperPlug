@@ -16,3 +16,12 @@ def test_doctor_no_longer_depends_on_embed_monkey_patch():
 
     assert "_sniperplug_safe_followup_send_installed" not in dashboard
     assert "Native embed delivery" in dashboard
+
+
+def test_verizon_shine_does_not_own_slash_command_sync():
+    verizon = Path("sniperplug/cogs/verizon_shine.py").read_text(encoding="utf-8")
+
+    assert "_sync_all_joined_guilds_once" not in verizon
+    assert "_sync_guild_commands" not in verizon
+    assert "copy_global_to" not in verizon
+    assert ".tree.sync" not in verizon

@@ -150,37 +150,99 @@ class AutoScanRunnerCog(commands.Cog):
             await interaction.response.send_message("Use this in a server so I know which auto-scan settings to test.", ephemeral=True)
             return
 
-        lock = autoscan_lock(interaction.guild_id)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        guild_id = int(interaction.guild_id)
+        lock = autoscan_lock(guild_id)
         if lock.locked():
-            await interaction.response.send_message("Auto-scan is already running for this server. I blocked the duplicate run so the bot does not hang or double-post.", ephemeral=True)
+            await interaction.followup.send(
+                "Auto-scan is already running for this server. I blocked the duplicate run so the bot does not hang or double-post.",
+                ephemeral=True,
+            )
             return
 
-        await interaction.response.send_message("Auto-scan started. I’ll post the result here when it finishes. Duplicate clicks are blocked while this runs.", ephemeral=True)
-        async with lock:
-            config = await get_public_alert_config(self.bot.db, interaction.guild_id)
-            if not config.get("enabled") or not config.get("channel_id"):
-                await interaction.followup.send("Public alerts are not configured yet. Run `/setup_sniperplug_here` first.", ephemeral=True)
-                return
-            if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):  # public config controls where auto-scan may post
-                await interaction.followup.send("Public alerts are enabled, but Walmart is not in the public retailer list. Run `/setup_sniperplug_here` to repair it.", ephemeral=True)
-                return
-            report = await self._run_guild_walmart_discovery(AutoScanGuild(interaction.guild_id, config.get("channel_id")), force=force)
+        await interaction.followup.send(
+            "✅ Auto-scan accepted instantly. I’m running the Walmart scan now and will send the result when it finishes. Duplicate clicks are blocked.",
+            ephemeral=True,
+        )
+        asyncio.create_task(self._run_autoscan_now_background(interaction, guild_id, force))
 
-        embed = discord.Embed(title="🧭 Auto-scan test result", description=report.discord_summary()[:4000], color=discord.Color.green() if report.public_result.posted else discord.Color.orange())
+    async def _run_autoscan_now_background(self, interaction: discord.Interaction, guild_id: int, force: bool) -> None:
+        lock = autoscan_lock(guild_id)
+        async with lock:
+            try:
+                config = await get_public_alert_config(self.bot.db, guild_id)
+                if not config.get("enabled") or not config.get("channel_id"):
+                    await self._safe_autoscan_followup(
+                        interaction,
+                        "Public alerts are not configured yet. Run `/setup_sniperplug_here` first.",
+                    )
+                    return
+                if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):
+                    await self._safe_autoscan_followup(
+                        interaction,
+                        "Public alerts are enabled, but Walmart is not in the public retailer list. Run `/setup_sniperplug_here` to repair it.",
+                    )
+                    return
+
+                report = await self._run_guild_walmart_discovery(
+                    AutoScanGuild(guild_id, config.get("channel_id")),
+                    force=force,
+                )
+                await self._send_autoscan_report(interaction, report)
+            except Exception as exc:
+                log.exception("Manual /autoscan_now failed guild=%s", guild_id)
+                await self._safe_autoscan_followup(
+                    interaction,
+                    f"Auto-scan hit an error after starting: `{clean_log_text(exc)}`",
+                )
+
+    async def _send_autoscan_report(self, interaction: discord.Interaction, report: AutoScanReport) -> None:
+        embed = discord.Embed(
+            title="🧭 Auto-scan test result",
+            description=report.discord_summary()[:4000],
+            color=discord.Color.green() if report.public_result.posted else discord.Color.orange(),
+        )
         if report.review_candidate_summary:
-            embed.add_field(name="Review-only diagnostics", value=trim_discord_value(report.review_candidate_summary), inline=False)
+            embed.add_field(
+                name="Review-only diagnostics",
+                value=trim_discord_value(report.review_candidate_summary),
+                inline=False,
+            )
         if report.route_summary:
-            embed.add_field(name="Top search routes", value=trim_discord_value(report.route_summary), inline=False)
+            embed.add_field(
+                name="Top search routes",
+                value=trim_discord_value(report.route_summary),
+                inline=False,
+            )
         if report.warnings:
-            embed.add_field(name="Warnings", value="\n".join(f"• {warning}" for warning in report.warnings[:5]), inline=False)
+            warning_text = chr(10).join(f"• {warning}" for warning in report.warnings[:5])
+            embed.add_field(name="Warnings", value=warning_text, inline=False)
         if report.public_result.errors:
-            embed.add_field(name="Errors", value="\n".join(f"• {clean_log_text(error)}" for error in report.public_result.errors[:5]), inline=False)
+            error_text = chr(10).join(f"• {clean_log_text(error)}" for error in report.public_result.errors[:5])
+            embed.add_field(name="Errors", value=error_text, inline=False)
         embed.set_footer(text="This uses the same direct verified auto-scan path as the background loop.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await self._safe_autoscan_followup(interaction, embed=embed)
+
+    async def _safe_autoscan_followup(
+        self,
+        interaction: discord.Interaction,
+        content: str | None = None,
+        *,
+        embed: discord.Embed | None = None,
+    ) -> None:
+        try:
+            await interaction.followup.send(content=content, embed=embed, ephemeral=True)
+        except Exception:
+            log.exception("Failed to send /autoscan_now followup")
 
     @autoscan_now.error
     async def autoscan_now_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = "You need **Manage Server** permission to run an auto-scan test." if isinstance(error, app_commands.MissingPermissions) else f"Auto-scan test hit an error: `{error}`"
+        message = (
+            "You need **Manage Server** permission to run an auto-scan test."
+            if isinstance(error, app_commands.MissingPermissions)
+            else f"Auto-scan test hit an error: `{error}`"
+        )
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:
@@ -366,7 +428,7 @@ async def run_autoscan_verified_category(db, guild_id: int, *, preset: HuntPrese
         preset=preset,
         db=db,
         guild_id=guild_id,
-        use_price_memory=True,
+        use_price_memory=False,
     )
 
 

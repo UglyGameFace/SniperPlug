@@ -234,3 +234,39 @@ def format_category_page(preferences: dict[str, str], *, page: int = 0, page_siz
 def category_page_count(page_size: int = 20) -> int:
     rows = category_rows()
     return max(1, (len(rows) + page_size - 1) // page_size)
+
+
+def summarize_category_preferences(preferences: dict[str, str], *, limit: int = 8) -> str:
+    labels_by_key = {category.key: category.label for category in OPPORTUNITY_CATEGORIES}
+    priority = [
+        f"`{key}`"
+        for key, mode in sorted(preferences.items())
+        if normalize_category_mode(mode) == CATEGORY_MODE_PRIORITY
+    ]
+    muted = [
+        f"`{key}`"
+        for key, mode in sorted(preferences.items())
+        if normalize_category_mode(mode) == CATEGORY_MODE_MUTED
+    ]
+
+    if not priority and not muted:
+        return (
+            "No category preferences saved yet. Use `/deal_categories`, then tap **🔥 Deal Week** "
+            "or pick categories to mark Priority/Muted."
+        )
+
+    def trim(items: list[str]) -> str:
+        if not items:
+            return "none"
+        shown = items[:limit]
+        extra = len(items) - len(shown)
+        text = ", ".join(shown)
+        if extra > 0:
+            text += f", +{extra} more"
+        return text
+
+    return (
+        f"⭐ Priority: {trim(priority)}\n"
+        f"🙈 Muted: {trim(muted)}\n"
+        "Muted hides normal deals only. Extreme/nuclear markdowns still break through."
+    )

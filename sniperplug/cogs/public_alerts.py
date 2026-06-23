@@ -21,6 +21,7 @@ from sniperplug.services.deal_category_preferences import (
     normalize_category_mode,
     reset_category_preferences,
     set_category_preference,
+    summarize_category_preferences,
 )
 
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_config
@@ -82,6 +83,7 @@ class DealCategoryDashboardView(discord.ui.View):
         )
         embed.add_field(name="Selected", value=selected, inline=True)
         embed.add_field(name="Page", value=f"{self.page + 1}/{page_count}", inline=True)
+        embed.add_field(name="Current category settings", value=summarize_category_preferences(self.preferences), inline=False)
         embed.add_field(name="Categories", value=format_category_page(self.preferences, page=self.page, page_size=self.PAGE_SIZE), inline=False)
         embed.add_field(
             name="Fast presets",
@@ -365,16 +367,20 @@ class PublicAlertsCog(commands.Cog):
         config = await get_public_alert_config(self.bot.db, interaction.guild_id)
         auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         threshold = await get_starting_deal_percent(self.bot.db, interaction.guild_id)
-        await interaction.followup.send(
-            embed=public_alert_status_embed(
-                enabled=config["enabled"],
-                retailers=config["retailers"],
-                channel_id=config["channel_id"],
-                auto_scan=auto_scan,
-                threshold=threshold,
-            ),
-            ephemeral=True,
+        embed = public_alert_status_embed(
+            enabled=config["enabled"],
+            retailers=config["retailers"],
+            channel_id=config["channel_id"],
+            auto_scan=auto_scan,
+            threshold=threshold,
         )
+        category_preferences = await get_category_preferences(self.bot.db, interaction.guild_id)
+        embed.add_field(
+            name="Category preferences",
+            value=summarize_category_preferences(category_preferences),
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="autoscan_health", description="Check whether Walmart auto-scan can post and what happened recently.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -444,7 +450,7 @@ def public_alert_channel_missing_permissions_message(channel: discord.TextChanne
 def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None, auto_scan: dict[str, dict] | None = None, threshold: int | None = None) -> discord.Embed:
     embed = discord.Embed(
         title="📣 Public Alert Settings",
-        description="This is the simple view. Use `/setup_sniperplug_here` for one-step setup, `/public_alerts` to fine-tune posting, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.",
+        description="This is the simple view. Use `/setup_sniperplug_here` for one-step setup, `/deal_categories` for boost/mute categories, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.",
         color=discord.Color.green() if enabled else discord.Color.dark_gold(),
     )
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
@@ -470,6 +476,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     posts_today = await count_public_posts_today(db, guild_id)
     active_cached = await count_active_cached_deals(db, guild_id)
     channel_status = public_alert_channel_status(bot, guild_id, config.get("channel_id"))
+    category_preferences = await get_category_preferences(db, guild_id)
 
     critical_ok = bool(config.get("enabled")) and "walmart" in set(config.get("retailers") or ()) and channel_status.startswith("✅") and bool(walmart_settings.get("enabled")) and allowed
     embed = discord.Embed(

@@ -15,6 +15,7 @@ ALERT_DEDUPE_DAYS = 30
 PUBLIC_ALERT_KEY = "public_alert:v1"
 PUBLIC_CHANNEL_NAME_FALLBACKS = ("walmart-deals", "deals", "deal-alerts", "sniperplug-deals")
 RESERVATION_STALE_MINUTES = 20
+_MISSING_ROWCOUNT = object()
 
 
 @dataclass(frozen=True)
@@ -425,7 +426,21 @@ async def reserve_public_deal_post(db, *, guild_id: int, retailer: str, deal_key
         (guild_id, deal_key, normalize_retailer_key(retailer), source_label, now),
     )
     await conn.commit()
-    return bool(getattr(cursor, "rowcount", 0))
+
+    rowcount = getattr(cursor, "rowcount", _MISSING_ROWCOUNT)
+    if rowcount is not _MISSING_ROWCOUNT:
+        try:
+            return int(rowcount) > 0
+        except (TypeError, ValueError):
+            pass
+
+    # Turso/libsql cursors do not expose rowcount. Verify whether this exact
+    # reservation was created instead of treating every insert as a duplicate.
+    check = await conn.execute(
+        "SELECT 1 FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'reserved' AND first_seen_at = ? LIMIT 1",
+        (guild_id, deal_key, now),
+    )
+    return bool(await check.fetchone())
 
 
 async def mark_public_deal_posted(db, *, guild_id: int, deal_key: str) -> None:

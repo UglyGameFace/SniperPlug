@@ -13,12 +13,16 @@ from sniperplug.services.deal_category_preferences import (
     CATEGORY_MODE_MUTED,
     CATEGORY_MODE_NORMAL,
     CATEGORY_MODE_PRIORITY,
-    format_category_catalog,
+    apply_preset,
+    category_page_count,
+    category_rows,
+    format_category_page,
     get_category_preferences,
     normalize_category_mode,
+    reset_category_preferences,
     set_category_preference,
-    valid_category_keys,
 )
+
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_config
 from sniperplug.services.public_deal_posts import ensure_public_post_tables
 from sniperplug.services.public_posting import (
@@ -35,6 +39,141 @@ UNLIMITED_AUTOSCAN_INTERVAL_HOURS = 0
 UNLIMITED_AUTOSCAN_DAILY_LIMIT = 0
 UNMETERED_OFFICIAL_RETAILERS = {"walmart"}
 WALMART_AUTOSCAN_SCAN_KEY = "autoscan:walmart_discovery"
+
+
+class DealCategoryDashboardView(discord.ui.View):
+    PAGE_SIZE = 20
+
+    def __init__(self, db, guild_id: int, preferences: dict[str, str], *, page: int = 0, selected_key: str | None = None):
+        super().__init__(timeout=300)
+        self.db = db
+        self.guild_id = int(guild_id)
+        self.preferences = dict(preferences)
+        self.page = max(0, int(page))
+        self.selected_key = selected_key
+        self._rebuild_items()
+
+    def _rebuild_items(self) -> None:
+        self.clear_items()
+        self.add_item(DealCategorySelect(self))
+        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_PRIORITY, "Priority", "⭐", discord.ButtonStyle.success))
+        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_NORMAL, "Normal", "▫️", discord.ButtonStyle.secondary))
+        self.add_item(DealCategoryModeButton(self, CATEGORY_MODE_MUTED, "Muted", "🙈", discord.ButtonStyle.danger))
+        self.add_item(DealCategoryPresetButton(self, "deal_week", "Deal Week", "🔥", discord.ButtonStyle.primary))
+        self.add_item(DealCategoryPresetButton(self, "flip_focus", "Flip Focus", "💰", discord.ButtonStyle.primary))
+        self.add_item(DealCategoryPresetButton(self, "daily_essentials", "Essentials", "🧻", discord.ButtonStyle.secondary))
+        self.add_item(DealCategoryResetButton(self))
+        if category_page_count(self.PAGE_SIZE) > 1:
+            self.add_item(DealCategoryPageButton(self, -1, "Prev", "⬅️"))
+            self.add_item(DealCategoryPageButton(self, 1, "Next", "➡️"))
+
+    def embed(self) -> discord.Embed:
+        page_count = category_page_count(self.PAGE_SIZE)
+        selected = f"`{self.selected_key}`" if self.selected_key else "Pick a category below"
+        embed = discord.Embed(
+            title="🏷️ Deal Category Dashboard",
+            description=(
+                "One place to control what SniperPlug boosts or quiets down.\n\n"
+                "⭐ **Priority** = rank higher / show faster\n"
+                "▫️ **Normal** = regular logic\n"
+                "🙈 **Muted** = hide normal deals, but **extreme/nuclear markdowns still override** so amazing deals are not missed."
+            ),
+            color=discord.Color.blue(),
+        )
+        embed.add_field(name="Selected", value=selected, inline=True)
+        embed.add_field(name="Page", value=f"{self.page + 1}/{page_count}", inline=True)
+        embed.add_field(name="Categories", value=format_category_page(self.preferences, page=self.page, page_size=self.PAGE_SIZE), inline=False)
+        embed.add_field(
+            name="Fast presets",
+            value="🔥 **Deal Week** boosts broad Walmart sale categories.\n💰 **Flip Focus** boosts resale-style categories and mutes boring normal essentials.\n🧻 **Essentials** boosts household/grocery/baby/pet necessities.",
+            inline=False,
+        )
+        return embed
+
+    async def refresh(self, interaction: discord.Interaction, *, note: str | None = None) -> None:
+        self.preferences = await get_category_preferences(self.db, self.guild_id)
+        self._rebuild_items()
+        embed = self.embed()
+        if note:
+            embed.add_field(name="Saved", value=note, inline=False)
+        await interaction.edit_original_response(embed=embed, view=self)
+
+
+class DealCategorySelect(discord.ui.Select):
+    def __init__(self, dashboard: DealCategoryDashboardView):
+        self.dashboard = dashboard
+        rows = category_rows()
+        start = dashboard.page * dashboard.PAGE_SIZE
+        chunk = rows[start:start + dashboard.PAGE_SIZE]
+        options = [
+            discord.SelectOption(
+                label=category.label[:100],
+                value=category.key,
+                description=f"{category.key} • current: {normalize_category_mode(dashboard.preferences.get(category.key, CATEGORY_MODE_NORMAL))}"[:100],
+            )
+            for category in chunk
+        ] or [discord.SelectOption(label="No categories", value="none")]
+        super().__init__(placeholder="Pick a category to edit…", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        value = self.values[0]
+        if value != "none":
+            self.dashboard.selected_key = value
+        await self.dashboard.refresh(interaction, note=f"Selected `{self.dashboard.selected_key}`. Now press Priority, Normal, or Muted.")
+
+
+class DealCategoryModeButton(discord.ui.Button):
+    def __init__(self, dashboard: DealCategoryDashboardView, mode: str, label: str, emoji: str, style: discord.ButtonStyle):
+        super().__init__(label=label, emoji=emoji, style=style, row=1)
+        self.dashboard = dashboard
+        self.mode = mode
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if not self.dashboard.selected_key:
+            await self.dashboard.refresh(interaction, note="Pick a category first, then choose Priority, Normal, or Muted.")
+            return
+        await set_category_preference(self.dashboard.db, self.dashboard.guild_id, self.dashboard.selected_key, self.mode)
+        await self.dashboard.refresh(interaction, note=f"`{self.dashboard.selected_key}` is now **{self.mode}**.")
+
+
+class DealCategoryPresetButton(discord.ui.Button):
+    def __init__(self, dashboard: DealCategoryDashboardView, preset: str, label: str, emoji: str, style: discord.ButtonStyle):
+        super().__init__(label=label, emoji=emoji, style=style, row=2)
+        self.dashboard = dashboard
+        self.preset = preset
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await apply_preset(self.dashboard.db, self.dashboard.guild_id, self.preset)
+        await self.dashboard.refresh(interaction, note=f"Applied **{self.label}** preset.")
+
+
+class DealCategoryResetButton(discord.ui.Button):
+    def __init__(self, dashboard: DealCategoryDashboardView):
+        super().__init__(label="Reset", emoji="♻️", style=discord.ButtonStyle.danger, row=2)
+        self.dashboard = dashboard
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await reset_category_preferences(self.dashboard.db, self.dashboard.guild_id)
+        self.dashboard.selected_key = None
+        await self.dashboard.refresh(interaction, note="Reset all category preferences to normal.")
+
+
+class DealCategoryPageButton(discord.ui.Button):
+    def __init__(self, dashboard: DealCategoryDashboardView, delta: int, label: str, emoji: str):
+        super().__init__(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=3)
+        self.dashboard = dashboard
+        self.delta = int(delta)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        pages = category_page_count(self.dashboard.PAGE_SIZE)
+        self.dashboard.page = (self.dashboard.page + self.delta) % pages
+        await self.dashboard.refresh(interaction)
+
 
 
 class PublicAlertsCog(commands.Cog):
@@ -197,7 +336,7 @@ class PublicAlertsCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
-    @app_commands.command(name="deal_categories", description="Show deal categories and whether each one is priority, normal, or muted.")
+    @app_commands.command(name="deal_categories", description="Open the category dashboard for boosting or muting deal types.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def deal_categories(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -205,60 +344,12 @@ class PublicAlertsCog(commands.Cog):
             await interaction.followup.send("Use this in a server so I know which category preferences to show.", ephemeral=True)
             return
         preferences = await get_category_preferences(self.bot.db, interaction.guild_id)
-        catalog = format_category_catalog(preferences)
-        chunks = [catalog[i:i + 3900] for i in range(0, len(catalog), 3900)] or ["No categories found."]
-        embed = discord.Embed(
-            title="🏷️ Deal Categories",
-            description=(
-                "Modes: ⭐ priority = boost/rank higher • ▫️ normal = regular • 🙈 muted = hide normal deals, but extreme markdowns still override so SniperPlug does not miss nuclear finds."
-            ),
-            color=discord.Color.blue(),
-        )
-        embed.add_field(name="How to change one", value="Use `/deal_category category:mobile_accessories mode:priority|normal|muted`.", inline=False)
-        embed.add_field(name="Categories", value=chunks[0], inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        for chunk in chunks[1:]:
-            await interaction.followup.send(chunk, ephemeral=True)
+        view = DealCategoryDashboardView(self.bot.db, interaction.guild_id, preferences)
+        await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
     @deal_categories.error
     async def deal_categories_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = "You need **Manage Server** permission to view deal categories." if isinstance(error, app_commands.MissingPermissions) else f"Deal categories hit an error: `{error}`"
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-
-    @app_commands.command(name="deal_category", description="Set a deal category to priority, normal, or muted.")
-    @app_commands.describe(
-        category="Category key from /deal_categories, like mobile_accessories or fragrance_beauty.",
-        mode="priority boosts it, normal uses regular logic, muted hides normal deals but extreme deals still override.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def deal_category(self, interaction: discord.Interaction, category: str, mode: str) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which category preference to save.", ephemeral=True)
-            return
-
-        key = str(category or "").strip().lower()
-        safe_mode = normalize_category_mode(mode)
-        if key not in valid_category_keys():
-            await interaction.followup.send(
-                f"Unknown category `{category}`. Run `/deal_categories` and copy one of the category keys.",
-                ephemeral=True,
-            )
-            return
-
-        await set_category_preference(self.bot.db, interaction.guild_id, key, safe_mode)
-        label = "⭐ priority" if safe_mode == CATEGORY_MODE_PRIORITY else "🙈 muted" if safe_mode == CATEGORY_MODE_MUTED else "▫️ normal"
-        await interaction.followup.send(
-            f"Saved `{key}` as **{label}**. Muted categories hide normal deals, but extreme/nuclear markdowns can still override so SniperPlug does not miss them.",
-            ephemeral=True,
-        )
-
-    @deal_category.error
-    async def deal_category_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = "You need **Manage Server** permission to change deal categories." if isinstance(error, app_commands.MissingPermissions) else f"Deal category update hit an error: `{error}`"
+        message = "You need **Manage Server** permission to manage deal categories." if isinstance(error, app_commands.MissingPermissions) else f"Deal category dashboard hit an error: `{error}`"
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=True)
         else:

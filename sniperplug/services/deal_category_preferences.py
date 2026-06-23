@@ -8,7 +8,6 @@ from sniperplug.services.opportunity_watchlist import OPPORTUNITY_CATEGORIES, Op
 CATEGORY_MODE_PRIORITY = "priority"
 CATEGORY_MODE_NORMAL = "normal"
 CATEGORY_MODE_MUTED = "muted"
-VALID_CATEGORY_MODES = {CATEGORY_MODE_PRIORITY, CATEGORY_MODE_NORMAL, CATEGORY_MODE_MUTED}
 
 
 @dataclass(frozen=True)
@@ -70,6 +69,13 @@ async def set_category_preference(db, guild_id: int, category_key: str, mode: st
     await conn.commit()
 
 
+async def reset_category_preferences(db, guild_id: int) -> None:
+    await ensure_deal_category_preference_table(db)
+    conn = db.require_conn()
+    await conn.execute("DELETE FROM guild_deal_category_preferences WHERE guild_id = ?", (int(guild_id),))
+    await conn.commit()
+
+
 async def get_category_preferences(db, guild_id: int) -> dict[str, str]:
     await ensure_deal_category_preference_table(db)
     conn = db.require_conn()
@@ -79,6 +85,51 @@ async def get_category_preferences(db, guild_id: int) -> dict[str, str]:
     )
     rows = await cursor.fetchall()
     return {str(row["category_key"]): normalize_category_mode(str(row["mode"])) for row in rows}
+
+
+async def apply_preset(db, guild_id: int, preset: str) -> None:
+    preset_key = str(preset or "").strip().lower()
+    presets = {
+        "deal_week": {
+            CATEGORY_MODE_PRIORITY: {
+                "mobile_accessories", "apple", "brand_direct_electronics", "ssds", "tools",
+                "motor_oil", "fragrance_beauty", "gold_jewelry", "smart_home", "office_school",
+                "viral_gadgets", "toys_collectibles", "home_kitchen",
+            },
+            CATEGORY_MODE_MUTED: set(),
+        },
+        "flip_focus": {
+            CATEGORY_MODE_PRIORITY: {
+                "brand_direct_electronics", "apple", "gpus", "cpus", "ram", "ssds", "gold_jewelry",
+                "watches", "fragrance_beauty", "tools", "toys_collectibles", "shoes_apparel",
+                "mobile_accessories",
+            },
+            CATEGORY_MODE_MUTED: {"grocery_pantry", "household_essentials", "baby_kids", "pet_supplies"},
+        },
+        "daily_essentials": {
+            CATEGORY_MODE_PRIORITY: {"household_essentials", "grocery_pantry", "baby_kids", "pet_supplies", "motor_oil"},
+            CATEGORY_MODE_MUTED: set(),
+        },
+    }
+    selected = presets.get(preset_key)
+    if selected is None:
+        raise ValueError(f"Unknown category preset: {preset}")
+
+    await ensure_deal_category_preference_table(db)
+    conn = db.require_conn()
+    for mode, keys in selected.items():
+        for key in keys:
+            if key in valid_category_keys():
+                await conn.execute(
+                    """
+                    INSERT INTO guild_deal_category_preferences (guild_id, category_key, mode, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(guild_id, category_key)
+                    DO UPDATE SET mode = excluded.mode, updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (int(guild_id), key, mode),
+                )
+    await conn.commit()
 
 
 def category_for_card(card: DealCard) -> OpportunityCategory | None:
@@ -102,65 +153,22 @@ def is_extreme_card(card: DealCard) -> bool:
             return True
     except Exception:
         pass
-    embed = getattr(card, "embed", None)
-    text = ""
-    if embed is not None:
-        text = " ".join(
-            str(part or "")
-            for part in [
-                getattr(embed, "title", ""),
-                getattr(embed, "description", ""),
-                *[getattr(field, "value", "") for field in getattr(embed, "fields", [])],
-            ]
-        ).lower()
-    return "90%+" in text or "nuclear" in text or "extreme" in text
+    return False
 
 
 def decide_category(card: DealCard, preferences: dict[str, str]) -> CategoryDecision:
     category = category_for_card(card)
     if category is None:
-        return CategoryDecision(
-            category_key="unknown",
-            category_label="Unknown / uncategorized",
-            mode=CATEGORY_MODE_NORMAL,
-            action="allow",
-            reason="Unknown category is not blocked. Strong markdown/proof can still post.",
-        )
+        return CategoryDecision("unknown", "Unknown / uncategorized", CATEGORY_MODE_NORMAL, "allow", "Unknown category is not blocked. Strong markdown/proof can still post.")
 
     mode = normalize_category_mode(preferences.get(category.key, CATEGORY_MODE_NORMAL))
     if mode == CATEGORY_MODE_PRIORITY:
-        return CategoryDecision(
-            category_key=category.key,
-            category_label=category.label,
-            mode=mode,
-            action="boost",
-            reason=f"Priority category: {category.label}.",
-        )
-
+        return CategoryDecision(category.key, category.label, mode, "boost", f"Priority category: {category.label}.")
     if mode == CATEGORY_MODE_MUTED:
         if is_extreme_card(card):
-            return CategoryDecision(
-                category_key=category.key,
-                category_label=category.label,
-                mode=mode,
-                action="allow_extreme",
-                reason=f"Muted category override: {category.label}, but markdown/score is extreme so SniperPlug will not miss it.",
-            )
-        return CategoryDecision(
-            category_key=category.key,
-            category_label=category.label,
-            mode=mode,
-            action="suppress",
-            reason=f"Muted category: {category.label}. Normal deals stay out of the public feed.",
-        )
-
-    return CategoryDecision(
-        category_key=category.key,
-        category_label=category.label,
-        mode=CATEGORY_MODE_NORMAL,
-        action="allow",
-        reason=f"Normal category: {category.label}.",
-    )
+            return CategoryDecision(category.key, category.label, mode, "allow_extreme", f"Muted category override: {category.label}, but markdown/score is extreme so SniperPlug will not miss it.")
+        return CategoryDecision(category.key, category.label, mode, "suppress", f"Muted category: {category.label}. Normal deals stay out of the public feed.")
+    return CategoryDecision(category.key, category.label, CATEGORY_MODE_NORMAL, "allow", f"Normal category: {category.label}.")
 
 
 def apply_category_preferences(cards: list[DealCard], preferences: dict[str, str]) -> tuple[list[DealCard], list[DealCard], list[str]]:
@@ -201,11 +209,28 @@ def apply_category_preferences(cards: list[DealCard], preferences: dict[str, str
     return allowed, suppressed, notes[:8]
 
 
-def format_category_catalog(preferences: dict[str, str] | None = None) -> str:
-    prefs = preferences or {}
-    rows: list[str] = []
-    for category in category_rows():
-        mode = normalize_category_mode(prefs.get(category.key, CATEGORY_MODE_NORMAL))
-        marker = "⭐" if mode == CATEGORY_MODE_PRIORITY else "🙈" if mode == CATEGORY_MODE_MUTED else "▫️"
-        rows.append(f"{marker} `{category.key}` — {category.label}")
-    return "\n".join(rows)
+def category_mode_marker(mode: str) -> str:
+    safe = normalize_category_mode(mode)
+    if safe == CATEGORY_MODE_PRIORITY:
+        return "⭐"
+    if safe == CATEGORY_MODE_MUTED:
+        return "🙈"
+    return "▫️"
+
+
+def format_category_page(preferences: dict[str, str], *, page: int = 0, page_size: int = 20) -> str:
+    rows = category_rows()
+    start = max(0, int(page)) * page_size
+    chunk = rows[start:start + page_size]
+    if not chunk:
+        return "No categories on this page."
+    lines = []
+    for category in chunk:
+        mode = normalize_category_mode(preferences.get(category.key, CATEGORY_MODE_NORMAL))
+        lines.append(f"{category_mode_marker(mode)} `{category.key}` — {category.label}")
+    return "\n".join(lines)
+
+
+def category_page_count(page_size: int = 20) -> int:
+    rows = category_rows()
+    return max(1, (len(rows) + page_size - 1) // page_size)

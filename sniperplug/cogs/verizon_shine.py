@@ -43,7 +43,6 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         self._relay_runner: Any | None = None
         self._relay_site: Any | None = None
         self._relay_started = False
-        self._ready_guild_sync_done = False
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -54,7 +53,6 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         if not self.ntfy_pump.is_running():
             self.ntfy_pump.start()
         await self._start_optional_relay()
-        await self._sync_all_joined_guilds_once(reason="ready")
         guilds = sorted((f"{guild.name}({guild.id})" for guild in self.bot.guilds), key=str.lower)
         log.info(
             "Verizon Shine alert module ready: reminders=true relay=%s ntfy=true visible_guilds=%s [%s]",
@@ -66,7 +64,6 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
         log.info("SniperPlug joined guild %s (%s) members=%s", guild.name, guild.id, guild.member_count)
-        await self._sync_guild_commands(guild, reason="guild_join")
 
     async def cog_unload(self) -> None:
         if self.reminder_pump.is_running():
@@ -433,34 +430,6 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
     @ntfy_pump.before_loop
     async def before_ntfy_pump(self) -> None:
         await self.bot.wait_until_ready()
-
-    async def _sync_all_joined_guilds_once(self, *, reason: str) -> None:
-        if self._ready_guild_sync_done:
-            return
-        self._ready_guild_sync_done = True
-        if not self._env_enabled("SYNC_JOINED_GUILD_COMMANDS", default=True):
-            log.info("Joined guild command sync disabled by SYNC_JOINED_GUILD_COMMANDS=false")
-            return
-        if getattr(getattr(self.bot, "settings", None), "sync_global_commands", False):
-            log.info("Global command sync is enabled; skipping joined guild command sync sweep")
-            return
-        for guild in list(self.bot.guilds):
-            await self._sync_guild_commands(guild, reason=reason)
-
-    async def _sync_guild_commands(self, guild: discord.Guild, *, reason: str) -> None:
-        if not self._env_enabled("SYNC_JOINED_GUILD_COMMANDS", default=True):
-            return
-        if getattr(getattr(self.bot, "settings", None), "sync_global_commands", False):
-            return
-        try:
-            target = discord.Object(id=guild.id)
-            self.bot.tree.copy_global_to(guild=target)
-            synced = await self.bot.tree.sync(guild=target)
-            log.info("Synced %s SniperPlug slash commands to guild %s (%s) reason=%s", len(synced), guild.name, guild.id, reason)
-        except discord.Forbidden:
-            log.warning("Could not sync SniperPlug commands to guild %s (%s): missing access", guild.name, guild.id)
-        except Exception:
-            log.exception("Failed to sync SniperPlug commands to guild %s (%s)", guild.name, guild.id)
 
     async def _fetch_ntfy_messages(self, source: VerizonNtfySource) -> list[dict[str, Any]]:
         try:

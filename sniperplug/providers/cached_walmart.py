@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Any
 
 from sniperplug.models.candidate import SourceCandidate
@@ -11,6 +11,16 @@ from sniperplug.providers.walmart import WalmartProvider
 
 
 WALMART_SCAN_CACHE_MINUTES = 10
+_SOURCE_CANDIDATE_FIELDS = {field.name for field in fields(SourceCandidate)}
+_CACHE_SCOPE_METADATA_KEYS = (
+    "zip_code",
+    "postal_code",
+    "store_id",
+    "store_ids",
+    "walmart_store_id",
+    "location",
+    "fulfillment",
+)
 
 
 class CachedWalmartProvider(DealProvider):
@@ -182,7 +192,7 @@ def _scan_cache_key(request: ProviderScanRequest) -> str:
 
 
 def _request_cache_payload(request: ProviderScanRequest) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "query": (request.query or "").strip().lower(),
         "product_ids": tuple(str(value).strip() for value in request.product_ids),
         "page": max(1, request.page),
@@ -190,6 +200,27 @@ def _request_cache_payload(request: ProviderScanRequest) -> dict[str, Any]:
         "sort": request.sort or "relevance",
         "order": request.order or "",
     }
+    scoped_metadata = _cache_scope_metadata(request.metadata)
+    if scoped_metadata:
+        payload["scope"] = scoped_metadata
+    return payload
+
+
+def _cache_scope_metadata(metadata: dict[str, Any]) -> dict[str, str]:
+    scope: dict[str, str] = {}
+    for key in _CACHE_SCOPE_METADATA_KEYS:
+        value = metadata.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, (list, tuple, set)):
+            cleaned = tuple(str(item).strip() for item in value if str(item).strip())
+            if cleaned:
+                scope[key] = ",".join(cleaned)
+            continue
+        text = str(value).strip()
+        if text:
+            scope[key] = text.lower()
+    return scope
 
 
 def _result_cache_payload(result: ProviderScanResult) -> dict[str, Any]:
@@ -207,10 +238,15 @@ def _result_cache_payload(result: ProviderScanResult) -> dict[str, Any]:
 
 
 def _result_from_cache(data: dict[str, Any]) -> ProviderScanResult:
-    candidates = tuple(SourceCandidate(**candidate) for candidate in data.get("candidates", []))
+    candidates = []
+    for raw in data.get("candidates", []):
+        if not isinstance(raw, dict):
+            continue
+        clean = {key: value for key, value in raw.items() if key in _SOURCE_CANDIDATE_FIELDS}
+        candidates.append(SourceCandidate(**clean))
     return ProviderScanResult(
         provider_key=data.get("provider_key") or "walmart",
-        candidates=candidates,
+        candidates=tuple(candidates),
         warnings=tuple(data.get("warnings") or ()),
         total_results=data.get("total_results"),
         page=int(data.get("page") or 1),

@@ -20,6 +20,14 @@ _EXCLUDED_SAVINGS_CONTEXT = (
     "gift_card",
 )
 
+_LOW_CONFIDENCE_REFERENCE_TOKENS = (
+    "msrp",
+    "listprice",
+    "retailprice",
+    "marketplace",
+    "comp",
+)
+
 _SAVINGS_PRICE_PATHS = (
     "savings",
     "saving",
@@ -47,17 +55,17 @@ _SAVINGS_PRICE_PATHS = (
 
 
 def install_walmart_savings_reference_patch() -> None:
-    """Treat Walmart page savings as trusted was-price math.
+    """Use only visible Walmart markdown proof for public savings math.
 
-    Walmart's affiliate/search payloads do not always expose the visible product-page
-    strike price as `wasPrice`. Some products expose only the current price plus a
-    savings amount, while also exposing unrelated MSRP/list values. When the page says
-    "You save $X" next to the current product price, the visible was price is:
+    Walmart payloads often include the product-page current price plus the visible
+    "You save $X" amount, while also including unrelated MSRP/list/marketplace
+    comparison prices. The verified page math is:
 
-        current price + savings amount
+        current price + visible savings amount
 
-    That is stronger proof than a random marketplace/MSRP comp, and it prevents good
-    deals from being demoted to review-only.
+    MSRP/list/retail/marketplace comps are useful context, but they must not be
+    treated as verified public savings proof. This prevents cards from saying a
+    product is 58% off when the Walmart page itself says a smaller markdown.
     """
     global _PATCHED, _ORIGINAL_TRUSTED_REFERENCE_PRICE, _ORIGINAL_TRUSTED_REFERENCE_SOURCE, _ORIGINAL_BEST_REFERENCE_CONTEXT_PRICE
     if _PATCHED:
@@ -93,7 +101,7 @@ def _trusted_reference_price_with_visible_savings(item: dict, title: str, curren
                 f"ignored suspicious Walmart {source} reference price: ${value:,.2f}",
                 aliases=("ignored low-confidence",),
             )
-        if wm._reference_price_is_trusted(source=source, title=title, current_price=current_price, reference_price=value):
+        if _reference_price_is_trusted_for_public_math(source=source, title=title, current_price=current_price, reference_price=value):
             return value, f"Walmart reference price source: {source}"
         ignored.append(f"{source}=${value:,.2f}")
 
@@ -103,12 +111,10 @@ def _trusted_reference_price_with_visible_savings(item: dict, title: str, curren
 
 
 def _trusted_reference_source_with_visible_savings(*, item: dict, title: str, current_price: float | None, reference_price: float) -> str | None:
-    from sniperplug.providers import walmart as wm
-
     for source, value in _reference_candidates_with_visible_savings(item, current_price=current_price):
         if value is None or abs(value - reference_price) > 0.005:
             continue
-        if wm._reference_price_is_trusted(source=source, title=title, current_price=current_price, reference_price=value):
+        if _reference_price_is_trusted_for_public_math(source=source, title=title, current_price=current_price, reference_price=value):
             return source
     return None
 
@@ -174,14 +180,23 @@ def _reference_from_savings(*, current_price: float, savings: float | None) -> f
 
 
 def _first_trusted_reference_from(references: list[tuple[str, float | None]], *, title: str, current_price: float | None) -> tuple[float | None, str | None]:
-    from sniperplug.providers import walmart as wm
-
     for source, value in references:
         if not value or value <= 0:
             continue
-        if wm._reference_price_is_trusted(source=source, title=title, current_price=current_price, reference_price=value):
+        if _reference_price_is_trusted_for_public_math(source=source, title=title, current_price=current_price, reference_price=value):
             return value, source
     return None, None
+
+
+def _reference_price_is_trusted_for_public_math(*, source: str, title: str, current_price: float | None, reference_price: float) -> bool:
+    from sniperplug.providers import walmart as wm
+
+    source_key = source.lower().replace("_", "").replace("-", "")
+    if any(token in source_key for token in _LOW_CONFIDENCE_REFERENCE_TOKENS):
+        return False
+    if current_price is not None and wm._reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=reference_price):
+        return False
+    return wm._reference_price_trust(source) == "high"
 
 
 def _path_has_excluded_context(path: str) -> bool:

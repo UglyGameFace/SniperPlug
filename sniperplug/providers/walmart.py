@@ -22,6 +22,16 @@ from sniperplug.services.walmart_cash import strict_walmart_promotion_proof
 from sniperplug.services.walmart_marketplace_comp import is_marketplace_comp_source, marketplace_comp_from_item
 
 
+LOW_CONFIDENCE_REFERENCE_TOKENS = (
+    "msrp",
+    "listprice",
+    "retailprice",
+    "marketplace",
+    "comparisonprice",
+    "comp",
+)
+
+
 @dataclass(frozen=True)
 class WalmartAffiliateConfig:
     consumer_id: str | None = None
@@ -449,84 +459,83 @@ def _best_reference_context_price(*, item: dict, current_price: float | None) ->
 
 
 def _reference_price_candidates(item: dict, current_price: float | None = None) -> list[tuple[str, float | None]]:
-    references = _price_candidates_for_names(
-        item,
-        (
-            "wasPrice",
-            "was_price",
-            "was",
-            "priceInfo.wasPrice",
-            "priceInfo.was_price",
-            "price_info.wasPrice",
-            "price_info.was_price",
-            "regularPrice",
-            "regular_price",
-            "priceInfo.regularPrice",
-            "priceInfo.regular_price",
-            "price_info.regularPrice",
-            "price_info.regular_price",
-            "strikeThroughPrice",
-            "strikethroughPrice",
-            "strike_through_price",
-            "strikethrough_price",
-            "priceInfo.strikeThroughPrice",
-            "priceInfo.strikethroughPrice",
-            "priceInfo.strike_through_price",
-            "priceInfo.strikethrough_price",
-            "comparisonPrice",
-            "comparison_price",
-            "priceInfo.comparisonPrice",
-            "priceInfo.comparison_price",
-            "price_info.comparisonPrice",
-            "price_info.comparison_price",
-            "originalPrice",
-            "original_price",
-            "priceInfo.originalPrice",
-            "priceInfo.original_price",
-            "price_info.originalPrice",
-            "price_info.original_price",
-            "listPrice",
-            "list_price",
-            "priceInfo.listPrice",
-            "priceInfo.list_price",
-            "price_info.listPrice",
-            "price_info.list_price",
-            "retailPrice",
-            "retail_price",
-            "priceInfo.retailPrice",
-            "priceInfo.retail_price",
-            "price_info.retailPrice",
-            "price_info.retail_price",
-            "msrp",
-            "priceInfo.msrp",
-            "price_info.msrp",
-        ),
-    )
+    references: list[tuple[str, float | None]] = []
     if current_price is not None and current_price > 0:
         references.extend(_was_price_from_product_savings(item, current_price=current_price))
+    references.extend(
+        _price_candidates_for_names(
+            item,
+            (
+                "wasPrice",
+                "was_price",
+                "was",
+                "priceInfo.wasPrice",
+                "priceInfo.was_price",
+                "price_info.wasPrice",
+                "price_info.was_price",
+                "regularPrice",
+                "regular_price",
+                "priceInfo.regularPrice",
+                "priceInfo.regular_price",
+                "price_info.regularPrice",
+                "price_info.regular_price",
+                "strikeThroughPrice",
+                "strikethroughPrice",
+                "strike_through_price",
+                "strikethrough_price",
+                "priceInfo.strikeThroughPrice",
+                "priceInfo.strikethroughPrice",
+                "priceInfo.strike_through_price",
+                "priceInfo.strikethrough_price",
+                "comparisonPrice",
+                "comparison_price",
+                "priceInfo.comparisonPrice",
+                "priceInfo.comparison_price",
+                "price_info.comparisonPrice",
+                "price_info.comparison_price",
+                "originalPrice",
+                "original_price",
+                "priceInfo.originalPrice",
+                "priceInfo.original_price",
+                "price_info.originalPrice",
+                "price_info.original_price",
+                "listPrice",
+                "list_price",
+                "priceInfo.listPrice",
+                "priceInfo.list_price",
+                "price_info.listPrice",
+                "price_info.list_price",
+                "retailPrice",
+                "retail_price",
+                "priceInfo.retailPrice",
+                "priceInfo.retail_price",
+                "price_info.retailPrice",
+                "price_info.retail_price",
+                "msrp",
+                "priceInfo.msrp",
+                "price_info.msrp",
+            ),
+        )
+    )
     references.extend(_best_marketplace_reference_prices(item))
     return _dedupe_price_candidates(references)
 
 
 def _reference_price_trust(source: str) -> str:
     source_key = source.lower().replace("_", "")
-    high_tokens = ("wasprice", ".was", "regularprice", "strikethroughprice", "strikethrough", "comparisonprice", "originalprice")
+    high_tokens = ("wasprice", ".was", "regularprice", "strikethroughprice", "strikethrough", "originalprice")
     if any(token in source_key for token in high_tokens):
         return "high"
     return "low"
 
 
 def _reference_price_is_trusted(*, source: str, title: str, current_price: float | None, reference_price: float) -> bool:
+    source_key = source.lower().replace("_", "").replace("-", "")
+    if any(token in source_key for token in LOW_CONFIDENCE_REFERENCE_TOKENS):
+        return False
     if current_price is not None and _reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=reference_price):
         return False
-    if _reference_price_trust(source) == "high":
-        return True
-    source_key = source.lower().replace("_", "")
-    if is_marketplace_comp_source(source_key):
-        return False
-    if "msrp" in source_key and _is_durable_or_electronics(title.lower()):
-        return True
-    return False
+    return _reference_price_trust(source) == "high"
 
 
 def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | None]]:
@@ -820,8 +829,6 @@ def _reference_price_looks_suspicious(*, source: str, title: str, current_price:
     if is_marketplace_comp_source(source_key):
         return True
     if "waspricefromsavings" in source_key:
-        return False
-    if _reference_price_trust(source) == "high":
         return False
     if ratio >= 8:
         return True

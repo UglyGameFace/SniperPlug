@@ -12,6 +12,11 @@ from sniperplug.providers.registry import provider_registry
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
 from sniperplug.services.safe_links import product_link_choices
+from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
+
+
+BROAD_QUERY_TERMS = {"clearance", "sale", "tools", "home depot", "deal", "deals"}
+BROAD_QUERY_EXAMPLES = "`milwaukee drill`, `faucet`, `vanity`, `ryobi battery`, `ceiling fan`, or `shower head`"
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,23 @@ class HomeDepotSearchCog(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
+        cleaned_query = clean_query(query)
+        cleaned_store_id = (store_id or "").strip()
+        cleaned_zip_code = (zip_code or "").strip()
+        has_local_anchor = bool(cleaned_store_id or cleaned_zip_code)
+        broad_warning = _broad_query_warning(cleaned_query)
+        if not cleaned_query:
+            await interaction.followup.send(f"Home Depot search needs a product term. Try {BROAD_QUERY_EXAMPLES}.", ephemeral=True)
+            return
+        if broad_warning and not has_local_anchor:
+            await interaction.followup.send(
+                "SerpApi credit protected: that query is too broad without a ZIP or store ID.\n\n"
+                f"{broad_warning}\n"
+                "Add `zip_code:`/`store_id:` or use a tighter product term before spending a credit.",
+                ephemeral=True,
+            )
+            return
+
         provider = provider_registry.get("home_depot_serpapi")
         if provider is None:
             await interaction.followup.send("Home Depot SerpApi provider is not registered yet.", ephemeral=True)
@@ -84,91 +106,100 @@ class HomeDepotSearchCog(commands.Cog):
             await interaction.followup.send(health.message, ephemeral=True)
             return
 
-        cleaned_store_id = (store_id or "").strip()
-        cleaned_zip_code = (zip_code or "").strip()
-        has_local_anchor = bool(cleaned_store_id or cleaned_zip_code)
-        broad_warning = _broad_query_warning(query)
-        quota = serpapi_quota_guard.check(interaction.user.id, cost=1)
-        if not quota.allowed:
-            await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
+        lock_key = ScanLockKey(
+            guild_id=interaction.guild_id,
+            user_id=interaction.user.id,
+            action="home_depot_penny_hunt" if penny_mode else "home_depot_search",
+            query=cleaned_query,
+            page=int(page),
+        )
+        if not await scan_operation_locks.acquire(lock_key):
+            await interaction.followup.send("That Home Depot scan is already running. I blocked the duplicate tap so it does not spend another SerpApi credit.", ephemeral=True)
             return
 
-        result = await provider.scan(
-            ProviderScanRequest(
-                source_key="home_depot_serpapi",
-                query=query.strip(),
-                page=page,
-                max_results=24,
-                metadata={
-                    "store_id": cleaned_store_id,
-                    "zip_code": cleaned_zip_code,
-                    "requested_by": str(interaction.user.id),
-                },
-            )
-        )
-        quota_after = serpapi_quota_guard.record(interaction.user.id, cost=1)
+        try:
+            quota = serpapi_quota_guard.check(interaction.user.id, cost=1)
+            if not quota.allowed:
+                await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
+                return
 
-        if result.warnings and not result.candidates:
-            await interaction.followup.send("\n".join(result.warnings), ephemeral=True)
-            return
+            result = await provider.scan(
+                ProviderScanRequest(
+                    source_key="home_depot_serpapi",
+                    query=cleaned_query,
+                    page=page,
+                    max_results=24,
+                    metadata={
+                        "store_id": cleaned_store_id,
+                        "zip_code": cleaned_zip_code,
+                        "requested_by": str(interaction.user.id),
+                    },
+                )
+            )
+            quota_after = serpapi_quota_guard.record(interaction.user.id, cost=1)
 
-        batch = build_home_depot_card_batch(result.candidates, has_local_anchor=has_local_anchor, penny_mode=penny_mode)
-        summary = discord.Embed(
-            title="🏚️ Home Depot Penny Hunt" if penny_mode else "🏚️ Home Depot Search",
-            description=(
-                f"Searching: **{query}**\n"
-                f"Store: `{cleaned_store_id or 'n/a'}` • ZIP: `{cleaned_zip_code or 'n/a'}` • Page: `{page}`\n"
-                f"SerpApi used: **{quota_after.monthly_used}/{quota_after.monthly_limit} monthly safe budget** • "
-                f"**{quota_after.daily_used}/{quota_after.daily_limit} today**\n"
-                f"Products returned: **{batch.returned_count}** • Cards shown: **{batch.shown_count}**"
-            ),
-            color=discord.Color.orange(),
-        )
-        if penny_mode:
-            summary.description += f" • Penny-filtered: **{batch.filtered_count}**"
-        summary.description += "\nThese are **verification candidates**, not confirmed in-store penny deals."
-        if batch.used_raw_fallback:
-            summary.add_field(
-                name="Credit protected",
-                value="SerpApi returned products, but none passed the penny threshold. Showing raw low-score results anyway so the credit is not wasted.",
-                inline=False,
+            if result.warnings and not result.candidates:
+                await interaction.followup.send("\n".join(result.warnings), ephemeral=True)
+                return
+            batch = build_home_depot_card_batch(result.candidates, has_local_anchor=has_local_anchor, penny_mode=penny_mode)
+            summary = discord.Embed(
+                title="🏚️ Home Depot Penny Hunt" if penny_mode else "🏚️ Home Depot Search",
+                description=(
+                    f"Searching: **{cleaned_query}**\n"
+                    f"Store: `{cleaned_store_id or 'n/a'}` • ZIP: `{cleaned_zip_code or 'n/a'}` • Page: `{page}`\n"
+                    f"SerpApi used: **{quota_after.monthly_used}/{quota_after.monthly_limit} monthly safe budget** • "
+                    f"**{quota_after.daily_used}/{quota_after.daily_limit} today**\n"
+                    f"Products returned: **{batch.returned_count}** • Cards shown: **{batch.shown_count}**"
+                ),
+                color=discord.Color.orange(),
             )
-        if batch.candidates:
-            summary.add_field(
-                name="Product links",
-                value="Each product card includes its own **App/Web** and **Browser Search** links so users do not have to match numbered buttons at the bottom.",
-                inline=False,
-            )
-        if cleaned_zip_code and not cleaned_store_id:
-            summary.add_field(
-                name="ZIP used as local anchor",
-                value="No store ID needed. SniperPlug used the ZIP for local Home Depot search context; store-specific proof is still stronger when available.",
-                inline=False,
-            )
-        elif not has_local_anchor:
-            summary.add_field(
-                name="Local proof warning",
-                value="No ZIP or store ID was supplied, so scores are weaker and local stock proof is limited.",
-                inline=False,
-            )
-        if broad_warning:
-            summary.add_field(name="⚠️ Quota warning", value=broad_warning, inline=False)
-        if result.warnings:
-            summary.add_field(name="⚠️ Provider notes", value="\n".join(result.warnings[:3]), inline=False)
-        if not batch.embeds:
-            summary.add_field(
-                name="No products returned",
-                value="SerpApi did not return product cards for this query/location. Try a different query, ZIP, or page.",
-                inline=False,
-            )
-            await interaction.followup.send(embed=summary, ephemeral=True)
-            return
+            if penny_mode:
+                summary.description += f" • Penny-filtered: **{batch.filtered_count}**"
+            summary.description += "\nThese are **verification candidates**, not confirmed in-store penny deals."
+            if batch.used_raw_fallback:
+                summary.add_field(
+                    name="Credit protected",
+                    value="SerpApi returned products, but none passed the penny threshold. Showing raw low-score results anyway so the credit is not wasted.",
+                    inline=False,
+                )
+            if batch.candidates:
+                summary.add_field(
+                    name="Product links",
+                    value="Each product card includes its own **App/Web** and **Browser Search** links so users do not have to match numbered buttons at the bottom.",
+                    inline=False,
+                )
+            if cleaned_zip_code and not cleaned_store_id:
+                summary.add_field(
+                    name="ZIP used as local anchor",
+                    value="No store ID needed. SniperPlug used the ZIP for local Home Depot search context; store-specific proof is still stronger when available.",
+                    inline=False,
+                )
+            elif not has_local_anchor:
+                summary.add_field(
+                    name="Local proof warning",
+                    value="No ZIP or store ID was supplied, so scores are weaker and local stock proof is limited.",
+                    inline=False,
+                )
+            if broad_warning:
+                summary.add_field(name="⚠️ Quota warning", value=broad_warning, inline=False)
+            if result.warnings:
+                summary.add_field(name="⚠️ Provider notes", value="\n".join(result.warnings[:3]), inline=False)
+            if not batch.embeds:
+                summary.add_field(
+                    name="No products returned",
+                    value="SerpApi did not return product cards for this query/location. Try a different query, ZIP, or page.",
+                    inline=False,
+                )
+                await interaction.followup.send(embed=summary, ephemeral=True)
+                return
 
-        await interaction.followup.send(
-            embeds=[summary] + batch.embeds[:5],
-            view=HomeDepotResultView(batch.candidates[:5]),
-            ephemeral=True,
-        )
+            await interaction.followup.send(
+                embeds=[summary] + batch.embeds[:5],
+                view=HomeDepotResultView(batch.candidates[:5]),
+                ephemeral=True,
+            )
+        finally:
+            await scan_operation_locks.release(lock_key)
 
 
 def build_home_depot_cards(candidates: tuple[SourceCandidate, ...], *, has_store_id: bool, penny_mode: bool) -> list[discord.Embed]:
@@ -454,7 +485,12 @@ def trim_title(title: str, limit: int) -> str:
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
 
 
+def clean_query(query: str) -> str:
+    return " ".join(str(query or "").split())
+
+
 def _broad_query_warning(query: str) -> str | None:
-    if query.strip().lower() in {"clearance", "sale", "tools", "home depot", "deal", "deals"}:
-        return "This is a broad query and can waste credits. Use tighter terms like `milwaukee drill`, `faucet`, `vanity`, or `ceiling fan`."
+    normalized = clean_query(query).lower()
+    if normalized in BROAD_QUERY_TERMS:
+        return f"This is a broad query and can waste credits. Use tighter terms like {BROAD_QUERY_EXAMPLES}."
     return None

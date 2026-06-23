@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sniperplug.services.public_deal_posts import (
+    RESERVATION_STALE_MINUTES,
     active_cache_key,
     card_deal_key,
     card_product_key,
@@ -22,6 +24,7 @@ class FreshDealSelection:
     unknown_price_repeats: int = 0
     recent_public_duplicates: int = 0
     exact_public_post_duplicates: int = 0
+    stale_reserved_recovered: int = 0
     not_alertable: int = 0
 
     @property
@@ -34,6 +37,8 @@ class FreshDealSelection:
             parts.append(f"recent public alert duplicates hidden: **{self.recent_public_duplicates}**")
         if self.exact_public_post_duplicates:
             parts.append(f"exact public post duplicates hidden: **{self.exact_public_post_duplicates}**")
+        if self.stale_reserved_recovered:
+            parts.append(f"stale reserved rows ignored: **{self.stale_reserved_recovered}**")
         if self.not_alertable:
             parts.append(f"not public-alertable hidden: **{self.not_alertable}**")
         if self.repeated_same_or_higher_price:
@@ -80,6 +85,7 @@ async def select_fresh_deal_cards(
     unknown_price_repeats = 0
     recent_public_duplicates = 0
     exact_public_post_duplicates = 0
+    stale_reserved_recovered = 0
     not_alertable = 0
 
     for card in cards:
@@ -103,13 +109,15 @@ async def select_fresh_deal_cards(
 
         deal_key = card_deal_key(card, retailer=retailer)
         cursor = await conn.execute(
-            "SELECT status FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? LIMIT 1",
+            "SELECT status, first_seen_at FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? LIMIT 1",
             (guild_id, deal_key),
         )
         row = await cursor.fetchone()
-        if row:
+        if row and public_post_row_should_block(row):
             exact_public_post_duplicates += 1
             continue
+        if row:
+            stale_reserved_recovered += 1
 
         if hide_active_cache_repeats:
             key = active_cache_key(
@@ -141,7 +149,6 @@ async def select_fresh_deal_cards(
 
         if len(fresh) >= limit:
             break
-
     return FreshDealSelection(
         fresh=fresh,
         repeated_same_or_higher_price=repeated_same_or_higher_price,
@@ -149,6 +156,7 @@ async def select_fresh_deal_cards(
         unknown_price_repeats=unknown_price_repeats,
         recent_public_duplicates=recent_public_duplicates,
         exact_public_post_duplicates=exact_public_post_duplicates,
+        stale_reserved_recovered=stale_reserved_recovered,
         not_alertable=not_alertable,
     )
 
@@ -162,6 +170,38 @@ def card_is_public_alertable(card: Any, *, min_alert_score: int = 90) -> bool:
     if should_alert is None:
         return int(getattr(card, "score", 0) or 0) >= min_alert_score
     return bool(should_alert)
+
+
+def public_post_row_should_block(row: Any) -> bool:
+    status = row_value(row, "status")
+    if status == "posted":
+        return True
+    if status != "reserved":
+        return False
+    first_seen = parse_iso_datetime(row_value(row, "first_seen_at"))
+    if first_seen is None:
+        return False
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - first_seen < timedelta(minutes=RESERVATION_STALE_MINUTES)
+
+
+def row_value(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except Exception:
+        if isinstance(row, dict):
+            return row.get(key)
+        return getattr(row, key, None)
+
+
+def parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def float_or_none(value) -> float | None:

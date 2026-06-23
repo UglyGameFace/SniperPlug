@@ -63,7 +63,9 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
             link_choices=choices,
         )
         card.retailer = deal.retailer
-        card.should_alert = decision.should_alert and discount is not None
+        # Value-only Walmart cards are valid when the API proves a coupon or
+        # Walmart Cash value even without a trusted was-price markdown.
+        card.should_alert = decision.should_alert and (discount is not None or has_coupon_or_cash)
         card.current_price = deal.current_price
         card.selected_offer_id = deal.selected_offer_id
         card.sku = deal.sku

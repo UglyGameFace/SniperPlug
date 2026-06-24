@@ -69,16 +69,13 @@ async def maybe_post_public_deal_cards(
     fallback_key = normalize_retailer_key(fallback_retailer)
     config = await get_public_alert_config(db, guild_id)
     if not config["enabled"] or not config["channel_id"]:
-        cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cards, source_label=source_label, fallback_retailer=fallback_key)
-        return PublicPostResult(attempted=attempted, skipped_disabled=attempted, cached_active=cached_active)
+        return PublicPostResult(attempted=attempted, skipped_disabled=attempted)
 
     channel, channel_note = await resolve_public_alert_channel(bot, db, guild_id=guild_id, configured_channel_id=config["channel_id"])
     if channel is None:
-        cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cards, source_label=source_label, fallback_retailer=fallback_key)
-        return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(channel_note or "public channel lookup failed",))
+        return PublicPostResult(attempted=attempted, errors=(channel_note or "public channel lookup failed",))
     if not hasattr(channel, "send"):
-        cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cards, source_label=source_label, fallback_retailer=fallback_key)
-        return PublicPostResult(attempted=attempted, cached_active=cached_active, errors=(f"configured public alert channel <#{getattr(channel, 'id', config['channel_id'])}> is not sendable",))
+        return PublicPostResult(attempted=attempted, errors=(f"configured public alert channel <#{getattr(channel, 'id', config['channel_id'])}> is not sendable",))
 
     allowed_retailers = set(config["retailers"])
     posted = 0

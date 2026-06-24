@@ -147,11 +147,39 @@ def parse_confidence_ready(value: Any) -> int:
 def format_latest_report_line(payload: dict[str, Any] | None) -> str:
     if not payload:
         return "No detailed auto-scan report saved yet. Wait for the next scheduled run or use `/autoscan_now`."
-    return (
-        f"Saved: `{payload.get('saved_at', 'unknown')}`\n"
-        f"Category: **{payload.get('category_label') or payload.get('category') or 'unknown'}** • Threshold: **{payload.get('threshold', 0)}%** • Confidence floor: **{payload.get('confidence_floor', 0)}/100**\n"
-        f"Checked: **{payload.get('checked', 0)}** products / **{payload.get('searches', 0)}** searches • Verified: **{payload.get('total_cards', 0)}**\n"
-        f"Confidence: {payload.get('confidence_summary') or 'n/a'}\n"
-        f"Fresh filter: {payload.get('repeat_summary') or 'n/a'}\n"
-        f"Public guard: posted **{payload.get('posted', 0)}** • dupes **{payload.get('dupes', 0)}** • not alertable **{payload.get('not_alertable', 0)}** • disabled **{payload.get('disabled', 0)}**"
-    )
+
+    parts = [
+        f"Saved: `{payload.get('saved_at', 'unknown')}`",
+        f"Category: **{payload.get('category_label') or payload.get('category') or 'unknown'}** • Threshold: **{payload.get('threshold', 0)}%** • Confidence floor: **{payload.get('confidence_floor', 0)}/100**",
+        f"Checked: **{payload.get('checked', 0)}** products / **{payload.get('searches', 0)}** searches • Verified: **{payload.get('total_cards', 0)}**",
+        f"Confidence: {payload.get('confidence_summary') or 'n/a'}",
+        f"Fresh filter: {payload.get('repeat_summary') or 'n/a'}",
+        f"Public guard: posted **{payload.get('posted', 0)}** • dupes **{payload.get('dupes', 0)}** • not alertable **{payload.get('not_alertable', 0)}** • disabled **{payload.get('disabled', 0)}**",
+    ]
+
+    errors = payload.get("errors") or ()
+    warnings = payload.get("warnings") or ()
+    verification = payload.get("verification_failure_summary") or ""
+    review = payload.get("review_candidate_summary") or ""
+    decision = payload.get("decision_trail_summary") or ""
+    routes = payload.get("route_summary") or ""
+
+    if errors:
+        parts.append("Errors: " + "; ".join(str(error) for error in list(errors)[:3]))
+    if warnings:
+        parts.append("Warnings: " + "; ".join(str(warning) for warning in list(warnings)[:3]))
+    if verification:
+        parts.append("Verification blockers: " + str(verification))
+    if review:
+        parts.append("Review/scout audit: " + str(review))
+    if decision:
+        parts.append("Candidate decision trail: " + str(decision))
+    if routes:
+        parts.append("Routes: " + str(routes))
+
+    return trim_report_text("\n".join(parts), 2400)
+
+
+def trim_report_text(value: str, limit: int = 2400) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"

@@ -257,6 +257,12 @@ class AutoScanRunnerCog(commands.Cog):
         if report.warnings:
             warning_text = chr(10).join(f"• {warning}" for warning in report.warnings[:5])
             embed.add_field(name="Warnings", value=warning_text, inline=False)
+        if not report.public_result.posted:
+            embed.add_field(
+                name="Why nothing posted",
+                value=trim_discord_value(autoscan_blocker_summary(report)),
+                inline=False,
+            )
         if report.public_result.errors:
             error_text = chr(10).join(f"• {clean_log_text(error)}" for error in report.public_result.errors[:5])
             embed.add_field(name="Errors", value=error_text, inline=False)
@@ -376,6 +382,8 @@ class AutoScanRunnerCog(commands.Cog):
             fallback_retailer=AUTO_SCAN_RETAILER,
             limit=AUTO_SCAN_PUBLIC_LIMIT,
             hide_active_cache_repeats=False,
+            min_public_discount=result.min_discount,
+            source_label=f"{AUTO_SCAN_SOURCE_LABEL}:{preset.key}",
         )
         decision_trail_summary = explain_autoscan_decision_trail(
             all_verified_cards=unique_cards,
@@ -706,6 +714,27 @@ async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
             guilds.append(AutoScanGuild(guild_id=guild_id, channel_id=int(config["channel_id"])))
     return guilds
 
+
+
+def autoscan_blocker_summary(report: AutoScanReport) -> str:
+    result = report.public_result
+    lines: list[str] = []
+    if report.total_cards <= 0:
+        lines.append("No verified cards were created. Most likely reason: Walmart API did not return trusted was/typical price proof at this threshold.")
+    elif report.cards_attempted_for_public <= 0:
+        lines.append("Verified cards existed, but none reached final public preflight.")
+    elif result.posted <= 0:
+        if result.skipped_disabled:
+            lines.append("Public alerts were disabled or missing a saved channel.")
+        if result.skipped_wrong_retailer:
+            lines.append(f"{result.skipped_wrong_retailer} card(s) were blocked because Walmart is not allowed in public stores.")
+        if result.skipped_duplicate:
+            lines.append(f"{result.skipped_duplicate} card(s) were blocked as recent/exact duplicates.")
+        if result.skipped_not_alertable:
+            lines.append(f"{result.skipped_not_alertable} card(s) failed public-quality/not-alertable checks.")
+        if result.errors:
+            lines.append("Posting errors: " + "; ".join(clean_log_text(error) for error in result.errors[:3]))
+    return "\n".join(f"• {line}" for line in lines) or "No blocker summary available."
 
 def duplicate_breakdown_text(result: PublicPostResult) -> str:
     recent = int(getattr(result, "skipped_recent_alert_duplicate", 0) or 0)

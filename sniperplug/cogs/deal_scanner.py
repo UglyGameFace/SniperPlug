@@ -88,7 +88,7 @@ class DealScannerCog(commands.Cog):
         search="Optional product/category. Example: detergent, baby, pet, personal care. Leave blank for broad Cash Offers.",
         max_results="How many API products to inspect per search route.",
     )
-    async def walmart_cash(self, interaction: discord.Interaction, search: str = "walmart cash offers", max_results: app_commands.Range[int, 5, 25] = 25) -> None:
+    async def walmart_cash(self, interaction: discord.Interaction, search: str = "walmart cash offers", max_results: app_commands.Range[int, 3, 12] = 8) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         await self._send_walmart_cash_search(interaction, search, int(max_results))
 
@@ -115,8 +115,8 @@ class DealScannerCog(commands.Cog):
         all_candidates: list[SourceCandidate] = []
         warnings: list[str] = []
 
-        per_route_limit = max(10, min(25, int(max_results)))
-        scan_jobs = [(query, page) for query in queries[:3] for page in (1,)]
+        per_route_limit = max(3, min(12, int(max_results)))
+        scan_jobs = [(query, page) for query in queries[:2] for page in (1,)]
         semaphore = asyncio.Semaphore(2)
 
         async def run_one_cash_route(query: str, page: int):
@@ -124,7 +124,7 @@ class DealScannerCog(commands.Cog):
                 try:
                     return await asyncio.wait_for(
                         run_walmart_scan(query, page, per_route_limit, None, None, str(interaction.user.id)),
-                        timeout=15,
+                        timeout=8,
                     )
                 except asyncio.TimeoutError:
                     warnings.append(f"Timed out checking `{query}` page {page}; skipped that route.")

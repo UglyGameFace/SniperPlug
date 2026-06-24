@@ -64,3 +64,10 @@ def test_help_text_points_to_single_setup_flow():
     assert "/setup_sniperplug_here" in CATALOG
     assert "/setup_sniperplug channel:" not in CATALOG
     assert "/public_alerts" not in CATALOG
+
+
+def test_removed_command_error_handlers_are_not_left_dangling():
+    assert "@set_channel.error" not in COGS
+    assert "@setup_sniperplug.error" not in COGS
+    assert "@public_alerts.error" not in COGS
+    assert "@autoscan_setup.error" not in COGS

@@ -494,7 +494,6 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             + "\n\nGive the SniperPlug bot/role those permissions, then try again."
         )
 
-    @set_channel.error
     @test_alert.error
     @scan_test.error
     @snipe_plan.error

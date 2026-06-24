@@ -116,15 +116,15 @@ class DealScannerCog(commands.Cog):
         warnings: list[str] = []
 
         per_route_limit = max(10, min(25, int(max_results)))
-        scan_jobs = [(query, page) for query in queries[:6] for page in (1, 2)]
-        semaphore = asyncio.Semaphore(4)
+        scan_jobs = [(query, page) for query in queries[:3] for page in (1,)]
+        semaphore = asyncio.Semaphore(2)
 
         async def run_one_cash_route(query: str, page: int):
             async with semaphore:
                 try:
                     return await asyncio.wait_for(
                         run_walmart_scan(query, page, per_route_limit, None, None, str(interaction.user.id)),
-                        timeout=18,
+                        timeout=15,
                     )
                 except asyncio.TimeoutError:
                     warnings.append(f"Timed out checking `{query}` page {page}; skipped that route.")
@@ -256,7 +256,7 @@ async def send_command_error(interaction: discord.Interaction, message: str) -> 
 
 class HuntPresetMenuView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=300)
+        super().__init__(timeout=150)
         self.add_item(HuntPresetButton(HUNT_PRESETS["glitch"], row=0))
         self.add_item(HuntPresetButton(HUNT_PRESETS["tech"], row=0))
         self.add_item(HuntPresetButton(HUNT_PRESETS["essentials"], row=0))
@@ -323,14 +323,14 @@ class WalmartCashOffersButton(discord.ui.Button):
 
 class PresetResultView(discord.ui.View):
     def __init__(self, cards: list[DealCard]):
-        super().__init__(timeout=300)
+        super().__init__(timeout=150)
         add_deal_link_buttons(self, cards[:5])
         self.add_item(discord.ui.Button(label="Run /hunt again for more categories", style=discord.ButtonStyle.secondary, disabled=True, row=4))
 
 
 class DealSearchControlView(discord.ui.View):
     def __init__(self, query: str, page: int, min_discount: int, max_results: int, sort_value: str | None, order_value: str | None, alerts_only: bool, simple_mode: bool, cards: list[DealCard] | None = None, has_next_page: bool = False):
-        super().__init__(timeout=300)
+        super().__init__(timeout=150)
         self.query = query
         self.page = page
         self.min_discount = min_discount

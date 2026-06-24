@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -153,7 +154,39 @@ class _LibsqlAsyncConnection:
                 raise
 
         async with self._lock:
-            return await asyncio.to_thread(run)
+            global _LIBSQL_OPERATION_LOCK
+            try:
+                lock = _LIBSQL_OPERATION_LOCK
+            except NameError:
+                _LIBSQL_OPERATION_LOCK = asyncio.Lock()
+                lock = _LIBSQL_OPERATION_LOCK
+
+            async with lock:
+                last_exc = None
+                for attempt in range(3):
+                    try:
+                        return await asyncio.to_thread(run)
+                    except ValueError as exc:
+                        text = str(exc).lower()
+                        if "stream already in use" not in text and "stream not found" not in text:
+                            raise
+                        last_exc = exc
+
+                        for reconnect_name in ("reconnect", "_reconnect"):
+                            reconnect = getattr(self, reconnect_name, None)
+                            if reconnect is None:
+                                continue
+                            try:
+                                result = reconnect()
+                                if inspect.isawaitable(result):
+                                    await result
+                                break
+                            except Exception:
+                                pass
+
+                        await asyncio.sleep(0.35 * (attempt + 1))
+
+                raise last_exc
 
     async def executescript(self, script: str) -> None:
         for statement in _split_sql_script(script):

@@ -698,6 +698,7 @@ def _selected_offer_proof(item: dict[str, Any]) -> dict[str, str | None]:
     condition = _clean_string(item.get("condition") or item.get("conditionType") or _nested_value(item, "condition", "type"))
     is_walmart_seller = _is_walmart_seller(seller_name=seller_name, seller_id=seller_id, item=item)
     return {
+        "raw_api": item,
         "seller_name": seller_name or ("Walmart" if is_walmart_seller else None),
         "seller_id": seller_id,
         "fulfillment_type": fulfillment_type,

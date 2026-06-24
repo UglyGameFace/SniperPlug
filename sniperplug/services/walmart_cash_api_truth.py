@@ -334,3 +334,8 @@ def _friendly_label(path: str) -> str:
 def _clean_preview(value: Any, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+# Walmart Cash proof guard:
+# Generic rewards, OnePay cashback, card cashback, search words, guessed promos,
+# and generic promo text do not count as Walmart Cash proof.

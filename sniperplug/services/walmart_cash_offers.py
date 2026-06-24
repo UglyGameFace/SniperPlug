@@ -200,9 +200,9 @@ def build_walmart_cash_summary_embed(
 
     if not found:
         embed.add_field(
-            name="No API-confirmed Cash Offers found",
+            name="No API-confirmed Cash Offers found from returned API results",
             value=(
-                "That means the checked API results did not expose Walmart Cash proof fields. "
+                "That means the returned API results did not expose Walmart Cash proof fields. If it says Checked: 0, Walmart did not return usable product data before timeout. "
                 "Try a narrower search like `/walmart_cash search:personal care`, `/walmart_cash search:detergent`, "
                 "or `/walmart_cash search:baby`."
             ),

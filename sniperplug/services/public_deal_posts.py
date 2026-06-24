@@ -9,7 +9,7 @@ from sniperplug.services.deal_feedback import build_deal_feedback_view, build_fe
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_channel_id
 from sniperplug.services.public_posting import normalize_retailer_key
-from sniperplug.services.public_deal_quality import is_public_deal_candidate, prepare_public_deal_candidate
+from sniperplug.services.public_deal_quality import is_public_deal_candidate, prepare_public_deal_candidate, prepare_public_scout_candidate
 
 
 ALERT_DEDUPE_DAYS = 30
@@ -57,6 +57,7 @@ async def maybe_post_public_deal_cards(
     fallback_retailer: str | None = None,
     min_alert_score: int = 90,
     min_public_discount: int = 50,
+    allow_review_scout: bool = False,
 ) -> PublicPostResult:
     if guild_id is None or not cards:
         return PublicPostResult()
@@ -94,7 +95,11 @@ async def maybe_post_public_deal_cards(
             skipped_wrong_retailer += 1
             continue
 
-        if not prepare_public_deal_candidate(card, source_label=source_label, min_discount=min_public_discount):
+        if allow_review_scout:
+            public_ready = prepare_public_scout_candidate(card, source_label=source_label)
+        else:
+            public_ready = prepare_public_deal_candidate(card, source_label=source_label, min_discount=min_public_discount)
+        if not public_ready:
             skipped_not_alertable += 1
             continue
 
@@ -142,7 +147,8 @@ async def maybe_post_public_deal_cards(
             )
         except Exception as exc:
             notes.append(f"alert dedupe write failed for {retailer}: {clean_error_text(exc)}")
-        cache_after_posting.append(card)
+        if not allow_review_scout:
+            cache_after_posting.append(card)
         posted += 1
 
     cached_active = 0

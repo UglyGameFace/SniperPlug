@@ -17,7 +17,9 @@ def test_autoscan_has_verified_markdown_rescue_lane():
     assert "select_public_deal_candidates" in AUTO
     assert "Verified markdown rescue lane added" in AUTO
     assert "shown_cards = watchlist_cards" not in AUTO
-    assert "were kept private in diagnostics" in AUTO
+    assert "Public Scout Lane is posting the top review leads" in AUTO
+    assert "allow_review_scout=True" in AUTO
+    assert "were kept private in diagnostics" not in AUTO
 
 
 def test_manual_commands_post_public_candidates_not_raw_cards():

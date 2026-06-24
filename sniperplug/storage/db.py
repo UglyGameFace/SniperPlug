@@ -14,8 +14,9 @@ from sniperplug.services.routing import DEFAULT_ROUTE
 
 
 class _LibsqlAsyncCursor:
-    def __init__(self, result: Any):
+    def __init__(self, result: Any, lock: asyncio.Lock | None = None):
         self.result = result
+        self._lock = lock
         self._rows_cache: list[Any] | None = None
 
     async def fetchone(self) -> Any | None:
@@ -24,7 +25,11 @@ class _LibsqlAsyncCursor:
 
     async def fetchall(self) -> list[Any]:
         if self._rows_cache is None:
-            rows = await asyncio.to_thread(self._fetchall_sync)
+            if self._lock is not None:
+                async with self._lock:
+                    rows = await asyncio.to_thread(self._fetchall_sync)
+            else:
+                rows = await asyncio.to_thread(self._fetchall_sync)
             self._rows_cache = [self._normalize_row(row) for row in rows]
         return self._rows_cache
 
@@ -82,7 +87,7 @@ class _LibsqlAsyncConnection:
                 result = self.conn.execute(sql)
             else:
                 result = self.conn.execute(sql, tuple(params))
-            return _LibsqlAsyncCursor(result)
+            return _LibsqlAsyncCursor(result, self._lock)
 
         async with self._lock:
             return await asyncio.to_thread(run)

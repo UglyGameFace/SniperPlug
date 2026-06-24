@@ -401,17 +401,33 @@ class AutoScanRunnerCog(commands.Cog):
             watchlist_cards = prepare_review_watchlist_cards(result, limit=AUTO_SCAN_REVIEW_FALLBACK_LIMIT)
             if watchlist_cards:
                 warnings.append(
-                    "No verified public deal passed. Watchlist/review leads were kept private in diagnostics and were NOT public-posted."
+                    "No verified public deal passed. Public Scout Lane is posting the top review leads with a manual verification warning."
                 )
 
         if not force:
             await record_auto_scan_run(self.bot.db, guild.guild_id, AUTO_SCAN_RETAILER, scan_key=scan_key)
 
         if not shown_cards:
+            scout_result = PublicPostResult()
+            if watchlist_cards:
+                scout_result = await maybe_post_public_deal_cards(
+                    bot=self.bot,
+                    guild_id=guild.guild_id,
+                    cards=watchlist_cards,
+                    source_label=f"{AUTO_SCAN_SOURCE_LABEL}:{preset.key}:scout",
+                    fallback_retailer=AUTO_SCAN_RETAILER,
+                    min_public_discount=result.min_discount,
+                    allow_review_scout=True,
+                )
+
             report = AutoScanReport(
                 guild_id=guild.guild_id,
                 allowed=True,
-                reason="Auto-scan completed with no new/lower-price verified public-quality cards that passed final posting gates.",
+                reason=(
+                    "Auto-scan posted public Scout Lane lead(s) because no verified markdown cards passed."
+                    if scout_result.posted
+                    else "Auto-scan completed with no new/lower-price verified public-quality cards that passed final posting gates."
+                ),
                 settings=settings,
                 category_key=preset.key,
                 category_label=preset.label,
@@ -429,14 +445,15 @@ class AutoScanRunnerCog(commands.Cog):
                 searches_checked=result.searches_attempted,
                 total_cards=len(unique_cards),
                 verified_before_memory=result.total_verified_cards,
-                fresh_cards=0,
-                cards_attempted_for_public=0,
-                used_repeat_fallback=False,
-                repeat_summary=fresh_selection.summary_line(),
+                fresh_cards=len(watchlist_cards),
+                cards_attempted_for_public=len(watchlist_cards),
+                used_repeat_fallback=bool(watchlist_cards),
+                repeat_summary=watchlist_repeat_summary(fresh_selection.summary_line(), watchlist_cards, scout_result),
+                public_result=scout_result,
                 warnings=tuple(warnings),
             )
             await persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
-            log.info("Auto-scan completed with no fresh public-quality cards %s", report.log_fields())
+            log.info("Auto-scan completed with Scout Lane fallback %s", report.log_fields())
             return report
 
         category_preferences = await get_category_preferences(self.bot.db, guild.guild_id)

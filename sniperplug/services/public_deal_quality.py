@@ -6,6 +6,7 @@ import discord
 
 
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
+PUBLIC_SCOUT_LANE_FIELD = "🟨 Public scout lane"
 
 
 def card_text(card: Any, *, source_label: str = "") -> str:
@@ -106,6 +107,54 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
             inline=False,
         )
 
+    return True
+
+
+def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 85) -> bool:
+    """Allow clearly labeled review/scout leads to post without calling them verified deals."""
+    if not has_real_price(card):
+        return False
+
+    score = int_or_zero(getattr(card, "score", 0))
+    text = card_text(card, source_label=source_label).lower()
+    manual_allowed = bool(getattr(card, "manual_share_allowed", False))
+    scout_text = any(
+        term in text
+        for term in (
+            "exact product match",
+            "flip/value lead",
+            "review candidate",
+            "watchlist",
+            "walmart cash",
+            "cashrewards",
+            "rollback",
+            "clearance",
+        )
+    )
+    return score >= int(min_score) and (manual_allowed or scout_text)
+
+
+def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 85) -> bool:
+    if not is_public_scout_candidate(card, source_label=source_label, min_score=min_score):
+        return False
+
+    setattr(card, "should_alert", True)
+    try:
+        card.score = max(int(getattr(card, "score", 0) or 0), 90)
+    except Exception:
+        setattr(card, "score", 90)
+
+    embed = getattr(card, "embed", None)
+    if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_SCOUT_LANE_FIELD for field in embed.fields):
+        embed.add_field(
+            name=PUBLIC_SCOUT_LANE_FIELD,
+            value=(
+                "Posted because strict verified markdown proof found **0** public deals, "
+                "but this was one of the strongest Walmart Scout leads. "
+                "**Verify app price, selected option, seller, shipping, stock, and comps before buying.**"
+            ),
+            inline=False,
+        )
     return True
 
 

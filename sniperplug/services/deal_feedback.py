@@ -79,6 +79,21 @@ FEEDBACK_ACTIONS: dict[str, FeedbackAction] = {
 }
 
 
+async def safe_feedback_reply(interaction: discord.Interaction, message: str) -> None:
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.NotFound:
+        return
+    except Exception:
+        try:
+            await interaction.followup.send(message, ephemeral=True)
+        except Exception:
+            return
+
+
 class DealFeedbackView(discord.ui.View):
     """Per-message feedback buttons with persistent token support."""
 
@@ -101,22 +116,31 @@ class DealFeedbackButton(discord.ui.Button):
         self.token = token or ""
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+        except Exception:
+            pass
+
         db = getattr(interaction.client, "db", None)
         if db is None or interaction.guild_id is None:
-            await interaction.response.send_message("Feedback could not be saved because the bot database/server context is unavailable.", ephemeral=True)
+            await safe_feedback_reply(interaction, "Feedback could not be saved because the bot database/server context is unavailable.")
             return
-        await interaction.response.defer(ephemeral=True)
+
         target = getattr(self.view, "target", None) if isinstance(self.view, DealFeedbackView) else None
         if target is None and self.token:
             target = await get_feedback_target(db, token=self.token, guild_id=interaction.guild_id)
         if target is None:
             target = feedback_target_from_interaction_message(interaction, action=self.action.key)
         if target is None:
-            await interaction.followup.send(
+            await safe_feedback_reply(
+                interaction,
                 "I caught this old feedback button so it will not interaction-fail, but I could not recover the deal details from the message. Newer deal posts will save feedback normally.",
-                ephemeral=True,
             )
             return
+
         result = await record_deal_feedback(
             db,
             guild_id=interaction.guild_id,
@@ -124,8 +148,7 @@ class DealFeedbackButton(discord.ui.Button):
             action=self.action.key,
             user_id=getattr(interaction.user, "id", None),
         )
-        await interaction.followup.send(result.message, ephemeral=True)
-
+        await safe_feedback_reply(interaction, result.message)
 
 def feedback_target_from_interaction_message(interaction: discord.Interaction, *, action: str = "") -> DealFeedbackTarget | None:
     """Recover a feedback target from an old message whose view was not tokenized.

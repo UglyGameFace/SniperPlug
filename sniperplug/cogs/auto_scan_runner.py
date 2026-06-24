@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from sniperplug.cogs.deal_scanner import DealCard, HuntPreset, provider_health_error_message
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.autoscan_history import save_autoscan_report
+from sniperplug.services.autoscan_decision_trail import explain_autoscan_decision_trail, no_post_plain_english
 from sniperplug.services.deal_confidence import DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR, select_confident_public_cards
 from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
 from sniperplug.services.deal_feedback import apply_feedback_learning_to_cards
@@ -63,6 +64,7 @@ class AutoScanReport:
     feedback_learning_summary: str = ""
     verification_failure_summary: str = ""
     review_candidate_summary: str = ""
+    decision_trail_summary: str = ""
     route_summary: str = ""
     price_memory_summary: str = ""
     products_checked: int = 0
@@ -90,6 +92,7 @@ class AutoScanReport:
             "feedback_learning": compact_log_text(self.feedback_learning_summary),
             "verification_failure_summary": compact_log_text(self.verification_failure_summary, limit=900),
             "review_candidate_summary": compact_log_text(self.review_candidate_summary, limit=900),
+            "decision_trail_summary": compact_log_text(self.decision_trail_summary, limit=1200),
             "route_summary": compact_log_text(self.route_summary, limit=900),
             "price_memory_summary": compact_log_text(self.price_memory_summary, limit=500),
             "checked": self.products_checked,
@@ -121,12 +124,19 @@ class AutoScanReport:
         verification = f"\nVerification trail: {self.verification_failure_summary}" if self.verification_failure_summary else ""
         memory = f"\nPrice memory: {self.price_memory_summary}" if self.price_memory_summary else ""
         duplicate_breakdown = duplicate_breakdown_text(result)
+        plain = no_post_plain_english(
+            verified_count=self.total_cards,
+            public_candidate_count=self.cards_attempted_for_public,
+            fresh_count=self.fresh_cards,
+            posted_count=result.posted,
+        )
         return (
             f"Category: **{category}**\n"
             f"Threshold: **{self.min_discount}%+ verified markdown** • Ranking: **{self.public_mode}**{confidence}{feedback}{memory}{verification}\n"
             f"Checked **{self.products_checked}** products across **{self.searches_checked}** searches.\n"
             f"Verified before memory: **{self.verified_before_memory}** • Verified after memory/ranking: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
             f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}**{duplicate_breakdown} • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
+            f"Bottom line: {plain}\n"
             f"Repeat fallback used: **{'yes' if self.used_repeat_fallback else 'no'}**\n"
             f"Fresh filter: {self.repeat_summary or 'n/a'}"
         )
@@ -209,6 +219,12 @@ class AutoScanRunnerCog(commands.Cog):
             embed.add_field(
                 name="Review-only diagnostics",
                 value=trim_discord_value(report.review_candidate_summary),
+                inline=False,
+            )
+        if report.decision_trail_summary:
+            embed.add_field(
+                name="Candidate decision trail",
+                value=trim_discord_value(report.decision_trail_summary),
                 inline=False,
             )
         if report.route_summary:
@@ -326,6 +342,15 @@ class AutoScanRunnerCog(commands.Cog):
             limit=AUTO_SCAN_PUBLIC_LIMIT,
             hide_active_cache_repeats=False,
         )
+        decision_trail_summary = explain_autoscan_decision_trail(
+            all_verified_cards=unique_cards,
+            confidence_cards=list(confidence_selection.cards),
+            public_candidates=public_candidates,
+            fresh_cards=list(fresh_selection.fresh),
+            min_discount=result.min_discount,
+            confidence_floor=AUTOSCAN_CONFIDENCE_FLOOR,
+            limit=8,
+        )
 
         shown_cards = fresh_selection.fresh
         watchlist_cards: list[DealCard] = []
@@ -343,7 +368,7 @@ class AutoScanRunnerCog(commands.Cog):
             report = AutoScanReport(
                 guild_id=guild.guild_id,
                 allowed=True,
-                reason="Auto-scan completed with no new/lower-price verified public-confidence cards.",
+                reason="Auto-scan completed with no new/lower-price verified public-quality cards that passed final posting gates.",
                 settings=settings,
                 category_key=preset.key,
                 category_label=preset.label,
@@ -354,6 +379,7 @@ class AutoScanRunnerCog(commands.Cog):
                 feedback_learning_summary=feedback_summary,
                 verification_failure_summary=diagnostics["verification_failure_summary"],
                 review_candidate_summary=diagnostics["review_candidate_summary"],
+                decision_trail_summary=decision_trail_summary,
                 route_summary=diagnostics["route_summary"],
                 price_memory_summary=diagnostics["price_memory_summary"],
                 products_checked=result.products_checked,
@@ -367,7 +393,7 @@ class AutoScanRunnerCog(commands.Cog):
                 warnings=tuple(warnings),
             )
             await persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
-            log.info("Auto-scan completed with no fresh public-confidence cards %s", report.log_fields())
+            log.info("Auto-scan completed with no fresh public-quality cards %s", report.log_fields())
             return report
 
         category_preferences = await get_category_preferences(self.bot.db, guild.guild_id)
@@ -401,6 +427,7 @@ class AutoScanRunnerCog(commands.Cog):
             feedback_learning_summary=feedback_summary,
             verification_failure_summary=diagnostics["verification_failure_summary"],
             review_candidate_summary=diagnostics["review_candidate_summary"],
+            decision_trail_summary=decision_trail_summary,
             route_summary=diagnostics["route_summary"],
             price_memory_summary=diagnostics["price_memory_summary"],
             products_checked=result.products_checked,

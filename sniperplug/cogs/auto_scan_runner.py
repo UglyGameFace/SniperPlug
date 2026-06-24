@@ -40,6 +40,8 @@ AUTO_SCAN_FAST_QUERY_COUNT = 4
 AUTO_SCAN_DEEP_QUERY_COUNT = 8
 AUTO_SCAN_MANUAL_QUERY_COUNT = 10
 AUTO_SCAN_DEEP_EVERY_BUCKETS = 8
+AUTO_SCAN_PROGRESS_SECONDS = 45
+AUTO_SCAN_DEEP_FOLLOWUP_ENABLED = True
 _AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -197,11 +199,30 @@ class AutoScanRunnerCog(commands.Cog):
                     )
                     return
 
-                report = await self._run_guild_walmart_discovery(
-                    AutoScanGuild(guild_id, config.get("channel_id")),
-                    force=force,
-                )
-                await self._send_autoscan_report(interaction, report)
+                progress_task = asyncio.create_task(self._autoscan_progress_notice(interaction))
+                try:
+                    report = await self._run_guild_walmart_discovery(
+                        AutoScanGuild(guild_id, config.get("channel_id")),
+                        force=force,
+                        query_count_override=AUTO_SCAN_FAST_QUERY_COUNT if force else None,
+                        report_label="Fast pass",
+                    )
+                finally:
+                    progress_task.cancel()
+                await self._send_autoscan_report(interaction, report, label="Fast pass result")
+
+                if force and AUTO_SCAN_DEEP_FOLLOWUP_ENABLED:
+                    await self._safe_autoscan_followup(
+                        interaction,
+                        "🔎 Fast pass finished. I’m continuing a deeper Walmart scan in the background and will send a second report if it finds anything different.",
+                    )
+                    deep_report = await self._run_guild_walmart_discovery(
+                        AutoScanGuild(guild_id, config.get("channel_id")),
+                        force=force,
+                        query_count_override=AUTO_SCAN_MANUAL_QUERY_COUNT,
+                        report_label="Deep follow-up",
+                    )
+                    await self._send_autoscan_report(interaction, deep_report, label="Deep follow-up result")
             except Exception as exc:
                 log.exception("Manual /autoscan_now failed guild=%s", guild_id)
                 await self._safe_autoscan_followup(
@@ -209,9 +230,9 @@ class AutoScanRunnerCog(commands.Cog):
                     f"Auto-scan hit an error after starting: `{clean_log_text(exc)}`",
                 )
 
-    async def _send_autoscan_report(self, interaction: discord.Interaction, report: AutoScanReport) -> None:
+    async def _send_autoscan_report(self, interaction: discord.Interaction, report: AutoScanReport, *, label: str = "Auto-scan test result") -> None:
         embed = discord.Embed(
-            title="🧭 Auto-scan test result",
+            title=f"🧭 {label}",
             description=report.discord_summary()[:4000],
             color=discord.Color.green() if report.public_result.posted else discord.Color.orange(),
         )
@@ -241,6 +262,18 @@ class AutoScanRunnerCog(commands.Cog):
             embed.add_field(name="Errors", value=error_text, inline=False)
         embed.set_footer(text="This uses the same direct verified auto-scan path as the background loop.")
         await self._safe_autoscan_followup(interaction, embed=embed)
+
+    async def _autoscan_progress_notice(self, interaction: discord.Interaction) -> None:
+        try:
+            await asyncio.sleep(AUTO_SCAN_PROGRESS_SECONDS)
+            await self._safe_autoscan_followup(
+                interaction,
+                "⏳ Still scanning Walmart. Fast results are taking longer than usual, but the scan is alive. I’ll post the report as soon as the first pass finishes.",
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.exception("Failed to send /autoscan_now progress notice")
 
     async def _safe_autoscan_followup(
         self,
@@ -289,7 +322,7 @@ class AutoScanRunnerCog(commands.Cog):
     async def before_auto_scan_loop(self) -> None:
         await self.bot.wait_until_ready()
 
-    async def _run_guild_walmart_discovery(self, guild: AutoScanGuild, *, force: bool = False) -> AutoScanReport:
+    async def _run_guild_walmart_discovery(self, guild: AutoScanGuild, *, force: bool = False, query_count_override: int | None = None, report_label: str = "") -> AutoScanReport:
         scan_key = AUTO_SCAN_SOURCE_LABEL
         settings: dict = {}
         if not force:
@@ -307,9 +340,11 @@ class AutoScanRunnerCog(commands.Cog):
         else:
             settings = {"forced": True, "retailer": AUTO_SCAN_RETAILER}
 
-        preset = select_autoscan_preset(guild.guild_id, force=force)
+        preset = select_autoscan_preset(guild.guild_id, force=force, query_count_override=query_count_override)
         result = await run_autoscan_verified_category(self.bot.db, guild.guild_id, preset=preset)
         warnings = clean_warning_list(result.warnings)
+        if report_label:
+            warnings.append(f"{report_label}: scanned **{len(preset.queries)}** route(s) in this pass.")
         diagnostics = autoscan_diagnostics(result)
 
         unique_cards = dedupe_cards(result.cards)
@@ -446,7 +481,7 @@ class AutoScanRunnerCog(commands.Cog):
         return report
 
 
-def select_autoscan_preset(guild_id: int, *, force: bool = False) -> HuntPreset:
+def select_autoscan_preset(guild_id: int, *, force: bool = False, query_count_override: int | None = None) -> HuntPreset:
     """Rotate categories and query slices so coverage is preserved without hammering Discord/API.
 
     Each scheduled run scans a small slice of the current category. The slice
@@ -461,7 +496,9 @@ def select_autoscan_preset(guild_id: int, *, force: bool = False) -> HuntPreset:
         index = (bucket + int(guild_id)) % len(AUTO_SCAN_CATEGORY_ROTATION)
         key = AUTO_SCAN_CATEGORY_ROTATION[index]
         base = HUNT_PRESETS.get(key) or next(iter(HUNT_PRESETS.values()))
-    if force:
+    if query_count_override is not None:
+        query_count = max(1, int(query_count_override))
+    elif force:
         query_count = AUTO_SCAN_MANUAL_QUERY_COUNT
     else:
         bucket = int(time.time() // (AUTO_SCAN_INTERVAL_MINUTES * 60))

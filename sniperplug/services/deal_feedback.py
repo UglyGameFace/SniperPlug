@@ -19,7 +19,7 @@ POPULAR_BRAND_TERMS = {
     "cerave", "cetaphil", "neutrogena", "olay", "dove", "gillette", "tide", "gain", "persil", "bounty", "charmin", "scott", "huggies", "pampers",
 }
 
-FEEDBACK_TARGET_DAYS = 45
+FEEDBACK_TARGET_DAYS = 3650
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ class DealFeedbackView(discord.ui.View):
     """Per-message feedback buttons with persistent token support."""
 
     def __init__(self, target: DealFeedbackTarget | None = None, *, token: str | None = None, persistent: bool = False):
-        super().__init__(timeout=None if persistent else 86400)
+        super().__init__(timeout=None)
         self.target = target
         self.token = token or ""
         for action in FEEDBACK_ACTIONS.values():
@@ -105,11 +105,17 @@ class DealFeedbackButton(discord.ui.Button):
         if db is None or interaction.guild_id is None:
             await interaction.response.send_message("Feedback could not be saved because the bot database/server context is unavailable.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True)
         target = getattr(self.view, "target", None) if isinstance(self.view, DealFeedbackView) else None
         if target is None and self.token:
             target = await get_feedback_target(db, token=self.token, guild_id=interaction.guild_id)
         if target is None:
-            await interaction.response.send_message("This feedback target is no longer available. Newer deal posts will keep working across restarts.", ephemeral=True)
+            target = feedback_target_from_interaction_message(interaction, action=self.action.key)
+        if target is None:
+            await interaction.followup.send(
+                "I caught this old feedback button so it will not interaction-fail, but I could not recover the deal details from the message. Newer deal posts will save feedback normally.",
+                ephemeral=True,
+            )
             return
         result = await record_deal_feedback(
             db,
@@ -118,7 +124,67 @@ class DealFeedbackButton(discord.ui.Button):
             action=self.action.key,
             user_id=getattr(interaction.user, "id", None),
         )
-        await interaction.response.send_message(result.message, ephemeral=True)
+        await interaction.followup.send(result.message, ephemeral=True)
+
+
+def feedback_target_from_interaction_message(interaction: discord.Interaction, *, action: str = "") -> DealFeedbackTarget | None:
+    """Recover a feedback target from an old message whose view was not tokenized.
+
+    This keeps older public deal panels usable after restarts. It is less perfect
+    than token-backed targets, but it is much better than Discord's
+    "This interaction failed".
+    """
+    message = getattr(interaction, "message", None)
+    if message is None:
+        return None
+
+    embeds = list(getattr(message, "embeds", []) or [])
+    embed = embeds[0] if embeds else None
+
+    title = ""
+    url = ""
+    source_label = "legacy_feedback_panel"
+    retailer = "walmart"
+
+    if embed is not None:
+        title = str(getattr(embed, "title", "") or "").strip()
+        url = str(getattr(embed, "url", "") or "").strip()
+        description = str(getattr(embed, "description", "") or "").lower()
+        fields = list(getattr(embed, "fields", []) or [])
+        for field in fields:
+            name = str(getattr(field, "name", "") or "").lower()
+            value = str(getattr(field, "value", "") or "")
+            lower_value = value.lower()
+            if "source" in name and value.strip():
+                source_label = "legacy:" + value.strip()[:90]
+            if "walmart" in lower_value or "walmart" in description:
+                retailer = "walmart"
+            if not url:
+                for part in value.replace(")", " ").replace("]", " ").split():
+                    if "walmart.com" in part and part.startswith("http"):
+                        url = part.strip("<>")
+
+    if not title:
+        content = str(getattr(message, "content", "") or "").strip()
+        title = content[:120] if content else "Recovered deal feedback target"
+
+    if not url:
+        url = str(getattr(message, "jump_url", "") or "")
+
+    guild_id = int(getattr(interaction, "guild_id", 0) or 0)
+    message_id = int(getattr(message, "id", 0) or 0)
+    target_key = hashlib.sha256(f"{guild_id}|{message_id}|{title}|{url}|{action}".encode("utf-8")).hexdigest()[:32]
+
+    return DealFeedbackTarget(
+        target_key=f"{normalize_retailer_key(retailer)}:{target_key}",
+        retailer=normalize_retailer_key(retailer),
+        title=title[:300],
+        url=url[:800],
+        source_label=source_label[:120],
+        brand_hint="",
+    )
+
+
 
 
 async def build_deal_feedback_view(db, *, guild_id: int, target: DealFeedbackTarget) -> DealFeedbackView:
@@ -128,10 +194,21 @@ async def build_deal_feedback_view(db, *, guild_id: int, target: DealFeedbackTar
 
 async def register_persistent_feedback_views(bot: Any) -> int:
     db = getattr(bot, "db", None)
-    if db is None:
-        return 0
-    targets = await recent_feedback_targets(db)
     registered = 0
+
+    # Legacy/no-token feedback buttons from older posts used custom IDs like
+    # deal_feedback:bad. Register a permanent catch-all view so those buttons
+    # never Discord-timeout after restart.
+    try:
+        bot.add_view(DealFeedbackView(None, persistent=True))
+        registered += 1
+    except Exception:
+        pass
+
+    if db is None:
+        return registered
+
+    targets = await recent_feedback_targets(db)
     for token, target in targets:
         try:
             bot.add_view(DealFeedbackView(target, token=token, persistent=True))

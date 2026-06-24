@@ -25,6 +25,7 @@ from sniperplug.services.public_deal_posts import PublicPostResult, maybe_post_p
 from sniperplug.services.scout_lane_polish import select_best_public_scout_cards
 from sniperplug.services.public_result_explainer import explain_public_post_result
 from sniperplug.services.public_deal_quality import select_public_deal_candidates
+from sniperplug.services.setup_self_heal import repair_public_alert_setup
 from sniperplug.services.verified_discount_hunt import HUNT_PRESETS, VerifiedHuntResult, collect_verified_discount_cards
 
 
@@ -186,17 +187,27 @@ class AutoScanRunnerCog(commands.Cog):
         lock = autoscan_lock(guild_id)
         async with lock:
             try:
-                config = await get_public_alert_config(self.bot.db, guild_id)
+                target_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+                repair = await repair_public_alert_setup(self.bot.db, self.bot, guild_id, target_channel=target_channel)
+                config = repair.config if repair.config is not None else await get_public_alert_config(self.bot.db, guild_id)
+                if repair.human_action_required:
+                    await self._safe_autoscan_followup(
+                        interaction,
+                        "SniperPlug could not safely repair the saved posting setup yet. "
+                        + repair.discord_line()
+                        + "\n\nThis should only require setup on first install or after channel permissions/deletion changed.",
+                    )
+                    return
                 if not config.get("enabled") or not config.get("channel_id"):
                     await self._safe_autoscan_followup(
                         interaction,
-                        "Public alerts are not configured yet. Run `/setup_sniperplug_here` first.",
+                        "Public alerts are still missing after self-heal. Run `/autoscan_health` for the exact channel/permission blocker.",
                     )
                     return
                 if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):
                     await self._safe_autoscan_followup(
                         interaction,
-                        "Public alerts are enabled, but Walmart is not in the public retailer list. Run `/setup_sniperplug_here` to repair it.",
+                        "Walmart was still missing from public retailers after self-heal. Run `/autoscan_health` so the repair status is visible.",
                     )
                     return
 

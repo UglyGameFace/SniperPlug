@@ -29,6 +29,7 @@ from sniperplug.services.deal_category_preferences import (
 
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_config
 from sniperplug.services.public_deal_posts import ensure_public_post_tables
+from sniperplug.services.setup_self_heal import repair_public_alert_setup
 from sniperplug.services.public_posting import (
     SUPPORTED_RETAILERS,
     format_retailers,
@@ -475,7 +476,8 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
 
 async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> discord.Embed:
     db = bot.db
-    config = await get_public_alert_config(db, guild_id)
+    repair = await repair_public_alert_setup(db, bot, guild_id)
+    config = repair.config if repair.config is not None else await get_public_alert_config(db, guild_id)
     auto_scan = await list_retailer_auto_scan_settings(db, guild_id)
     threshold = await get_starting_deal_percent(db, guild_id)
     allowed, reason, walmart_settings = await auto_scan_allowed(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
@@ -517,6 +519,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
         ),
         inline=False,
     )
+    embed.add_field(name="Self-heal", value=repair.discord_line(), inline=False)
     embed.add_field(name="Channel", value=channel_status, inline=False)
     embed.add_field(
         name="Schedule gate",
@@ -544,7 +547,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
             name="🚨 Posting route problem",
             value=(
                 "SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. "
-                "Run `/setup_sniperplug_here` inside the live #walmart-deals channel, then run `/autoscan_now force:true`."
+                "SniperPlug now repairs saved routes automatically when a safe saved channel exists. If this still appears, run `/autoscan_health` and fix the exact channel/permission issue shown there."
             ),
             inline=False,
         )
@@ -559,16 +562,16 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
 
 def public_alert_channel_status(bot: commands.Bot, guild_id: int, channel_id: int | str | None) -> str:
     if not channel_id:
-        return "⛔ No public channel saved. Run `/setup_sniperplug_here` inside the live public deals channel."
+        return "⛔ No public channel saved. Run `/setup_sniperplug_here` only for first install, or fix the saved channel/permission issue shown by `/autoscan_health`."
     guild = bot.get_guild(guild_id)
     if guild is None:
         return f"⛔ Bot is not connected to guild `{guild_id}` right now."
     decoded = decode_channel_id(channel_id)
     if decoded is None:
-        return f"⛔ Saved channel ID is invalid: `{channel_id}`. Re-run `/setup_sniperplug_here`."
+        return f"⛔ Saved channel ID is invalid: `{channel_id}`. `/autoscan_health` will try to repair from the saved default route."
     channel = guild.get_channel(decoded)
     if channel is None:
-        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. Re-run `/setup_sniperplug_here` with the live channel."
+        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. `/autoscan_health` will try to repair from another saved route."
     if not hasattr(channel, "send"):
         return f"⛔ Saved channel <#{decoded}> is not a sendable text channel."
     me = getattr(guild, "me", None)

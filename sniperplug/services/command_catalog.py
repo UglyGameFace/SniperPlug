@@ -17,7 +17,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         name="/setup_sniperplug_here",
         audience="Owner",
         purpose="Fastest setup: use the current channel for public alerts, default route, retailers, and Walmart auto-scan.",
-        when_to_use="Run this inside the channel where SniperPlug should post verified deals. This avoids Discord channel-picker/mobile channel-id issues.",
+        when_to_use="Run once during first install or when intentionally moving the posting channel. Deploys should self-heal saved setup.",
     ),
     CommandCatalogEntry(
         name="/sniperplug_workflow",
@@ -40,6 +40,13 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
+        name="/walmart_cash",
+        audience="Everyone",
+        purpose="Cash-only Walmart search.",
+        when_to_use="Use when you only want products where the Walmart API returned explicit Walmart Cash offer proof.",
+        credit_risk="Walmart official API",
+    ),
+    CommandCatalogEntry(
         name="/discover",
         audience="Everyone",
         purpose="Manual broad discovery run across deal categories.",
@@ -50,7 +57,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         name="/autoscan_now",
         audience="Owner",
         purpose="Run the Walmart auto-scan immediately and show the exact post/block decision.",
-        when_to_use="Use after deploys or setup changes to confirm whether deals post, duplicate, cache, fail confidence, or fail channel/config gates. Setup first with `/setup_sniperplug_here`.",
+        when_to_use="Use after deploys or setup changes to confirm whether deals post, duplicate, cache, fail confidence, or fail channel/config gates. It now self-heals saved setup when safe.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
@@ -125,10 +132,10 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use when active cache has old deals that have not been seen again recently.",
     ),
     CommandCatalogEntry(
-        name="/setup_sniperplug_here",
+        name="/public_alerts_status",
         audience="Owner",
-        purpose="Public posting settings: on/off, channel, and allowed retailer list.",
-        when_to_use="Use only when `/setup_sniperplug_here` is not specific enough. This is not the same as auto-scan.",
+        purpose="Show public posting settings: on/off, channel, and allowed retailer list.",
+        when_to_use="Use when you want to inspect public posting config without changing setup.",
     ),
     CommandCatalogEntry(
         name="/setup_sniperplug_here_status",

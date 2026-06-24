@@ -61,9 +61,15 @@ def test_home_depot_and_penny_commands_are_not_removed():
 
 
 def test_help_text_points_to_single_setup_flow():
-    assert "/setup_sniperplug_here" in CATALOG
+    names = catalog_names()
+
+    assert "/setup_sniperplug_here" in names
+    assert "/setup_sniperplug" not in names
     assert "/setup_sniperplug channel:" not in CATALOG
-    assert "/public_alerts" not in CATALOG
+
+    # Exact old setter is gone, but the read-only status command is allowed.
+    assert "/public_alerts" not in names
+    assert "/public_alerts_status" in names
 
 
 def test_removed_command_error_handlers_are_not_left_dangling():

@@ -12,7 +12,7 @@ def test_autoscan_loop_passes_bot_to_guild_loader():
 
 def test_list_public_alert_guilds_skips_ghost_rows():
     assert "live_guild_ids" in AUTO
-    assert "Auto-scan skipped stale/ghost public-alert guild row" in AUTO
+    assert "Auto-scan deleted stale/ghost public-alert guild row" in AUTO
     assert "guild_id not in live_guild_ids" in AUTO
 
 

@@ -16,6 +16,12 @@ from sniperplug.services.public_deal_quality import select_public_deal_candidate
 from sniperplug.services.routing import route_label
 from sniperplug.services.safe_links import LinkChoice, product_link_choices
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
+from sniperplug.services.walmart_cash_offers import (
+    build_walmart_cash_offer_embed,
+    build_walmart_cash_summary_embed,
+    find_walmart_cash_offer,
+    walmart_cash_search_terms,
+)
 
 
 SORT_CHOICES = [
@@ -76,6 +82,15 @@ class DealScannerCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         await self._send_walmart_scan(interaction, search, 50, 1, 10, None, None, False, True)
 
+    @app_commands.command(name="walmart_cash", description="Search only Walmart products with API-confirmed Walmart Cash offers.")
+    @app_commands.describe(
+        search="Optional product/category. Example: detergent, baby, pet, personal care. Leave blank for broad Cash Offers.",
+        max_results="How many API products to inspect per search route.",
+    )
+    async def walmart_cash(self, interaction: discord.Interaction, search: str = "walmart cash offers", max_results: app_commands.Range[int, 5, 25] = 15) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self._send_walmart_cash_search(interaction, search, int(max_results))
+
     @app_commands.command(name="walmart_scan", description="Advanced Walmart deal scan for staff/admins.")
     @app_commands.describe(query="Product search, like gaming monitor, tide detergent, lego, patio set.", min_discount="Only show deals at or above this percent off. Try 50 or 80.", page="Walmart result page to scan. Use page 2/3 if page 1 repeats weak deals.", max_results="How many Walmart results to inspect on this page. Max 25.", sort="Optional Walmart sorting mode.", alerts_only="Only show candidates SniperPlug would alert on.")
     @app_commands.choices(sort=SORT_CHOICES)
@@ -84,6 +99,65 @@ class DealScannerCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         sort_value, order_value = parse_sort_choice(sort.value if sort else None)
         await self._send_walmart_scan(interaction, query, min_discount, page, max_results, sort_value, order_value, alerts_only, False)
+
+    async def _send_walmart_cash_search(self, interaction: discord.Interaction, search: str, max_results: int = 15) -> None:
+        provider = provider_registry.get("walmart")
+        if provider is None:
+            await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
+            return
+        health = await provider.healthcheck()
+        if health.status != ProviderStatus.READY:
+            await interaction.followup.send("Walmart Cash search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
+            return
+
+        queries = walmart_cash_search_terms(search)
+        all_candidates: list[SourceCandidate] = []
+        warnings: list[str] = []
+
+        for query in queries[:3]:
+            result = await run_walmart_scan(query, 1, max(5, min(25, int(max_results))), None, None, str(interaction.user.id))
+            all_candidates.extend(result.candidates)
+            warnings.extend(w for w in result.warnings if w not in warnings)
+
+        candidates = dedupe_candidates(all_candidates)
+        cards: list[DealCard] = []
+
+        for candidate in candidates:
+            decision = evaluate_candidate(candidate)
+            deal = decision.deal
+            offer = find_walmart_cash_offer(candidate, deal)
+            if offer is None:
+                continue
+
+            choices = product_link_choices(
+                retailer=deal.retailer,
+                product_url=deal.product_url,
+                title=deal.title,
+                product_id=candidate.product_id,
+                sku=deal.sku,
+                asin=deal.asin,
+            )
+            embed = build_walmart_cash_offer_embed(candidate, deal, offer, choices)
+            card = DealCard(
+                embed=embed,
+                url=deal.product_url,
+                label=short_button_label(deal.title),
+                score=decision.anomaly.score,
+                discount=0,
+                link_choices=choices,
+            )
+            card.retailer = deal.retailer
+            card.should_alert = False
+            card.current_price = deal.current_price
+            card.selected_offer_id = deal.selected_offer_id
+            card.sku = deal.sku
+            card.upc = deal.upc
+            cards.append(card)
+
+        cards.sort(key=lambda card: (float(getattr(card, "current_price", 0) or 0), card.score), reverse=True)
+        shown_cards = cards[:5]
+        summary = build_walmart_cash_summary_embed(search, queries, len(candidates), len(cards), tuple(warnings))
+        await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], ephemeral=True)
 
     async def _send_walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: int, page: int, max_results: int, sort_value: str | None, order_value: str | None, alerts_only: bool, simple_mode: bool) -> None:
         provider = provider_registry.get("walmart")
@@ -143,6 +217,10 @@ class DealScannerCog(commands.Cog):
     async def deals_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await send_command_error(interaction, f"Deal search hit an error: `{error}`")
 
+    @walmart_cash.error
+    async def walmart_cash_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        await send_command_error(interaction, f"Walmart Cash search hit an error: `{error}`")
+
     @walmart_scan.error
     async def walmart_scan_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await send_command_error(interaction, "You need **Manage Server** permission to run advanced Walmart scans. Use `/deals` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Walmart scan hit an error: `{error}`")
@@ -164,6 +242,7 @@ class HuntPresetMenuView(discord.ui.View):
         self.add_item(HuntPresetButton(HUNT_PRESETS["home"], row=1))
         self.add_item(HuntPresetButton(HUNT_PRESETS["toys"], row=1))
         self.add_item(HuntPresetButton(HUNT_PRESETS["auto_tools"], row=1))
+        self.add_item(WalmartCashOffersButton(row=2))
 
 
 class HuntPresetButton(discord.ui.Button):
@@ -200,6 +279,25 @@ class HuntPresetButton(discord.ui.Button):
             await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], view=PresetResultView(shown_cards), ephemeral=True)
         finally:
             await scan_operation_locks.release(lock_key)
+
+
+class WalmartCashOffersButton(discord.ui.Button):
+    def __init__(self, row: int = 2):
+        super().__init__(
+            label="Walmart Cash Offers",
+            emoji="💸",
+            style=discord.ButtonStyle.success,
+            row=row,
+            custom_id="hunt:walmart_cash_offers",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        cog = interaction.client.get_cog("VerifiedDealScannerCog") or interaction.client.get_cog("DealScannerCog")
+        if cog is None or not hasattr(cog, "_send_walmart_cash_search"):
+            await interaction.followup.send("Walmart Cash search is not loaded yet.", ephemeral=True)
+            return
+        await cog._send_walmart_cash_search(interaction, "walmart cash offers", 25)
 
 
 class PresetResultView(discord.ui.View):

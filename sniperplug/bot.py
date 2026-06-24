@@ -39,6 +39,7 @@ from sniperplug.services.error_logging import (
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.storage_maintenance import run_storage_maintenance
+from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
 from sniperplug.storage.db import Database
 
 
@@ -52,6 +53,7 @@ class SniperPlugBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self.settings = settings
         self.db = Database(settings.database_path)
+        self._setup_self_heal_done = False
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
     async def setup_hook(self) -> None:
@@ -121,6 +123,13 @@ class SniperPlugBot(commands.Bot):
 
     async def on_ready(self) -> None:
         log.info("SniperPlug online as %s (%s)", self.user, self.user.id if self.user else "unknown")
+        if not self._setup_self_heal_done:
+            self._setup_self_heal_done = True
+            try:
+                repair_summary = await repair_all_public_alert_setups(self.db, self)
+                log.info("Setup self-heal complete: %s", repair_summary)
+            except Exception:
+                log.exception("Setup self-heal failed")
 
     async def close(self) -> None:
         await self.db.close()

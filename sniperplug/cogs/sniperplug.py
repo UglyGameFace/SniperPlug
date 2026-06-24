@@ -51,40 +51,6 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="set_channel", description="Route a SniperPlug alert type to a specific channel.")
-    @app_commands.describe(
-        route="The SniperPlug alert route to configure.",
-        channel="The channel where this route should post.",
-    )
-    @app_commands.choices(route=ROUTE_CHOICES)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def set_channel(
-        self,
-        interaction: discord.Interaction,
-        route: app_commands.Choice[str],
-        channel: discord.TextChannel,
-    ) -> None:
-        if not interaction.guild_id or not interaction.guild:
-            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-            return
-
-        if not is_valid_route(route.value):
-            await interaction.response.send_message("That is not a valid SniperPlug alert route.", ephemeral=True)
-            return
-
-        missing = self._missing_bot_perms(interaction.guild, channel)
-        if missing:
-            await interaction.response.send_message(
-                self._missing_permissions_message(channel, missing),
-                ephemeral=True,
-            )
-            return
-
-        await self.bot.db.set_alert_route(interaction.guild_id, route.value, channel.id)
-        await interaction.response.send_message(
-            f"{route_label(route.value)} alerts will post in {channel.mention}.",
-            ephemeral=True,
-        )
 
     @app_commands.command(name="routes", description="Show SniperPlug alert channel routing for this server.")
     async def routes(self, interaction: discord.Interaction) -> None:

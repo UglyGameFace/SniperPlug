@@ -20,12 +20,6 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Run this inside the channel where SniperPlug should post verified deals. This avoids Discord channel-picker/mobile channel-id issues.",
     ),
     CommandCatalogEntry(
-        name="/setup_sniperplug",
-        audience="Owner",
-        purpose="Advanced one-step setup where you pick the alert channel manually.",
-        when_to_use="Use this when setup from the current channel is not enough. If Discord says channel id invalid, use `/setup_sniperplug_here` instead.",
-    ),
-    CommandCatalogEntry(
         name="/sniperplug_workflow",
         audience="Everyone",
         purpose="Show the simple SniperPlug workflow from setup to posting.",
@@ -131,13 +125,13 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use when active cache has old deals that have not been seen again recently.",
     ),
     CommandCatalogEntry(
-        name="/public_alerts",
+        name="/setup_sniperplug_here",
         audience="Owner",
         purpose="Public posting settings: on/off, channel, and allowed retailer list.",
         when_to_use="Use only when `/setup_sniperplug_here` is not specific enough. This is not the same as auto-scan.",
     ),
     CommandCatalogEntry(
-        name="/public_alerts_status",
+        name="/setup_sniperplug_here_status",
         audience="Owner",
         purpose="Show current public posting settings.",
         when_to_use="Use to confirm whether public posting is enabled, which retailers may post, and which channel receives alerts.",
@@ -183,12 +177,6 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         audience="Owner",
         purpose="Set the starting verified discount percent for deal hunting and auto-scan.",
         when_to_use="Use 30–40% for normal hunting, lower for more results, or higher for stricter glitch-style alerts.",
-    ),
-    CommandCatalogEntry(
-        name="/sniperplug set_channel",
-        audience="Owner",
-        purpose="Route a specific alert type to a specific channel.",
-        when_to_use="Use when different kinds of deals need different channels.",
     ),
 )
 

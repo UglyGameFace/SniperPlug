@@ -32,33 +32,6 @@ class WorkflowCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="setup_sniperplug", description="Recommended one-step setup for public alerts, retailers, and Walmart auto-scan.")
-    @app_commands.describe(
-        channel="Channel where verified public deal alerts should post.",
-        retailers="Stores allowed to public-post. Default: walmart. Example: walmart,home_depot.",
-        public_alerts="Allow verified deals to post publicly into the channel.",
-        walmart_autoscan="Allow scheduled/background Walmart discovery. Manual scans always work.",
-        walmart_unlimited="For Walmart only: remove scheduled interval/daily gates because official API is unmetered here.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup_sniperplug(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel,
-        retailers: str = "walmart",
-        public_alerts: bool = True,
-        walmart_autoscan: bool = True,
-        walmart_unlimited: bool = True,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self._apply_setup(
-            interaction,
-            channel=channel,
-            retailers=retailers,
-            public_alerts=public_alerts,
-            walmart_autoscan=walmart_autoscan,
-            walmart_unlimited=walmart_unlimited,
-        )
 
     @app_commands.command(name="setup_sniperplug_here", description="Setup SniperPlug to post and auto-scan from this channel.")
     @app_commands.describe(
@@ -79,7 +52,7 @@ class WorkflowCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel):
-            await interaction.followup.send("Run this inside the text channel where SniperPlug should post verified deals, or use `/setup_sniperplug` and pick a channel.", ephemeral=True)
+            await interaction.followup.send("Run this inside the text channel where SniperPlug should post verified deals.", ephemeral=True)
             return
         await self._apply_setup(
             interaction,
@@ -155,7 +128,7 @@ class WorkflowCog(commands.Cog):
             description="Use this order so the bot feels simple instead of scattered.",
             color=discord.Color.orange(),
         )
-        embed.add_field(name="1. Setup once", value="Fastest: run `/setup_sniperplug_here` inside the deal channel. Advanced: run `/setup_sniperplug` and choose a channel. Both default to public Walmart posting plus Walmart background auto-scan.", inline=False)
+        embed.add_field(name="1. Setup once", value="Run `/setup_sniperplug_here` inside the deal channel. It sets the public alert route, retailers, and Walmart background auto-scan together.", inline=False)
         embed.add_field(name="2. Manual testing", value="Use `/deals` for one item, `/hunt` for category buttons, or `/discover` for broad manual discovery. Manual scans do not depend on auto-scan being enabled.", inline=False)
         embed.add_field(name="3. Background scanning", value="Use `/retailer_autoscan` when you want to change scheduled/background pulls. Paid-credit providers stay protected; Walmart can run unlimited through official-provider bypass.", inline=False)
         embed.add_field(name="4. Troubleshooting", value="Use `/autoscan_health`, `/sniperplug_dashboard`, `/active_deals`, and `/sniperplug_commands` to see what is configured, cached, and available.", inline=False)

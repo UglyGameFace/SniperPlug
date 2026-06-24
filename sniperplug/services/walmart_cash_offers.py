@@ -166,6 +166,8 @@ def build_walmart_cash_summary_embed(
     found: int,
     warnings: tuple[str, ...],
 ) -> discord.Embed:
+    timed_out = any("timed out" in str(warning).lower() or "timeout" in str(warning).lower() for warning in warnings)
+
     embed = discord.Embed(
         title="💸 Walmart Cash Finder",
         description=(
@@ -179,8 +181,9 @@ def build_walmart_cash_summary_embed(
     embed.add_field(
         name="✅ What counts",
         value=(
-            "A product only shows here when the raw Walmart API returns an explicit Walmart Cash proof field/text **and a sane dollar amount** for that exact product. "
-            "If the API only shows search words, OnePay, card rewards, or a generic promo, SniperPlug hides it."
+            "A product only shows here when the raw Walmart API returns an explicit Walmart Cash proof field/text "
+            "**and a sane dollar amount** for that exact product. Search words, OnePay, card rewards, generic cashback, "
+            "and guessed promos do not count."
         ),
         inline=False,
     )
@@ -188,26 +191,47 @@ def build_walmart_cash_summary_embed(
     embed.add_field(
         name="🚫 What does not count",
         value=(
-            "OnePay cashback, card rewards, normal cashback, `Buy more, save up to...`, generic promo text, search words, guesses, and app-only screenshots do not count."
+            "OnePay cashback, card rewards, normal cashback, `Buy more, save up to...`, generic promo text, "
+            "search words, guesses, and app-only screenshots do not count."
         ),
         inline=False,
     )
 
-    embed.add_field(name="🔎 Search routes used", value=", ".join(f"`{q}`" for q in queries[:8])[:1024], inline=False)
+    embed.add_field(
+        name="🔎 Search routes actually checked",
+        value=", ".join(f"`{q}`" for q in queries[:8])[:1024] or "`none`",
+        inline=False,
+    )
 
     if warnings:
         embed.add_field(name="Notes", value="\n".join(f"• {w}" for w in warnings[:4])[:1024], inline=False)
 
     if not found:
-        embed.add_field(
-            name="No API-confirmed Cash Offers found from returned API results",
-            value=(
-                "That means the returned API results did not expose Walmart Cash proof fields. If it says Checked: 0, Walmart did not return usable product data before timeout. "
-                "Try a narrower search like `/walmart_cash search:personal care`, `/walmart_cash search:detergent`, "
-                "or `/walmart_cash search:baby`."
-            ),
-            inline=False,
-        )
+        if checked <= 0 and timed_out:
+            embed.add_field(
+                name="Walmart API timed out before product data returned",
+                value=(
+                    "This is **not** a proven no-offer result. SniperPlug could not inspect product rows because Walmart "
+                    "did not return usable API product data in time. Try again once, or use a narrower search like "
+                    "`/walmart_cash search:detergent max_results:5`."
+                ),
+                inline=False,
+            )
+        elif checked <= 0:
+            embed.add_field(
+                name="No Walmart API product rows returned",
+                value="SniperPlug did not receive usable Walmart product rows for the checked route.",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="No API-confirmed Cash Offers found in checked products",
+                value=(
+                    "SniperPlug checked returned Walmart API product rows, but none exposed strict Walmart Cash proof "
+                    "fields with a sane dollar amount for the exact product."
+                ),
+                inline=False,
+            )
 
     embed.set_footer(text="Private Cash-only search. It does not public-post markdown alerts.")
     return embed

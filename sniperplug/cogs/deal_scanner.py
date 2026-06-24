@@ -101,7 +101,7 @@ class DealScannerCog(commands.Cog):
         sort_value, order_value = parse_sort_choice(sort.value if sort else None)
         await self._send_walmart_scan(interaction, query, min_discount, page, max_results, sort_value, order_value, alerts_only, False)
 
-    async def _send_walmart_cash_search(self, interaction: discord.Interaction, search: str, max_results: int = 15) -> None:
+    async def _send_walmart_cash_search(self, interaction: discord.Interaction, search: str, max_results: int = 8) -> None:
         provider = provider_registry.get("walmart")
         if provider is None:
             await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
@@ -115,16 +115,31 @@ class DealScannerCog(commands.Cog):
         all_candidates: list[SourceCandidate] = []
         warnings: list[str] = []
 
+        provider_timeout = int(getattr(getattr(provider, "config", None), "timeout_seconds", 12) or 12)
+        cash_route_timeout = max(provider_timeout + 4, 16)
         per_route_limit = max(3, min(12, int(max_results)))
+
         scan_jobs = [(query, page) for query in queries[:2] for page in (1,)]
+        used_queries = tuple(query for query, _page in scan_jobs)
         semaphore = asyncio.Semaphore(2)
 
         async def run_one_cash_route(query: str, page: int):
             async with semaphore:
                 try:
                     return await asyncio.wait_for(
-                        run_walmart_scan(query, page, per_route_limit, None, None, str(interaction.user.id)),
-                        timeout=8,
+                        provider.scan(
+                            ProviderScanRequest(
+                                source_key="walmart",
+                                query=query.strip(),
+                                max_results=per_route_limit,
+                                page=page,
+                                metadata={
+                                    "requested_by": str(interaction.user.id),
+                                    "mode": "walmart_cash",
+                                },
+                            )
+                        ),
+                        timeout=cash_route_timeout,
                     )
                 except asyncio.TimeoutError:
                     warnings.append(f"Timed out checking `{query}` page {page}; skipped that route.")
@@ -177,8 +192,9 @@ class DealScannerCog(commands.Cog):
 
         cards.sort(key=lambda card: (float(getattr(card, "current_price", 0) or 0), card.score), reverse=True)
         shown_cards = cards[:5]
-        summary = build_walmart_cash_summary_embed(search, queries, len(candidates), len(cards), tuple(warnings))
+        summary = build_walmart_cash_summary_embed(search, used_queries, len(candidates), len(cards), tuple(warnings))
         await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], ephemeral=True)
+
 
     async def _send_walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: int, page: int, max_results: int, sort_value: str | None, order_value: str | None, alerts_only: bool, simple_mode: bool) -> None:
         provider = provider_registry.get("walmart")

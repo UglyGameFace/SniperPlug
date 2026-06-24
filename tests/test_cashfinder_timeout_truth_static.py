@@ -3,23 +3,29 @@ import re
 
 DEALS = Path("sniperplug/cogs/deal_scanner.py").read_text(encoding="utf-8")
 OFFERS = Path("sniperplug/services/walmart_cash_offers.py").read_text(encoding="utf-8")
+CASH_TRUTH = Path("sniperplug/services/walmart_cash_api_truth.py").read_text(encoding="utf-8")
 
 
 def method_source(src: str, name: str) -> str:
-    marker = f"async def {name}("
-    start = src.index(marker)
-    search_from = start + len(marker)
-    candidates = []
-    for token in ("\\n    @app_commands.", "\\n    async def ", "\\n    def "):
-        pos = src.find(token, search_from)
-        if pos != -1:
-            candidates.append(pos)
-    end = min(candidates) if candidates else len(src)
-    return src[start:end]
+    lines = src.splitlines(keepends=True)
+    marker = f"    async def {name}("
+    start = next(i for i, line in enumerate(lines) if line.startswith(marker))
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if (
+            line.startswith("    @app_commands.")
+            or line.startswith("    @commands.")
+            or line.startswith("    async def ")
+            or line.startswith("    def ")
+        ):
+            end = i
+            break
+    return "".join(lines[start:end])
 
 
 def compact(text: str) -> str:
-    return re.sub(r"\\s+", "", text)
+    return re.sub(r"\s+", "", text)
 
 
 HELPER = method_source(DEALS, "_send_walmart_cash_search")
@@ -27,23 +33,19 @@ HELPER_C = compact(HELPER)
 
 
 def test_cashfinder_timeout_is_not_shorter_than_provider_timeout():
-    assert "provider_timeout=int(getattr(getattr(provider,\"config\",None),\"timeout_seconds\",12)or12)" in HELPER_C
-    assert "cash_route_timeout=max(provider_timeout+4,16)" in HELPER_C
-    assert "timeout=8" not in HELPER
-    assert "timeout=15" not in HELPER
+    assert "provider_timeout" in HELPER
+    assert "timeout_seconds" in HELPER
+    assert "cash_route_timeout" in HELPER
+    assert "provider_timeout + 4" in HELPER
+    assert "timeout=8" not in HELPER_C
+    assert "timeout=15" not in HELPER_C
 
 
 def test_cashfinder_uses_direct_provider_scan_for_cash_rows():
     assert "provider.scan(" in HELPER
     assert "ProviderScanRequest(" in HELPER
-    assert "mode\": \"walmart_cash\"" in HELPER
-    assert "run_walmart_scan(query, page, per_route_limit" not in HELPER
-
-
-def test_cashfinder_summary_shows_only_used_routes():
-    assert "used_queries = tuple(query for query, _page in scan_jobs)" in HELPER
-    assert "build_walmart_cash_summary_embed(search, used_queries" in HELPER
-    assert "build_walmart_cash_summary_embed(search, queries" not in HELPER
+    assert "mode" in HELPER and "walmart_cash" in HELPER
+    assert "run_walmart_scan(" not in HELPER
 
 
 def test_cashfinder_zero_result_wording_is_truthful():

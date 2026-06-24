@@ -87,7 +87,7 @@ class DealScannerCog(commands.Cog):
         search="Optional product/category. Example: detergent, baby, pet, personal care. Leave blank for broad Cash Offers.",
         max_results="How many API products to inspect per search route.",
     )
-    async def walmart_cash(self, interaction: discord.Interaction, search: str = "walmart cash offers", max_results: app_commands.Range[int, 5, 25] = 15) -> None:
+    async def walmart_cash(self, interaction: discord.Interaction, search: str = "walmart cash offers", max_results: app_commands.Range[int, 5, 25] = 25) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         await self._send_walmart_cash_search(interaction, search, int(max_results))
 
@@ -114,10 +114,11 @@ class DealScannerCog(commands.Cog):
         all_candidates: list[SourceCandidate] = []
         warnings: list[str] = []
 
-        for query in queries[:3]:
-            result = await run_walmart_scan(query, 1, max(5, min(25, int(max_results))), None, None, str(interaction.user.id))
-            all_candidates.extend(result.candidates)
-            warnings.extend(w for w in result.warnings if w not in warnings)
+        for query in queries[:6]:
+            for page in (1, 2):
+                result = await run_walmart_scan(query, page, max(10, min(25, int(max_results))), None, None, str(interaction.user.id))
+                all_candidates.extend(result.candidates)
+                warnings.extend(w for w in result.warnings if w not in warnings)
 
         candidates = dedupe_candidates(all_candidates)
         cards: list[DealCard] = []

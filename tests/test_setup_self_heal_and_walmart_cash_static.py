@@ -8,6 +8,7 @@ PUBLIC = Path("sniperplug/cogs/public_alerts.py").read_text(encoding="utf-8")
 DEALS = Path("sniperplug/cogs/deal_scanner.py").read_text(encoding="utf-8")
 VERIFIED = Path("sniperplug/cogs/verified_deal_scanner.py").read_text(encoding="utf-8")
 CASH = Path("sniperplug/services/walmart_cash_offers.py").read_text(encoding="utf-8")
+API_TRUTH = Path("sniperplug/services/walmart_cash_api_truth.py").read_text(encoding="utf-8")
 CATALOG = Path("sniperplug/services/command_catalog.py").read_text(encoding="utf-8")
 
 
@@ -43,13 +44,19 @@ def test_walmart_cash_only_command_and_button_exist():
 
 
 def test_walmart_cash_only_blocks_guesses_and_onepay():
-    assert "walmartCashSavings" in CASH
-    assert "onepay" in CASH
-    assert "generic rewards" in CASH
+    # User-facing Cash Finder explains what does and does not count.
+    assert "OnePay cashback" in CASH
+    assert "generic promo text" in CASH or "generic rewards" in CASH
     assert "search words" in CASH
-    assert "if \"onepay\" in joined.lower()" in CASH
-    assert "return None" in CASH
-    assert "does not public-post markdown alerts" in CASH
+    assert "does not public-post markdown alerts" in CASH or "does not public-post markdown alerts" in CASH.lower()
+
+    # Actual trust logic lives in the raw Walmart API proof extractor.
+    assert "BLOCKED_NON_WALMART_CASH_TERMS" in API_TRUTH
+    assert "onepay" in API_TRUTH
+    assert "one pay" in API_TRUTH
+    assert "cashrewards" in API_TRUTH
+    assert "extract_walmart_cash_api_truth" in API_TRUTH
+    assert "return None" in API_TRUTH
 
 
 def test_command_catalog_lists_cash_and_setup_once():

@@ -19,6 +19,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import DealProvider, ProviderCapability, ProviderHealth, ProviderScanRequest, ProviderScanResult, ProviderStatus
 from sniperplug.services.variant_proof import extract_variant_proof
 from sniperplug.services.walmart_cash import strict_walmart_promotion_proof
+from sniperplug.services.walmart_cash_api_truth import extract_walmart_cash_api_truth
 from sniperplug.services.walmart_api_value_proof import extract_walmart_api_value_proof
 from sniperplug.services.walmart_marketplace_comp import is_marketplace_comp_source, marketplace_comp_from_item
 
@@ -242,9 +243,12 @@ class WalmartProvider(DealProvider):
 
         variant = extract_variant_proof(item, title)
         promotions = _walmart_promotion_proof(item)
+        cash_api_truth = extract_walmart_cash_api_truth(item, current_price=current_price)
         api_value_proof = extract_walmart_api_value_proof(item, current_price=current_price)
         proof_attrs = _walmart_proof_attributes(item, variant.attributes, selected_offer, promotions)
         proof_attrs.update(api_value_proof)
+        if cash_api_truth is not None:
+            proof_attrs.update(cash_api_truth.as_attributes())
         if current_price_signal:
             proof_attrs["currentPriceSource"] = current_price_signal.split(":", 1)[-1].strip()
         if typical_price is not None:
@@ -272,7 +276,9 @@ class WalmartProvider(DealProvider):
             signals.append(f"Walmart category: {category_path}")
         if promotions.get("couponSavings"):
             signals.append(f"Walmart coupon detected: ${float(promotions['couponSavings']):,.2f}")
-        if promotions.get("walmartCashSavings"):
+        if cash_api_truth is not None:
+            signals.append(cash_api_truth.signal())
+        elif promotions.get("walmartCashSavings"):
             signals.append(f"Walmart Cash detected: ${float(promotions['walmartCashSavings']):,.2f}")
         if api_value_proof.get("apiSavingsAmount"):
             signals.append(f"Walmart API savings detected: ${float(api_value_proof['apiSavingsAmount']):,.2f}")

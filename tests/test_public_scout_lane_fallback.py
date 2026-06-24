@@ -23,7 +23,7 @@ def test_public_posting_allows_scout_lane_without_verified_cache_pollution():
 
 def test_autoscan_posts_scout_when_verified_lane_empty():
     assert "Public Scout Lane only posts high-confidence leads" in AUTO
-    assert "allow_review_scout=True" in AUTO
+    assert "allow_review_scout=True" not in AUTO
     assert "Auto-scan posted public Scout Lane lead" in AUTO
 
 

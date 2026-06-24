@@ -28,8 +28,8 @@ def test_public_quality_uses_scout_rank_and_lower_scout_threshold():
 
 
 def test_old_private_watchlist_expectation_removed():
-    assert "were kept private in diagnostics" not in AUTO
-    assert "allow_review_scout=True" in AUTO
+    assert "Public Scout Lane is disabled for public posts" in AUTO
+    assert "allow_review_scout=True" not in AUTO
 
 
 def test_scout_lane_never_claims_verified_certainty():

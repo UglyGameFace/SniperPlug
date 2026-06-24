@@ -140,7 +140,7 @@ class AutoScanReport:
             f"Verified before memory: **{self.verified_before_memory}** • Verified after memory/ranking: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
             f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}**{duplicate_breakdown} • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
             f"Bottom line: {plain}\n"
-            f"Repeat fallback used: **{'yes' if self.used_repeat_fallback else 'no'}**\n"
+            f"Private review fallback found: **{'yes' if self.used_repeat_fallback else 'no'}**\n"
             f"Fresh filter: {self.repeat_summary or 'n/a'}"
         )
 
@@ -409,31 +409,22 @@ class AutoScanRunnerCog(commands.Cog):
             await record_auto_scan_run(self.bot.db, guild.guild_id, AUTO_SCAN_RETAILER, scan_key=scan_key)
 
         if not shown_cards:
-            scout_result = PublicPostResult()
             if watchlist_cards:
-                scout_result = await maybe_post_public_deal_cards(
-                    bot=self.bot,
-                    guild_id=guild.guild_id,
-                    cards=watchlist_cards,
-                    source_label=f"{AUTO_SCAN_SOURCE_LABEL}:{preset.key}:scout",
-                    fallback_retailer=AUTO_SCAN_RETAILER,
-                    min_public_discount=result.min_discount,
-                    allow_review_scout=True,
+                warnings.append(
+                    "Public Scout Lane is disabled for public posts. Review/scout leads stay private unless they meet the verified API markdown threshold."
                 )
 
+            private_watchlist_count = len(watchlist_cards)
+            public_result = PublicPostResult()
             report = AutoScanReport(
                 guild_id=guild.guild_id,
                 allowed=True,
-                reason=(
-                    "Auto-scan posted public Scout Lane lead(s) because no verified markdown cards passed."
-                    if scout_result.posted
-                    else "Auto-scan completed with no new/lower-price verified public-quality cards that passed final posting gates."
-                ),
+                reason="Auto-scan completed with no new/lower-price API-verified public deals that met the threshold.",
                 settings=settings,
                 category_key=preset.key,
                 category_label=preset.label,
                 min_discount=result.min_discount,
-                public_mode="Best Picks",
+                public_mode="Verified API Threshold Only",
                 confidence_floor=AUTOSCAN_CONFIDENCE_FLOOR,
                 confidence_summary=confidence_selection.summary_line(),
                 feedback_learning_summary=feedback_summary,
@@ -446,15 +437,18 @@ class AutoScanRunnerCog(commands.Cog):
                 searches_checked=result.searches_attempted,
                 total_cards=len(unique_cards),
                 verified_before_memory=result.total_verified_cards,
-                fresh_cards=len(watchlist_cards),
-                cards_attempted_for_public=len(watchlist_cards),
+                fresh_cards=0,
+                cards_attempted_for_public=0,
                 used_repeat_fallback=bool(watchlist_cards),
-                repeat_summary=watchlist_repeat_summary(fresh_selection.summary_line(), watchlist_cards, scout_result),
-                public_result=scout_result,
+                repeat_summary=(
+                    f"{fresh_selection.summary_line()} • private review/scout leads kept out of public: "
+                    f"**{private_watchlist_count}**"
+                ),
+                public_result=public_result,
                 warnings=tuple(warnings),
             )
             await persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
-            log.info("Auto-scan completed with Scout Lane fallback %s", report.log_fields())
+            log.info("Auto-scan completed with no API-verified public threshold deal %s", report.log_fields())
             return report
 
         category_preferences = await get_category_preferences(self.bot.db, guild.guild_id)

@@ -103,7 +103,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         else:
             missing_reference += 1
 
-        has_value_signal = trusted_discount >= REVIEW_MIN_TRUSTED_DISCOUNT or coupon >= REVIEW_MIN_COUPON_OR_CASH or cash >= REVIEW_MIN_COUPON_OR_CASH or api_value_signal or safe_markdown_signal(candidate) or is_exact_search_match or profit_signal
+        has_value_signal = trusted_discount >= REVIEW_MIN_TRUSTED_DISCOUNT or coupon >= REVIEW_MIN_COUPON_OR_CASH or cash >= REVIEW_MIN_COUPON_OR_CASH or api_value_signal or safe_markdown_signal(candidate)
         if not has_value_signal:
             no_value_signal += 1
             continue
@@ -111,7 +111,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         context_score = 0.0
         if profit_signal:
             context_score = min(65.0, (context_discount or 0.0) * 0.70 + min(context_profit or 0.0, 60.0) * 0.45 + (context_margin or 0.0) * 18.0)
-        review_score = trusted_discount + coupon + cash + api_savings + api_promo_cap + context_score + (5 if safe_markdown_signal(candidate) else 0) + (35 * match_score)
+        review_score = trusted_discount + coupon + cash + api_savings + api_promo_cap + (5 if safe_markdown_signal(candidate) else 0)
 
         card = build_review_card(candidate, deal, proof, context_price=context_price, context_discount=context_discount, ignored_context_price=raw_context_price if context_price is None else None, coupon=coupon, cash=cash, direct_match_score=match_score)
         scored.append((review_score, card))
@@ -150,7 +150,7 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
 
     choices = product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, asin=deal.asin, upc=deal.upc, brand=brand, model=model, category=category)
     if direct_match_score >= 0.45:
-        title_prefix = "🔎 Exact product match"
+        title_prefix = "🔎 Search match — not deal proof"
     elif context_profit is not None and context_margin is not None and context_profit >= REVIEW_MIN_CONTEXT_PROFIT:
         title_prefix = "💸 Flip/value lead"
     else:
@@ -161,7 +161,7 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
 
     lines = [f"Current product price: **{money(deal.current_price)}**"]
     if direct_match_score >= 0.45:
-        lines.append(f"Direct search match: **{direct_match_score:.0%}** — shown even without Walmart markdown proof")
+        lines.append(f"Search route match: **{direct_match_score:.0%}** — not deal proof and cannot bypass the public threshold")
     if proof.discount_percent is not None and deal.typical_price:
         lines.append(f"Trusted was/typical: **{money(deal.typical_price)}**")
         lines.append(f"Trusted API markdown: **{proof.discount_percent:.0f}%** — below 50% hunt threshold")
@@ -198,7 +198,7 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
     comp_links = build_free_comp_links(title=deal.title, brand=brand, upc=deal.upc, model=model, sku=deal.sku or candidate.product_id, category=category, max_links=7)
     comp_block = comp_link_block(comp_links, max_links=7)
     if comp_block:
-        embed.add_field(name="🧭 Free comp research", value=f"{comp_block}\nUse these to verify market price. These links are **not auto-proof** until a retailer/API/parser confirms the price.", inline=False)
+        embed.add_field(name="🧭 Free comp research", value=f"{comp_block}\nUse these for manual research only. These links are **not deal proof** and do not count toward public posting unless a retailer API/parser returns a confirmed current price.", inline=False)
 
     proof_lines = api_lines(candidate, deal)
     if proof_lines:
@@ -216,7 +216,7 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
     card.selected_offer_id = deal.selected_offer_id
     card.sku = deal.sku
     card.upc = deal.upc
-    card.manual_share_allowed = True
+    card.manual_share_allowed = False
     if context_profit is not None:
         card.estimated_profit = context_profit
     if context_margin is not None:

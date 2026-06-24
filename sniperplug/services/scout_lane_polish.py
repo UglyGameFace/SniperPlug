@@ -196,35 +196,10 @@ def scout_rank(card: Any, *, min_discount: int = 50) -> int:
 
 
 def is_high_confidence_public_scout(card: Any, *, min_discount: int = 50, min_rank: int = 95) -> bool:
-    if _price(card) <= 0:
-        return False
-
-    if not has_hard_value_signal(card, min_discount=min_discount):
-        return False
-
-    # Low-trust references can still be reviewed privately, but they should not be public-posted
-    # unless another hard value signal exists.
-    if has_weak_reference_warning(card) and _discount(card) <= 0:
-        text = _text(card).lower()
-        has_override_value = (
-            "walmart cash" in text
-            or "cashrewards" in text
-            or "coupon from api" in text
-            or "walmart api savings" in text
-            or "walmart api promo" in text
-            or "api promo cap" in text
-            or "buy more" in text
-            or "save up" in text
-            or "rough spread" in text
-            or "flip/value lead" in text
-            or "profit" in text
-            or "margin" in text
-        )
-        if not has_override_value:
-            return False
-
-    return scout_rank(card, min_discount=min_discount) >= int(min_rank)
-
+    # Public Scout Lane is disabled.
+    # A Scout/Watchlist lead can be useful, but it is not a public deal.
+    # Public posting is locked to trusted API markdown >= the server threshold.
+    return False
 
 def polish_public_scout_card(card: Any, *, rank: int, min_discount: int, position: int) -> Any:
     setattr(card, "score", max(_base_score(card), rank))

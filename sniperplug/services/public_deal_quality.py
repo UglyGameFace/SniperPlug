@@ -4,11 +4,9 @@ from typing import Any
 
 import discord
 
-from sniperplug.services.scout_lane_polish import is_high_confidence_public_scout, scout_rank
-
 
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
-PUBLIC_SCOUT_LANE_FIELD = "🟨 Public scout lane"
+PUBLIC_SCOUT_LANE_FIELD = "🧪 Private scout/review lane"
 
 
 def card_text(card: Any, *, source_label: str = "") -> str:
@@ -30,6 +28,8 @@ def card_text(card: Any, *, source_label: str = "") -> str:
 def float_or_none(value: Any) -> float | None:
     if value is None or value == "":
         return None
+    if isinstance(value, str):
+        value = value.replace("$", "").replace(",", "").strip()
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -45,67 +45,83 @@ def int_or_zero(value: Any) -> int:
 
 def is_review_or_watchlist(card: Any, *, source_label: str = "") -> bool:
     text = card_text(card, source_label=source_label).lower()
-    bad_terms = (
+    blocked_terms = (
         "watchlist",
         "review-only",
         "review only",
         "private only",
         "staff review",
         "scout lead",
-        "not alertable",
-        "weak reference",
-        "low-trust/suspicious",
+        "public scout lane",
+        "private scout",
+        "not verified",
+        "not a verified",
+        "not blind-buy",
+        "not deal proof",
+        "shown even without walmart markdown proof",
     )
-    return any(term in text for term in bad_terms)
+    return any(term in text for term in blocked_terms)
 
 
-def has_walmart_cash_signal(card: Any, *, source_label: str = "") -> bool:
+def has_low_trust_reference(card: Any, *, source_label: str = "") -> bool:
     text = card_text(card, source_label=source_label).lower()
-    return "walmart cash" in text or "cashrewards" in text or "cash rewards" in text
+    blocked_terms = (
+        "ignored reference",
+        "ignored suspicious",
+        "ignored low-confidence",
+        "weak reference",
+        "weak/ignored reference",
+        "low-trust/suspicious",
+        "blocked as low-trust",
+        "reference match: blocked",
+        "msrp",
+    )
+    return any(term in text for term in blocked_terms)
 
 
 def has_real_price(card: Any) -> bool:
-    return float_or_none(getattr(card, "current_price", None)) is not None or "$" in card_text(card)
+    return float_or_none(getattr(card, "current_price", None)) is not None
 
 
-def is_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
-    """True only for rows that deserve public posting/cache as real deal candidates."""
+def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
+    """
+    The only public deal gate.
+
+    Public deals must satisfy the server threshold using trusted API markdown.
+    Walmart Cash, coupons, buy-more promos, exact search matches, scores, and
+    comp links may be useful diagnostics, but they do not bypass the threshold.
+    """
     if is_review_or_watchlist(card, source_label=source_label):
+        return False
+    if has_low_trust_reference(card, source_label=source_label):
+        return False
+    if not has_real_price(card):
         return False
 
     discount = float_or_none(getattr(card, "discount", None)) or 0.0
-    score = int_or_zero(getattr(card, "score", 0))
+    return discount >= max(1, int(min_discount))
 
-    if has_walmart_cash_signal(card, source_label=source_label) and has_real_price(card) and score >= 80:
-        return True
 
-    if discount >= max(1, int(min_discount)) and has_real_price(card):
-        return True
-
-    return False
+def is_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
+    return has_verified_api_threshold_discount(card, source_label=source_label, min_discount=min_discount)
 
 
 def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
-    """Mark real public candidates alertable so threshold actually works."""
     if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
         return False
 
     setattr(card, "should_alert", True)
-    try:
-        card.score = max(int(getattr(card, "score", 0) or 0), scout_rank(card))
-    except Exception:
-        setattr(card, "score", scout_rank(card))
 
     embed = getattr(card, "embed", None)
     if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_DEAL_LANE_FIELD for field in embed.fields):
         discount = float_or_none(getattr(card, "discount", None)) or 0.0
-        if has_walmart_cash_signal(card, source_label=source_label):
-            reason = "Walmart Cash / extra value signal detected. Verify amount and selected option before buying."
-        else:
-            reason = f"Verified markdown is **{discount:.0f}%+**, meeting this server's public deal threshold."
         embed.add_field(
             name=PUBLIC_DEAL_LANE_FIELD,
-            value=reason,
+            value=(
+                f"Posted because Walmart API trusted markdown is **{discount:.0f}%**, "
+                f"meeting this server's **{int(min_discount)}%+** public deal threshold. "
+                "No Scout, watchlist, MSRP-only, score-only, or comp-link bypass was used."
+            ),
             inline=False,
         )
 
@@ -113,34 +129,13 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
 
 
 def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
-    """Allow only high-confidence Scout leads with hard value proof to public-post."""
-    if not has_real_price(card):
-        return False
-    return is_high_confidence_public_scout(card, min_rank=int(min_score))
+    # Public Scout Lane is intentionally disabled.
+    # Review/scout cards may be useful diagnostics, but they are not public deals.
+    return False
 
 
 def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
-    if not is_public_scout_candidate(card, source_label=source_label, min_score=min_score):
-        return False
-
-    setattr(card, "should_alert", True)
-    try:
-        card.score = max(int(getattr(card, "score", 0) or 0), scout_rank(card))
-    except Exception:
-        setattr(card, "score", scout_rank(card))
-
-    embed = getattr(card, "embed", None)
-    if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_SCOUT_LANE_FIELD for field in embed.fields):
-        embed.add_field(
-            name=PUBLIC_SCOUT_LANE_FIELD,
-            value=(
-                "Posted because strict Verified Deal proof found **0** public deals, "
-                "but this Scout lead had hard value proof. "
-                "**Verify app price, selected option, seller, shipping, stock, and comps before buying.**"
-            ),
-            inline=False,
-        )
-    return True
+    return False
 
 
 def select_public_deal_candidates(cards: list[Any], *, source_label: str = "", min_discount: int = 50, limit: int = 5) -> list[Any]:

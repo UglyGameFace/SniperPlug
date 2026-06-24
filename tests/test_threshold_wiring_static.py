@@ -18,8 +18,8 @@ def test_autoscan_has_verified_markdown_rescue_lane():
     assert "Verified markdown rescue lane added" in AUTO
     assert "shown_cards = watchlist_cards" not in AUTO
     assert "Public Scout Lane only posts high-confidence leads" in AUTO
-    assert "allow_review_scout=True" in AUTO
-    assert "were kept private in diagnostics" not in AUTO
+    assert "allow_review_scout=True" not in AUTO
+    assert "Public Scout Lane is disabled for public posts" in AUTO
 
 
 def test_manual_commands_post_public_candidates_not_raw_cards():

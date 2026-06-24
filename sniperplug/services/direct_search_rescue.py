@@ -34,17 +34,16 @@ def direct_match_score(query: str, title: str, *, sku: str | None = None, upc: s
     query_tokens = meaningful_tokens(query_text)
     title_tokens = meaningful_tokens(title_text)
 
-    # Generic route searches like "toy clearance", "home rollback", "fragrance",
-    # and "monitor clearance" are category routes, not exact product requests.
-    # They may find leads, but they are not proof.
+    # "toy clearance", "home rollback", "fragrance", etc. are search routes.
+    # They are not exact product proof and cannot make a deal public.
     if len(query_tokens) < 2:
+        return 0.0
+
+    if not title_tokens:
         return 0.0
 
     if query_text in title_text and len(query_tokens) >= 2:
         return 1.0
-
-    if not title_tokens:
-        return 0.0
 
     matched = query_tokens & title_tokens
     token_score = len(matched) / len(query_tokens)

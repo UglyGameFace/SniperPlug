@@ -172,7 +172,7 @@ class _LibsqlAsyncConnection:
                             raise
                         last_exc = exc
 
-                        for reconnect_name in ("reconnect", "_reconnect"):
+                        for reconnect_name in ("_reconnect_sync", "reconnect", "_reconnect"):
                             reconnect = getattr(self, reconnect_name, None)
                             if reconnect is None:
                                 continue

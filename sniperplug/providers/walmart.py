@@ -22,6 +22,7 @@ from sniperplug.services.walmart_cash import strict_walmart_promotion_proof
 from sniperplug.services.walmart_cash_api_truth import extract_walmart_cash_api_truth
 from sniperplug.services.walmart_api_value_proof import extract_walmart_api_value_proof
 from sniperplug.services.walmart_marketplace_comp import is_marketplace_comp_source, marketplace_comp_from_item
+from sniperplug.services.walmart_promo_classifier import classify_walmart_api_promos
 
 
 LOW_CONFIDENCE_REFERENCE_TOKENS = (
@@ -53,6 +54,7 @@ class WalmartProvider(DealProvider):
     display_name = "Walmart"
     search_url = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/search"
     taxonomy_url = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/taxonomy"
+    detail_url = "https://developer.api.walmart.com/api-proxy/service/affil/product/v2/items"
     allowed_sorts = {"relevance", "price", "title", "bestseller", "customerRating", "new"}
     capabilities = frozenset(
         {
@@ -159,6 +161,37 @@ class WalmartProvider(DealProvider):
         url = f"{self.search_url}?{urllib.parse.urlencode(params)}"
         return self._request_json(url)
 
+
+    async def fetch_product_detail_payload(self, item_id: str) -> dict:
+        return await asyncio.to_thread(self._product_detail_payload, item_id)
+
+    def _product_detail_payload(self, item_id: str) -> dict:
+        clean_id = str(item_id or "").strip()
+        if not clean_id:
+            raise WalmartProviderError("Walmart product detail lookup skipped: missing item id.")
+
+        params = {"responseGroup": "full"}
+        if self.config.publisher_id:
+            params["publisherId"] = self.config.publisher_id
+
+        encoded_id = urllib.parse.quote(clean_id, safe="")
+        query = urllib.parse.urlencode(params)
+        urls = (
+            f"{self.detail_url}/{encoded_id}?{query}",
+            f"{self.detail_url}?ids={encoded_id}&{query}",
+        )
+
+        last_error: Exception | None = None
+        for url in urls:
+            try:
+                payload = self._request_json(url)
+                item = _first_detail_item(payload)
+                return item or payload
+            except WalmartProviderError as exc:
+                last_error = exc
+
+        raise WalmartProviderError(f"Walmart detail promo endpoint unavailable for {clean_id}: {last_error}")
+
     def _request_json(self, url: str) -> dict:
         headers = self._signed_headers()
         request = urllib.request.Request(url, headers=headers, method="GET")
@@ -244,9 +277,11 @@ class WalmartProvider(DealProvider):
         variant = extract_variant_proof(item, title)
         promotions = _walmart_promotion_proof(item)
         cash_api_truth = extract_walmart_cash_api_truth(item, current_price=current_price)
+        promo_scan = classify_walmart_api_promos(item, current_price=current_price)
         api_value_proof = extract_walmart_api_value_proof(item, current_price=current_price)
         proof_attrs = _walmart_proof_attributes(item, variant.attributes, selected_offer, promotions)
         proof_attrs.update(api_value_proof)
+        proof_attrs.update(promo_scan.as_attributes())
         if cash_api_truth is not None:
             proof_attrs.update(cash_api_truth.as_attributes())
         if current_price_signal:
@@ -278,6 +313,10 @@ class WalmartProvider(DealProvider):
             signals.append(f"Walmart coupon detected: ${float(promotions['couponSavings']):,.2f}")
         if cash_api_truth is not None:
             signals.append(cash_api_truth.signal())
+        if promo_scan.cart_promo is not None:
+            signals.append(f"Walmart cart promo detected: {promo_scan.cart_promo.proof_text[:120]}")
+        if promo_scan.onepay is not None:
+            signals.append(f"OnePay cashback detected separately: {promo_scan.onepay.proof_text[:120]}")
         elif promotions.get("walmartCashSavings"):
             signals.append(f"Walmart Cash detected: ${float(promotions['walmartCashSavings']):,.2f}")
         if api_value_proof.get("apiSavingsAmount"):
@@ -390,6 +429,29 @@ def _direct_walmart_url(item_id) -> str:
     if item_id is None or item_id == "":
         return ""
     return f"https://www.walmart.com/ip/{item_id}"
+
+
+def _first_detail_item(payload: Any) -> dict | None:
+    if isinstance(payload, dict):
+        if payload.get("itemId") or payload.get("usItemId") or payload.get("name"):
+            return payload
+
+        for key in ("item", "product", "data"):
+            child = payload.get(key)
+            if isinstance(child, dict):
+                found = _first_detail_item(child)
+                if found:
+                    return found
+
+        for key in ("items", "products", "itemResponse", "results"):
+            child = payload.get(key)
+            if isinstance(child, list):
+                for item in child:
+                    found = _first_detail_item(item)
+                    if found:
+                        return found
+
+    return None
 
 
 def _trusted_current_price(item: dict) -> tuple[float | None, str | None]:

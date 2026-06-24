@@ -21,8 +21,6 @@ DEFAULT_CASH_QUERIES = (
     "detergent walmart cash",
 )
 
-# Internal guard terms that must never be treated as Walmart Cash proof.
-# Keep lowercase tokens here so static tests can prove we block guesses.
 BLOCKED_CASH_GUESS_TERMS = (
     "onepay",
     "one pay",
@@ -69,14 +67,16 @@ def find_walmart_cash_offer(candidate: SourceCandidate, deal: NormalizedDeal) ->
     if str(attrs.get("walmartCashProofMode") or "") != "strict_api_field_amount":
         return None
 
+    amount = _float_or_none(attrs.get("walmartCashAmount") or attrs.get("walmartCashSavings"))
+    if amount is None or amount <= 0:
+        return None
+
     proof_path = str(attrs.get("walmartCashProofPath") or "").strip()
     proof_label = str(attrs.get("walmartCashProofLabel") or "Walmart Cash API field").strip()
     proof_text = str(attrs.get("walmartCashProofText") or "").strip()
     raw_value = str(attrs.get("walmartCashRawValue") or "").strip()
 
-    amount = _float_or_none(attrs.get("walmartCashAmount") or attrs.get("walmartCashSavings"))
-
-    if not proof_path and not proof_text and amount is None:
+    if not proof_path and not proof_text:
         return None
 
     return WalmartCashOffer(
@@ -96,11 +96,12 @@ def build_walmart_cash_offer_embed(
 ) -> discord.Embed:
     title = short(deal.title, 82)
     embed = discord.Embed(
-        title=f"✅ API-confirmed Walmart Cash • {title}",
+        title=f"✅ API-proven Walmart Cash • {title}",
         url=deal.product_url,
         description=(
-            "SniperPlug found this because the **Walmart API returned a Walmart Cash field for this exact product result**.\n"
-            "This is a **Cash Offer**, not a regular markdown deal unless Walmart also returns trusted was-price proof."
+            "SniperPlug found this because the **raw Walmart API returned Walmart Cash proof "
+            "with a sane dollar amount for this exact product**.\n"
+            "This is a **Cash Offer**, not a rollback/clearance deal unless Walmart also returns trusted markdown proof."
         ),
         color=discord.Color.green(),
     )
@@ -123,7 +124,7 @@ def build_walmart_cash_offer_embed(
     if offer.amount is not None and deal.current_price:
         after_cash = max(float(deal.current_price) - float(offer.amount), 0)
         price_lines.append(f"After-Cash estimate: **{money(after_cash)}**")
-        price_lines.append("This is an estimate only because Walmart Cash is earned/redeemed by Walmart rules.")
+        price_lines.append("Estimate only. Walmart Cash is earned/redeemed under Walmart’s rules.")
     if deal.typical_price:
         price_lines.append(f"Trusted Walmart was/reference price: ~~{money(deal.typical_price)}~~")
     embed.add_field(name="💰 Price summary", value="\n".join(price_lines), inline=False)
@@ -165,25 +166,43 @@ def build_walmart_cash_summary_embed(
     checked: int,
     found: int,
     warnings: tuple[str, ...],
+    *,
+    detail_checked: int = 0,
+    detail_unavailable: bool = False,
+    partial: bool = False,
+    capability_label: str = "",
+    capability_notes: tuple[str, ...] = (),
+    promo_counts: dict[str, int] | None = None,
 ) -> discord.Embed:
-    timed_out = any("timed out" in str(warning).lower() or "timeout" in str(warning).lower() for warning in warnings)
+    timed_out = partial or any("timed out" in str(warning).lower() or "timeout" in str(warning).lower() for warning in warnings)
+    promo_counts = promo_counts or {}
 
     embed = discord.Embed(
         title="💸 Walmart Cash Finder",
         description=(
-            f"Search mode: **Cash Offers only**\n"
-            f"Checked: **{checked}** Walmart API product result(s)\n"
-            f"API-confirmed Walmart Cash offers found: **{found}**"
+            f"Search mode: **Cash Offers only / API proof required**\n"
+            f"Search rows checked: **{checked}**\n"
+            f"Detail promo rows checked: **{detail_checked}**\n"
+            f"API-proven Walmart Cash offers found: **{found}**"
         ),
         color=discord.Color.green() if found else discord.Color.orange(),
     )
 
+    access_lines = [f"Access level: **{capability_label or 'Unknown'}**"]
+    if detail_unavailable:
+        access_lines.append("Promo detail proof: **not exposed by the current API response**")
+    elif detail_checked:
+        access_lines.append("Promo detail proof: **checked on returned detail rows**")
+    else:
+        access_lines.append("Promo detail proof: **not checked**")
+    access_lines.extend(f"• {note}" for note in capability_notes[:3])
+    embed.add_field(name="🔐 API access truth", value="\n".join(access_lines)[:1024], inline=False)
+
     embed.add_field(
-        name="✅ What counts",
+        name="✅ What counts as Walmart Cash",
         value=(
-            "A product only shows here when the raw Walmart API returns an explicit Walmart Cash proof field/text "
-            "**and a sane dollar amount** for that exact product. Search words, OnePay, card rewards, generic cashback, "
-            "and guessed promos do not count."
+            "Only an explicit Walmart Cash API field/text **plus a sane dollar amount** for the exact product. "
+            "Example: an API promo object that says `Walmart Cash` and returns `$5`, `$8`, etc."
         ),
         inline=False,
     )
@@ -192,10 +211,29 @@ def build_walmart_cash_summary_embed(
         name="🚫 What does not count",
         value=(
             "OnePay cashback, card rewards, normal cashback, `Buy more, save up to...`, generic promo text, "
-            "search words, guesses, and app-only screenshots do not count."
+            "search words, guesses, app-only screenshots, and product titles do not count."
         ),
         inline=False,
     )
+
+    promo_lines = []
+    labels = {
+        "cart_promo": "Cart Promo / Buy-more-save-more",
+        "onepay": "OnePay cashback",
+        "markdown": "Rollback/was-price markdown",
+        "clearance": "Clearance signal",
+        "generic_promo": "Generic promo text",
+    }
+    for key, label in labels.items():
+        value = int(promo_counts.get(key, 0) or 0)
+        if value:
+            promo_lines.append(f"• {label}: **{value}**")
+    if promo_lines:
+        embed.add_field(
+            name="🧾 Other promo types seen separately",
+            value="\n".join(promo_lines)[:1024],
+            inline=False,
+        )
 
     embed.add_field(
         name="🔎 Search routes actually checked",
@@ -204,16 +242,24 @@ def build_walmart_cash_summary_embed(
     )
 
     if warnings:
-        embed.add_field(name="Notes", value="\n".join(f"• {w}" for w in warnings[:4])[:1024], inline=False)
+        embed.add_field(name="Notes", value="\n".join(f"• {w}" for w in warnings[:5])[:1024], inline=False)
 
     if not found:
-        if checked <= 0 and timed_out:
+        if detail_unavailable:
             embed.add_field(
-                name="Walmart API timed out before product data returned",
+                name="Proof unavailable — not a proven no-offer result",
                 value=(
-                    "This is **not** a proven no-offer result. SniperPlug could not inspect product rows because Walmart "
-                    "did not return usable API product data in time. Try again once, or use a narrower search like "
-                    "`/walmart_cash search:detergent max_results:5`."
+                    "Walmart did not expose full promo detail through the current API access. "
+                    "SniperPlug will not claim Cash Offers exist, but it also will not pretend the app has none."
+                ),
+                inline=False,
+            )
+        elif timed_out:
+            embed.add_field(
+                name="Partial check — not a proven no-offer result",
+                value=(
+                    "Some Walmart API checks timed out or were skipped. This is a partial result, not proof that "
+                    "no Walmart Cash offers exist."
                 ),
                 inline=False,
             )
@@ -225,15 +271,81 @@ def build_walmart_cash_summary_embed(
             )
         else:
             embed.add_field(
-                name="No API-confirmed Cash Offers found in checked products",
+                name="No API-proven Walmart Cash found in checked detail rows",
                 value=(
-                    "SniperPlug checked returned Walmart API product rows, but none exposed strict Walmart Cash proof "
-                    "fields with a sane dollar amount for the exact product."
+                    "SniperPlug checked returned Walmart API rows and only accepts detail promo proof with an amount. "
+                    "No checked detail row exposed valid Walmart Cash proof."
                 ),
                 inline=False,
             )
 
     embed.set_footer(text="Private Cash-only search. It does not public-post markdown alerts.")
+    return embed
+
+
+def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
+    embed = discord.Embed(
+        title="🧪 Walmart API Probe",
+        description="Owner/admin diagnostic. This shows what SniperPlug could actually prove from Walmart API data.",
+        color=discord.Color.blurple(),
+    )
+
+    embed.add_field(
+        name="🔐 API capability",
+        value=(
+            f"Mode: **{getattr(probe.capability, 'label', 'Unknown')}**\n"
+            f"Detail access available in code: **{'yes' if getattr(probe.capability, 'detail_access', False) else 'no'}**\n"
+            + "\n".join(f"• {note}" for note in getattr(probe.capability, "notes", ())[:3])
+        )[:1024],
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📊 Rows checked",
+        value=(
+            f"Search rows checked: **{getattr(probe, 'search_rows_checked', 0)}**\n"
+            f"Detail promo rows checked: **{getattr(probe, 'detail_rows_checked', 0)}**\n"
+            f"Walmart Cash proof candidates: **{len(getattr(probe, 'cash_candidates', ()))}**"
+        ),
+        inline=False,
+    )
+
+    counts = getattr(probe, "promo_counts", {}) or {}
+    embed.add_field(
+        name="🧾 Promo types found separately",
+        value=(
+            f"Walmart Cash: **{counts.get('walmart_cash', 0)}**\n"
+            f"Cart Promo / Buy-more-save-more: **{counts.get('cart_promo', 0)}**\n"
+            f"OnePay cashback: **{counts.get('onepay', 0)}**\n"
+            f"Rollback/markdown: **{counts.get('markdown', 0)}**\n"
+            f"Clearance: **{counts.get('clearance', 0)}**\n"
+            f"Generic promo text: **{counts.get('generic_promo', 0)}**"
+        ),
+        inline=False,
+    )
+
+    debug_lines = tuple(getattr(probe, "debug_lines", ()) or ())
+    embed.add_field(
+        name="🔎 Product proof trail",
+        value="\n".join(f"• {line}" for line in debug_lines[:6])[:1024] or "No product rows were available to inspect.",
+        inline=False,
+    )
+
+    warnings = tuple(getattr(probe, "warnings", ()) or ())
+    if warnings:
+        embed.add_field(name="Notes", value="\n".join(f"• {w}" for w in warnings[:5])[:1024], inline=False)
+
+    if getattr(probe, "detail_unavailable", False):
+        embed.add_field(
+            name="Important",
+            value=(
+                "Walmart did not expose full promo detail through the current API access. "
+                "That means proof is unavailable, not that the Walmart app has no offers."
+            ),
+            inline=False,
+        )
+
+    embed.set_footer(text="Probe is private. It does not post deal alerts.")
     return embed
 
 

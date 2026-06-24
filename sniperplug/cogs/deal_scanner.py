@@ -18,10 +18,14 @@ from sniperplug.services.routing import route_label
 from sniperplug.services.safe_links import LinkChoice, product_link_choices
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
 from sniperplug.services.walmart_cash_offers import (
+    build_walmart_api_probe_embed,
     build_walmart_cash_offer_embed,
     build_walmart_cash_summary_embed,
     find_walmart_cash_offer,
-    walmart_cash_search_terms,
+)
+from sniperplug.services.walmart_cash_pipeline import (
+    run_walmart_api_probe,
+    run_walmart_cash_discovery,
 )
 
 
@@ -83,7 +87,7 @@ class DealScannerCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         await self._send_walmart_scan(interaction, search, 50, 1, 10, None, None, False, True)
 
-    @app_commands.command(name="walmart_cash", description="Search only Walmart products with API-confirmed Walmart Cash offers.")
+    @app_commands.command(name="walmart_cash", description="Find API-proven Walmart Cash offers only. No guesses, no OnePay, no cart promos.")
     @app_commands.describe(
         search="Optional product/category. Example: detergent, baby, pet, personal care. Leave blank for broad Cash Offers.",
         max_results="How many API products to inspect per search route.",
@@ -91,6 +95,16 @@ class DealScannerCog(commands.Cog):
     async def walmart_cash(self, interaction: discord.Interaction, search: str = "walmart cash offers", max_results: app_commands.Range[int, 3, 12] = 8) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         await self._send_walmart_cash_search(interaction, search, int(max_results))
+
+    @app_commands.command(name="walmart_api_probe", description="Owner/admin diagnostic for Walmart API promo proof paths.")
+    @app_commands.describe(
+        query="Product/category to inspect. Example: detergent, personal care, baby.",
+        max_results="Small bounded probe size.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def walmart_api_probe(self, interaction: discord.Interaction, query: str = "detergent", max_results: app_commands.Range[int, 1, 8] = 3) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self._send_walmart_api_probe(interaction, query, int(max_results))
 
     @app_commands.command(name="walmart_scan", description="Advanced Walmart deal scan for staff/admins.")
     @app_commands.describe(query="Product search, like gaming monitor, tide detergent, lego, patio set.", min_discount="Only show deals at or above this percent off. Try 50 or 80.", page="Walmart result page to scan. Use page 2/3 if page 1 repeats weak deals.", max_results="How many Walmart results to inspect on this page. Max 25.", sort="Optional Walmart sorting mode.", alerts_only="Only show candidates SniperPlug would alert on.")
@@ -106,59 +120,22 @@ class DealScannerCog(commands.Cog):
         if provider is None:
             await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
             return
+
         health = await provider.healthcheck()
         if health.status != ProviderStatus.READY:
             await interaction.followup.send("Walmart Cash search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
             return
 
-        queries = walmart_cash_search_terms(search)
-        all_candidates: list[SourceCandidate] = []
-        warnings: list[str] = []
+        discovery = await run_walmart_cash_discovery(
+            provider,
+            search=search,
+            max_results=int(max_results),
+            requested_by=str(interaction.user.id),
+        )
 
-        provider_timeout = int(getattr(getattr(provider, "config", None), "timeout_seconds", 12) or 12)
-        cash_route_timeout = max(provider_timeout + 4, 16)
-        per_route_limit = max(3, min(12, int(max_results)))
-
-        scan_jobs = [(query, page) for query in queries[:2] for page in (1,)]
-        used_queries = tuple(query for query, _page in scan_jobs)
-        semaphore = asyncio.Semaphore(2)
-
-        async def run_one_cash_route(query: str, page: int):
-            async with semaphore:
-                try:
-                    return await asyncio.wait_for(
-                        provider.scan(
-                            ProviderScanRequest(
-                                source_key="walmart",
-                                query=query.strip(),
-                                max_results=per_route_limit,
-                                page=page,
-                                metadata={
-                                    "requested_by": str(interaction.user.id),
-                                    "mode": "walmart_cash",
-                                },
-                            )
-                        ),
-                        timeout=cash_route_timeout,
-                    )
-                except asyncio.TimeoutError:
-                    warnings.append(f"Timed out checking `{query}` page {page}; skipped that route.")
-                    return None
-                except Exception as exc:
-                    warnings.append(f"Skipped `{query}` page {page}: {type(exc).__name__}")
-                    return None
-
-        results = await asyncio.gather(*(run_one_cash_route(query, page) for query, page in scan_jobs))
-        for result in results:
-            if result is None:
-                continue
-            all_candidates.extend(result.candidates)
-            warnings.extend(w for w in result.warnings if w not in warnings)
-
-        candidates = dedupe_candidates(all_candidates)
         cards: list[DealCard] = []
 
-        for candidate in candidates:
+        for candidate in discovery.cash_candidates:
             decision = evaluate_candidate(candidate)
             deal = decision.deal
             offer = find_walmart_cash_offer(candidate, deal)
@@ -192,8 +169,40 @@ class DealScannerCog(commands.Cog):
 
         cards.sort(key=lambda card: (float(getattr(card, "current_price", 0) or 0), card.score), reverse=True)
         shown_cards = cards[:5]
-        summary = build_walmart_cash_summary_embed(search, used_queries, len(candidates), len(cards), tuple(warnings))
+
+        summary = build_walmart_cash_summary_embed(
+            search,
+            discovery.used_queries,
+            discovery.search_rows_checked,
+            len(cards),
+            discovery.warnings,
+            detail_checked=discovery.detail_rows_checked,
+            detail_unavailable=discovery.detail_unavailable,
+            partial=discovery.partial,
+            capability_label=discovery.capability.label,
+            capability_notes=discovery.capability.notes,
+            promo_counts=discovery.promo_counts,
+        )
         await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], ephemeral=True)
+
+    async def _send_walmart_api_probe(self, interaction: discord.Interaction, query: str, max_results: int = 3) -> None:
+        provider = provider_registry.get("walmart")
+        if provider is None:
+            await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
+            return
+
+        health = await provider.healthcheck()
+        if health.status != ProviderStatus.READY:
+            await interaction.followup.send("Walmart API probe is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
+            return
+
+        probe = await run_walmart_api_probe(
+            provider,
+            query=query,
+            max_results=int(max_results),
+            requested_by=str(interaction.user.id),
+        )
+        await interaction.followup.send(embed=build_walmart_api_probe_embed(probe), ephemeral=True)
 
 
     async def _send_walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: int, page: int, max_results: int, sort_value: str | None, order_value: str | None, alerts_only: bool, simple_mode: bool) -> None:
@@ -257,6 +266,10 @@ class DealScannerCog(commands.Cog):
     @walmart_cash.error
     async def walmart_cash_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await send_command_error(interaction, f"Walmart Cash search hit an error: `{error}`")
+
+    @walmart_api_probe.error
+    async def walmart_api_probe_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        await send_command_error(interaction, "You need **Manage Server** permission to run the Walmart API probe." if isinstance(error, app_commands.MissingPermissions) else f"Walmart API probe hit an error: `{error}`")
 
     @walmart_scan.error
     async def walmart_scan_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -334,7 +347,7 @@ class WalmartCashOffersButton(discord.ui.Button):
         if cog is None or not hasattr(cog, "_send_walmart_cash_search"):
             await interaction.followup.send("Walmart Cash search is not loaded yet.", ephemeral=True)
             return
-        await cog._send_walmart_cash_search(interaction, "walmart cash offers", 25)
+        await cog._send_walmart_cash_search(interaction, "walmart cash offers", 8)
 
 
 class PresetResultView(discord.ui.View):

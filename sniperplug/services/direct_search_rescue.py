@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+
 SEARCH_STOPWORDS = {
     "the",
     "and",
@@ -15,6 +16,8 @@ SEARCH_STOPWORDS = {
     "price",
     "deal",
     "deals",
+    "sale",
+    "sales",
 }
 
 
@@ -27,13 +30,19 @@ def direct_match_score(query: str, title: str, *, sku: str | None = None, upc: s
     identifiers = {normalize_text(value) for value in (sku, upc, product_id) if value}
     if query_text in identifiers:
         return 1.0
-    if query_text in title_text:
-        return 1.0
 
     query_tokens = meaningful_tokens(query_text)
-    if not query_tokens:
-        return 0.0
     title_tokens = meaningful_tokens(title_text)
+
+    # Generic route searches like "toy clearance", "home rollback", "fragrance",
+    # and "monitor clearance" are category routes, not exact product requests.
+    # They may find leads, but they are not proof.
+    if len(query_tokens) < 2:
+        return 0.0
+
+    if query_text in title_text and len(query_tokens) >= 2:
+        return 1.0
+
     if not title_tokens:
         return 0.0
 

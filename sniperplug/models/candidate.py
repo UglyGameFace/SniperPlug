@@ -134,6 +134,23 @@ class SourceCandidate:
             deal.alert_tags.append("Walmart Cash")
             deal.verification_notes.append(f"Walmart Cash detected: {money(walmart_cash)} reward/value")
 
+        api_savings = _float_or_none(self.variant_attributes.get("apiSavingsAmount"))
+        api_promo_cap = _float_or_none(self.variant_attributes.get("apiPromotionSavingsCap"))
+        api_promo = str(self.variant_attributes.get("apiPromotionText") or "").strip()
+        api_kind = str(self.variant_attributes.get("apiValueKind") or "").strip()
+
+        if api_savings and api_savings > 0:
+            deal.alert_tags.append("Walmart API Savings")
+            deal.verification_notes.append(f"Walmart API savings from payload: {money(api_savings)}")
+        if api_promo_cap and api_promo_cap > 0:
+            deal.alert_tags.append("Walmart API Promo")
+            deal.verification_notes.append(f"Walmart API promo savings cap: {money(api_promo_cap)}")
+        if api_promo:
+            deal.alert_tags.append("Walmart API Promo")
+            deal.verification_notes.append(f"Walmart API promo text: {api_promo[:180]}")
+        if api_kind:
+            deal.verification_notes.append(f"Walmart API value type: {api_kind}")
+
         deal.recalculate_prices()
 
         if self.variant_label:

@@ -53,6 +53,10 @@ def build_deal_embed(deal: NormalizedDeal) -> discord.Embed:
     if proof:
         embed.add_field(name="Proof", value=proof, inline=False)
 
+    api_value = walmart_api_value_lines(deal)
+    if api_value:
+        embed.add_field(name="Walmart API value proof", value="\n".join(api_value), inline=False)
+
     seller_bits: list[str] = []
     if deal.retailer:
         seller_bits.append(f"Retailer: `{deal.retailer}`")
@@ -187,3 +191,27 @@ class DealActionView(discord.ui.View):
             "Dead deal report received. Good looks — this helps keep SniperPlug clean.",
             ephemeral=True,
         )
+
+
+def walmart_api_value_lines(deal: NormalizedDeal) -> list[str]:
+    attrs = deal.variant_attributes or {}
+    lines: list[str] = []
+
+    promo = str(attrs.get("apiPromotionText") or "").strip()
+    savings = attrs.get("apiSavingsAmount")
+    promo_cap = attrs.get("apiPromotionSavingsCap")
+    reference = attrs.get("apiReferenceFromSavings")
+    kind = str(attrs.get("apiValueKind") or "").strip()
+
+    if savings:
+        lines.append(f"• API savings amount: `{savings}`")
+    if promo_cap:
+        lines.append(f"• API promo savings cap: `{promo_cap}`")
+    if reference:
+        lines.append(f"• API reference from savings: `{reference}`")
+    if promo:
+        lines.append(f"• API promo text: {promo[:180]}")
+    if kind:
+        lines.append(f"• API value type: `{kind}`")
+
+    return lines[:6]

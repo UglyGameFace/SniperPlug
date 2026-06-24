@@ -81,6 +81,10 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         coupon = coupon or 0.0
         cash = cash or 0.0
         trusted_discount = proof.discount_percent or 0.0
+        api_savings = safe_value_amount(deal.variant_attributes.get("apiSavingsAmount"), deal.current_price) or 0.0
+        api_promo_cap = safe_value_amount(deal.variant_attributes.get("apiPromotionSavingsCap"), deal.current_price) or 0.0
+        api_promo_text = str(deal.variant_attributes.get("apiPromotionText") or "").strip()
+        api_value_signal = api_savings >= REVIEW_MIN_COUPON_OR_CASH or api_promo_cap >= REVIEW_MIN_COUPON_OR_CASH or bool(api_promo_text and (api_savings > 0 or api_promo_cap > 0))
 
         raw_context_price = float_or_none(deal.variant_attributes.get("referenceContextPrice"))
         context_source = str(deal.variant_attributes.get("referenceContextSource") or "")
@@ -99,7 +103,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         else:
             missing_reference += 1
 
-        has_value_signal = trusted_discount >= REVIEW_MIN_TRUSTED_DISCOUNT or coupon >= REVIEW_MIN_COUPON_OR_CASH or cash >= REVIEW_MIN_COUPON_OR_CASH or safe_markdown_signal(candidate) or is_exact_search_match or profit_signal
+        has_value_signal = trusted_discount >= REVIEW_MIN_TRUSTED_DISCOUNT or coupon >= REVIEW_MIN_COUPON_OR_CASH or cash >= REVIEW_MIN_COUPON_OR_CASH or api_value_signal or safe_markdown_signal(candidate) or is_exact_search_match or profit_signal
         if not has_value_signal:
             no_value_signal += 1
             continue
@@ -107,7 +111,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         context_score = 0.0
         if profit_signal:
             context_score = min(65.0, (context_discount or 0.0) * 0.70 + min(context_profit or 0.0, 60.0) * 0.45 + (context_margin or 0.0) * 18.0)
-        review_score = trusted_discount + coupon + cash + context_score + (5 if safe_markdown_signal(candidate) else 0) + (35 * match_score)
+        review_score = trusted_discount + coupon + cash + api_savings + api_promo_cap + context_score + (5 if safe_markdown_signal(candidate) else 0) + (35 * match_score)
 
         card = build_review_card(candidate, deal, proof, context_price=context_price, context_discount=context_discount, ignored_context_price=raw_context_price if context_price is None else None, coupon=coupon, cash=cash, direct_match_score=match_score)
         scored.append((review_score, card))
@@ -180,6 +184,15 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
         lines.append(f"Coupon from API: **{money(coupon)}**")
     if cash:
         lines.append(f"Walmart Cash from API: **{money(cash)}**")
+    api_savings = safe_value_amount(deal.variant_attributes.get("apiSavingsAmount"), deal.current_price) or 0.0
+    api_promo_cap = safe_value_amount(deal.variant_attributes.get("apiPromotionSavingsCap"), deal.current_price) or 0.0
+    api_promo_text = str(deal.variant_attributes.get("apiPromotionText") or "").strip()
+    if api_savings:
+        lines.append(f"Walmart API savings: **{money(api_savings)}**")
+    if api_promo_cap:
+        lines.append(f"Walmart API promo cap: **{money(api_promo_cap)}**")
+    if api_promo_text:
+        lines.append(f"Walmart API promo: **{api_promo_text[:160]}**")
     embed.add_field(name="💰 API price/value", value="\n".join(lines), inline=False)
 
     comp_links = build_free_comp_links(title=deal.title, brand=brand, upc=deal.upc, model=model, sku=deal.sku or candidate.product_id, category=category, max_links=7)
@@ -228,7 +241,7 @@ def api_lines(candidate: SourceCandidate, deal) -> list[str]:
     finder_query = attr_text(attrs, "finderSourceQuery")
     if finder_query:
         lines.append(f"• Finder query: **{finder_query[:90]}**")
-    for label, value in (("SKU", deal.sku), ("UPC", deal.upc), ("Offer ID", deal.selected_offer_id), ("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")), ("Condition", candidate.condition or deal.condition or attrs.get("condition")), ("Fulfillment", candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")), ("Stock", candidate.stock_status), ("Available online", attrs.get("availableOnline")), ("Offer type", attrs.get("offerType")), ("Max order qty", attrs.get("maxOrderQty"))):
+    for label, value in (("SKU", deal.sku), ("UPC", deal.upc), ("Offer ID", deal.selected_offer_id), ("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")), ("Condition", candidate.condition or deal.condition or attrs.get("condition")), ("Fulfillment", candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")), ("Stock", candidate.stock_status), ("Available online", attrs.get("availableOnline")), ("Offer type", attrs.get("offerType")), ("Max order qty", attrs.get("maxOrderQty")), ("API savings", attrs.get("apiSavingsAmount")), ("API promo cap", attrs.get("apiPromotionSavingsCap")), ("API promo", attrs.get("apiPromotionText")), ("API value type", attrs.get("apiValueKind"))):
         if value:
             lines.append(f"• {label}: **{str(value)[:90]}**")
     lines.extend(marketplace_api_lines(current_price=deal.current_price, attrs=attrs))

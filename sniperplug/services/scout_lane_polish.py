@@ -36,6 +36,12 @@ VALUE_PROOF_TERMS = (
     "ebay sold",
     "comps support",
     "comp research",
+    "walmart api savings",
+    "walmart api promo",
+    "api promo cap",
+    "api savings amount",
+    "buy more",
+    "save up",
 )
 
 
@@ -110,6 +116,9 @@ def has_hard_value_signal(card: Any, *, min_discount: int = 50) -> bool:
     if "coupon from api" in text:
         return True
 
+    if "walmart api savings" in text or "walmart api promo" in text or "api promo cap" in text or "buy more" in text or "save up" in text:
+        return True
+
     if "rough spread" in text or "flip/value lead" in text or "profit" in text or "margin" in text:
         return True
 
@@ -132,6 +141,8 @@ def scout_reasons(card: Any, *, min_discount: int = 50) -> list[str]:
         reasons.append("Walmart Cash value")
     if "coupon from api" in text:
         reasons.append("coupon value")
+    if "walmart api savings" in text or "walmart api promo" in text or "api promo cap" in text or "buy more" in text or "save up" in text:
+        reasons.append("Walmart API promo/savings")
     if "rough spread" in text or "flip/value lead" in text or "profit" in text or "margin" in text:
         reasons.append("comp/profit spread")
     if "you save" in text and not has_weak_reference_warning(card):
@@ -155,6 +166,8 @@ def scout_rank(card: Any, *, min_discount: int = 50) -> int:
         score += 30
     if "coupon from api" in text:
         score += 22
+    if "walmart api savings" in text or "walmart api promo" in text or "api promo cap" in text or "buy more" in text or "save up" in text:
+        score += 28
     if "rough spread" in text or "flip/value lead" in text or "profit" in text or "margin" in text:
         score += 28
     if "you save" in text and not has_weak_reference_warning(card):
@@ -197,6 +210,11 @@ def is_high_confidence_public_scout(card: Any, *, min_discount: int = 50, min_ra
             "walmart cash" in text
             or "cashrewards" in text
             or "coupon from api" in text
+            or "walmart api savings" in text
+            or "walmart api promo" in text
+            or "api promo cap" in text
+            or "buy more" in text
+            or "save up" in text
             or "rough spread" in text
             or "flip/value lead" in text
             or "profit" in text

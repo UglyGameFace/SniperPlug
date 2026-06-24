@@ -12,7 +12,7 @@ HOME_DEPOT = Path("sniperplug/cogs/home_depot_local.py").read_text(encoding="utf
 
 
 def slash_command_names() -> set[str]:
-    return set(re.findall(r'@app_commands\.command\(name=["\']([^"\']+)["\']', COGS))
+    return set(re.findall(r'@app_commands\.command\(\s*name=["\']([^"\']+)["\']', COGS, flags=re.S))
 
 
 def catalog_names() -> set[str]:

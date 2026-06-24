@@ -66,6 +66,8 @@ def find_walmart_cash_offer(candidate: SourceCandidate, deal: NormalizedDeal) ->
 
     if str(attrs.get("walmartCashApiProof") or "").lower() != "yes":
         return None
+    if str(attrs.get("walmartCashProofMode") or "") != "strict_api_field_amount":
+        return None
 
     proof_path = str(attrs.get("walmartCashProofPath") or "").strip()
     proof_label = str(attrs.get("walmartCashProofLabel") or "Walmart Cash API field").strip()
@@ -106,7 +108,7 @@ def build_walmart_cash_offer_embed(
     if deal.image_url:
         embed.set_thumbnail(url=deal.image_url)
 
-    cash_line = f"**{money(offer.amount)} Walmart Cash**" if offer.amount is not None else "**Eligible, but amount was not clearly returned**"
+    cash_line = f"**{money(offer.amount)} Walmart Cash**"
     embed.add_field(
         name="💸 Walmart Cash proof",
         value=(
@@ -177,8 +179,8 @@ def build_walmart_cash_summary_embed(
     embed.add_field(
         name="✅ What counts",
         value=(
-            "A product only shows here when the Walmart API returns explicit Walmart Cash proof for that product result. "
-            "SniperPlug shows the exact API field/path in each card."
+            "A product only shows here when the raw Walmart API returns an explicit Walmart Cash proof field/text **and a sane dollar amount** for that exact product. "
+            "If the API only shows search words, OnePay, card rewards, or a generic promo, SniperPlug hides it."
         ),
         inline=False,
     )
@@ -186,7 +188,7 @@ def build_walmart_cash_summary_embed(
     embed.add_field(
         name="🚫 What does not count",
         value=(
-            "OnePay cashback, card rewards, normal cashback, generic promo text, search words, guesses, and app-only screenshots do not count."
+            "OnePay cashback, card rewards, normal cashback, `Buy more, save up to...`, generic promo text, search words, guesses, and app-only screenshots do not count."
         ),
         inline=False,
     )

@@ -20,7 +20,7 @@ def test_extracts_walmart_cash_amount_from_explicit_api_object():
     assert "Walmart Cash" in proof.signal()
 
 
-def test_extracts_walmart_cash_eligibility_without_amount():
+def test_rejects_walmart_cash_eligibility_without_amount():
     item = {
         "name": "Baby wipes",
         "salePrice": 12.99,
@@ -29,10 +29,20 @@ def test_extracts_walmart_cash_eligibility_without_amount():
 
     proof = extract_walmart_cash_api_truth(item, current_price=12.99)
 
-    assert proof is not None
-    assert proof.amount is None
-    assert "eligible" in proof.signal().lower()
+    assert proof is None
 
+
+def test_extracts_walmart_cash_badge_when_amount_is_present():
+    item = {
+        "name": "Baby wipes",
+        "salePrice": 12.99,
+        "badges": [{"text": "Earn $5 Walmart Cash"}],
+    }
+
+    proof = extract_walmart_cash_api_truth(item, current_price=12.99)
+
+    assert proof is not None
+    assert proof.amount == 5
 
 def test_blocks_onepay_cashback_as_walmart_cash():
     item = {

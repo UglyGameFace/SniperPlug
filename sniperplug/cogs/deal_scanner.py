@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
 
 import discord
 from discord import app_commands
@@ -114,11 +115,30 @@ class DealScannerCog(commands.Cog):
         all_candidates: list[SourceCandidate] = []
         warnings: list[str] = []
 
-        for query in queries[:6]:
-            for page in (1, 2):
-                result = await run_walmart_scan(query, page, max(10, min(25, int(max_results))), None, None, str(interaction.user.id))
-                all_candidates.extend(result.candidates)
-                warnings.extend(w for w in result.warnings if w not in warnings)
+        per_route_limit = max(10, min(25, int(max_results)))
+        scan_jobs = [(query, page) for query in queries[:6] for page in (1, 2)]
+        semaphore = asyncio.Semaphore(4)
+
+        async def run_one_cash_route(query: str, page: int):
+            async with semaphore:
+                try:
+                    return await asyncio.wait_for(
+                        run_walmart_scan(query, page, per_route_limit, None, None, str(interaction.user.id)),
+                        timeout=18,
+                    )
+                except asyncio.TimeoutError:
+                    warnings.append(f"Timed out checking `{query}` page {page}; skipped that route.")
+                    return None
+                except Exception as exc:
+                    warnings.append(f"Skipped `{query}` page {page}: {type(exc).__name__}")
+                    return None
+
+        results = await asyncio.gather(*(run_one_cash_route(query, page) for query, page in scan_jobs))
+        for result in results:
+            if result is None:
+                continue
+            all_candidates.extend(result.candidates)
+            warnings.extend(w for w in result.warnings if w not in warnings)
 
         candidates = dedupe_candidates(all_candidates)
         cards: list[DealCard] = []

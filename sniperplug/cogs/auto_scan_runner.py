@@ -334,7 +334,11 @@ class AutoScanRunnerCog(commands.Cog):
                 log.info("Auto-scan skipped guild=%s because another auto-scan is already running", guild.guild_id)
                 continue
             async with lock:
-                await self._run_guild_walmart_discovery(guild)
+                try:
+                    await self._run_guild_walmart_discovery(guild)
+                except Exception:
+                    log.exception("Auto-scan guild run failed but loop will continue guild=%s", guild.guild_id)
+                    continue
 
     @auto_scan_loop.before_loop
     async def before_auto_scan_loop(self) -> None:

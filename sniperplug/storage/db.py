@@ -14,35 +14,46 @@ from sniperplug.services.routing import DEFAULT_ROUTE
 
 
 class _LibsqlAsyncCursor:
-    def __init__(self, result: Any, lock: asyncio.Lock | None = None):
-        self.result = result
-        self._lock = lock
-        self._rows_cache: list[Any] | None = None
+    def __init__(self, rows: list[Any] | None = None, columns: list[str] | None = None):
+        self._rows_cache: list[Any] = rows or []
+        self._columns_cache: list[str] = columns or []
+
+    @classmethod
+    def from_result(cls, result: Any) -> "_LibsqlAsyncCursor":
+        columns = cls._extract_columns(result)
+        raw_rows = cls._result_rows(result)
+        cursor = cls(rows=[], columns=columns)
+        cursor._rows_cache = [cursor._normalize_row(row) for row in raw_rows]
+        return cursor
 
     async def fetchone(self) -> Any | None:
         rows = await self.fetchall()
         return rows[0] if rows else None
 
     async def fetchall(self) -> list[Any]:
-        if self._rows_cache is None:
-            if self._lock is not None:
-                async with self._lock:
-                    rows = await asyncio.to_thread(self._fetchall_sync)
-            else:
-                rows = await asyncio.to_thread(self._fetchall_sync)
-            self._rows_cache = [self._normalize_row(row) for row in rows]
-        return self._rows_cache
+        return list(self._rows_cache)
 
-    def _fetchall_sync(self) -> list[Any]:
-        if hasattr(self.result, "fetchall"):
-            return list(self.result.fetchall())
-        rows = getattr(self.result, "rows", None)
+    @staticmethod
+    def _result_rows(result: Any) -> list[Any]:
+        if result is None:
+            return []
+        if hasattr(result, "fetchall"):
+            try:
+                return list(result.fetchall())
+            except Exception:
+                # DDL/PRAGMA/write statements may not expose row fetching.
+                return []
+        rows = getattr(result, "rows", None)
         if rows is not None:
             return list(rows)
         return []
 
-    def _columns(self) -> list[str]:
-        description = getattr(self.result, "description", None)
+    @staticmethod
+    def _extract_columns(result: Any) -> list[str]:
+        if result is None:
+            return []
+
+        description = getattr(result, "description", None)
         if description:
             columns: list[str] = []
             for item in description:
@@ -51,7 +62,8 @@ class _LibsqlAsyncCursor:
                 else:
                     columns.append(str(getattr(item, "name", item)))
             return columns
-        columns = getattr(self.result, "columns", None)
+
+        columns = getattr(result, "columns", None)
         if callable(columns):
             columns = columns()
         if columns:
@@ -61,33 +73,84 @@ class _LibsqlAsyncCursor:
     def _normalize_row(self, row: Any) -> Any:
         if isinstance(row, dict):
             return row
+
         keys = getattr(row, "keys", None)
         if callable(keys):
             try:
                 return {str(key): row[key] for key in keys()}
             except Exception:
                 pass
-        columns = self._columns()
+
+        columns = self._columns_cache
         if columns:
             try:
                 return {columns[index]: row[index] for index in range(min(len(columns), len(row)))}
             except Exception:
                 pass
+
         return row
 
 
 class _LibsqlAsyncConnection:
-    def __init__(self, conn: Any):
+    def __init__(self, conn: Any, *, database: str = "", auth_token: str = ""):
         self.conn = conn
+        self.database = database
+        self.auth_token = auth_token
         self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _is_retryable_libsql_stream_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "hrana" in text and (
+            "stream not found" in text
+            or "stream already in use" in text
+            or "closed stream" in text
+            or "stream closed" in text
+        )
+
+    def _connect_sync(self) -> Any:
+        if not self.database or not self.auth_token:
+            raise RuntimeError("Cannot reconnect Turso/libsql connection: missing database URL or auth token.")
+        import libsql
+
+        return libsql.connect(database=self.database, auth_token=self.auth_token)
+
+    def _close_sync(self) -> None:
+        close = getattr(self.conn, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+    def _reconnect_sync(self) -> None:
+        self._close_sync()
+        self.conn = self._connect_sync()
+        try:
+            self.conn.execute("PRAGMA foreign_keys=ON;")
+        except Exception:
+            # Not fatal for remote libsql; real statements will surface errors.
+            pass
+
+    def _execute_sync(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None) -> _LibsqlAsyncCursor:
+        if params is None:
+            result = self.conn.execute(sql)
+        else:
+            result = self.conn.execute(sql, tuple(params))
+
+        # Critical: consume result rows immediately while the connection lock is held.
+        # Do not return a live remote stream to be fetched later.
+        return _LibsqlAsyncCursor.from_result(result)
 
     async def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None) -> _LibsqlAsyncCursor:
         def run() -> _LibsqlAsyncCursor:
-            if params is None:
-                result = self.conn.execute(sql)
-            else:
-                result = self.conn.execute(sql, tuple(params))
-            return _LibsqlAsyncCursor(result, self._lock)
+            try:
+                return self._execute_sync(sql, params)
+            except Exception as exc:
+                if self._is_retryable_libsql_stream_error(exc):
+                    self._reconnect_sync()
+                    return self._execute_sync(sql, params)
+                raise
 
         async with self._lock:
             return await asyncio.to_thread(run)
@@ -98,15 +161,27 @@ class _LibsqlAsyncConnection:
 
     async def commit(self) -> None:
         commit = getattr(self.conn, "commit", None)
-        if callable(commit):
-            async with self._lock:
-                await asyncio.to_thread(commit)
+        if not callable(commit):
+            return
+
+        def run() -> None:
+            try:
+                commit()
+            except Exception as exc:
+                if self._is_retryable_libsql_stream_error(exc):
+                    self._reconnect_sync()
+                    new_commit = getattr(self.conn, "commit", None)
+                    if callable(new_commit):
+                        new_commit()
+                    return
+                raise
+
+        async with self._lock:
+            await asyncio.to_thread(run)
 
     async def close(self) -> None:
-        close = getattr(self.conn, "close", None)
-        if callable(close):
-            async with self._lock:
-                await asyncio.to_thread(close)
+        async with self._lock:
+            await asyncio.to_thread(self._close_sync)
 
 
 class Database:
@@ -125,7 +200,7 @@ class Database:
                 import libsql
             except ImportError as exc:
                 raise RuntimeError("Turso database config is present, but Python package 'libsql' is not installed.") from exc
-            self.conn = _LibsqlAsyncConnection(libsql.connect(database=turso_url, auth_token=turso_token))
+            self.conn = _LibsqlAsyncConnection(libsql.connect(database=turso_url, auth_token=turso_token), database=turso_url, auth_token=turso_token)
             self.backend = "turso"
             await self.conn.execute("PRAGMA foreign_keys=ON;")
             await self.conn.commit()

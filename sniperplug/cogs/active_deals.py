@@ -16,6 +16,7 @@ from sniperplug.services.public_posting import SUPPORTED_RETAILERS, format_retai
 DEFAULT_STALE_AFTER_HOURS = 24
 ACTIVE_DEALS_MAX_PAGE_SIZE = 15
 ACTIVE_DEALS_DEFAULT_PAGE_SIZE = 10
+ACTIVE_DEALS_DEFAULT_MIN_DISCOUNT = 1
 ACTIVE_DEAL_SORTS = {
     "recent": "last_seen_at DESC",
     "discount": "discount DESC, last_seen_at DESC",
@@ -35,6 +36,7 @@ class ActiveDealPage:
     query: str | None = None
     min_discount: int | None = None
     sort: str = "recent"
+    public_quality_only: bool = True
 
     @property
     def total_pages(self) -> int:
@@ -105,6 +107,7 @@ class ActiveDealsCog(commands.Cog):
             search=search,
             min_discount=int(min_discount) if min_discount is not None else None,
             sort=sort_key,
+            public_quality_only=min_discount is None,
         )
         view = ActiveDealsPageView(page_data) if page_data.total_pages > 1 else None
         await interaction.followup.send(embed=build_active_deals_embed(interaction.guild_id, page_data), view=view, ephemeral=True)
@@ -158,6 +161,7 @@ class ActiveDealsPageView(discord.ui.View):
             search=self.page_data.query,
             min_discount=self.page_data.min_discount,
             sort=self.page_data.sort,
+            public_quality_only=self.page_data.public_quality_only,
         )
         await interaction.edit_original_response(embed=build_active_deals_embed(interaction.guild_id, page_data), view=ActiveDealsPageView(page_data) if page_data.total_pages > 1 else None)
 
@@ -172,6 +176,7 @@ async def list_active_deals(
     search: str | None = None,
     min_discount: int | None = None,
     sort: str = "recent",
+    public_quality_only: bool = True,
 ) -> ActiveDealPage:
     await ensure_public_post_tables(db)
     conn = db.require_conn()
@@ -185,6 +190,19 @@ async def list_active_deals(
     if min_discount is not None:
         filters.append("discount IS NOT NULL AND discount >= ?")
         params.append(int(min_discount))
+    elif public_quality_only:
+        filters.append(
+            """(
+                (discount IS NOT NULL AND discount >= ?)
+                OR LOWER(title) LIKE '%walmart cash%'
+                OR LOWER(source_label) LIKE '%walmart_cash%'
+                OR LOWER(source_label) LIKE '%cash%'
+            )"""
+        )
+        params.append(ACTIVE_DEALS_DEFAULT_MIN_DISCOUNT)
+        filters.append("LOWER(source_label) NOT LIKE '%watchlist%'")
+        filters.append("LOWER(source_label) NOT LIKE '%review%'")
+        filters.append("LOWER(source_label) NOT LIKE '%scout%'")
     clean_search = " ".join(str(search or "").split())
     if clean_search:
         filters.append("(LOWER(title) LIKE ? OR LOWER(source_label) LIKE ? OR LOWER(retailer) LIKE ?)")
@@ -247,12 +265,12 @@ def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discor
         filters.append(f"{page_data.min_discount}%+ markdown")
     filter_text = " • ".join(filters) if filters else "none"
     embed = discord.Embed(
-        title="🟢 Active Deals Cache",
+        title="🟢 Public Deal Cache",
         description=(
             f"Server: `{guild_id}`\n"
             f"Page: **{page_data.clamped_page}/{page_data.total_pages}** • Total matching active cached rows: **{page_data.total}**\n"
             f"Filters: {filter_text} • Sort: `{page_data.sort}`\n\n"
-            "Cache means SniperPlug recently saw this row. It is **not** the same as public-ready. Public posts still require verified markdown, confidence, fresh/lower-price, duplicate, and proof gates."
+            "Default view hides 0% watchlist/review/scout junk. It should show only public-quality rows, verified markdown rows, or Walmart Cash value rows. Use `min_discount:0` only for raw cache debugging."
         ),
         color=discord.Color.green() if page_data.rows else discord.Color.dark_gold(),
     )
@@ -275,7 +293,7 @@ def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discor
             ),
             inline=False,
         )
-    embed.set_footer(text="Use the buttons to page. Use /active_deals search:<term> or min_discount:<percent> to narrow 1000+ rows.")
+    embed.set_footer(text="Default view hides 0% junk. Use min_discount:0 only for raw cache debugging.")
     return embed
 
 

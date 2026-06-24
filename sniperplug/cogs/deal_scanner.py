@@ -12,6 +12,7 @@ from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult, P
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.candidate_pipeline import evaluate_candidate
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
+from sniperplug.services.public_deal_quality import select_public_deal_candidates
 from sniperplug.services.routing import route_label
 from sniperplug.services.safe_links import LinkChoice, product_link_choices
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
@@ -112,12 +113,20 @@ class DealScannerCog(commands.Cog):
                     lines.append(f"Muted category settings hid **{len(category_suppressed_cards)}** normal public lead(s). Extreme/nuclear deals still break through.")
                 lines.extend(f"• {note}" for note in category_notes[:3])
                 summary.add_field(name="🎛️ Deal Feed Controls", value="\n".join(lines)[:1024], inline=False)
+            source_label = "deals" if simple_mode else "walmart_scan"
+            public_cards = select_public_deal_candidates(
+                shown_cards,
+                source_label=source_label,
+                min_discount=shown_discount,
+                limit=5,
+            )
             public_result = await maybe_post_public_deal_cards(
                 bot=self.bot,
                 guild_id=interaction.guild_id,
-                cards=shown_cards,
-                source_label="deals" if simple_mode else "walmart_scan",
+                cards=public_cards,
+                source_label=source_label,
                 fallback_retailer="walmart",
+                min_public_discount=shown_discount,
             )
             summary.add_field(name="Product links", value="Each product card now includes its own **App/Web** and **Browser Search** links so users do not have to match numbered buttons at the bottom.", inline=False)
             add_public_posting_field(summary, public_result)
@@ -178,12 +187,14 @@ class HuntPresetButton(discord.ui.Button):
                 await interaction.followup.send(embed=summary, view=HuntPresetMenuView(), ephemeral=True)
                 return
             shown_cards = cards[:5]
+            public_cards = select_public_deal_candidates(shown_cards, source_label=f"hunt:{self.preset.key}", min_discount=self.preset.min_discount, limit=5)
             public_result = await maybe_post_public_deal_cards(
                 bot=interaction.client,
                 guild_id=interaction.guild_id,
-                cards=shown_cards,
+                cards=public_cards,
                 source_label=f"hunt:{self.preset.key}",
                 fallback_retailer="walmart",
+                min_public_discount=self.preset.min_discount,
             )
             add_public_posting_field(summary, public_result)
             await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], view=PresetResultView(shown_cards), ephemeral=True)
@@ -273,12 +284,14 @@ class DealSearchControlView(discord.ui.View):
                     cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
                     shown_cards = cards[:5]
                     summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, len(cards), tuple(warnings), self.simple_mode)
+                    public_cards = select_public_deal_candidates(shown_cards, source_label="hunt_pages", min_discount=min_discount, limit=5)
                     public_result = await maybe_post_public_deal_cards(
                         bot=interaction.client,
                         guild_id=interaction.guild_id,
-                        cards=shown_cards,
+                        cards=public_cards,
                         source_label="hunt_pages",
                         fallback_retailer="walmart",
+                        min_public_discount=min_discount,
                     )
                     summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
                     add_public_posting_field(summary, public_result)
@@ -291,12 +304,14 @@ class DealSearchControlView(discord.ui.View):
             summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, len(fallback_cards), tuple(warnings), self.simple_mode)
             if fallback_cards:
                 shown_cards = fallback_cards[:5]
+                public_cards = select_public_deal_candidates(shown_cards, source_label="hunt_pages_fallback", min_discount=shown_discount, limit=5)
                 public_result = await maybe_post_public_deal_cards(
                     bot=interaction.client,
                     guild_id=interaction.guild_id,
-                    cards=shown_cards,
+                    cards=public_cards,
                     source_label="hunt_pages_fallback",
                     fallback_retailer="walmart",
+                    min_public_discount=shown_discount,
                 )
                 summary.add_field(name="No 80%+ found — showing closest matches", value=f"I did not find a true 80%+ markdown, so I’m showing the best **{shown_discount}%+** matches instead.", inline=False)
                 summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)

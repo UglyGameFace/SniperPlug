@@ -22,6 +22,7 @@ from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_posts import PublicPostResult, maybe_post_public_deal_cards
 from sniperplug.services.public_result_explainer import explain_public_post_result
+from sniperplug.services.public_deal_quality import select_public_deal_candidates
 from sniperplug.services.verified_discount_hunt import HUNT_PRESETS, VerifiedHuntResult, collect_verified_discount_cards
 
 
@@ -300,10 +301,27 @@ class AutoScanRunnerCog(commands.Cog):
         unique_cards = await apply_feedback_learning_to_cards(self.bot.db, guild_id=guild.guild_id, cards=unique_cards, fallback_retailer=AUTO_SCAN_RETAILER)
         feedback_summary = summarize_feedback_learning(unique_cards)
         confidence_selection = select_confident_public_cards(unique_cards, floor=AUTOSCAN_CONFIDENCE_FLOOR)
+        public_candidates = list(confidence_selection.cards)
+        rescued_cards = select_public_deal_candidates(
+            unique_cards,
+            source_label=f"{AUTO_SCAN_SOURCE_LABEL}:{preset.key}",
+            min_discount=result.min_discount,
+            limit=AUTO_SCAN_PUBLIC_LIMIT,
+        )
+        added_rescues = 0
+        for card in rescued_cards:
+            if card not in public_candidates:
+                public_candidates.append(card)
+                added_rescues += 1
+        if added_rescues:
+            warnings.append(
+                f"Verified markdown rescue lane added **{added_rescues}** real threshold-matching deal(s) that confidence scoring would have hidden."
+            )
+
         fresh_selection = await select_fresh_deal_cards(
             self.bot.db,
             guild_id=guild.guild_id,
-            cards=confidence_selection.cards,
+            cards=public_candidates,
             fallback_retailer=AUTO_SCAN_RETAILER,
             limit=AUTO_SCAN_PUBLIC_LIMIT,
             hide_active_cache_repeats=False,
@@ -314,8 +332,9 @@ class AutoScanRunnerCog(commands.Cog):
         if not shown_cards:
             watchlist_cards = prepare_review_watchlist_cards(result, limit=AUTO_SCAN_REVIEW_FALLBACK_LIMIT)
             if watchlist_cards:
-                shown_cards = watchlist_cards
-                warnings.append("No verified public-confidence cards passed; selected top Walmart Deal Week watchlist/review leads and sent them to the public guard.")
+                warnings.append(
+                    "No verified public deal passed. Watchlist/review leads were kept private in diagnostics and were NOT public-posted."
+                )
 
         if not force:
             await record_auto_scan_run(self.bot.db, guild.guild_id, AUTO_SCAN_RETAILER, scan_key=scan_key)
@@ -367,6 +386,7 @@ class AutoScanRunnerCog(commands.Cog):
             cards=shown_cards,
             source_label=f"{AUTO_SCAN_SOURCE_LABEL}:{preset.key}{':watchlist' if watchlist_cards else ''}",
             fallback_retailer=AUTO_SCAN_RETAILER,
+            min_public_discount=result.min_discount,
         )
         report = AutoScanReport(
             guild_id=guild.guild_id,
@@ -471,7 +491,6 @@ def prepare_review_watchlist_cards(result: VerifiedHuntResult, *, limit: int = A
 
     cards: list[DealCard] = []
     for card in review.cards[: max(1, int(limit))]:
-        setattr(card, "should_alert", True)
         try:
             card.score = max(int(getattr(card, "score", 0) or 0), 90)
         except Exception:

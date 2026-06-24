@@ -9,6 +9,7 @@ from sniperplug.services.deal_feedback import build_deal_feedback_view, build_fe
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_channel_id
 from sniperplug.services.public_posting import normalize_retailer_key
+from sniperplug.services.public_deal_quality import is_public_deal_candidate, prepare_public_deal_candidate
 
 
 ALERT_DEDUPE_DAYS = 30
@@ -55,6 +56,7 @@ async def maybe_post_public_deal_cards(
     source_label: str,
     fallback_retailer: str | None = None,
     min_alert_score: int = 90,
+    min_public_discount: int = 50,
 ) -> PublicPostResult:
     if guild_id is None or not cards:
         return PublicPostResult()
@@ -93,6 +95,10 @@ async def maybe_post_public_deal_cards(
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or fallback_key
         if retailer not in allowed_retailers:
             skipped_wrong_retailer += 1
+            continue
+
+        if not prepare_public_deal_candidate(card, source_label=source_label, min_discount=min_public_discount):
+            skipped_not_alertable += 1
             continue
 
         should_alert = getattr(card, "should_alert", None)
@@ -323,6 +329,8 @@ async def cache_active_deal_cards(db, *, guild_id: int, cards: list[Any], source
     for card in cards:
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
         if not retailer:
+            continue
+        if not is_public_deal_candidate(card, source_label=source_label, min_discount=50):
             continue
         url = getattr(card, "url", "") or ""
         key = active_cache_key(

@@ -22,6 +22,7 @@ from sniperplug.services.deal_search_modes import MODE_BEST, rank_for_search_mod
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_posts import PublicPostResult, maybe_post_public_deal_cards
+from sniperplug.services.scout_lane_polish import select_best_public_scout_cards
 from sniperplug.services.public_result_explainer import explain_public_post_result
 from sniperplug.services.public_deal_quality import select_public_deal_candidates
 from sniperplug.services.verified_discount_hunt import HUNT_PRESETS, VerifiedHuntResult, collect_verified_discount_cards
@@ -401,7 +402,7 @@ class AutoScanRunnerCog(commands.Cog):
             watchlist_cards = prepare_review_watchlist_cards(result, limit=AUTO_SCAN_REVIEW_FALLBACK_LIMIT)
             if watchlist_cards:
                 warnings.append(
-                    "No verified public deal passed. Public Scout Lane is posting the top review leads with a manual verification warning."
+                    "No verified public deal passed. Public Scout Lane is posting the strongest ranked leads with proof labels, buy-checks, and manual verification warnings."
                 )
 
         if not force:
@@ -579,7 +580,13 @@ def prepare_review_watchlist_cards(result: VerifiedHuntResult, *, limit: int = A
         return []
 
     cards: list[DealCard] = []
-    for card in review.cards[: max(1, int(limit))]:
+    scout_source_cards = select_best_public_scout_cards(
+        list(review.cards),
+        limit=max(1, int(limit)),
+        min_discount=result.min_discount,
+        min_rank=45,
+    )
+    for card in scout_source_cards:
         try:
             card.score = max(int(getattr(card, "score", 0) or 0), 90)
         except Exception:

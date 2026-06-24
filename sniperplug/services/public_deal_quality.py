@@ -4,6 +4,8 @@ from typing import Any
 
 import discord
 
+from sniperplug.services.scout_lane_polish import scout_rank
+
 
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
 PUBLIC_SCOUT_LANE_FIELD = "🟨 Public scout lane"
@@ -110,12 +112,12 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
     return True
 
 
-def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 85) -> bool:
+def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 45) -> bool:
     """Allow clearly labeled review/scout leads to post without calling them verified deals."""
     if not has_real_price(card):
         return False
 
-    score = int_or_zero(getattr(card, "score", 0))
+    score = max(int_or_zero(getattr(card, "score", 0)), scout_rank(card))
     text = card_text(card, source_label=source_label).lower()
     manual_allowed = bool(getattr(card, "manual_share_allowed", False))
     scout_text = any(
@@ -134,7 +136,7 @@ def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: i
     return score >= int(min_score) and (manual_allowed or scout_text)
 
 
-def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 85) -> bool:
+def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 45) -> bool:
     if not is_public_scout_candidate(card, source_label=source_label, min_score=min_score):
         return False
 

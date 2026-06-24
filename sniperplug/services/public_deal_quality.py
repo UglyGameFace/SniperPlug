@@ -4,7 +4,7 @@ from typing import Any
 
 import discord
 
-from sniperplug.services.scout_lane_polish import scout_rank
+from sniperplug.services.scout_lane_polish import is_high_confidence_public_scout, scout_rank
 
 
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
@@ -92,9 +92,9 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
 
     setattr(card, "should_alert", True)
     try:
-        card.score = max(int(getattr(card, "score", 0) or 0), 90)
+        card.score = max(int(getattr(card, "score", 0) or 0), scout_rank(card))
     except Exception:
-        setattr(card, "score", 90)
+        setattr(card, "score", scout_rank(card))
 
     embed = getattr(card, "embed", None)
     if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_DEAL_LANE_FIELD for field in embed.fields):
@@ -112,47 +112,30 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
     return True
 
 
-def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 45) -> bool:
-    """Allow clearly labeled review/scout leads to post without calling them verified deals."""
+def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
+    """Allow only high-confidence Scout leads with hard value proof to public-post."""
     if not has_real_price(card):
         return False
-
-    score = max(int_or_zero(getattr(card, "score", 0)), scout_rank(card))
-    text = card_text(card, source_label=source_label).lower()
-    manual_allowed = bool(getattr(card, "manual_share_allowed", False))
-    scout_text = any(
-        term in text
-        for term in (
-            "exact product match",
-            "flip/value lead",
-            "review candidate",
-            "watchlist",
-            "walmart cash",
-            "cashrewards",
-            "rollback",
-            "clearance",
-        )
-    )
-    return score >= int(min_score) and (manual_allowed or scout_text)
+    return is_high_confidence_public_scout(card, min_rank=int(min_score))
 
 
-def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 45) -> bool:
+def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
     if not is_public_scout_candidate(card, source_label=source_label, min_score=min_score):
         return False
 
     setattr(card, "should_alert", True)
     try:
-        card.score = max(int(getattr(card, "score", 0) or 0), 90)
+        card.score = max(int(getattr(card, "score", 0) or 0), scout_rank(card))
     except Exception:
-        setattr(card, "score", 90)
+        setattr(card, "score", scout_rank(card))
 
     embed = getattr(card, "embed", None)
     if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_SCOUT_LANE_FIELD for field in embed.fields):
         embed.add_field(
             name=PUBLIC_SCOUT_LANE_FIELD,
             value=(
-                "Posted because strict verified markdown proof found **0** public deals, "
-                "but this was one of the strongest Walmart Scout leads. "
+                "Posted because strict Verified Deal proof found **0** public deals, "
+                "but this Scout lead had hard value proof. "
                 "**Verify app price, selected option, seller, shipping, stock, and comps before buying.**"
             ),
             inline=False,

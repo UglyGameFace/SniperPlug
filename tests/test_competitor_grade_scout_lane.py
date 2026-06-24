@@ -18,12 +18,12 @@ def test_autoscan_uses_ranked_scout_cards_not_raw_review_slice():
     assert "select_best_public_scout_cards" in AUTO
     assert "scout_source_cards" in AUTO
     assert "review.cards[: max" not in AUTO
-    assert "strongest ranked leads" in AUTO
+    assert "high-confidence leads" in AUTO
 
 
 def test_public_quality_uses_scout_rank_and_lower_scout_threshold():
     assert "scout_rank(card)" in QUALITY
-    assert "min_score: int = 45" in QUALITY
+    assert "min_score: int = 95" in QUALITY
     assert "prepare_public_scout_candidate" in QUALITY
 
 
@@ -33,6 +33,6 @@ def test_old_private_watchlist_expectation_removed():
 
 
 def test_scout_lane_never_claims_verified_certainty():
-    assert "Lane: **Scout**, not Verified" in POLISH
-    assert "not blind-buy proof" in POLISH
+    assert "Lane: **High-confidence Scout**, not Verified" in POLISH
+    assert "not verified proof" in POLISH or "not blind-buy proof" in POLISH
     assert "Verify before buying" in POLISH

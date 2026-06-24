@@ -402,7 +402,7 @@ class AutoScanRunnerCog(commands.Cog):
             watchlist_cards = prepare_review_watchlist_cards(result, limit=AUTO_SCAN_REVIEW_FALLBACK_LIMIT)
             if watchlist_cards:
                 warnings.append(
-                    "No verified public deal passed. Public Scout Lane is posting the strongest ranked leads with proof labels, buy-checks, and manual verification warnings."
+                    "No verified public deal passed. Public Scout Lane only posts high-confidence leads with hard value proof. Weak reference-only leads stay private."
                 )
 
         if not force:
@@ -584,13 +584,10 @@ def prepare_review_watchlist_cards(result: VerifiedHuntResult, *, limit: int = A
         list(review.cards),
         limit=max(1, int(limit)),
         min_discount=result.min_discount,
-        min_rank=45,
+        min_rank=95,
     )
     for card in scout_source_cards:
-        try:
-            card.score = max(int(getattr(card, "score", 0) or 0), 90)
-        except Exception:
-            setattr(card, "score", 90)
+        # Scout cards are already ranked by hard value proof. Do not inflate weak leads.
         key = getattr(card, "selected_offer_id", None) or getattr(card, "sku", None) or getattr(card, "upc", None) or getattr(card, "url", "") or getattr(card, "label", "watchlist")
         price = getattr(card, "current_price", None)
         setattr(card, "public_post_key", f"watchlist:{key}:price:{price}")

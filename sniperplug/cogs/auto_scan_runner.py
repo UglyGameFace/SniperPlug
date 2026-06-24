@@ -724,6 +724,29 @@ def summarize_price_memory(result: VerifiedHuntResult) -> str:
         return "used, but summary unavailable"
 
 
+async def delete_ghost_public_alert_guild_row(db, guild_id: int) -> None:
+    conn = db.require_conn()
+    tables = (
+        "guild_public_alert_settings",
+        "guild_retailer_auto_scan_settings",
+        "guild_retailer_auto_scan_runs",
+        "guild_alert_channels",
+        "guild_public_deal_posts",
+        "guild_active_deal_cache",
+        "alert_dedupe",
+    )
+    for table in tables:
+        try:
+            await conn.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
+        except Exception:
+            # Table may not exist yet on older deployments.
+            pass
+    try:
+        await conn.commit()
+    except Exception:
+        pass
+
+
 async def list_public_alert_guilds(db, *, bot: Any | None = None) -> list[AutoScanGuild]:
     conn = db.require_conn()
     cursor = await conn.execute(
@@ -742,10 +765,11 @@ async def list_public_alert_guilds(db, *, bot: Any | None = None) -> list[AutoSc
 
         if live_guild_ids is not None and guild_id not in live_guild_ids:
             log.warning(
-                "Auto-scan skipped stale/ghost public-alert guild row guild=%s live_guilds=%s. Re-run /setup_sniperplug_here in the live server to repair.",
+                "Auto-scan deleted stale/ghost public-alert guild row guild=%s live_guilds=%s. Run /setup_sniperplug_here in the live server if this server still needs alerts.",
                 guild_id,
                 sorted(live_guild_ids),
             )
+            await delete_ghost_public_alert_guild_row(db, guild_id)
             continue
 
         config = await get_public_alert_config(db, guild_id)

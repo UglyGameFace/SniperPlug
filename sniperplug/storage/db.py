@@ -635,21 +635,35 @@ class Database:
         )
         await conn.commit()
 
-    async def find_recent_alert(self, *, guild_id: int, retailer: str, product_key: str, current_price: float | None = None) -> dict[str, Any] | None:
+    async def find_recent_alert(
+        self,
+        *,
+        guild_id: int,
+        retailer: str,
+        product_key: str,
+        current_price: float | None = None,
+        alert_key: str | None = None,
+    ) -> dict[str, Any] | None:
         conn = self.require_conn()
         now = utc_now_iso()
-        cursor = await conn.execute(
-            """
+
+        sql = """
             SELECT * FROM alert_dedupe
             WHERE guild_id = ? AND retailer = ? AND product_key = ? AND (expires_at IS NULL OR expires_at > ?)
-            ORDER BY posted_at DESC
-            LIMIT 1
-            """,
-            (guild_id, retailer, product_key, now),
-        )
+        """
+        params: list[Any] = [guild_id, retailer, product_key, now]
+
+        if alert_key:
+            sql += " AND alert_key = ?"
+            params.append(alert_key)
+
+        sql += " ORDER BY posted_at DESC LIMIT 1"
+
+        cursor = await conn.execute(sql, tuple(params))
         row = await cursor.fetchone()
         if not row:
             return None
+
         data = dict(row)
         previous_price = data.get("current_price")
         data["same_or_higher_price"] = bool(current_price is not None and previous_price is not None and current_price >= float(previous_price))

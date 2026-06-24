@@ -241,71 +241,6 @@ class PublicAlertsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="public_alerts", description="Turn public deal posting on/off and choose the public alert channel.")
-    @app_commands.describe(
-        enabled="Whether verified public deal cards may post publicly.",
-        channel="Channel for public deal cards. Omit to keep the existing channel or use the current channel.",
-        retailers="Comma-separated stores allowed to post publicly. Example: walmart,home_depot",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def public_alerts(
-        self,
-        interaction: discord.Interaction,
-        enabled: bool = True,
-        channel: discord.TextChannel | None = None,
-        retailers: str = "walmart",
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which public-alert settings to save.", ephemeral=True)
-            return
-
-        existing = await get_public_alert_config(self.bot.db, interaction.guild_id)
-        parsed_retailers = parse_retailer_list(retailers) or tuple(existing.get("retailers") or ()) or ("walmart",)
-        unsupported = [piece.strip() for piece in retailers.replace(";", ",").split(",") if piece.strip() and normalize_retailer_key(piece) not in SUPPORTED_RETAILERS]
-        if unsupported:
-            await interaction.followup.send(f"Unsupported retailer(s): `{', '.join(unsupported)}`. Supported: {format_retailers(tuple(sorted(SUPPORTED_RETAILERS)))}", ephemeral=True)
-            return
-
-        chosen_channel = channel
-        if chosen_channel is None and isinstance(interaction.channel, discord.TextChannel):
-            chosen_channel = interaction.channel
-        channel_id = chosen_channel.id if chosen_channel is not None else existing.get("channel_id")
-        if enabled and channel_id is None:
-            await interaction.followup.send("Public alerts need a channel. Re-run this with `channel:#your-deals-channel` or run it inside the channel you want to use.", ephemeral=True)
-            return
-        if enabled and chosen_channel is not None and interaction.guild is not None:
-            missing = public_alert_channel_missing_permissions(chosen_channel, interaction.guild.me)
-            if missing:
-                await interaction.followup.send(public_alert_channel_missing_permissions_message(chosen_channel, missing), ephemeral=True)
-                return
-
-        await set_public_alert_config(
-            self.bot.db,
-            guild_id=interaction.guild_id,
-            enabled=bool(enabled),
-            retailers=parsed_retailers,
-            channel_id=channel_id,
-        )
-        config = await get_public_alert_config(self.bot.db, interaction.guild_id)
-        auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
-        embed = public_alert_status_embed(
-            enabled=config["enabled"],
-            retailers=config["retailers"],
-            channel_id=config["channel_id"],
-            auto_scan=auto_scan,
-            threshold=await get_starting_deal_percent(self.bot.db, interaction.guild_id),
-        )
-        embed.title = "📣 Public Alerts Updated"
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @public_alerts.error
-    async def public_alerts_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = "You need **Manage Server** permission to change public alerts." if isinstance(error, app_commands.MissingPermissions) else f"Public alerts hit an error: `{error}`"
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(name="retailer_autoscan", description="Turn scheduled auto-scan on/off for a retailer and set its safety gates.")
     @app_commands.describe(
@@ -474,9 +409,15 @@ class PublicAlertsCog(commands.Cog):
         if interaction.guild_id is None:
             await interaction.followup.send("Use this in a server so I know which active deal cache to clear.", ephemeral=True)
             return
-        cleared = await clear_active_cached_deals(self.bot.db, interaction.guild_id)
+        cleared = await clear_autoscan_posting_memory(self.bot.db, interaction.guild_id)
         await interaction.followup.send(
-            f"Cleared **{cleared}** active cached deal record(s). This does not delete Discord posts; it only resets SniperPlug's remembered active-deal cache.",
+            (
+                "Cleared SniperPlug auto-scan memory for this server.\n"
+                f"• Active cache: **{cleared['active_cache']}**\n"
+                f"• Public post duplicate memory: **{cleared['public_posts']}**\n"
+                f"• Alert dedupe memory: **{cleared['alert_dedupe']}**\n\n"
+                "This does not delete Discord messages. Run `/autoscan_now force:true` next."
+            ),
             ephemeral=True,
         )
 
@@ -618,7 +559,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
 
 def public_alert_channel_status(bot: commands.Bot, guild_id: int, channel_id: int | str | None) -> str:
     if not channel_id:
-        return "⛔ No public channel saved. Run `/setup_sniperplug_here` inside the channel you want, or `/setup_sniperplug channel:#walmart-deals`."
+        return "⛔ No public channel saved. Run `/setup_sniperplug_here` inside the live public deals channel."
     guild = bot.get_guild(guild_id)
     if guild is None:
         return f"⛔ Bot is not connected to guild `{guild_id}` right now."
@@ -716,6 +657,49 @@ async def clear_active_cached_deals(db, guild_id: int) -> int:
         return count
     except Exception:
         return 0
+
+
+async def clear_autoscan_posting_memory(db, guild_id: int) -> dict[str, int]:
+    await ensure_public_post_tables(db)
+    conn = db.require_conn()
+
+    async def count_rows(sql: str, params: tuple) -> int:
+        cursor = await conn.execute(sql, params)
+        row = await cursor.fetchone()
+        return int(row["count"] if row and row["count"] is not None else 0)
+
+    active_count = await count_rows(
+        "SELECT COUNT(*) AS count FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active'",
+        (guild_id,),
+    )
+    public_post_count = await count_rows(
+        "SELECT COUNT(*) AS count FROM guild_public_deal_posts WHERE guild_id = ?",
+        (guild_id,),
+    )
+    alert_dedupe_count = await count_rows(
+        "SELECT COUNT(*) AS count FROM alert_dedupe WHERE guild_id = ? AND retailer = 'walmart'",
+        (guild_id,),
+    )
+
+    await conn.execute(
+        "UPDATE guild_active_deal_cache SET status = 'cleared' WHERE guild_id = ? AND status = 'active'",
+        (guild_id,),
+    )
+    await conn.execute(
+        "DELETE FROM guild_public_deal_posts WHERE guild_id = ?",
+        (guild_id,),
+    )
+    await conn.execute(
+        "DELETE FROM alert_dedupe WHERE guild_id = ? AND retailer = 'walmart'",
+        (guild_id,),
+    )
+    await conn.commit()
+
+    return {
+        "active_cache": active_count,
+        "public_posts": public_post_count,
+        "alert_dedupe": alert_dedupe_count,
+    }
 
 
 

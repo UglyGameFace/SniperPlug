@@ -13,7 +13,9 @@ from sniperplug.services.public_deal_quality import is_public_deal_candidate, pr
 
 
 ALERT_DEDUPE_DAYS = 30
+SCOUT_ALERT_DEDUPE_HOURS = 6
 PUBLIC_ALERT_KEY = "public_alert:v1"
+PUBLIC_SCOUT_ALERT_KEY = "public_scout_alert:v1"
 PUBLIC_CHANNEL_NAME_FALLBACKS = ("walmart-deals", "deals", "deal-alerts", "sniperplug-deals")
 RESERVATION_STALE_MINUTES = 20
 _MISSING_ROWCOUNT = object()
@@ -112,7 +114,15 @@ async def maybe_post_public_deal_cards(
 
         current_price = _float_or_none(getattr(card, "current_price", None))
         product_key = card_product_key(card, retailer=retailer)
-        recent_alert = await safe_find_recent_alert(db, guild_id=guild_id, retailer=retailer, product_key=product_key, current_price=current_price)
+        alert_key = PUBLIC_SCOUT_ALERT_KEY if allow_review_scout else PUBLIC_ALERT_KEY
+        recent_alert = await safe_find_recent_alert(
+            db,
+            guild_id=guild_id,
+            retailer=retailer,
+            product_key=product_key,
+            current_price=current_price,
+            alert_key=alert_key,
+        )
         if recent_alert and should_suppress_recent_alert(recent_alert, current_price):
             skipped_recent_alert_duplicate += 1
             continue
@@ -138,12 +148,12 @@ async def maybe_post_public_deal_cards(
                 guild_id=guild_id,
                 retailer=retailer,
                 product_key=product_key,
-                alert_key=PUBLIC_ALERT_KEY,
+                alert_key=alert_key,
                 current_price=current_price,
                 channel_id=getattr(channel, "id", config["channel_id"]),
                 message_id=getattr(message, "id", None),
                 threshold_price=current_price,
-                expires_at=alert_expires_at(),
+                expires_at=alert_expires_at(hours=SCOUT_ALERT_DEDUPE_HOURS if allow_review_scout else None),
             )
         except Exception as exc:
             notes.append(f"alert dedupe write failed for {retailer}: {clean_error_text(exc)}")
@@ -186,7 +196,7 @@ async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, conf
                 return None, (
                     f"public channel lookup failed: saved route uses ghost guild `{guild_id}`, "
                     f"but saved channel <#{channel_id}> belongs to live guild `{fetched_guild_id}`. "
-                    "Run `/setup_sniperplug_here` in the live #walmart-deals channel to repair the route."
+                    "Run `/setup_sniperplug_here` inside the live public deals channel to repair the route."
                 )
         except Exception:
             pass
@@ -211,7 +221,7 @@ async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, conf
 
     repaired = await find_named_public_channel(guild)
     if repaired is None:
-        return None, f"{fetch_error}. Re-run `/setup_sniperplug_here` to save the live channel ID."
+        return None, f"{fetch_error}. Run `/setup_sniperplug_here` inside the live public deals channel to save the correct route."
 
     permission_error = public_channel_permission_error(guild, repaired)
     if permission_error:
@@ -308,9 +318,23 @@ def canonical_url_key(url: str) -> str:
     return text.split("?", 1)[0].rstrip("/") or "unknown"
 
 
-async def safe_find_recent_alert(db, *, guild_id: int, retailer: str, product_key: str, current_price: float | None) -> dict[str, Any] | None:
+async def safe_find_recent_alert(
+    db,
+    *,
+    guild_id: int,
+    retailer: str,
+    product_key: str,
+    current_price: float | None,
+    alert_key: str | None = None,
+) -> dict[str, Any] | None:
     try:
-        return await db.find_recent_alert(guild_id=guild_id, retailer=retailer, product_key=product_key, current_price=current_price)
+        return await db.find_recent_alert(
+            guild_id=guild_id,
+            retailer=retailer,
+            product_key=product_key,
+            current_price=current_price,
+            alert_key=alert_key,
+        )
     except Exception:
         return None
 
@@ -324,7 +348,9 @@ def should_suppress_recent_alert(recent_alert: dict[str, Any], current_price: fl
     return current_price >= previous_price
 
 
-def alert_expires_at(days: int = ALERT_DEDUPE_DAYS) -> str:
+def alert_expires_at(days: int = ALERT_DEDUPE_DAYS, *, hours: int | None = None) -> str:
+    if hours is not None:
+        return (datetime.now(timezone.utc) + timedelta(hours=max(1, int(hours)))).isoformat()
     return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
 
@@ -438,6 +464,20 @@ async def reserve_public_deal_post(db, *, guild_id: int, retailer: str, deal_key
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
     stale_before = (now_dt - timedelta(minutes=RESERVATION_STALE_MINUTES)).isoformat()
+    scout_stale_before = (now_dt - timedelta(hours=SCOUT_ALERT_DEDUPE_HOURS)).isoformat()
+
+    if str(deal_key).startswith("scout:") or "scout" in str(source_label).lower():
+        await conn.execute(
+            """
+            DELETE FROM guild_public_deal_posts
+            WHERE guild_id = ?
+              AND deal_key = ?
+              AND status = 'posted'
+              AND COALESCE(posted_at, first_seen_at) < ?
+            """,
+            (guild_id, deal_key, scout_stale_before),
+        )
+
     await conn.execute(
         "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'reserved' AND first_seen_at < ?",
         (guild_id, deal_key, stale_before),

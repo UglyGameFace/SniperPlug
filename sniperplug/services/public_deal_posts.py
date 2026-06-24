@@ -177,6 +177,19 @@ async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, conf
 
     guild = bot.get_guild(guild_id)
     if guild is None:
+        # This usually means an old/stale DB row is using a guild ID the bot is
+        # no longer connected to. Do not silently fail as "no deals"; explain it.
+        try:
+            fetched = await bot.fetch_channel(channel_id)
+            fetched_guild_id = getattr(getattr(fetched, "guild", None), "id", None)
+            if fetched_guild_id is not None and int(fetched_guild_id) != int(guild_id):
+                return None, (
+                    f"public channel lookup failed: saved route uses ghost guild `{guild_id}`, "
+                    f"but saved channel <#{channel_id}> belongs to live guild `{fetched_guild_id}`. "
+                    "Run `/setup_sniperplug_here` in the live #walmart-deals channel to repair the route."
+                )
+        except Exception:
+            pass
         return None, f"public channel lookup failed: bot is not currently connected to guild `{guild_id}`"
 
     channel = guild.get_channel(channel_id)

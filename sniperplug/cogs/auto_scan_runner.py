@@ -309,7 +309,7 @@ class AutoScanRunnerCog(commands.Cog):
     @tasks.loop(minutes=AUTO_SCAN_INTERVAL_MINUTES)
     async def auto_scan_loop(self) -> None:
         await self.bot.wait_until_ready()
-        guilds = await list_public_alert_guilds(self.bot.db)
+        guilds = await list_public_alert_guilds(self.bot.db, bot=self.bot)
         if not guilds:
             return
 
@@ -724,17 +724,35 @@ def summarize_price_memory(result: VerifiedHuntResult) -> str:
         return "used, but summary unavailable"
 
 
-async def list_public_alert_guilds(db) -> list[AutoScanGuild]:
+async def list_public_alert_guilds(db, *, bot: Any | None = None) -> list[AutoScanGuild]:
     conn = db.require_conn()
     cursor = await conn.execute(
         "SELECT guild_id FROM guild_public_alert_settings WHERE enabled = 1 AND channel_id IS NOT NULL"
     )
     rows = await cursor.fetchall()
     guilds: list[AutoScanGuild] = []
+    seen: set[int] = set()
+
+    live_guild_ids: set[int] | None = None
+    if bot is not None:
+        live_guild_ids = {int(guild.id) for guild in list(getattr(bot, "guilds", []) or [])}
+
     for row in rows:
         guild_id = int(row["guild_id"])
+
+        if live_guild_ids is not None and guild_id not in live_guild_ids:
+            log.warning(
+                "Auto-scan skipped stale/ghost public-alert guild row guild=%s live_guilds=%s. Re-run /setup_sniperplug_here in the live server to repair.",
+                guild_id,
+                sorted(live_guild_ids),
+            )
+            continue
+
         config = await get_public_alert_config(db, guild_id)
         if AUTO_SCAN_RETAILER in set(config.get("retailers") or ()) and config.get("channel_id"):
+            if guild_id in seen:
+                continue
+            seen.add(guild_id)
             guilds.append(AutoScanGuild(guild_id=guild_id, channel_id=int(config["channel_id"])))
     return guilds
 

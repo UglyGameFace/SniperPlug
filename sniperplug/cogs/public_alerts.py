@@ -545,7 +545,22 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     channel_status = public_alert_channel_status(bot, guild_id, config.get("channel_id"))
     category_preferences = await get_category_preferences(db, guild_id)
 
-    critical_ok = bool(config.get("enabled")) and "walmart" in set(config.get("retailers") or ()) and channel_status.startswith("✅") and bool(walmart_settings.get("enabled")) and allowed
+    latest_text = format_latest_report_line(latest_report)
+    latest_lower = latest_text.lower()
+    last_run_has_route_error = (
+        "public channel lookup failed" in latest_lower
+        or "ghost guild" in latest_lower
+        or "bot is not currently connected to guild" in latest_lower
+    )
+
+    critical_ok = (
+        bool(config.get("enabled"))
+        and "walmart" in set(config.get("retailers") or ())
+        and channel_status.startswith("✅")
+        and bool(walmart_settings.get("enabled"))
+        and allowed
+        and not last_run_has_route_error
+    )
     embed = discord.Embed(
         title="🩺 Walmart Auto-Scan Health",
         description="This checks setup, channel permissions, schedule gates, and the exact last run decision trail.",
@@ -583,7 +598,16 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
         ),
         inline=False,
     )
-    embed.add_field(name="Last run decision", value=trim_field(format_latest_report_line(latest_report), 1024), inline=False)
+    if last_run_has_route_error:
+        embed.add_field(
+            name="🚨 Posting route problem",
+            value=(
+                "SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. "
+                "Run `/setup_sniperplug_here` inside the live #walmart-deals channel, then run `/autoscan_now force:true`."
+            ),
+            inline=False,
+        )
+    embed.add_field(name="Last run decision", value=trim_field(latest_text, 1024), inline=False)
     embed.add_field(
         name="How to read this",
         value="If setup/channel/gate are green but posts stay at 0, check Last run decision. It will show whether threshold, confidence, fresh filter, category preference, duplicate, not-alertable, or disabled guards blocked the candidates.",

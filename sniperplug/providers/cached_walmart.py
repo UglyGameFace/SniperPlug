@@ -34,10 +34,20 @@ class CachedWalmartProvider(DealProvider):
         self.db = db
         self.inner = inner or WalmartProvider(configured=False)
 
+    @property
+    def config(self):
+        return getattr(self.inner, "config", None)
+
     async def healthcheck(self) -> ProviderHealth:
         return await self.inner.healthcheck()
 
+    async def fetch_product_detail_payload(self, item_id: str) -> dict:
+        return await self.inner.fetch_product_detail_payload(item_id)
+
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
+        if str(request.metadata.get("skip_scan_cache") or "").lower() in {"1", "true", "yes", "on"}:
+            return await self.inner.scan(request)
+
         scan_id = None
         requested_by = _int_or_none(request.metadata.get("requested_by"))
         guild_id = _int_or_none(request.metadata.get("guild_id"))
@@ -278,8 +288,10 @@ def _jsonable(value: Any) -> bool:
         return False
 
 
-def _int_or_none(value: Any) -> int | None:
+def _int_or_none(value) -> int | None:
+    if value is None or value == "":
+        return None
     try:
-        return int(value) if value is not None and str(value).strip() else None
+        return int(value)
     except (TypeError, ValueError):
         return None

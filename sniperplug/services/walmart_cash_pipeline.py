@@ -49,6 +49,7 @@ class WalmartCashDiscovery:
 
 
 def detect_walmart_api_capability(provider: Any) -> WalmartApiCapability:
+    provider = _unwrap_walmart_provider(provider)
     cfg = getattr(provider, "config", None)
     enabled = bool(getattr(cfg, "enabled", False))
     has_signed = bool(enabled and getattr(cfg, "consumer_id", None) and getattr(cfg, "private_key_b64", None))
@@ -89,7 +90,12 @@ async def run_walmart_cash_discovery(
     max_results: int,
     requested_by: str,
 ) -> WalmartCashDiscovery:
-    capability = detect_walmart_api_capability(provider)
+    # Cash Finder needs live Walmart API truth, not cached normalized scan rows.
+    # The normal bot registers CachedWalmartProvider for public deal scans, so
+    # unwrap it here to avoid DB/cache work blocking the command response and to
+    # expose the real provider's signed config/detail method to the probe.
+    api_provider = _unwrap_walmart_provider(provider)
+    capability = detect_walmart_api_capability(api_provider)
     queries = walmart_cash_search_terms(search)
     per_route_limit = max(3, min(12, int(max_results)))
     scan_jobs = [(query, 1) for query in queries[:2]]
@@ -97,15 +103,15 @@ async def run_walmart_cash_discovery(
     warnings: list[str] = []
     all_candidates: list[SourceCandidate] = []
 
-    provider_timeout = int(getattr(getattr(provider, "config", None), "timeout_seconds", 12) or 12)
-    route_timeout = max(provider_timeout + 4, 16)
+    provider_timeout = int(getattr(getattr(api_provider, "config", None), "timeout_seconds", 12) or 12)
+    route_timeout = max(provider_timeout + 6, 18)
     semaphore = asyncio.Semaphore(2)
 
     async def run_one_route(query: str, page: int):
         async with semaphore:
             try:
                 result = await asyncio.wait_for(
-                    provider.scan(
+                    api_provider.scan(
                         ProviderScanRequest(
                             source_key="walmart",
                             query=query.strip(),
@@ -115,6 +121,7 @@ async def run_walmart_cash_discovery(
                                 "requested_by": requested_by,
                                 "mode": "walmart_cash",
                                 "api_truth_only": "yes",
+                                "skip_scan_cache": "yes",
                             },
                         )
                     ),
@@ -137,7 +144,7 @@ async def run_walmart_cash_discovery(
         warnings.extend(w for w in result.warnings if w not in warnings)
 
     candidates = [_strip_search_level_cash_attrs(candidate) for candidate in _dedupe_candidates(all_candidates)]
-    detail_results = await _enrich_candidates_with_detail(provider, candidates, capability=capability)
+    detail_results = await _enrich_candidates_with_detail(api_provider, candidates, capability=capability)
 
     scans = [result.promo_scan for result in detail_results if result.promo_scan is not None]
     detail_rows_checked = sum(1 for result in detail_results if result.detail_checked)
@@ -192,6 +199,7 @@ async def _enrich_candidates_with_detail(
     *,
     capability: WalmartApiCapability,
 ) -> list[WalmartDetailResult]:
+    provider = _unwrap_walmart_provider(provider)
     if not candidates:
         return []
 
@@ -247,6 +255,18 @@ async def _call_detail_method(detail_method: Any, product_id: str) -> Any:
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+def _unwrap_walmart_provider(provider: Any) -> Any:
+    seen: set[int] = set()
+    current = provider
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        inner = getattr(current, "inner", None)
+        if inner is None or inner is current:
+            break
+        current = inner
+    return current if current is not None else provider
 
 
 def _strip_search_level_cash_attrs(candidate: SourceCandidate) -> SourceCandidate:

@@ -7,6 +7,7 @@ TARGETS = [
     "sniperplug/services/walmart_cash_offers.py",
     "sniperplug/services/walmart_cash_pipeline.py",
     "sniperplug/services/walmart_promo_classifier.py",
+    "sniperplug/providers/cached_walmart.py",
     "sniperplug/cogs/deal_scanner.py",
 ]
 

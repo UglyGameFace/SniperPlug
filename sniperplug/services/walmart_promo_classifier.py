@@ -103,6 +103,50 @@ def classify_walmart_api_promos(item: dict[str, Any], *, current_price: float | 
     )
 
 
+def classify_walmart_promos(raw_item: dict[str, Any], *, current_price: float | None = None) -> dict[str, list[dict[str, Any]]]:
+    """Stable public export for Cash Finder, API probe, and tests.
+
+    This wrapper intentionally delegates to classify_walmart_api_promos() so every
+    consumer uses the same API-truth rules. Do not add separate guess logic here;
+    Walmart Cash must come from extract_walmart_cash_api_truth(), which requires
+    explicit Walmart Cash proof plus a sane dollar amount for the exact product.
+    """
+
+    scan = classify_walmart_api_promos(raw_item, current_price=current_price)
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "walmart_cash": [],
+        "cart_promo": [],
+        "onepay": [],
+        "markdown": [],
+        "clearance": [],
+        "generic_promo": [],
+    }
+
+    if scan.cash is not None:
+        buckets["walmart_cash"].append(
+            {
+                "path": scan.cash.proof_path,
+                "key": _leaf_key(scan.cash.proof_path),
+                "value": scan.cash.proof_text,
+                "amount": scan.cash.amount,
+                "proof_label": scan.cash.proof_label,
+                "raw_value": scan.cash.raw_value,
+            }
+        )
+
+    for bucket, evidence in (
+        ("cart_promo", scan.cart_promo),
+        ("onepay", scan.onepay),
+        ("markdown", scan.markdown),
+        ("clearance", scan.clearance),
+        ("generic_promo", scan.generic),
+    ):
+        if evidence is not None:
+            buckets[bucket].append(_evidence_row(evidence))
+
+    return buckets
+
+
 def promo_counts_from_scans(scans: list[WalmartPromoScan]) -> dict[str, int]:
     totals = {
         "walmart_cash": 0,
@@ -193,6 +237,25 @@ def _money_from_text(text: str) -> float | None:
         return None
 
 
+def _evidence_row(evidence: PromoEvidence) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "path": evidence.proof_path,
+        "key": _leaf_key(evidence.proof_path),
+        "value": evidence.proof_text,
+        "raw_value": evidence.raw_value,
+    }
+    if evidence.amount is not None:
+        row["amount"] = evidence.amount
+    return row
+
+
+def _leaf_key(path: str) -> str:
+    if not path:
+        return ""
+    cleaned = path.replace("]", "").replace("[", ".")
+    return cleaned.split(".")[-1]
+
+
 def _norm(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
@@ -200,90 +263,3 @@ def _norm(value: Any) -> str:
 def _clean(value: Any, limit: int = 220) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-
-
-# Stable public export used by Walmart Cash Finder, API probe, and tests.
-# This separates promo types so Walmart Cash can never be confused with
-# OnePay, cart promos, rollback/markdowns, clearance, or generic promo text.
-def classify_walmart_promos(raw_item, *, current_price=None):
-    import re
-
-    buckets = {
-        "walmart_cash": [],
-        "cart_promo": [],
-        "onepay": [],
-        "markdown": [],
-        "clearance": [],
-        "generic_promo": [],
-    }
-
-    def walk(value, path="$"):
-        if isinstance(value, dict):
-            for key, child in value.items():
-                child_path = f"{path}.{key}"
-                yield child_path, key, child
-                yield from walk(child, child_path)
-        elif isinstance(value, list):
-            for idx, child in enumerate(value):
-                child_path = f"{path}[{idx}]"
-                yield child_path, str(idx), child
-                yield from walk(child, child_path)
-
-    def sane_amount(text):
-        if text is None:
-            return None
-        joined = str(text)
-        matches = re.findall(r"\$?\b([0-9]+(?:\.[0-9]{1,2})?)\b", joined)
-        for match in matches:
-            try:
-                amount = float(match)
-            except Exception:
-                continue
-            if 0 < amount <= 500:
-                return amount
-        return None
-
-    def add(bucket, path, key, value, amount=None):
-        row = {
-            "path": path,
-            "key": str(key),
-            "value": str(value)[:500],
-        }
-        if amount is not None:
-            row["amount"] = amount
-        buckets[bucket].append(row)
-
-    for path, key, value in walk(raw_item):
-        hay = f"{key} {value}".lower()
-
-        if "onepay" in hay or "one pay" in hay:
-            add("onepay", path, key, value)
-            continue
-
-        if ("buy more" in hay and "save" in hay) or "save up to" in hay:
-            add("cart_promo", path, key, value)
-            continue
-
-        if "walmart cash" in hay or "walmartcash" in hay:
-            amount = sane_amount(value)
-            if amount is None:
-                amount = sane_amount(key)
-            if amount is not None:
-                add("walmart_cash", path, key, value, amount=amount)
-            else:
-                add("generic_promo", path, key, value)
-            continue
-
-        if "rollback" in hay or "was price" in hay or "wasprice" in hay or "list price" in hay:
-            add("markdown", path, key, value)
-            continue
-
-        if "clearance" in hay:
-            add("clearance", path, key, value)
-            continue
-
-        if any(token in hay for token in ("promo", "promotion", "coupon", "reward", "cashback", "cash back", "savings")):
-            add("generic_promo", path, key, value)
-
-    return buckets

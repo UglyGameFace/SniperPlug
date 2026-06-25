@@ -27,10 +27,14 @@ def test_open_box_command_and_routes_exist():
         assert query in source
 
 
-def test_open_box_cog_is_loaded():
-    source = read("sniperplug/bot.py")
-    assert "from sniperplug.cogs.open_box_deals import OpenBoxDealsCog" in source
-    assert "await self.add_cog(OpenBoxDealsCog(self))" in source
+def test_open_box_cog_and_autoscan_routes_are_loaded():
+    bot = read("sniperplug/bot.py")
+    routes = read("sniperplug/services/open_box_autoscan_routes.py")
+    assert "from sniperplug.cogs.open_box_deals import OpenBoxDealsCog" in bot
+    assert "await self.add_cog(OpenBoxDealsCog(self))" in bot
+    assert "install_open_box_autoscan_routes()" in bot
+    assert "OPEN_BOX_AUTOSCAN_QUERIES" in routes
+    assert "AUTO_SCAN_CATEGORY_ROTATION" in routes
 
 
 def test_existing_deal_and_autoscan_commands_still_exist():

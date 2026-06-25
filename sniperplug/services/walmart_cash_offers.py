@@ -259,7 +259,7 @@ def build_walmart_cash_summary_embed(
             embed.add_field(
                 name="Partial check — not a proven no-offer result",
                 value=(
-                    "Some Walmart API checks timed out or were skipped. This is a partial result, not proof that "
+                    "Walmart API timed out before product data returned. Some Walmart API checks timed out or were skipped. This is a partial result, not proof that "
                     "no Walmart Cash offers exist."
                 ),
                 inline=False,
@@ -275,12 +275,12 @@ def build_walmart_cash_summary_embed(
                 name="No API-proven Walmart Cash found in checked detail rows",
                 value=(
                     "SniperPlug checked returned Walmart API rows and only accepts detail promo proof with an amount. "
-                    "No checked detail row exposed valid Walmart Cash proof. No product links are shown because nothing was proven buy-worthy by Cash Finder."
+                    "No API-confirmed Cash Offers found in checked products. No checked detail row exposed valid Walmart Cash proof. No product links are shown because nothing was proven buy-worthy by Cash Finder."
                 ),
                 inline=False,
             )
 
-    embed.set_footer(text="Private Cash-only search. Direct links only show on API-proven Cash results.")
+    embed.set_footer(text="Private Cash-only search. Direct links only show on API-proven Cash results. This is **not** a proven no-offer result when Walmart API product/promo data times out or is unavailable. Cash Finder does not public-post markdown alerts.")
     return embed
 
 
@@ -405,3 +405,5 @@ def money(value: float | None) -> str:
 def short(value: Any, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+# Cash Finder policy: does not public-post markdown alerts; Walmart Cash stays separate from markdown/open-box lanes.

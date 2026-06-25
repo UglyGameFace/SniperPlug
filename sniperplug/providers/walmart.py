@@ -532,12 +532,24 @@ def _trusted_reference_price(item: dict, title: str, current_price: float | None
     for source, value in references:
         if value is None or value <= current_price:
             continue
-        suspicious = _reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=value)
+
+        # Native Walmart markdown/reference fields are proof. Do not let a huge
+        # discount ratio alone block real wasPrice/regular/original proof.
+        if _reference_price_trust(source) == "high":
+            return value, f"Walmart reference price source: {source}"
+
+        suspicious = _reference_price_looks_suspicious(
+            source=source,
+            title=title,
+            current_price=current_price,
+            reference_price=value,
+        )
         if suspicious:
             return None, ReferenceSignal(
                 f"ignored suspicious Walmart {source} reference price: ${value:,.2f}",
                 aliases=("ignored low-confidence",),
             )
+
         if _reference_price_is_trusted(source=source, title=title, current_price=current_price, reference_price=value):
             return value, f"Walmart reference price source: {source}"
         ignored.append(f"{source}=${value:,.2f}")
@@ -545,7 +557,6 @@ def _trusted_reference_price(item: dict, title: str, current_price: float | None
     if ignored:
         return None, "ignored low-confidence Walmart reference price(s): " + ", ".join(ignored[:3])
     return None, None
-
 
 def _trusted_reference_source(*, item: dict, title: str, current_price: float | None, reference_price: float) -> str | None:
     for source, value in _reference_price_candidates(item, current_price=current_price):
@@ -560,6 +571,10 @@ def _best_reference_context_price(*, item: dict, current_price: float | None) ->
     best_price: float | None = None
     best_source: str | None = None
     for source, value in _reference_price_candidates(item, current_price=current_price):
+        # Marketplace comps are flip/research context only. They are not Walmart
+        # was/regular/original/list reference proof.
+        if is_marketplace_comp_source(source):
+            continue
         if value is None or value <= 0:
             continue
         if current_price is not None and value <= current_price:
@@ -568,7 +583,6 @@ def _best_reference_context_price(*, item: dict, current_price: float | None) ->
             best_price = value
             best_source = source
     return best_price, best_source
-
 
 def _reference_price_candidates(item: dict, current_price: float | None = None) -> list[tuple[str, float | None]]:
     references: list[tuple[str, float | None]] = []
@@ -645,10 +659,19 @@ def _reference_price_is_trusted(*, source: str, title: str, current_price: float
     source_key = source.lower().replace("_", "").replace("-", "")
     if any(token in source_key for token in LOW_CONFIDENCE_REFERENCE_TOKENS):
         return False
-    if current_price is not None and _reference_price_looks_suspicious(source=source, title=title, current_price=current_price, reference_price=reference_price):
-        return False
-    return _reference_price_trust(source) == "high"
 
+    # Trusted native Walmart fields are proof even when the markdown is huge.
+    if _reference_price_trust(source) == "high":
+        return True
+
+    if current_price is not None and _reference_price_looks_suspicious(
+        source=source,
+        title=title,
+        current_price=current_price,
+        reference_price=reference_price,
+    ):
+        return False
+    return False
 
 def _best_marketplace_reference_prices(item: dict) -> list[tuple[str, float | None]]:
     attrs = marketplace_comp_from_item(item)
@@ -701,10 +724,33 @@ def _walmart_promotion_proof(item: dict[str, Any]) -> dict[str, str]:
     current_price, _ = _trusted_current_price(item)
     coupon = _promotion_amount(
         item,
-        include_terms=("coupon",),
-        exclude_terms=("cash", "reward", "walmart cash", "savings", "yousave", "wasprice"),
+        include_terms=("coupon", "extra savings", "extrasavings"),
+        exclude_terms=("cash", "reward", "walmart cash", "yousave", "wasprice"),
     )
-    return strict_walmart_promotion_proof(item, current_price=current_price, coupon_amount=coupon)
+    proof = strict_walmart_promotion_proof(item, current_price=current_price, coupon_amount=coupon)
+
+    # Some Walmart payloads expose explicit Walmart Cash as walmartCashOffer
+    # without the exact strict flattened proof fields. Accept only explicit
+    # Walmart Cash text/path plus a sane amount.
+    cash = _promotion_amount(
+        item,
+        include_terms=("walmart cash", "walmartcash", "cash offer", "cashoffer"),
+        exclude_terms=("onepay", "one pay", "cashback", "cash back", "generic rewards", "card rewards"),
+    )
+    if cash is not None and cash > 0 and "walmartCashSavings" not in proof:
+        max_allowed = 100.0
+        if current_price is not None and current_price > 0:
+            max_allowed = max(float(current_price) * 1.05, 100.0)
+        if cash <= max_allowed:
+            proof["walmartCashSavings"] = f"{cash:.2f}"
+            proof["walmartCashApiProof"] = "yes"
+            proof["walmartCashProofMode"] = "strict_api_field_amount"
+            proof["walmartCashProofPath"] = "walmartCashOffer"
+            proof["walmartCashProofLabel"] = "Walmart Cash API field"
+            proof["walmartCashProofText"] = "Walmart API returned explicit Walmart Cash proof."
+            proof["walmartCashRawValue"] = f"{cash:.2f}"
+
+    return proof
 
 
 def _promotion_amount(value: Any, *, include_terms: tuple[str, ...], exclude_terms: tuple[str, ...]) -> float | None:

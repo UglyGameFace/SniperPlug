@@ -18,9 +18,9 @@ def test_category_summary_shows_priority_and_muted():
         "pet_supplies": "muted",
     })
     assert "Priority" in text
-    assert "`mobile_accessories`" in text
+    assert "Mobile Accessories" in text
     assert "Muted" in text
-    assert "`pet_supplies`" in text
+    assert "Pet Supplies" in text
     assert "Extreme/nuclear" in text
 
 

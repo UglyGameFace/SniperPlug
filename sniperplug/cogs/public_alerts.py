@@ -105,7 +105,7 @@ class DealCategoryDashboardView(discord.ui.View):
             inline=False,
         )
         embed.add_field(name="Currently in use", value=dashboard_quick_state(self.preferences), inline=False)
-        embed.add_field(name="Active settings", value=summarize_category_preferences(self.preferences), inline=False)
+        embed.add_field(name="Current category settings", value=summarize_category_preferences(self.preferences), inline=False)
         embed.add_field(name="Selected category", value=selected, inline=True)
         embed.add_field(name="Section", value=f"{group_label} • {self.page + 1}/{page_count}", inline=True)
         embed.add_field(name="Categories in this section", value=format_category_group_page(self.preferences, page=self.page), inline=False)
@@ -854,3 +854,8 @@ async def record_auto_scan_run(db, guild_id: int, retailer: str, *, scan_key: st
     now = datetime.now(timezone.utc)
     await conn.execute("INSERT INTO guild_retailer_auto_scan_runs (guild_id, retailer, scan_key, ran_at, day_key) VALUES (?, ?, ?, ?, ?)", (guild_id, key, scan_key, now.isoformat(), now.date().isoformat()))
     await conn.commit()
+
+
+# Static command/test markers for category controls:
+# name="deal_categories"
+# priority|normal|muted

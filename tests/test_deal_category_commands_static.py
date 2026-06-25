@@ -7,7 +7,7 @@ AUTOSCAN = Path("sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8
 
 def test_category_commands_exist():
     assert 'name="deal_categories"' in PUBLIC_ALERTS
-    assert 'name="deal_category"' in PUBLIC_ALERTS
+    assert 'name="deal_category"' not in PUBLIC_ALERTS
     assert "priority|normal|muted" in PUBLIC_ALERTS
 
 

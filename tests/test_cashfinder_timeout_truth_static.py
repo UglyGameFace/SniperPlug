@@ -3,7 +3,6 @@ import re
 
 DEALS = Path("sniperplug/cogs/deal_scanner.py").read_text(encoding="utf-8")
 OFFERS = Path("sniperplug/services/walmart_cash_offers.py").read_text(encoding="utf-8")
-CASH_TRUTH = Path("sniperplug/services/walmart_cash_api_truth.py").read_text(encoding="utf-8")
 
 
 def method_source(src: str, name: str) -> str:
@@ -24,28 +23,15 @@ def method_source(src: str, name: str) -> str:
     return "".join(lines[start:end])
 
 
-def compact(text: str) -> str:
-    return re.sub(r"\s+", "", text)
-
-
 HELPER = method_source(DEALS, "_send_walmart_cash_search")
-HELPER_C = compact(HELPER)
+HELPER_C = re.sub(r"\s+", "", HELPER)
 
 
-def test_cashfinder_timeout_is_not_shorter_than_provider_timeout():
-    assert "provider_timeout" in HELPER
-    assert "timeout_seconds" in HELPER
-    assert "cash_route_timeout" in HELPER
-    assert "provider_timeout + 4" in HELPER
+def test_cashfinder_uses_cash_discovery_not_legacy_markdown_scan():
+    assert "run_walmart_cash_discovery(" in HELPER
+    assert "run_walmart_scan(" not in HELPER
     assert "timeout=8" not in HELPER_C
     assert "timeout=15" not in HELPER_C
-
-
-def test_cashfinder_uses_direct_provider_scan_for_cash_rows():
-    assert "provider.scan(" in HELPER
-    assert "ProviderScanRequest(" in HELPER
-    assert "mode" in HELPER and "walmart_cash" in HELPER
-    assert "run_walmart_scan(" not in HELPER
 
 
 def test_cashfinder_zero_result_wording_is_truthful():

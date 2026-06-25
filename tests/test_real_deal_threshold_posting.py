@@ -115,10 +115,17 @@ def test_select_public_deal_candidates_filters_junk_but_keeps_real_api_threshold
 
     real = DealCard(
         embed=discord.Embed(title="Real"),
-        url="u2",
+        url="https://www.walmart.com/ip/real",
         label="Real",
         score=50,
         discount=55,
+        deal_lane="verified_markdown",
+        api_current_price=24.99,
+        api_reference_price=55.53,
+        api_discount_percent=55,
+        api_price_path="salePrice",
+        api_reference_path="wasPrice",
+        direct_product_url="https://www.walmart.com/ip/real",
     )
     real.current_price = 24.99
 

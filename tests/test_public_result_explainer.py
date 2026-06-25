@@ -8,7 +8,7 @@ def test_explain_public_post_disabled_tells_owner_to_setup():
     rendered = explain_public_post_result(result)
 
     assert "Posted: **0**" in rendered
-    assert "Run `/setup_sniperplug`" in rendered
+    assert "Run `/setup_sniperplug_here`" in rendered
 
 
 def test_explain_public_post_not_alertable_is_clear():

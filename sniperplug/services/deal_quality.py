@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.services.public_deal_quality import (
+    LANE_OPEN_BOX_LIKE_NEW,
+    LANE_RESTORED_REFURBISHED,
+    normalized_lane,
+)
 
 
 class DealQualityBucket(str, Enum):
     VERIFIED_MARKDOWN = "verified_markdown"
+    OPEN_BOX_LIKE_NEW = "open_box_like_new"
+    RESTORED_REFURBISHED = "restored_refurbished"
     COUPON_OR_CASH = "coupon_or_cash"
     FLIP_LEAD = "flip_lead"
     REVIEW_ONLY = "review_only"
@@ -29,9 +35,28 @@ class DealQuality:
 def classify_candidate(candidate: SourceCandidate) -> DealQuality:
     attrs = candidate.variant_attributes or {}
     signals = " ".join(candidate.signals or []).lower()
+    lane = normalized_lane(candidate)
 
     if candidate.option_mismatch_warning:
         return DealQuality(DealQualityBucket.VARIANT_RISK, "⚠️ Variant risk", candidate.option_mismatch_warning, False, -40)
+
+    if lane == LANE_OPEN_BOX_LIKE_NEW:
+        return DealQuality(
+            DealQualityBucket.OPEN_BOX_LIKE_NEW,
+            "📦 Open box / like-new",
+            "Condition lane with API current/reference math required for public posting.",
+            True,
+            35,
+        )
+
+    if lane == LANE_RESTORED_REFURBISHED:
+        return DealQuality(
+            DealQualityBucket.RESTORED_REFURBISHED,
+            "♻️ Restored / refurbished",
+            "Restored/refurbished lane with API current/reference math required for public posting.",
+            True,
+            30,
+        )
 
     if attrs.get("marketplaceCompPrice"):
         return DealQuality(
@@ -79,9 +104,14 @@ def classify_candidate(candidate: SourceCandidate) -> DealQuality:
 
 
 def classify_card(card: DealCard) -> DealQuality:
+    lane = normalized_lane(card)
     text = str(card.embed.to_dict()).lower()
     if "wrong option" in text or "variant" in text and "mismatch" in text:
         return DealQuality(DealQualityBucket.VARIANT_RISK, "⚠️ Variant risk", "Card contains variant mismatch risk.", False, -40)
+    if lane == LANE_OPEN_BOX_LIKE_NEW:
+        return DealQuality(DealQualityBucket.OPEN_BOX_LIKE_NEW, "📦 Open box / like-new", "Card is a condition markdown lane.", True, 35)
+    if lane == LANE_RESTORED_REFURBISHED:
+        return DealQuality(DealQualityBucket.RESTORED_REFURBISHED, "♻️ Restored / refurbished", "Card is a restored/refurbished markdown lane.", True, 30)
     if "marketplace comp" in text or "flip estimate" in text:
         return DealQuality(DealQualityBucket.FLIP_LEAD, "📈 Flip lead", "Card includes marketplace comp / flip context.", False, 25)
     if "walmart cash" in text or "coupon" in text:
@@ -102,6 +132,8 @@ def quality_summary(cards: list[DealCard]) -> str:
         return "No classified opportunities."
     ordered = [
         DealQualityBucket.VERIFIED_MARKDOWN,
+        DealQualityBucket.OPEN_BOX_LIKE_NEW,
+        DealQualityBucket.RESTORED_REFURBISHED,
         DealQualityBucket.FLIP_LEAD,
         DealQualityBucket.COUPON_OR_CASH,
         DealQualityBucket.REVIEW_ONLY,
@@ -110,6 +142,8 @@ def quality_summary(cards: list[DealCard]) -> str:
     ]
     labels = {
         DealQualityBucket.VERIFIED_MARKDOWN: "verified",
+        DealQualityBucket.OPEN_BOX_LIKE_NEW: "open box",
+        DealQualityBucket.RESTORED_REFURBISHED: "restored/refurb",
         DealQualityBucket.FLIP_LEAD: "flip",
         DealQualityBucket.COUPON_OR_CASH: "coupon/cash",
         DealQualityBucket.REVIEW_ONLY: "review",

@@ -29,6 +29,18 @@ class SourceCandidate:
     typical_price: float | None = None
     image_url: str | None = None
 
+    # Public deal proof. These fields are intentionally separate from display
+    # copy so public posting never guesses from embed wording such as MSRP.
+    deal_lane: str | None = None
+    api_current_price: float | None = None
+    api_reference_price: float | None = None
+    api_discount_percent: float | None = None
+    api_condition: str | None = None
+    api_condition_path: str | None = None
+    api_reference_path: str | None = None
+    api_price_path: str | None = None
+    direct_product_url: str | None = None
+
     product_id: str | None = None
     product_id_type: str | None = None
     sku: str | None = None
@@ -69,6 +81,8 @@ class SourceCandidate:
             asin=asin,
         )
         self.product_url = normalized.url
+        if not self.direct_product_url:
+            self.direct_product_url = normalized.url
         for note in normalized.notes:
             if note not in self.signals:
                 self.signals.append(note)
@@ -119,6 +133,21 @@ class SourceCandidate:
             condition=self.condition,
             availability_message="; ".join(availability_bits) if availability_bits else None,
         )
+
+        structured_attrs = {
+            "dealLane": self.deal_lane,
+            "apiCurrentPrice": _money_attr(self.api_current_price),
+            "apiReferencePrice": _money_attr(self.api_reference_price),
+            "apiDiscountPercent": _percent_attr(self.api_discount_percent),
+            "apiCondition": self.api_condition,
+            "apiConditionPath": self.api_condition_path,
+            "apiReferencePath": self.api_reference_path,
+            "apiPricePath": self.api_price_path,
+            "directProductUrl": self.direct_product_url,
+        }
+        for key, value in structured_attrs.items():
+            if value is not None and value != "":
+                deal.variant_attributes.setdefault(key, str(value))
 
         coupon_savings = _float_or_none(self.variant_attributes.get("couponSavings"))
         if coupon_savings and coupon_savings > 0 and self.current_price is not None:
@@ -191,11 +220,25 @@ def _float_or_none(value) -> float | None:
     if value is None or value == "":
         return None
     if isinstance(value, str):
-        value = value.replace("$", "").replace(",", "").strip()
+        value = value.replace("$", "").replace(",", "").strip().rstrip("%")
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _money_attr(value: float | None) -> str | None:
+    parsed = _float_or_none(value)
+    if parsed is None:
+        return None
+    return f"{parsed:.2f}"
+
+
+def _percent_attr(value: float | None) -> str | None:
+    parsed = _float_or_none(value)
+    if parsed is None:
+        return None
+    return f"{parsed:.2f}"
 
 
 def money(value: float | None) -> str:

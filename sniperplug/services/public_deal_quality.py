@@ -8,6 +8,62 @@ import discord
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
 PUBLIC_SCOUT_LANE_FIELD = "🧪 Private scout/review lane"
 
+LANE_VERIFIED_MARKDOWN = "verified_markdown"
+LANE_OPEN_BOX_LIKE_NEW = "open_box_like_new"
+LANE_RESTORED_REFURBISHED = "restored_refurbished"
+LANE_WALMART_CASH = "walmart_cash"
+LANE_CART_PROMO = "cart_promo"
+LANE_ONEPAY = "onepay"
+LANE_CLEARANCE = "clearance"
+LANE_ROLLBACK = "rollback"
+
+PUBLIC_PRICE_LANES = {
+    LANE_VERIFIED_MARKDOWN,
+    LANE_OPEN_BOX_LIKE_NEW,
+    LANE_RESTORED_REFURBISHED,
+}
+
+PRIVATE_PROMO_LANES = {
+    LANE_WALMART_CASH,
+    LANE_CART_PROMO,
+    LANE_ONEPAY,
+}
+
+OPEN_BOX_CONDITION_TERMS = (
+    "open box",
+    "open-box",
+    "like new",
+    "like-new",
+    "new other",
+)
+
+RESTORED_CONDITION_TERMS = (
+    "restored",
+    "refurbished",
+    "pre-owned",
+    "pre owned",
+    "preowned",
+    "renewed",
+)
+
+DISPLAY_REFERENCE_TERMS = (
+    "msrp",
+    "original price",
+    "reference price",
+    "list price",
+)
+
+LOW_TRUST_REFERENCE_TERMS = (
+    "ignored reference",
+    "ignored suspicious",
+    "ignored low-confidence",
+    "weak reference",
+    "weak/ignored reference",
+    "low-trust/suspicious",
+    "blocked as low-trust",
+    "reference match: blocked",
+)
+
 
 def card_text(card: Any, *, source_label: str = "") -> str:
     parts: list[str] = [
@@ -29,7 +85,7 @@ def float_or_none(value: Any) -> float | None:
     if value is None or value == "":
         return None
     if isinstance(value, str):
-        value = value.replace("$", "").replace(",", "").strip()
+        value = value.replace("$", "").replace(",", "").strip().rstrip("%")
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -63,43 +119,175 @@ def is_review_or_watchlist(card: Any, *, source_label: str = "") -> bool:
     return any(term in text for term in blocked_terms)
 
 
+def variant_attrs(card: Any) -> dict[str, Any]:
+    attrs = getattr(card, "variant_attributes", None)
+    if isinstance(attrs, dict):
+        return attrs
+    candidate = getattr(card, "candidate", None)
+    attrs = getattr(candidate, "variant_attributes", None)
+    if isinstance(attrs, dict):
+        return attrs
+    deal = getattr(card, "deal", None)
+    attrs = getattr(deal, "variant_attributes", None)
+    if isinstance(attrs, dict):
+        return attrs
+    return {}
+
+
+def attr_value(card: Any, *names: str) -> Any:
+    for name in names:
+        value = getattr(card, name, None)
+        if value not in (None, ""):
+            return value
+    attrs = variant_attrs(card)
+    for name in names:
+        for key in (name, camel_name(name)):
+            value = attrs.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def camel_name(name: str) -> str:
+    parts = name.split("_")
+    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+
+
+def normalized_lane(card: Any) -> str:
+    explicit = str(attr_value(card, "deal_lane", "dealLane") or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if explicit:
+        return explicit
+
+    condition = normalized_condition(attr_value(card, "api_condition", "condition"))
+    if is_open_box_condition(condition):
+        return LANE_OPEN_BOX_LIKE_NEW
+    if is_restored_condition(condition):
+        return LANE_RESTORED_REFURBISHED
+
+    attrs = variant_attrs(card)
+    if attrs.get("walmartCashSavings") or attrs.get("walmartCashAmount") or attrs.get("walmartCashReward"):
+        return LANE_WALMART_CASH
+    if attrs.get("onePayCashback") or attrs.get("onepayCashback"):
+        return LANE_ONEPAY
+    if attrs.get("cartPromo") or attrs.get("apiPromotionText") or attrs.get("apiPromotionSavingsCap"):
+        return LANE_CART_PROMO
+    if str(attrs.get("clearance") or "").lower() == "yes":
+        return LANE_CLEARANCE
+    if str(attrs.get("rollback") or "").lower() == "yes":
+        return LANE_ROLLBACK
+    return LANE_VERIFIED_MARKDOWN
+
+
+def normalized_condition(value: Any) -> str:
+    return " ".join(str(value or "").replace("_", " ").replace("-", " ").lower().split())
+
+
+def is_open_box_condition(condition: str) -> bool:
+    text = normalized_condition(condition)
+    return any(term.replace("-", " ") in text for term in OPEN_BOX_CONDITION_TERMS)
+
+
+def is_restored_condition(condition: str) -> bool:
+    text = normalized_condition(condition)
+    return any(term.replace("-", " ") in text for term in RESTORED_CONDITION_TERMS)
+
+
 def has_low_trust_reference(card: Any, *, source_label: str = "") -> bool:
+    attrs = variant_attrs(card)
+    trusted = str(attrs.get("referencePriceTrusted") or "").strip().lower()
+    if trusted == "no":
+        return True
+
     text = card_text(card, source_label=source_label).lower()
-    blocked_terms = (
-        "ignored reference",
-        "ignored suspicious",
-        "ignored low-confidence",
-        "weak reference",
-        "weak/ignored reference",
-        "low-trust/suspicious",
-        "blocked as low-trust",
-        "reference match: blocked",
-        "msrp",
-    )
-    return any(term in text for term in blocked_terms)
+    return any(term in text for term in LOW_TRUST_REFERENCE_TERMS)
 
 
 def has_real_price(card: Any) -> bool:
-    return float_or_none(getattr(card, "current_price", None)) is not None
+    return current_price(card) is not None
+
+
+def current_price(card: Any) -> float | None:
+    return float_or_none(attr_value(card, "api_current_price", "current_price", "apiCurrentPrice"))
+
+
+def reference_price(card: Any) -> float | None:
+    return float_or_none(attr_value(card, "api_reference_price", "typical_price", "apiReferencePrice", "trustedReferencePrice"))
+
+
+def structured_discount(card: Any) -> float | None:
+    explicit = float_or_none(attr_value(card, "api_discount_percent", "apiDiscountPercent"))
+    if explicit is not None:
+        return explicit
+    current = current_price(card)
+    reference = reference_price(card)
+    if current is not None and reference is not None and reference > 0 and reference > current:
+        return (reference - current) / reference * 100
+    return float_or_none(getattr(card, "discount", None))
+
+
+def direct_product_url(card: Any) -> str:
+    url = str(attr_value(card, "direct_product_url", "directProductUrl") or getattr(card, "url", "") or "").strip()
+    if not url:
+        return ""
+    lowered = url.lower()
+    if "walmart.com/ip/" not in lowered and "walmart.com/" not in lowered:
+        return ""
+    return url
+
+
+def has_structured_reference_proof(card: Any) -> bool:
+    if reference_price(card) is not None:
+        return True
+    reference_path = attr_value(card, "api_reference_path", "apiReferencePath", "trustedReferenceSource")
+    return bool(reference_path)
+
+
+def display_reference_without_proof(card: Any, *, source_label: str = "") -> bool:
+    if has_structured_reference_proof(card):
+        return False
+    text = card_text(card, source_label=source_label).lower()
+    return any(term in text for term in DISPLAY_REFERENCE_TERMS)
 
 
 def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
     """
-    The only public deal gate.
+    Public deal gate.
 
-    Public deals must satisfy the server threshold using trusted API markdown.
-    Walmart Cash, coupons, buy-more promos, exact search matches, scores, and
-    comp links may be useful diagnostics, but they do not bypass the threshold.
+    Walmart Cash, OnePay, cart promos, and private scout/watchlist cards stay out
+    of public posting. API-proven markdowns and condition deals can post when the
+    structured current/reference math meets the server threshold.
     """
     if is_review_or_watchlist(card, source_label=source_label):
         return False
     if has_low_trust_reference(card, source_label=source_label):
         return False
+    if display_reference_without_proof(card, source_label=source_label):
+        return False
     if not has_real_price(card):
         return False
+    if not direct_product_url(card):
+        return False
 
-    discount = float_or_none(getattr(card, "discount", None)) or 0.0
-    return discount >= max(1, int(min_discount))
+    lane = normalized_lane(card)
+    if lane in PRIVATE_PROMO_LANES:
+        return False
+
+    discount = structured_discount(card) or 0.0
+    if discount < max(1, int(min_discount)):
+        return False
+
+    if lane in {LANE_OPEN_BOX_LIKE_NEW, LANE_RESTORED_REFURBISHED}:
+        condition = normalized_condition(attr_value(card, "api_condition", "condition"))
+        if not condition:
+            return False
+        if not has_structured_reference_proof(card):
+            return False
+        if lane == LANE_OPEN_BOX_LIKE_NEW and not is_open_box_condition(condition):
+            return False
+        if lane == LANE_RESTORED_REFURBISHED and not is_restored_condition(condition):
+            return False
+
+    return lane in PUBLIC_PRICE_LANES or lane in {LANE_CLEARANCE, LANE_ROLLBACK}
 
 
 def is_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
@@ -110,22 +298,40 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
     if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
         return False
 
+    discount = structured_discount(card) or 0.0
+    lane = normalized_lane(card)
     setattr(card, "should_alert", True)
+    setattr(card, "deal_lane", lane)
+    setattr(card, "api_current_price", current_price(card))
+    setattr(card, "api_reference_price", reference_price(card))
+    setattr(card, "api_discount_percent", discount)
+    setattr(card, "direct_product_url", direct_product_url(card))
 
     embed = getattr(card, "embed", None)
     if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_DEAL_LANE_FIELD for field in embed.fields):
-        discount = float_or_none(getattr(card, "discount", None)) or 0.0
+        lane_label = public_lane_label(lane)
         embed.add_field(
             name=PUBLIC_DEAL_LANE_FIELD,
             value=(
-                f"Posted because Walmart API trusted markdown is **{discount:.0f}%**, "
+                f"Posted as **{lane_label}** because Walmart/API structured math is **{discount:.0f}%**, "
                 f"meeting this server's **{int(min_discount)}%+** public deal threshold. "
-                "No Scout, watchlist, MSRP-only, score-only, or comp-link bypass was used."
+                "Walmart Cash, OnePay, cart promos, scout leads, and display-only MSRP text did not bypass this gate."
             ),
             inline=False,
         )
 
     return True
+
+
+def public_lane_label(lane: str) -> str:
+    labels = {
+        LANE_VERIFIED_MARKDOWN: "Verified Markdown",
+        LANE_OPEN_BOX_LIKE_NEW: "Open Box / Like New",
+        LANE_RESTORED_REFURBISHED: "Restored / Refurbished",
+        LANE_CLEARANCE: "Clearance Markdown",
+        LANE_ROLLBACK: "Rollback Markdown",
+    }
+    return labels.get(lane, lane.replace("_", " ").title())
 
 
 def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:

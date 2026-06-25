@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from sniperplug.cogs.deal_scanner import DealCard
-from sniperplug.services.opportunity_watchlist import OPPORTUNITY_CATEGORIES, OpportunityCategory, category_for_title
+from sniperplug.services.opportunity_watchlist import (
+    OPPORTUNITY_CATEGORIES,
+    OpportunityCategory,
+    category_for_title,
+)
+
 
 CATEGORY_MODE_PRIORITY = "priority"
 CATEGORY_MODE_NORMAL = "normal"
 CATEGORY_MODE_MUTED = "muted"
+
+VALID_CATEGORY_MODES = {
+    CATEGORY_MODE_NORMAL,
+    CATEGORY_MODE_PRIORITY,
+    CATEGORY_MODE_MUTED,
+}
 
 CATEGORY_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("deal_boosters", "Deal Boosters / Add-ons", ("walmart_cash", "open_box_restored", "viral_gadgets", "business_bulk")),
@@ -29,29 +41,50 @@ class CategoryDecision:
     reason: str
 
 
-def normalize_category_mode(value: str | None) -> str:
-    mode = str(value or "").strip().lower()
-    if mode in {"boost", "favorite", "watch", "wanted", "priority"}:
-        return CATEGORY_MODE_PRIORITY
-    if mode in {"hide", "muted", "mute", "ignore", "snooze"}:
-        return CATEGORY_MODE_MUTED
-    return CATEGORY_MODE_NORMAL
+def normalize_category_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "boost": CATEGORY_MODE_PRIORITY,
+        "boosted": CATEGORY_MODE_PRIORITY,
+        "favorite": CATEGORY_MODE_PRIORITY,
+        "favorites": CATEGORY_MODE_PRIORITY,
+        "watch": CATEGORY_MODE_PRIORITY,
+        "wanted": CATEGORY_MODE_PRIORITY,
+        "prioritize": CATEGORY_MODE_PRIORITY,
+        "priority": CATEGORY_MODE_PRIORITY,
+        "hide": CATEGORY_MODE_MUTED,
+        "hidden": CATEGORY_MODE_MUTED,
+        "mute": CATEGORY_MODE_MUTED,
+        "muted": CATEGORY_MODE_MUTED,
+        "ignore": CATEGORY_MODE_MUTED,
+        "snooze": CATEGORY_MODE_MUTED,
+        "off": CATEGORY_MODE_MUTED,
+        "allow": CATEGORY_MODE_NORMAL,
+        "allowed": CATEGORY_MODE_NORMAL,
+        "default": CATEGORY_MODE_NORMAL,
+        "on": CATEGORY_MODE_NORMAL,
+        "normal": CATEGORY_MODE_NORMAL,
+    }
+    return aliases.get(mode, CATEGORY_MODE_NORMAL)
 
 
 def category_rows() -> list[OpportunityCategory]:
-    grouped = []
+    grouped: list[OpportunityCategory] = []
     by_key = category_by_key()
     seen: set[str] = set()
+
     for _group_key, _group_label, keys in CATEGORY_GROUPS:
         for key in keys:
             category = by_key.get(key)
             if category and key not in seen:
                 grouped.append(category)
                 seen.add(key)
+
     for category in sorted(OPPORTUNITY_CATEGORIES, key=lambda c: (c.label.lower(), c.key)):
         if category.key not in seen:
             grouped.append(category)
             seen.add(category.key)
+
     return grouped
 
 
@@ -63,7 +96,7 @@ def valid_category_keys() -> set[str]:
     return {category.key for category in OPPORTUNITY_CATEGORIES}
 
 
-def mode_label(mode: str) -> str:
+def mode_label(mode: Any) -> str:
     safe = normalize_category_mode(mode)
     if safe == CATEGORY_MODE_PRIORITY:
         return "⭐ ON / Priority"
@@ -72,7 +105,7 @@ def mode_label(mode: str) -> str:
     return "▫️ Normal"
 
 
-def category_mode_marker(mode: str) -> str:
+def category_mode_marker(mode: Any) -> str:
     safe = normalize_category_mode(mode)
     if safe == CATEGORY_MODE_PRIORITY:
         return "⭐"
@@ -81,9 +114,13 @@ def category_mode_marker(mode: str) -> str:
     return "▫️"
 
 
-async def ensure_deal_category_preference_table(db) -> None:
+async def ensure_deal_category_preference_table(db: Any) -> None:
+    if db is None or not hasattr(db, "require_conn"):
+        return
+
     conn = db.require_conn()
-    await conn.execute("""
+    await conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS guild_deal_category_preferences (
             guild_id INTEGER NOT NULL,
             category_key TEXT NOT NULL,
@@ -91,55 +128,116 @@ async def ensure_deal_category_preference_table(db) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, category_key)
         )
-    """)
+        """
+    )
     await conn.commit()
 
 
-async def set_category_preference(db, guild_id: int, category_key: str, mode: str) -> None:
+async def set_category_preference(db: Any, guild_id: int, category_key: str, mode: Any) -> None:
     key = str(category_key or "").strip().lower()
     safe_mode = normalize_category_mode(mode)
     if key not in valid_category_keys():
         raise ValueError(f"Unknown deal category: {category_key}")
-    await ensure_deal_category_preference_table(db)
-    conn = db.require_conn()
-    await conn.execute(
-        """
-        INSERT INTO guild_deal_category_preferences (guild_id, category_key, mode, updated_at)
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(guild_id, category_key)
-        DO UPDATE SET mode = excluded.mode, updated_at = CURRENT_TIMESTAMP
-        """,
-        (int(guild_id), key, safe_mode),
-    )
-    await conn.commit()
+
+    # Native sqlite-backed DB path.
+    if db is not None and hasattr(db, "require_conn"):
+        await ensure_deal_category_preference_table(db)
+        conn = db.require_conn()
+        await conn.execute(
+            """
+            INSERT INTO guild_deal_category_preferences (guild_id, category_key, mode, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id, category_key)
+            DO UPDATE SET mode = excluded.mode, updated_at = CURRENT_TIMESTAMP
+            """,
+            (int(guild_id), key, safe_mode),
+        )
+        await conn.commit()
+        return
+
+    # Test/fallback adapter path.
+    method = getattr(db, "set_category_preference", None) if db is not None else None
+    if method is not None:
+        await method(int(guild_id), key, safe_mode)
 
 
-async def reset_category_preferences(db, guild_id: int) -> None:
-    await ensure_deal_category_preference_table(db)
-    conn = db.require_conn()
-    await conn.execute("DELETE FROM guild_deal_category_preferences WHERE guild_id = ?", (int(guild_id),))
-    await conn.commit()
+async def reset_category_preferences(db: Any, guild_id: int) -> None:
+    if db is not None and hasattr(db, "require_conn"):
+        await ensure_deal_category_preference_table(db)
+        conn = db.require_conn()
+        await conn.execute("DELETE FROM guild_deal_category_preferences WHERE guild_id = ?", (int(guild_id),))
+        await conn.commit()
+        return
+
+    method = getattr(db, "reset_category_preferences", None) if db is not None else None
+    if method is not None:
+        await method(int(guild_id))
 
 
-async def get_category_preferences(db, guild_id: int) -> dict[str, str]:
-    await ensure_deal_category_preference_table(db)
-    conn = db.require_conn()
-    cursor = await conn.execute(
-        "SELECT category_key, mode FROM guild_deal_category_preferences WHERE guild_id = ?",
-        (int(guild_id),),
-    )
-    rows = await cursor.fetchall()
-    return {str(row["category_key"]): normalize_category_mode(str(row["mode"])) for row in rows}
+async def get_category_preferences(db: Any, guild_id: int | str) -> dict[str, str]:
+    if db is None or guild_id is None:
+        return {}
+
+    if hasattr(db, "require_conn"):
+        await ensure_deal_category_preference_table(db)
+        conn = db.require_conn()
+        cursor = await conn.execute(
+            "SELECT category_key, mode FROM guild_deal_category_preferences WHERE guild_id = ?",
+            (int(guild_id),),
+        )
+        rows = await cursor.fetchall()
+        out: dict[str, str] = {}
+        for row in rows:
+            try:
+                key = str(row["category_key"])
+                mode = row["mode"]
+            except Exception:
+                key = str(row[0])
+                mode = row[1]
+            out[key] = normalize_category_mode(mode)
+        return out
+
+    for method_name in (
+        "get_deal_category_preferences",
+        "get_public_deal_category_preferences",
+        "get_category_preferences",
+    ):
+        method = getattr(db, method_name, None)
+        if method is None:
+            continue
+        try:
+            result = await method(guild_id)
+        except TypeError:
+            result = await method(int(guild_id))
+        except Exception:
+            return {}
+        if isinstance(result, dict):
+            return {str(key): normalize_category_mode(value) for key, value in result.items()}
+
+    return {}
 
 
-async def apply_preset(db, guild_id: int, preset: str) -> None:
+async def apply_preset(db: Any, guild_id: int, preset: str) -> None:
     preset_key = str(preset or "").strip().lower()
-    presets = {
+    presets: dict[str, dict[str, set[str]]] = {
         "deal_week": {
             CATEGORY_MODE_PRIORITY: {
-                "walmart_cash", "open_box_restored", "mobile_accessories", "apple", "brand_direct_electronics",
-                "ssds", "tools", "motor_oil", "fragrance_beauty", "gold_jewelry", "smart_home",
-                "office_school", "viral_gadgets", "toys_collectibles", "home_kitchen", "appliances",
+                "walmart_cash",
+                "open_box_restored",
+                "mobile_accessories",
+                "apple",
+                "brand_direct_electronics",
+                "ssds",
+                "tools",
+                "motor_oil",
+                "fragrance_beauty",
+                "gold_jewelry",
+                "smart_home",
+                "office_school",
+                "viral_gadgets",
+                "toys_collectibles",
+                "home_kitchen",
+                "appliances",
                 "seasonal_holiday",
             },
             CATEGORY_MODE_MUTED: set(),
@@ -150,16 +248,34 @@ async def apply_preset(db, guild_id: int, preset: str) -> None:
         },
         "flip_focus": {
             CATEGORY_MODE_PRIORITY: {
-                "brand_direct_electronics", "apple", "gpus", "cpus", "ram", "ssds", "gold_jewelry",
-                "watches", "fragrance_beauty", "tools", "toys_collectibles", "shoes_apparel",
-                "sneakers", "premium_apparel", "mobile_accessories", "open_box_restored",
+                "brand_direct_electronics",
+                "apple",
+                "gpus",
+                "cpus",
+                "ram",
+                "ssds",
+                "gold_jewelry",
+                "watches",
+                "fragrance_beauty",
+                "tools",
+                "toys_collectibles",
+                "shoes_apparel",
+                "sneakers",
+                "premium_apparel",
+                "mobile_accessories",
+                "open_box_restored",
             },
             CATEGORY_MODE_MUTED: {"grocery_pantry", "household_essentials", "baby_kids", "pet_supplies"},
         },
         "daily_essentials": {
             CATEGORY_MODE_PRIORITY: {
-                "household_essentials", "grocery_pantry", "baby_kids", "pet_supplies",
-                "motor_oil", "health_wellness", "walmart_cash",
+                "household_essentials",
+                "grocery_pantry",
+                "baby_kids",
+                "pet_supplies",
+                "motor_oil",
+                "health_wellness",
+                "walmart_cash",
             },
             CATEGORY_MODE_MUTED: set(),
         },
@@ -168,11 +284,13 @@ async def apply_preset(db, guild_id: int, preset: str) -> None:
     if selected is None:
         raise ValueError(f"Unknown category preset: {preset}")
 
-    await ensure_deal_category_preference_table(db)
-    conn = db.require_conn()
-    for mode, keys in selected.items():
-        for key in keys:
-            if key in valid_category_keys():
+    if db is not None and hasattr(db, "require_conn"):
+        await ensure_deal_category_preference_table(db)
+        conn = db.require_conn()
+        for mode, keys in selected.items():
+            for key in keys:
+                if key not in valid_category_keys():
+                    continue
                 await conn.execute(
                     """
                     INSERT INTO guild_deal_category_preferences (guild_id, category_key, mode, updated_at)
@@ -182,16 +300,26 @@ async def apply_preset(db, guild_id: int, preset: str) -> None:
                     """,
                     (int(guild_id), key, mode),
                 )
-    await conn.commit()
+        await conn.commit()
+        return
+
+    # Fallback path for simple fake DBs in tests.
+    for mode, keys in selected.items():
+        for key in keys:
+            if key in valid_category_keys():
+                await set_category_preference(db, int(guild_id), key, mode)
 
 
-def _card_text(card: DealCard) -> str:
-    parts: list[str] = [str(getattr(card, "label", "") or "")]
+def _card_text(card: Any) -> str:
+    parts: list[str] = [
+        str(getattr(card, "label", "") or ""),
+        str(getattr(card, "url", "") or ""),
+    ]
     embed = getattr(card, "embed", None)
     if embed is not None:
         parts.append(str(getattr(embed, "title", "") or ""))
         parts.append(str(getattr(embed, "description", "") or ""))
-        for field in getattr(embed, "fields", []):
+        for field in getattr(embed, "fields", []) or []:
             parts.append(str(getattr(field, "name", "") or ""))
             parts.append(str(getattr(field, "value", "") or ""))
     return " ".join(parts)
@@ -199,7 +327,8 @@ def _card_text(card: DealCard) -> str:
 
 def category_for_card(card: DealCard) -> OpportunityCategory | None:
     text = _card_text(card)
-    if "walmart cash" in text.lower() or "cashrewards" in text.lower() or "cash rewards" in text.lower():
+    lowered = text.lower()
+    if "walmart cash" in lowered or "cashrewards" in lowered or "cash rewards" in lowered:
         return category_by_key().get("walmart_cash")
     return category_for_title(text)
 
@@ -218,7 +347,7 @@ def is_extreme_card(card: DealCard) -> bool:
     return False
 
 
-def decide_category(card: DealCard, preferences: dict[str, str]) -> CategoryDecision:
+def decide_category(card: DealCard, preferences: dict[str, str] | None) -> CategoryDecision:
     category = category_for_card(card)
     if category is None:
         return CategoryDecision(
@@ -229,7 +358,7 @@ def decide_category(card: DealCard, preferences: dict[str, str]) -> CategoryDeci
             "Unknown category is not blocked. Strong markdown/proof can still post.",
         )
 
-    mode = normalize_category_mode(preferences.get(category.key, CATEGORY_MODE_NORMAL))
+    mode = normalize_category_mode((preferences or {}).get(category.key, CATEGORY_MODE_NORMAL))
     if mode == CATEGORY_MODE_PRIORITY:
         return CategoryDecision(category.key, category.label, mode, "boost", f"Priority category: {category.label}.")
     if mode == CATEGORY_MODE_MUTED:
@@ -245,13 +374,13 @@ def decide_category(card: DealCard, preferences: dict[str, str]) -> CategoryDeci
     return CategoryDecision(category.key, category.label, CATEGORY_MODE_NORMAL, "allow", f"Normal category: {category.label}.")
 
 
-def apply_category_preferences(cards: list[DealCard], preferences: dict[str, str]) -> tuple[list[DealCard], list[DealCard], list[str]]:
+def apply_category_preferences(cards: list[DealCard], preferences: dict[str, str] | None) -> tuple[list[DealCard], list[DealCard], list[str]]:
     allowed: list[DealCard] = []
     suppressed: list[DealCard] = []
     notes: list[str] = []
 
     for card in cards:
-        decision = decide_category(card, preferences)
+        decision = decide_category(card, preferences or {})
         setattr(card, "deal_category_key", decision.category_key)
         setattr(card, "deal_category_label", decision.category_label)
         setattr(card, "deal_category_mode", decision.mode)
@@ -285,7 +414,8 @@ def apply_category_preferences(cards: list[DealCard], preferences: dict[str, str
     return allowed, suppressed, notes[:8]
 
 
-def summarize_category_preferences(preferences: dict[str, str], *, limit: int = 10) -> str:
+def summarize_category_preferences(preferences: dict[str, str] | None, *, limit: int = 10) -> str:
+    preferences = preferences or {}
     by_key = category_by_key()
     priority = [
         by_key[key].label
@@ -299,7 +429,7 @@ def summarize_category_preferences(preferences: dict[str, str], *, limit: int = 
     ]
 
     if not priority and not muted:
-        return "Nothing customized yet. Tap **🔥 Deal Week** for broad Walmart coverage, or pick a category below."
+        return "No category preferences saved yet. Run `/deal_categories` to customize public deal feed categories. Tap **🔥 Deal Week** for broad Walmart coverage, or pick a category below."
 
     def trim(items: list[str]) -> str:
         if not items:
@@ -318,7 +448,8 @@ def summarize_category_preferences(preferences: dict[str, str], *, limit: int = 
     )
 
 
-def dashboard_quick_state(preferences: dict[str, str]) -> str:
+def dashboard_quick_state(preferences: dict[str, str] | None) -> str:
+    preferences = preferences or {}
     priority = sum(1 for mode in preferences.values() if normalize_category_mode(mode) == CATEGORY_MODE_PRIORITY)
     muted = sum(1 for mode in preferences.values() if normalize_category_mode(mode) == CATEGORY_MODE_MUTED)
     normal = max(0, len(valid_category_keys()) - priority - muted)
@@ -336,10 +467,16 @@ def category_group(page: int) -> tuple[str, str, tuple[OpportunityCategory, ...]
     return group_key, group_label, tuple(by_key[key] for key in keys if key in by_key)
 
 
-def format_category_group_page(preferences: dict[str, str], *, page: int = 0) -> str:
+def categories_for_group_page(page: int) -> tuple[OpportunityCategory, ...]:
+    return category_group(page)[2]
+
+
+def format_category_group_page(preferences: dict[str, str] | None, *, page: int = 0) -> str:
+    preferences = preferences or {}
     _group_key, _group_label, categories = category_group(page)
     if not categories:
         return "No categories in this section."
+
     lines: list[str] = []
     for category in categories:
         mode = normalize_category_mode(preferences.get(category.key, CATEGORY_MODE_NORMAL))
@@ -353,13 +490,18 @@ def format_category_group_page(preferences: dict[str, str], *, page: int = 0) ->
     return "\n".join(lines)
 
 
-def categories_for_group_page(page: int) -> tuple[OpportunityCategory, ...]:
-    return category_group(page)[2]
-
-
 def category_page_count(page_size: int = 20) -> int:
     return category_group_count()
 
 
-def format_category_page(preferences: dict[str, str], *, page: int = 0, page_size: int = 20) -> str:
-    return format_category_group_page(preferences, page=page)
+def format_category_page(preferences: dict[str, str] | None, *, page: int = 0, page_size: int = 20) -> str:
+    return format_category_group_page(preferences or {}, page=page)
+
+
+def format_category_catalog(preferences: dict[str, str] | None = None) -> str:
+    preferences = preferences or {}
+    lines: list[str] = []
+    for category in category_rows():
+        mode = normalize_category_mode(preferences.get(category.key, CATEGORY_MODE_NORMAL))
+        lines.append(f"`{category.key}` — **{category.label}** — `{mode}`")
+    return "\n".join(lines)

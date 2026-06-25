@@ -283,7 +283,7 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, st
 def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     candidate = scan.best_candidate
     store_text = scan.requested_store_id or "ZIP-only / no store_id"
-    embed = discord.Embed(title=f"🏚️ Home Depot Local Stock Check • SKU {scan.sku}", description=f"ZIP: `{scan.zip_code}` • Store: `{store_text}` • Mode: `{scan.match_mode}`", color=_stock_color(scan))
+    embed = discord.Embed(title=f"🏚️ Home Depot Stock Check • SKU {scan.sku}", description=f"ZIP: `{scan.zip_code}` • Store: `{store_text}` • Mode: `{scan.match_mode}`", color=_stock_color(scan))
     if not candidate:
         embed.add_field(name="No usable stock result returned", value=f"Home Depot search returned `{scan.returned_count}` product result(s), but none were safe enough to use.\nSniperPlug blocked the card because multiple/no results would be too easy to misread.", inline=False)
         closest = scan.returned_candidates[0] if scan.returned_candidates else None
@@ -305,6 +305,28 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     safe_url = _safe_url(candidate.product_url)
     if safe_url:
         embed.url = safe_url
+
+    product_id = candidate.sku or candidate.product_id or scan.sku or "n/a"
+    product_lines = [
+        f"**{trim_title(candidate.title, 90)}**",
+        f"SKU / Internet #: `{product_id}`",
+    ]
+    if candidate.product_url:
+        product_lines.append(candidate.product_url)
+    embed.add_field(name="Product", value=_trim_field("\n".join(product_lines)), inline=False)
+
+    price_lines = [f"Now: **{money(candidate.current_price)}**"]
+    if candidate.typical_price:
+        price_lines.append(f"Was: **{money(candidate.typical_price)}**")
+    embed.add_field(name="Price", value=_trim_field("\n".join(price_lines)), inline=True)
+
+    embed.add_field(name="Stock / fulfillment", value=_trim_field(_local_stock_block(candidate, scan)), inline=True)
+    embed.add_field(
+        name="SniperPlug read",
+        value=_trim_field(f"Public alert: **No** — Home Depot local proof stays private until a user verifies store/price in person.\n**{_confidence_label(scan)}**\n{scan.match_note}"),
+        inline=False,
+    )
+
     embed.add_field(name="Product proof", value=_trim_field(_product_proof_block(scan, candidate)), inline=False)
     embed.add_field(name="Price proof", value=_trim_field(_local_price_block(candidate)), inline=True)
     embed.add_field(name="Location / availability", value=_trim_field(_local_stock_block(candidate, scan)), inline=True)
@@ -312,7 +334,7 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     embed.add_field(name="Proof status", value=_trim_field(f"**{_confidence_label(scan)}**\n{scan.match_note}"), inline=False)
     if scan.warnings:
         embed.add_field(name="Provider notes", value=_trim_field("\n".join(f"• {w}" for w in scan.warnings[:5])), inline=False)
-    embed.set_footer(text=f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} • ZIP-only stock proof is blocked unless a real store_id is used.")
+    embed.set_footer(text=f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} • ZIP-only stock proof is blocked unless a real store_id is used. Call/check before driving.")
     return embed
 
 

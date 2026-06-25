@@ -101,7 +101,8 @@ def test_walmart_uses_real_sale_price_not_extra_savings_unit_values():
     assert signal == "Walmart current price source: salePrice"
     assert reference == 199.99
     assert reference_signal == "Walmart reference price source: wasPrice"
-    assert proof["walmartCashSavings"] == "5.00"
+    assert proof["couponSavings"] == "5.00"
+    assert "walmartCashSavings" not in proof
 
 
 def test_walmart_builds_was_from_product_savings_but_not_cash_bonus():
@@ -120,3 +121,5 @@ def test_walmart_builds_was_from_product_savings_but_not_cash_bonus():
     assert reference == 173.40
     assert reference_signal == "Walmart reference price source: wasPriceFromSavings.savingsAmount"
     assert proof["walmartCashSavings"] == "5.00"
+    assert "couponSavings" not in proof
+

@@ -72,6 +72,21 @@ class DealCard:
     discount: float = 0.0
     link_choices: tuple[LinkChoice, ...] = field(default_factory=tuple)
 
+    # Native public-proof fields. Public posting must read structured retailer/API
+    # proof instead of guessing from embed wording like MSRP/original/list price.
+    deal_lane: str | None = None
+    api_current_price: float | str | None = None
+    api_reference_price: float | str | None = None
+    api_discount_percent: float | str | None = None
+    api_condition: str | None = None
+    api_condition_path: str | None = None
+    api_reference_path: str | None = None
+    api_price_path: str | None = None
+    seller_name: str | None = None
+    fulfillment_type: str | None = None
+    direct_product_url: str | None = None
+    variant_attributes: dict[str, object] = field(default_factory=dict)
+
 
 class DealScannerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -609,18 +624,106 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
             continue
         if alerts_only and not decision.should_alert:
             continue
-        choices = product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, asin=deal.asin)
-        card = DealCard(embed=build_deal_card_embed(candidate, deal, decision, discount, choices), url=deal.product_url, label=short_button_label(deal.title), score=decision.anomaly.score, discount=discount, link_choices=choices)
-        # Runtime attributes keep the dataclass backward compatible while giving
-        # the public posting pipeline exact proof for retailer/dedupe/alertability.
+
+        choices = product_link_choices(
+            retailer=deal.retailer,
+            product_url=deal.product_url,
+            title=deal.title,
+            product_id=candidate.product_id,
+            sku=deal.sku,
+            asin=deal.asin,
+        )
+        variant_attributes = _deal_card_variant_attributes(candidate, deal)
+        condition_value = _first_present(
+            getattr(candidate, "api_condition", None),
+            getattr(candidate, "condition", None),
+            getattr(deal, "condition", None),
+            variant_attributes.get("apiCondition"),
+            variant_attributes.get("condition"),
+        )
+        current_value = _first_present(
+            getattr(candidate, "api_current_price", None),
+            getattr(deal, "current_price", None),
+            variant_attributes.get("apiCurrentPrice"),
+        )
+        reference_value = _first_present(
+            getattr(candidate, "api_reference_price", None),
+            getattr(deal, "typical_price", None),
+            variant_attributes.get("apiReferencePrice"),
+            variant_attributes.get("trustedReferencePrice"),
+        )
+        direct_url = _first_present(
+            getattr(candidate, "direct_product_url", None),
+            variant_attributes.get("directProductUrl"),
+            getattr(deal, "product_url", None),
+        )
+
+        card = DealCard(
+            embed=build_deal_card_embed(candidate, deal, decision, discount, choices),
+            url=deal.product_url,
+            label=short_button_label(deal.title),
+            score=decision.anomaly.score,
+            discount=discount,
+            link_choices=choices,
+            deal_lane=_first_present(getattr(candidate, "deal_lane", None), variant_attributes.get("dealLane")),
+            api_current_price=current_value,
+            api_reference_price=reference_value,
+            api_discount_percent=_first_present(
+                getattr(candidate, "api_discount_percent", None),
+                variant_attributes.get("apiDiscountPercent"),
+                discount,
+            ),
+            api_condition=condition_value,
+            api_condition_path=_first_present(
+                getattr(candidate, "api_condition_path", None),
+                variant_attributes.get("apiConditionPath"),
+                variant_attributes.get("conditionPath"),
+                "condition" if condition_value else None,
+            ),
+            api_reference_path=_first_present(
+                getattr(candidate, "api_reference_path", None),
+                variant_attributes.get("apiReferencePath"),
+                variant_attributes.get("trustedReferenceSource"),
+            ),
+            api_price_path=_first_present(
+                getattr(candidate, "api_price_path", None),
+                variant_attributes.get("apiPricePath"),
+                variant_attributes.get("currentPriceSource"),
+            ),
+            seller_name=_first_present(getattr(candidate, "seller_name", None), getattr(deal, "seller_name", None)),
+            fulfillment_type=_first_present(getattr(candidate, "fulfillment_type", None), getattr(deal, "fulfillment_type", None)),
+            direct_product_url=direct_url,
+            variant_attributes=variant_attributes,
+        )
+
+        # Compatibility attributes used by older posting/dedupe helpers.
         card.retailer = deal.retailer
         card.should_alert = decision.should_alert
         card.current_price = deal.current_price
+        card.typical_price = deal.typical_price
         card.selected_offer_id = deal.selected_offer_id
         card.sku = deal.sku
         card.upc = deal.upc
         cards.append(card)
     return cards
+
+
+def _deal_card_variant_attributes(candidate: SourceCandidate, deal: NormalizedDeal) -> dict[str, object]:
+    attrs: dict[str, object] = {}
+    deal_attrs = getattr(deal, "variant_attributes", None)
+    if isinstance(deal_attrs, dict):
+        attrs.update(deal_attrs)
+    candidate_attrs = getattr(candidate, "variant_attributes", None)
+    if isinstance(candidate_attrs, dict):
+        attrs.update(candidate_attrs)
+    return attrs
+
+
+def _first_present(*values):
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
 
 
 def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, decision, discount: float, link_choices: tuple[LinkChoice, ...] = ()) -> discord.Embed:

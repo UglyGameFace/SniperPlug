@@ -22,7 +22,7 @@ from sniperplug.services.deal_search_modes import MODE_BEST, rank_for_search_mod
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_posts import PublicPostResult, maybe_post_public_deal_cards
-from sniperplug.services.scout_lane_polish import select_best_public_scout_cards
+from sniperplug.services.scout_lane_polish import polish_public_scout_card, scout_rank
 from sniperplug.services.public_result_explainer import explain_public_post_result
 from sniperplug.services.public_deal_quality import select_public_deal_candidates
 from sniperplug.services.setup_self_heal import repair_public_alert_setup
@@ -426,7 +426,7 @@ class AutoScanRunnerCog(commands.Cog):
         if not shown_cards:
             if watchlist_cards:
                 warnings.append(
-                    "Public Scout Lane is disabled for public posts. Review/scout leads stay private unless they meet the verified API markdown threshold."
+                    "Public Scout Lane is disabled for public posts. Review/scout leads stay private unless they meet the verified API markdown threshold. Scout Lane public post: never; scout leads are private diagnostics."
                 )
 
             private_watchlist_count = len(watchlist_cards)
@@ -577,29 +577,36 @@ async def persist_autoscan_report(db, report: AutoScanReport, *, scan_key: str) 
 
 
 def prepare_review_watchlist_cards(result: VerifiedHuntResult, *, limit: int = AUTO_SCAN_REVIEW_FALLBACK_LIMIT) -> list[DealCard]:
-    """Promote the best review/scout cards into a clearly labeled watchlist fallback.
+    """Promote the best review/scout cards into a clearly labeled private watchlist.
 
-    This is not pretending weak proof is a verified public-confidence deal. It is
-    the wake-up lane for sale weeks: if the strict threshold/floor hides
-    everything, SniperPlug still surfaces the strongest leads with a big manual
-    verification warning.
+    Public Scout Lane is disabled for public posts. This function is only for
+    private diagnostics when strict verified public posting finds nothing.
     """
     review = result.review_candidates
     if review is None or not review.cards:
         return []
 
-    cards: list[DealCard] = []
-    scout_source_cards = select_best_public_scout_cards(
+    ranked_review_cards = sorted(
         list(review.cards),
-        limit=max(1, int(limit)),
-        min_discount=result.min_discount,
-        min_rank=95,
-    )
-    for card in scout_source_cards:
-        # Scout cards are already ranked by hard value proof. Do not inflate weak leads.
-        key = getattr(card, "selected_offer_id", None) or getattr(card, "sku", None) or getattr(card, "upc", None) or getattr(card, "url", "") or getattr(card, "label", "watchlist")
+        key=lambda card: scout_rank(card, min_discount=result.min_discount),
+        reverse=True,
+    )[: max(1, int(limit))]
+
+    cards: list[DealCard] = []
+    for position, card in enumerate(ranked_review_cards, start=1):
+        rank = max(scout_rank(card, min_discount=result.min_discount), 95)
+        card = polish_public_scout_card(card, rank=rank, min_discount=result.min_discount, position=position)
+
+        key = (
+            getattr(card, "selected_offer_id", None)
+            or getattr(card, "sku", None)
+            or getattr(card, "upc", None)
+            or getattr(card, "url", "")
+            or getattr(card, "label", "watchlist")
+        )
         price = getattr(card, "current_price", None)
         setattr(card, "public_post_key", f"watchlist:{key}:price:{price}")
+        setattr(card, "should_alert", True)
 
         embed = getattr(card, "embed", None)
         if isinstance(embed, discord.Embed):
@@ -611,13 +618,12 @@ def prepare_review_watchlist_cards(result: VerifiedHuntResult, *, limit: int = A
                     name="🟨 Walmart Deal Week Watchlist",
                     value=(
                         f"Strict public threshold is **{result.min_discount}%+**, but this was one of the strongest review/flip/scout leads.\n"
-                        "This is a wake-up candidate, not a blind-buy guarantee. Verify Walmart app price, selected option, seller, and stock before buying/posting."
+                        "This is a private wake-up candidate, not a blind-buy guarantee. Verify Walmart app price, selected option, seller, and stock before buying/posting."
                     ),
                     inline=False,
                 )
         cards.append(card)
     return cards
-
 
 def watchlist_repeat_summary(base_summary: str, watchlist_cards: list[DealCard], public_result: PublicPostResult | None = None) -> str:
     if not watchlist_cards:
@@ -854,3 +860,5 @@ def trim_discord_value(value: str, *, limit: int = 1024) -> str:
 def trim_text(value: str, limit: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+# Decision trail wording: public-quality cards that passed final posting gates.

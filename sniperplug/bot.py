@@ -16,6 +16,7 @@ from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
+from sniperplug.cogs.open_box_deals import OpenBoxDealsCog
 from sniperplug.cogs.public_alerts import PublicAlertsCog
 from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
@@ -83,6 +84,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(WorkflowCog(self))
         await self.add_cog(VerifiedDealScannerCog(self))
+        await self.add_cog(OpenBoxDealsCog(self))
         await self.add_cog(LocalInventoryCog(self))
         await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))

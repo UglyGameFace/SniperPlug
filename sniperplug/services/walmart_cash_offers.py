@@ -124,7 +124,7 @@ def build_walmart_cash_offer_embed(
     if offer.amount is not None and deal.current_price:
         after_cash = max(float(deal.current_price) - float(offer.amount), 0)
         price_lines.append(f"After-Cash estimate: **{money(after_cash)}**")
-        price_lines.append("Estimate only. Walmart Cash is earned/redeemed under Walmart’s rules.")
+        price_lines.append("Estimate only. Walmart Cash is earned/redeemed under Walmart's rules.")
     if deal.typical_price:
         price_lines.append(f"Trusted Walmart was/reference price: ~~{money(deal.typical_price)}~~")
     embed.add_field(name="💰 Price summary", value="\n".join(price_lines), inline=False)
@@ -154,7 +154,7 @@ def build_walmart_cash_offer_embed(
 
     links = product_link_block(link_choices, fallback_url=deal.product_url)
     if links:
-        embed.add_field(name="🔗 Open product", value=links, inline=False)
+        embed.add_field(name="🔗 Open API-proven Cash product", value=links, inline=False)
 
     embed.set_footer(text=f"Walmart Cash API proof only • SKU: {deal.sku or 'n/a'} • UPC: {deal.upc or 'n/a'}")
     return embed
@@ -229,6 +229,7 @@ def build_walmart_cash_summary_embed(
         if value:
             promo_lines.append(f"• {label}: **{value}**")
     if promo_lines:
+        promo_lines.append("\nThese are separated diagnostics, not Walmart Cash links or buy recommendations.")
         embed.add_field(
             name="🧾 Other promo types seen separately",
             value="\n".join(promo_lines)[:1024],
@@ -274,19 +275,22 @@ def build_walmart_cash_summary_embed(
                 name="No API-proven Walmart Cash found in checked detail rows",
                 value=(
                     "SniperPlug checked returned Walmart API rows and only accepts detail promo proof with an amount. "
-                    "No checked detail row exposed valid Walmart Cash proof."
+                    "No checked detail row exposed valid Walmart Cash proof. No product links are shown because nothing was proven buy-worthy by Cash Finder."
                 ),
                 inline=False,
             )
 
-    embed.set_footer(text="Private Cash-only search. It does not public-post markdown alerts.")
+    embed.set_footer(text="Private Cash-only search. Direct links only show on API-proven Cash results.")
     return embed
 
 
 def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
     embed = discord.Embed(
         title="🧪 Walmart API Probe",
-        description="Owner/admin diagnostic. This shows what SniperPlug could actually prove from Walmart API data.",
+        description=(
+            "Owner/admin diagnostic. This is **not a shopping list**. It shows raw promo signals "
+            "SniperPlug could prove from Walmart API data."
+        ),
         color=discord.Color.blurple(),
     )
 
@@ -318,15 +322,42 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
             f"Cart Promo / Buy-more-save-more: **{counts.get('cart_promo', 0)}**\n"
             f"OnePay cashback: **{counts.get('onepay', 0)}**\n"
             f"Rollback/markdown: **{counts.get('markdown', 0)}**\n"
-            f"Clearance: **{counts.get('clearance', 0)}**\n"
+            f"Clearance signal: **{counts.get('clearance', 0)}**\n"
             f"Generic promo text: **{counts.get('generic_promo', 0)}**"
         ),
         inline=False,
     )
 
+    cash_candidates = tuple(getattr(probe, "cash_candidates", ()) or ())
+    buy_lines: list[str] = []
+    if cash_candidates:
+        buy_lines.append("✅ Direct links are allowed below because these rows have API-proven Walmart Cash with an amount.")
+        buy_lines.append("Still verify seller, shipping, stock, and resale comps before buying.")
+    elif any(int(counts.get(key, 0) or 0) for key in ("clearance", "cart_promo", "onepay", "generic_promo")):
+        buy_lines.append("⚠️ These are **promo signals only**, not buy-worthy deal alerts.")
+        buy_lines.append("A clearance flag by itself does not prove a discount, profit, or good buy.")
+        buy_lines.append("SniperPlug hides direct product links here until Walmart Cash or the normal deal scanner proves a real buyable deal.")
+    else:
+        buy_lines.append("No buy-worthy product was proven from this probe.")
+    embed.add_field(name="🛒 Buying meaning", value="\n".join(buy_lines)[:1024], inline=False)
+
+    cash_link_lines: list[str] = []
+    for candidate in cash_candidates[:5]:
+        url = str(getattr(candidate, "product_url", "") or "").strip()
+        if not url:
+            continue
+        title = short(getattr(candidate, "title", "Walmart product"), 70)
+        cash_link_lines.append(f"• [{title}]({url})")
+    if cash_link_lines:
+        embed.add_field(
+            name="🔗 API-proven Cash links",
+            value="\n".join(cash_link_lines)[:1024],
+            inline=False,
+        )
+
     debug_lines = tuple(getattr(probe, "debug_lines", ()) or ())
     embed.add_field(
-        name="🔎 Product proof trail",
+        name="🔎 Raw promo proof trail — diagnostic only",
         value="\n".join(f"• {line}" for line in debug_lines[:6])[:1024] or "No product rows were available to inspect.",
         inline=False,
     )
@@ -345,7 +376,7 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
             inline=False,
         )
 
-    embed.set_footer(text="Probe is private. It does not post deal alerts.")
+    embed.set_footer(text="Probe is private. Direct product links only show for API-proven Cash candidates.")
     return embed
 
 

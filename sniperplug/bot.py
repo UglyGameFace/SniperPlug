@@ -39,6 +39,7 @@ from sniperplug.services.error_logging import (
     install_global_exception_hooks,
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
+from sniperplug.services.open_box_autoscan_routes import install_open_box_autoscan_routes
 from sniperplug.services.storage_maintenance import run_storage_maintenance
 from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
 from sniperplug.storage.db import Database
@@ -80,6 +81,7 @@ class SniperPlugBot(commands.Bot):
         provider_registry.register(CachedWalmartProvider(self.db, WalmartProvider(configured=False)))
         provider_registry.register(HomeDepotProvider())
         provider_registry.register(SerpApiHomeDepotProvider())
+        install_open_box_autoscan_routes()
 
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(WorkflowCog(self))

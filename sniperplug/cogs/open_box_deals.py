@@ -12,6 +12,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.candidate_pipeline import evaluate_candidate
+from sniperplug.services.open_box_autoscan_routes import OPEN_BOX_AUTOSCAN_QUERIES
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.public_deal_quality import (
     LANE_OPEN_BOX_LIKE_NEW,
@@ -24,22 +25,6 @@ from sniperplug.services.public_deal_quality import (
     structured_discount,
 )
 from sniperplug.services.safe_links import product_link_choices
-
-
-OPEN_BOX_QUERIES: tuple[str, ...] = (
-    "open box vacuum",
-    "open box electronics",
-    "restored vacuum",
-    "refurbished vacuum",
-    "like new vacuum",
-    "open box appliance",
-    "restored electronics",
-    "open box home",
-    "open box gaming",
-    "open box monitor",
-    "open box laptop",
-)
-
 
 class OpenBoxDealsCog(commands.Cog):
     """Direct Walmart condition-deal scan.
@@ -75,7 +60,7 @@ class OpenBoxDealsCog(commands.Cog):
             await interaction.followup.send("Open-box scan is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
             return
 
-        routes = (query.strip(),) if query and query.strip() else OPEN_BOX_QUERIES[: max(1, int(max_routes))]
+        routes = (query.strip(),) if query and query.strip() else OPEN_BOX_AUTOSCAN_QUERIES[: max(1, int(max_routes))]
         results = await asyncio.gather(
             *(deal_scanner.run_walmart_scan(route, 1, 12, None, None, str(interaction.user.id)) for route in routes),
             return_exceptions=True,
@@ -163,6 +148,7 @@ def build_open_box_cards(result: ProviderScanResult, *, min_discount: int) -> li
             asin=deal.asin,
         )
         embed = deal_scanner.build_deal_card_embed(candidate, deal, decision, discount, choices)
+        variant_attributes = dict(getattr(candidate, "variant_attributes", {}) or {})
         card = DealCard(
             embed=embed,
             url=deal.product_url,
@@ -170,6 +156,18 @@ def build_open_box_cards(result: ProviderScanResult, *, min_discount: int) -> li
             score=decision.anomaly.score,
             discount=discount,
             link_choices=choices,
+            deal_lane=lane,
+            api_current_price=current_price(candidate),
+            api_reference_price=reference_price(candidate),
+            api_discount_percent=discount,
+            api_condition=condition,
+            api_condition_path=getattr(candidate, "api_condition_path", None) or variant_attributes.get("conditionPath") or "condition",
+            api_reference_path=getattr(candidate, "api_reference_path", None) or variant_attributes.get("trustedReferenceSource") or "trustedReferencePrice",
+            api_price_path=getattr(candidate, "api_price_path", None) or variant_attributes.get("currentPriceSource") or "currentPrice",
+            seller_name=deal.seller_name,
+            fulfillment_type=deal.fulfillment_type,
+            direct_product_url=getattr(candidate, "direct_product_url", None) or deal.product_url,
+            variant_attributes=variant_attributes,
         )
         card.retailer = deal.retailer
         card.should_alert = True
@@ -178,18 +176,6 @@ def build_open_box_cards(result: ProviderScanResult, *, min_discount: int) -> li
         card.selected_offer_id = deal.selected_offer_id
         card.sku = deal.sku
         card.upc = deal.upc
-        card.variant_attributes = dict(getattr(candidate, "variant_attributes", {}) or {})
-        card.deal_lane = lane
-        card.api_current_price = current_price(candidate)
-        card.api_reference_price = reference_price(candidate)
-        card.api_discount_percent = discount
-        card.api_condition = condition
-        card.api_condition_path = getattr(candidate, "api_condition_path", None) or "condition"
-        card.api_reference_path = getattr(candidate, "api_reference_path", None) or card.variant_attributes.get("trustedReferenceSource") or "trustedReferencePrice"
-        card.api_price_path = getattr(candidate, "api_price_path", None) or card.variant_attributes.get("currentPriceSource") or "currentPrice"
-        card.seller_name = deal.seller_name
-        card.fulfillment_type = deal.fulfillment_type
-        card.direct_product_url = getattr(candidate, "direct_product_url", None) or deal.product_url
         cards.append(card)
     cards.sort(key=lambda card: (float(getattr(card, "api_discount_percent", 0) or 0), int(getattr(card, "score", 0) or 0)), reverse=True)
     return cards

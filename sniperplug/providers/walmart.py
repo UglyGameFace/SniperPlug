@@ -23,6 +23,19 @@ from sniperplug.services.walmart_cash_api_truth import extract_walmart_cash_api_
 from sniperplug.services.walmart_api_value_proof import extract_walmart_api_value_proof
 from sniperplug.services.walmart_marketplace_comp import is_marketplace_comp_source, marketplace_comp_from_item
 from sniperplug.services.walmart_promo_classifier import classify_walmart_api_promos
+from sniperplug.services.public_deal_quality import (
+    LANE_CART_PROMO,
+    LANE_CLEARANCE,
+    LANE_OPEN_BOX_LIKE_NEW,
+    LANE_ONEPAY,
+    LANE_RESTORED_REFURBISHED,
+    LANE_ROLLBACK,
+    LANE_VERIFIED_MARKDOWN,
+    LANE_WALMART_CASH,
+    is_open_box_condition,
+    is_restored_condition,
+    normalized_condition,
+)
 
 
 LOW_CONFIDENCE_REFERENCE_TOKENS = (
@@ -265,6 +278,7 @@ class WalmartProvider(DealProvider):
         seller_name = selected_offer.get("seller_name")
         fulfillment_type = selected_offer.get("fulfillment_type")
         condition = selected_offer.get("condition")
+        condition_path = selected_offer.get("condition_path")
         signals.extend(_seller_signals(seller_name=seller_name, fulfillment_type=fulfillment_type, condition=condition))
 
         current_price, current_price_signal = _trusted_current_price(item)
@@ -284,8 +298,11 @@ class WalmartProvider(DealProvider):
         proof_attrs.update(promo_scan.as_attributes())
         if cash_api_truth is not None:
             proof_attrs.update(cash_api_truth.as_attributes())
+        current_price_path = None
         if current_price_signal:
-            proof_attrs["currentPriceSource"] = current_price_signal.split(":", 1)[-1].strip()
+            current_price_path = current_price_signal.split(":", 1)[-1].strip()
+            proof_attrs["currentPriceSource"] = current_price_path
+        trusted_source = None
         if typical_price is not None:
             proof_attrs["referencePriceTrusted"] = "yes"
             trusted_source = _trusted_reference_source(item=item, title=title, current_price=current_price, reference_price=typical_price)
@@ -326,6 +343,15 @@ class WalmartProvider(DealProvider):
         if api_value_proof.get("apiPromotionSavingsCap"):
             signals.append(f"Walmart API promo savings cap detected: ${float(api_value_proof['apiPromotionSavingsCap']):,.2f}")
 
+        api_discount_percent = _discount_percent(current_price, typical_price)
+        deal_lane = _walmart_deal_lane(
+            condition=condition,
+            proof_attrs=proof_attrs,
+            has_walmart_cash=cash_api_truth is not None,
+            has_cart_promo=promo_scan.cart_promo is not None,
+            has_onepay=promo_scan.onepay is not None,
+        )
+
         return SourceCandidate(
             source_key=self.provider_key,
             retailer="Walmart",
@@ -334,6 +360,15 @@ class WalmartProvider(DealProvider):
             current_price=current_price,
             typical_price=typical_price,
             image_url=str(item.get("largeImage") or item.get("mediumImage") or item.get("thumbnailImage") or "") or None,
+            deal_lane=deal_lane,
+            api_current_price=current_price,
+            api_reference_price=typical_price,
+            api_discount_percent=api_discount_percent,
+            api_condition=condition,
+            api_condition_path=condition_path,
+            api_reference_path=trusted_source,
+            api_price_path=current_price_path,
+            direct_product_url=direct_product_url,
             product_id=str(item_id) if item_id is not None else None,
             product_id_type="sku" if item_id is not None else None,
             sku=str(item_id) if item_id is not None else None,
@@ -753,11 +788,59 @@ def _first_money_amount(text: str) -> float | None:
     return _float_or_none(match.group(1))
 
 
+
+def _discount_percent(current_price: float | None, reference_price: float | None) -> float | None:
+    if current_price is None or reference_price is None or reference_price <= 0 or reference_price <= current_price:
+        return None
+    return round((reference_price - current_price) / reference_price * 100, 2)
+
+
+def _walmart_deal_lane(
+    *,
+    condition: str | None,
+    proof_attrs: dict[str, str],
+    has_walmart_cash: bool,
+    has_cart_promo: bool,
+    has_onepay: bool,
+) -> str:
+    normalized = normalized_condition(condition)
+    if is_open_box_condition(normalized):
+        return LANE_OPEN_BOX_LIKE_NEW
+    if is_restored_condition(normalized):
+        return LANE_RESTORED_REFURBISHED
+    if has_walmart_cash or proof_attrs.get("walmartCashSavings") or proof_attrs.get("walmartCashAmount") or proof_attrs.get("walmartCashReward"):
+        return LANE_WALMART_CASH
+    if has_onepay or proof_attrs.get("onePayCashback") or proof_attrs.get("onepayCashback"):
+        return LANE_ONEPAY
+    if has_cart_promo or proof_attrs.get("cartPromo") or proof_attrs.get("apiPromotionText") or proof_attrs.get("apiPromotionSavingsCap"):
+        return LANE_CART_PROMO
+    if str(proof_attrs.get("clearance") or "").lower() == "yes":
+        return LANE_CLEARANCE
+    if str(proof_attrs.get("rollback") or "").lower() == "yes":
+        return LANE_ROLLBACK
+    return LANE_VERIFIED_MARKDOWN
+
+
+def _first_clean_condition(item: dict[str, Any]) -> tuple[str | None, str | None]:
+    for path, value in (
+        ("condition", item.get("condition")),
+        ("conditionType", item.get("conditionType")),
+        ("condition.type", _nested_value(item, "condition", "type")),
+        ("condition.name", _nested_value(item, "condition", "name")),
+        ("offer.condition", _nested_value(item, "offer", "condition")),
+        ("selectedOffer.condition", _nested_value(item, "selectedOffer", "condition")),
+    ):
+        cleaned = _clean_string(value)
+        if cleaned:
+            return cleaned, path
+    return None, None
+
+
 def _selected_offer_proof(item: dict[str, Any]) -> dict[str, str | None]:
     seller_name = _clean_string(item.get("sellerName") or item.get("sellerDisplayName") or item.get("seller") or _nested_value(item, "sellerInfo", "sellerName") or _nested_value(item, "sellerInfo", "name") or _nested_value(item, "seller", "name"))
     seller_id = _clean_string(item.get("sellerId") or item.get("sellerID") or _nested_value(item, "sellerInfo", "sellerId") or _nested_value(item, "seller", "id"))
     fulfillment_type = _clean_string(item.get("fulfillmentType") or item.get("fulfillment") or item.get("fulfillmentBadge") or _nested_value(item, "fulfillmentSummary", "fulfillment") or _nested_value(item, "fulfillmentSummary", "fulfillmentType"))
-    condition = _clean_string(item.get("condition") or item.get("conditionType") or _nested_value(item, "condition", "type"))
+    condition, condition_path = _first_clean_condition(item)
     is_walmart_seller = _is_walmart_seller(seller_name=seller_name, seller_id=seller_id, item=item)
     return {
         "raw_api": item,
@@ -765,6 +848,7 @@ def _selected_offer_proof(item: dict[str, Any]) -> dict[str, str | None]:
         "seller_id": seller_id,
         "fulfillment_type": fulfillment_type,
         "condition": condition,
+        "condition_path": condition_path,
         "is_walmart_seller": "yes" if is_walmart_seller else "no" if seller_name or seller_id or item.get("marketplace") is True else None,
     }
 
@@ -822,7 +906,7 @@ def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str
     if promotions:
         attrs.update(promotions)
     if selected_offer:
-        for key, label in (("seller_name", "seller"), ("seller_id", "sellerId"), ("fulfillment_type", "fulfillment"), ("condition", "condition"), ("is_walmart_seller", "walmartSeller")):
+        for key, label in (("seller_name", "seller"), ("seller_id", "sellerId"), ("fulfillment_type", "fulfillment"), ("condition", "condition"), ("condition_path", "conditionPath"), ("is_walmart_seller", "walmartSeller")):
             value = selected_offer.get(key)
             if value:
                 attrs[label] = value

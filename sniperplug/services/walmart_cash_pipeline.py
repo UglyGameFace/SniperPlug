@@ -23,6 +23,9 @@ from sniperplug.services.walmart_promo_classifier import (
 )
 
 
+PDP_FALLBACK_WITHOUT_BADGE_LIMIT = 6
+
+
 @dataclass(frozen=True)
 class WalmartApiCapability:
     mode: str
@@ -315,7 +318,7 @@ async def _enrich_candidates_with_detail(
     detail_enabled = callable(detail_method) and capability.detail_access
     semaphore = asyncio.Semaphore(3)
 
-    async def enrich(candidate: SourceCandidate) -> WalmartDetailResult:
+    async def enrich(candidate: SourceCandidate, index: int) -> WalmartDetailResult:
         async with semaphore:
             product_id = str(candidate.product_id or candidate.sku or candidate.selected_offer_id or "").strip()
             badge_seen = _candidate_has_badge(candidate)
@@ -357,11 +360,12 @@ async def _enrich_candidates_with_detail(
             confirmed = bool(scan and scan.cash is not None)
             if confirmed and scan and scan.cash:
                 _apply_cash_truth(enriched, scan.cash, source="affiliate_detail")
-            elif badge_seen:
+            else:
                 enriched.variant_attributes["cashAmountConfirmed"] = "no"
 
             pdp_result = WalmartPdpCashProof(False, False, False, None)
-            if not confirmed and badge_seen:
+            should_probe_pdp = bool(badge_seen or index < PDP_FALLBACK_WITHOUT_BADGE_LIMIT)
+            if not confirmed and should_probe_pdp:
                 pdp_result = await _check_candidate_pdp(candidate, pdp_fetcher=pdp_fetcher)
                 if pdp_result.attempted:
                     enriched.variant_attributes["cashDetailUrl"] = pdp_result.url
@@ -372,6 +376,8 @@ async def _enrich_candidates_with_detail(
                     note = ""
                 else:
                     enriched.variant_attributes["cashAmountConfirmed"] = "no"
+                    if not badge_seen:
+                        enriched.variant_attributes["cashPdpFallbackReason"] = "cash_finder_exact_pdp_probe"
                     if pdp_result.failure_reason:
                         enriched.variant_attributes["cashFailureReason"] = pdp_result.failure_reason
                     if pdp_result.failure_reason and not note:
@@ -394,7 +400,8 @@ async def _enrich_candidates_with_detail(
                 cash_failure_reason=pdp_result.failure_reason,
             )
 
-    return list(await asyncio.gather(*(enrich(candidate) for candidate in candidates[:12])))
+    limited_candidates = candidates[:12]
+    return list(await asyncio.gather(*(enrich(candidate, index) for index, candidate in enumerate(limited_candidates))))
 
 
 async def _check_candidate_pdp(candidate: SourceCandidate, *, pdp_fetcher: Any) -> WalmartPdpCashProof:

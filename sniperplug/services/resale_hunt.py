@@ -18,6 +18,9 @@ RESALE_HUNT_QUERIES = (
     "restored tv",
     "refurbished nintendo switch",
     "open box power tool",
+    "like new laptop",
+    "like new iphone",
+    "like new electronics",
 )
 
 

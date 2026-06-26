@@ -1,25 +1,16 @@
-import discord
+from pathlib import Path
 
-from sniperplug.services.manual_posting_explainer import add_public_posting_field
 from sniperplug.services.public_deal_posts import PublicPostResult
 
 
-def test_manual_posting_field_includes_skip_reason():
-    embed = discord.Embed(title="summary")
+def test_public_post_result_tracks_skip_counts_without_compat_module():
     result = PublicPostResult(attempted=5, skipped_not_alertable=5, cached_active=5)
 
-    add_public_posting_field(embed, result)
-
-    data = embed.to_dict()
-    field = data["fields"][0]
-    assert field["name"] == "📣 Public posting"
-    assert "Posted: **0**" in field["value"]
-    assert "proof was too weak" in field["value"]
+    assert result.any_activity is True
+    assert result.posted == 0
+    assert result.skipped_not_alertable == 5
+    assert result.cached_active == 5
 
 
-def test_manual_posting_field_skips_empty_result():
-    embed = discord.Embed(title="summary")
-
-    add_public_posting_field(embed, PublicPostResult())
-
-    assert "fields" not in embed.to_dict()
+def test_manual_posting_compat_module_stays_removed():
+    assert not Path("sniperplug/services/manual_posting_explainer.py").exists()

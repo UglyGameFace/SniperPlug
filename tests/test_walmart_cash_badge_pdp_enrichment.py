@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.services.walmart_cash_pipeline import detect_walmart_cash_badge, run_walmart_cash_discovery
+from sniperplug.services.walmart_cash_offers import build_walmart_cash_summary_embed
+from sniperplug.services.walmart_cash_pipeline import (
+    detect_confirmed_walmart_cash_amount,
+    detect_walmart_cash_badge,
+    run_walmart_cash_discovery,
+)
 
 
 class FakeConfig:
@@ -84,6 +89,33 @@ async def test_detail_row_with_exact_amount_confirms_offer(monkeypatch):
     assert result.cash_candidates[0].variant_attributes["walmartCashApiProof"] == "yes"
 
 
+def test_nested_detail_promo_object_with_amount_confirms_offer():
+    item = {"itemId": "123", "offers": [{"type": "Walmart Cash", "amount": 3.0, "description": "Walmart Cash reward"}]}
+    assert detect_confirmed_walmart_cash_amount(item, current_price=9.99)
+
+
 def test_user_query_or_plain_title_does_not_prove_badge():
-    row = candidate(title="HP Laptop", variant_attributes={"finderSourceQuery": "walmart cash detergent"}, signals=["search route: walmart cash detergent"])
+    row = candidate(title="Walmart Cash detergent")
     assert detect_walmart_cash_badge(row) is None
+
+
+def test_summary_embed_reports_badges_separate_from_confirmed_amounts():
+    embed = build_walmart_cash_summary_embed(
+        "detergent",
+        ("detergent", "detergent walmart cash"),
+        checked=2,
+        found=0,
+        warnings=(),
+        detail_checked=2,
+        promo_counts={
+            "cash_badge_seen": 2,
+            "detail_rows_attempted": 2,
+            "confirmed_walmart_cash_amount_rows": 0,
+            "badge_rows_without_amount": 2,
+        },
+    )
+    rendered = str(embed.to_dict())
+    assert "Cash badges seen" in rendered
+    assert "Walmart Cash badge seen on" in rendered
+    assert "not shown as buy-worthy Cash offers yet" in rendered
+    assert "Cash Finder does not public-post markdown alerts" in rendered

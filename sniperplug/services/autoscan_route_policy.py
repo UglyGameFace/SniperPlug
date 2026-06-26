@@ -83,6 +83,8 @@ def install_public_autoscan_route_policy() -> None:
         verified_discount_hunt.DISCOVERY_QUERIES,
         verified_discount_hunt.TRUE_DISCOUNT_MIN,
     )
-    verified_discount_hunt.deal_scanner.HUNT_PRESETS.clear()
-    verified_discount_hunt.deal_scanner.HUNT_PRESETS.update(verified_discount_hunt.HUNT_PRESETS)
+
+    for key, preset in verified_discount_hunt.HUNT_PRESETS.items():
+        verified_discount_hunt.deal_scanner.HUNT_PRESETS[key] = preset
+
     verified_discount_hunt._sniperplug_public_autoscan_route_policy_installed = True

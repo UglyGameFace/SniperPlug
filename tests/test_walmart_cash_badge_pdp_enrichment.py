@@ -58,6 +58,30 @@ def candidate(**kwargs) -> SourceCandidate:
     return SourceCandidate(**base)
 
 
+@pytest.mark.asyncio
+async def test_badge_missing_still_checks_exact_pdp_and_confirms(monkeypatch):
+    monkeypatch.setenv("WALMART_OAUTH_ACCESS_TOKEN", "test-token")
+    row = candidate(variant_attributes={"clearance": "clearance"})
+    provider = FakeProvider(
+        [row],
+        {"123": {"itemId": "123", "name": "Glad ForceFlex Trash Bags", "clearance": True}},
+        {"https://www.walmart.com/ip/123": "<html><body>Earn $4 Walmart Cash on this exact product.</body></html>"},
+    )
+
+    result = await run_walmart_cash_discovery(provider, search="trash bags walmart cash", max_results=4, requested_by="tester")
+
+    assert result.cash_badges_seen == 0
+    assert result.detail_rows_checked == 1
+    assert result.pdp_fallback_attempted == 1
+    assert result.pdp_fallback_checked == 1
+    assert result.pdp_cash_wording_seen == 1
+    assert result.confirmed_cash_amount_rows == 1
+    assert len(result.cash_candidates) == 1
+    attrs = result.cash_candidates[0].variant_attributes
+    assert attrs["cashProofSource"] == "walmart_pdp"
+    assert attrs["walmartCashAmount"] == "4.00"
+
+
 def test_search_row_badge_creates_private_candidate_state():
     row = candidate(variant_attributes={"badge": "Walmart Cash available"})
     badge = detect_walmart_cash_badge(row)

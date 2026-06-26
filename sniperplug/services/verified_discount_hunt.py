@@ -417,13 +417,38 @@ async def collect_verified_discount_cards(
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for item in results:
         pages_checked += 1
-        if isinstance(item, Exception):
-            text = str(item) or item.__class__.__name__
-            if text not in warnings:
-                warnings.append(text)
-            route_stats.append(SearchRouteStats(query="unknown", pages_checked=1, returned_products=0, warnings=(text,)))
+        if isinstance(item, BaseException) or not isinstance(item, tuple) or len(item) != 2:
+            if isinstance(item, BaseException):
+                warning_text = str(item) or item.__class__.__name__
+            else:
+                warning_text = f"bad Walmart route result: {type(item).__name__}"
+            if warning_text not in warnings:
+                warnings.append(warning_text)
+            route_stats.append(
+                SearchRouteStats(
+                    query="unknown",
+                    pages_checked=1,
+                    returned_products=0,
+                    warnings=(warning_text,),
+                )
+            )
             continue
+
         query, result = item
+        if not isinstance(result, ProviderScanResult):
+            warning_text = f"bad Walmart provider result for {query}: {type(result).__name__}"
+            if warning_text not in warnings:
+                warnings.append(warning_text)
+            route_stats.append(
+                SearchRouteStats(
+                    query=str(query or "unknown"),
+                    pages_checked=1,
+                    returned_products=0,
+                    warnings=(warning_text,),
+                )
+            )
+            continue
+
         candidates = list(result.candidates)
         tag_candidates_with_route(candidates, query=query)
         all_candidates.extend(candidates)

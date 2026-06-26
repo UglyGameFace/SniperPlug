@@ -76,8 +76,8 @@ def build_free_comp_links(*, title: str, brand: str | None = None, upc: str | No
         CompLink("Google Shopping", google_shopping_url(query)),
         CompLink("Google Web", google_web_url(query)),
         CompLink("Google Retailers", google_web_url(build_retailer_group_query(query))),
-        CompLink("eBay Sold", ebay_sold_url(query)),
-        CompLink("eBay Active", ebay_active_url(query)),
+        CompLink("eBay sold", ebay_sold_url(query)),
+        CompLink("eBay active", ebay_active_url(query)),
     ]
 
     if identity.identifiers:
@@ -147,7 +147,7 @@ def category_specific_links(identity: ProductCompIdentity) -> list[CompLink]:
             CompLink("Nike/adidas", google_web_url(f"Nike Adidas Puma {query}")),
             CompLink("StockX", retailer_search_url("stockx.com", query)),
             CompLink("GOAT", retailer_search_url("goat.com", query)),
-            CompLink("eBay Active", ebay_active_url(query)),
+            CompLink("eBay active", ebay_active_url(query)),
         ]
     return [CompLink("Amazon", retailer_search_url("amazon.com", query)), CompLink("Target", retailer_search_url("target.com", query))]
 
@@ -178,45 +178,44 @@ def normalize_identifier(value: str | None) -> str:
     text = str(value or "").strip()
     if not text or text.lower() == "none":
         return ""
-    return re.sub(r"[^A-Za-z0-9\-]", "", text)
+    return re.sub(r"[^A-Za-z0-9\-_.]", "", text)
 
 
 def compact_tokens(title: str) -> list[str]:
-    raw_tokens = re.findall(r"[A-Za-z0-9&.+\-]+", title)
     tokens: list[str] = []
-    for token in raw_tokens:
-        clean = token.strip("-_. ")
-        if not clean:
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9.+\-]*", title):
+        lower = token.lower()
+        if lower in STOP_WORDS:
             continue
-        if clean.lower() in STOP_WORDS:
+        if len(lower) <= 1 and not lower.isdigit():
             continue
-        tokens.append(clean)
+        tokens.append(token)
     return tokens
 
 
 def dedupe(values: Iterable[str]) -> list[str]:
     seen: set[str] = set()
-    result: list[str] = []
+    out: list[str] = []
     for value in values:
-        key = str(value or "").lower()
+        key = value.lower()
         if not key or key in seen:
             continue
         seen.add(key)
-        result.append(str(value))
-    return result
+        out.append(value)
+    return out
 
 
 def dedupe_links(links: Iterable[CompLink]) -> list[CompLink]:
     seen: set[str] = set()
-    result: list[CompLink] = []
+    out: list[CompLink] = []
     for link in links:
         key = link.url
         if not key or key in seen:
             continue
         seen.add(key)
-        result.append(link)
-    return result
+        out.append(link)
+    return out
 
 
-def quote(query: str) -> str:
-    return urllib.parse.quote_plus(" ".join(str(query or "").split()))
+def quote(value: str) -> str:
+    return urllib.parse.quote_plus(value.strip())

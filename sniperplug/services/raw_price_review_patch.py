@@ -7,6 +7,7 @@ import discord
 from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.services.safe_links import product_link_choices
 from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards, is_fragrance_or_beauty, money
 
 
@@ -30,11 +31,12 @@ def raw_price_signal(candidate: SourceCandidate, deal) -> bool:
 
 
 def build_review_candidate_cards_with_raw_leads(candidates: Iterable[SourceCandidate], *, limit: int = 25) -> ReviewCandidateResult:
-    base = build_review_candidate_cards(list(candidates), limit=limit)
+    candidate_list = list(candidates)
+    base = build_review_candidate_cards(candidate_list, limit=limit)
     cards = list(base.cards)
     existing_urls = {getattr(card, "url", "") for card in cards}
 
-    for candidate in candidates:
+    for candidate in candidate_list:
         if len(cards) >= limit:
             break
         deal = candidate.to_normalized_deal()
@@ -85,7 +87,7 @@ def _build_raw_price_card(candidate: SourceCandidate, deal) -> DealCard:
         label=deal_scanner.short_button_label(deal.title),
         score=0,
         discount=0.0,
-        link_choices=deal_scanner.product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, upc=deal.upc),
+        link_choices=product_link_choices(retailer=deal.retailer, product_url=deal.product_url, title=deal.title, product_id=candidate.product_id, sku=deal.sku, upc=deal.upc),
     )
     card.raw_price_lead = True
     card.manual_share_allowed = True

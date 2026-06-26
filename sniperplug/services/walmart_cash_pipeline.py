@@ -10,6 +10,12 @@ import re
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest
 from sniperplug.services.walmart_cash_offers import walmart_cash_search_terms
+from sniperplug.services.walmart_pdp_cash_proof import (
+    WalmartPdpCashProof,
+    candidate_pdp_url,
+    check_walmart_pdp_cash_truth,
+    walmart_pdp_cash_proof_from_html,
+)
 from sniperplug.services.walmart_promo_classifier import (
     WalmartPromoScan,
     classify_walmart_api_promos,
@@ -43,6 +49,11 @@ class WalmartDetailResult:
     cash_amount_confirmed: bool
     promo_scan: WalmartPromoScan | None
     note: str
+    pdp_attempted: bool = False
+    pdp_checked: bool = False
+    pdp_wording_seen: bool = False
+    cash_detail_url: str = ""
+    cash_failure_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -62,6 +73,9 @@ class WalmartCashDiscovery:
     partial: bool
     capability: WalmartApiCapability
     debug_lines: tuple[str, ...]
+    pdp_fallback_attempted: int = 0
+    pdp_fallback_checked: int = 0
+    pdp_cash_wording_seen: int = 0
 
 
 def detect_walmart_cash_badge(candidate: SourceCandidate) -> WalmartCashBadgeEvidence | None:
@@ -208,11 +222,18 @@ async def run_walmart_cash_discovery(
     scans = [result.promo_scan for result in detail_results if result.promo_scan is not None]
     detail_rows_attempted = sum(1 for result in detail_results if result.detail_attempted)
     detail_rows_checked = sum(1 for result in detail_results if result.detail_checked)
-    detail_unavailable = bool(candidates) and detail_rows_checked == 0
+    pdp_fallback_attempted = sum(1 for result in detail_results if result.pdp_attempted)
+    pdp_fallback_checked = sum(1 for result in detail_results if result.pdp_checked)
+    pdp_cash_wording_seen = sum(1 for result in detail_results if result.pdp_wording_seen)
+    detail_unavailable = bool(candidates) and detail_rows_checked == 0 and pdp_fallback_checked == 0
     timed_out = any(result.timed_out for result in detail_results)
     cash_badges_seen = sum(1 for result in detail_results if result.cash_badge_seen)
     confirmed_cash_amount_rows = sum(1 for result in detail_results if result.cash_amount_confirmed)
-    badge_rows_without_amount = sum(1 for result in detail_results if result.cash_badge_seen and not result.cash_amount_confirmed)
+    badge_rows_without_amount = sum(
+        1
+        for result in detail_results
+        if (result.cash_badge_seen or result.pdp_wording_seen) and not result.cash_amount_confirmed
+    )
     other_promo_rows = sum(1 for result in detail_results if _has_non_cash_promo(result.promo_scan))
 
     for result in detail_results:
@@ -222,7 +243,7 @@ async def run_walmart_cash_discovery(
     cash_candidates = tuple(
         result.candidate
         for result in detail_results
-        if result.detail_checked and str(result.candidate.variant_attributes.get("walmartCashApiProof") or "").lower() == "yes"
+        if str(result.candidate.variant_attributes.get("walmartCashApiProof") or "").lower() == "yes"
     )
 
     partial = timed_out or detail_unavailable or any("partial result" in warning.lower() for warning in warnings)
@@ -232,6 +253,9 @@ async def run_walmart_cash_discovery(
             "cash_badge_seen": cash_badges_seen,
             "detail_rows_attempted": detail_rows_attempted,
             "detail_rows_checked": detail_rows_checked,
+            "pdp_fallback_attempted": pdp_fallback_attempted,
+            "pdp_fallback_checked": pdp_fallback_checked,
+            "pdp_cash_wording_seen": pdp_cash_wording_seen,
             "confirmed_walmart_cash_amount_rows": confirmed_cash_amount_rows,
             "badge_rows_without_amount": badge_rows_without_amount,
             "other_promo_rows": other_promo_rows,
@@ -254,6 +278,9 @@ async def run_walmart_cash_discovery(
         partial=partial,
         capability=capability,
         debug_lines=tuple(_debug_line(result) for result in detail_results[:8]),
+        pdp_fallback_attempted=pdp_fallback_attempted,
+        pdp_fallback_checked=pdp_fallback_checked,
+        pdp_cash_wording_seen=pdp_cash_wording_seen,
     )
 
 
@@ -284,57 +311,116 @@ async def _enrich_candidates_with_detail(
         return []
 
     detail_method = getattr(provider, "fetch_product_detail_payload", None)
-    if not callable(detail_method) or not capability.detail_access:
-        return [
-            WalmartDetailResult(
-                candidate=candidate,
-                detail_attempted=False,
-                detail_checked=False,
-                detail_unavailable=True,
-                timed_out=False,
-                cash_badge_seen=_candidate_has_badge(candidate),
-                cash_amount_confirmed=False,
-                promo_scan=None,
-                note="Walmart did not expose full promo detail through the current API access.",
-            )
-            for candidate in candidates[:12]
-        ]
-
+    pdp_fetcher = getattr(provider, "fetch_walmart_pdp_html", None)
+    detail_enabled = callable(detail_method) and capability.detail_access
     semaphore = asyncio.Semaphore(3)
 
     async def enrich(candidate: SourceCandidate) -> WalmartDetailResult:
         async with semaphore:
             product_id = str(candidate.product_id or candidate.sku or candidate.selected_offer_id or "").strip()
             badge_seen = _candidate_has_badge(candidate)
-            if not product_id:
-                return WalmartDetailResult(candidate, False, False, True, False, badge_seen, False, None, "Skipped one product with no Walmart product ID for detail proof.")
-
-            try:
-                payload = await asyncio.wait_for(_call_detail_method(detail_method, product_id), timeout=8)
-            except asyncio.TimeoutError:
-                return WalmartDetailResult(candidate, True, False, True, True, badge_seen, False, None, f"Timed out checking detail promo proof for `{product_id}`.")
-            except Exception as exc:
-                return WalmartDetailResult(candidate, True, False, True, False, badge_seen, False, None, f"Detail promo proof unavailable for `{product_id}`: {type(exc).__name__}")
-
-            item = _extract_detail_item(payload)
-            if not isinstance(item, dict):
-                return WalmartDetailResult(candidate, True, False, True, False, badge_seen, False, None, f"Detail endpoint returned no usable product promo row for `{product_id}`.")
-
-            scan = classify_walmart_api_promos(item, current_price=candidate.current_price)
             enriched = replace(candidate, variant_attributes=dict(candidate.variant_attributes), signals=list(candidate.signals))
-            enriched.variant_attributes.update(scan.as_attributes())
 
-            if scan.cash is not None:
-                enriched.variant_attributes.update(scan.cash.as_attributes())
-                enriched.variant_attributes["cashAmountConfirmed"] = "yes"
-                if scan.cash.signal() not in enriched.signals:
-                    enriched.signals.append(scan.cash.signal())
+            detail_attempted = False
+            detail_checked = False
+            detail_unavailable = False
+            timed_out = False
+            scan: WalmartPromoScan | None = None
+            note = ""
+
+            if detail_enabled and product_id:
+                detail_attempted = True
+                try:
+                    payload = await asyncio.wait_for(_call_detail_method(detail_method, product_id), timeout=8)
+                    item = _extract_detail_item(payload)
+                    if isinstance(item, dict):
+                        detail_checked = True
+                        scan = classify_walmart_api_promos(item, current_price=candidate.current_price)
+                        enriched.variant_attributes.update(scan.as_attributes())
+                    else:
+                        detail_unavailable = True
+                        note = f"Detail endpoint returned no usable product promo row for `{product_id}`."
+                except asyncio.TimeoutError:
+                    detail_unavailable = True
+                    timed_out = True
+                    note = f"Timed out checking detail promo proof for `{product_id}`."
+                except Exception as exc:
+                    detail_unavailable = True
+                    note = f"Detail promo proof unavailable for `{product_id}`: {type(exc).__name__}"
+            elif detail_enabled and not product_id:
+                detail_unavailable = True
+                note = "Skipped one product with no Walmart product ID for detail proof."
+            else:
+                detail_unavailable = True
+                note = "Walmart did not expose full promo detail through the current API access."
+
+            confirmed = bool(scan and scan.cash is not None)
+            if confirmed and scan and scan.cash:
+                _apply_cash_truth(enriched, scan.cash, source="affiliate_detail")
             elif badge_seen:
                 enriched.variant_attributes["cashAmountConfirmed"] = "no"
 
-            return WalmartDetailResult(enriched, True, True, False, False, badge_seen, scan.cash is not None, scan, "")
+            pdp_result = WalmartPdpCashProof(False, False, False, None)
+            if not confirmed and badge_seen:
+                pdp_result = await _check_candidate_pdp(candidate, pdp_fetcher=pdp_fetcher)
+                if pdp_result.attempted:
+                    enriched.variant_attributes["cashDetailUrl"] = pdp_result.url
+                if pdp_result.cash_truth is not None:
+                    scan = _scan_with_cash(scan, pdp_result.cash_truth)
+                    _apply_cash_truth(enriched, pdp_result.cash_truth, source="walmart_pdp", detail_url=pdp_result.url)
+                    confirmed = True
+                    note = ""
+                else:
+                    enriched.variant_attributes["cashAmountConfirmed"] = "no"
+                    if pdp_result.failure_reason:
+                        enriched.variant_attributes["cashFailureReason"] = pdp_result.failure_reason
+                    if pdp_result.failure_reason and not note:
+                        note = pdp_result.failure_reason
+
+            return WalmartDetailResult(
+                candidate=enriched,
+                detail_attempted=detail_attempted,
+                detail_checked=detail_checked,
+                detail_unavailable=detail_unavailable,
+                timed_out=timed_out,
+                cash_badge_seen=badge_seen,
+                cash_amount_confirmed=confirmed,
+                promo_scan=scan,
+                note=note,
+                pdp_attempted=pdp_result.attempted,
+                pdp_checked=pdp_result.checked,
+                pdp_wording_seen=pdp_result.wording_seen,
+                cash_detail_url=pdp_result.url,
+                cash_failure_reason=pdp_result.failure_reason,
+            )
 
     return list(await asyncio.gather(*(enrich(candidate) for candidate in candidates[:12])))
+
+
+async def _check_candidate_pdp(candidate: SourceCandidate, *, pdp_fetcher: Any) -> WalmartPdpCashProof:
+    url = candidate_pdp_url(candidate)
+    if not url:
+        return WalmartPdpCashProof(False, False, False, None, failure_reason="No exact Walmart product URL/ID was available for PDP fallback.")
+
+    try:
+        if callable(pdp_fetcher):
+            html = await asyncio.wait_for(_call_pdp_fetcher(pdp_fetcher, url), timeout=8)
+            return walmart_pdp_cash_proof_from_html(html, current_price=candidate.current_price, url=url)
+        return await asyncio.wait_for(
+            asyncio.to_thread(check_walmart_pdp_cash_truth, url, current_price=candidate.current_price),
+            timeout=10,
+        )
+    except asyncio.TimeoutError:
+        return WalmartPdpCashProof(True, False, False, None, url=url, failure_reason="Timed out checking exact Walmart PDP fallback.")
+    except Exception as exc:
+        return WalmartPdpCashProof(True, False, False, None, url=url, failure_reason=f"PDP fallback unavailable: {type(exc).__name__}")
+
+
+async def _call_pdp_fetcher(fetcher: Any, url: str) -> str:
+    result = fetcher(url)
+    if inspect.isawaitable(result):
+        result = await result
+    return str(result or "")
 
 
 async def _call_detail_method(detail_method: Any, product_id: str) -> Any:
@@ -342,6 +428,34 @@ async def _call_detail_method(detail_method: Any, product_id: str) -> Any:
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+def _apply_cash_truth(candidate: SourceCandidate, truth: Any, *, source: str, detail_url: str = "") -> None:
+    candidate.variant_attributes.update(truth.as_attributes())
+    candidate.variant_attributes["cashAmountConfirmed"] = "yes"
+    candidate.variant_attributes["cashProofSource"] = source
+    if detail_url:
+        candidate.variant_attributes["cashDetailUrl"] = detail_url
+    signal = truth.signal()
+    if signal not in candidate.signals:
+        candidate.signals.append(signal)
+
+
+def _scan_with_cash(scan: WalmartPromoScan | None, truth: Any) -> WalmartPromoScan:
+    if scan is None:
+        return WalmartPromoScan(cash=truth, raw_promo_paths=(truth.proof_path,))
+    paths = tuple(scan.raw_promo_paths or ())
+    if truth.proof_path not in paths:
+        paths = (*paths, truth.proof_path)
+    return WalmartPromoScan(
+        cash=truth,
+        cart_promo=scan.cart_promo,
+        onepay=scan.onepay,
+        markdown=scan.markdown,
+        clearance=scan.clearance,
+        generic=scan.generic,
+        raw_promo_paths=paths,
+    )
 
 
 def _unwrap_walmart_provider(provider: Any) -> Any:
@@ -370,7 +484,7 @@ def _strip_search_level_cash_attrs(candidate: SourceCandidate) -> SourceCandidat
         cloned.variant_attributes["cashBadgeProofText"] = badge.proof_text
         cloned.variant_attributes["cashBadgeRawValue"] = badge.raw_value
         cloned.variant_attributes["cashAmountConfirmed"] = "no"
-        signal = "Walmart Cash badge seen; amount requires product detail proof"
+        signal = "Walmart Cash badge seen; amount requires product detail/PDP proof"
         if signal not in cloned.signals:
             cloned.signals.append(signal)
 
@@ -430,34 +544,57 @@ def _extract_detail_item(payload: Any) -> dict[str, Any] | None:
 
 def _debug_line(result: WalmartDetailResult) -> str:
     candidate = result.candidate
+    attrs = dict(candidate.variant_attributes or {})
     title = " ".join(str(candidate.title or "Untitled").split())[:70]
     product_id = str(candidate.product_id or candidate.sku or candidate.selected_offer_id or "n/a")
     badge_prefix = "Cash badge seen; " if result.cash_badge_seen else ""
 
-    if not result.detail_checked:
-        return f"{title} ({product_id}): {badge_prefix}detail proof not checked — {result.note}"
+    bits: list[str] = []
+    if result.cash_amount_confirmed:
+        amount = attrs.get("walmartCashAmount") or attrs.get("walmartCashSavings") or "?"
+        source = attrs.get("cashProofSource") or "affiliate_detail"
+        path = attrs.get("walmartCashProofPath") or "unknown proof path"
+        bits.append(f"Walmart Cash amount confirmed ${amount} via {source} at {path}")
+    elif result.cash_badge_seen:
+        bits.append("badge candidate only; no confirmed Walmart Cash amount")
+
+    if result.detail_checked:
+        bits.append("affiliate detail checked")
+    elif result.detail_attempted:
+        bits.append(f"affiliate detail not checked — {result.note}")
+
+    if result.pdp_attempted:
+        if result.pdp_checked:
+            if result.pdp_wording_seen:
+                bits.append(f"PDP checked at {result.cash_detail_url}; Walmart Cash wording seen")
+            else:
+                bits.append(f"PDP checked at {result.cash_detail_url}; no Walmart Cash wording")
+        else:
+            bits.append(f"PDP not checked at {result.cash_detail_url or 'n/a'} — {result.cash_failure_reason}")
+
+    if not bits:
+        if not result.detail_checked:
+            bits.append(f"detail proof not checked — {result.note}")
+        else:
+            bits.append("detail checked, no promo proof")
 
     scan = result.promo_scan
-    if scan is None:
-        return f"{title} ({product_id}): {badge_prefix}detail checked, no promo paths exposed"
+    if scan is not None:
+        if scan.cart_promo:
+            bits.append(f"Cart Promo at {scan.cart_promo.proof_path}")
+        if scan.onepay:
+            bits.append(f"OnePay at {scan.onepay.proof_path}")
+        if scan.markdown:
+            bits.append(f"Markdown at {scan.markdown.proof_path}")
+        if scan.clearance:
+            bits.append(f"Clearance at {scan.clearance.proof_path}")
+        if scan.generic:
+            bits.append(f"Generic promo at {scan.generic.proof_path}")
 
-    bits: list[str] = []
-    if scan.cash:
-        bits.append(f"Walmart Cash amount confirmed ${scan.cash.amount:,.2f} at {scan.cash.proof_path}")
-    elif result.cash_badge_seen:
-        bits.append("Walmart Cash badge seen, but detail/PDP exposed no dollar amount")
-    if scan.cart_promo:
-        bits.append(f"Cart Promo at {scan.cart_promo.proof_path}")
-    if scan.onepay:
-        bits.append(f"OnePay at {scan.onepay.proof_path}")
-    if scan.markdown:
-        bits.append(f"Markdown at {scan.markdown.proof_path}")
-    if scan.clearance:
-        bits.append(f"Clearance at {scan.clearance.proof_path}")
-    if scan.generic:
-        bits.append(f"Generic promo at {scan.generic.proof_path}")
+    if result.cash_failure_reason and result.cash_failure_reason not in "; ".join(bits):
+        bits.append(result.cash_failure_reason)
 
-    return f"{title} ({product_id}): " + ("; ".join(bits) if bits else "detail checked, no promo proof")
+    return f"{title} ({product_id}): {badge_prefix}" + "; ".join(bits)
 
 
 def _badge_evidence_from_text(path: str, value: Any) -> WalmartCashBadgeEvidence | None:
@@ -478,7 +615,7 @@ def _badge_evidence_from_text(path: str, value: Any) -> WalmartCashBadgeEvidence
         return None
 
     # Badge/eligibility text is a candidate only. Amount confirmation still comes
-    # from detail/PDP via extract_walmart_cash_api_truth().
+    # from detail/PDP via product-level proof.
     proof_text = _clean_preview(value, 180)
     if not proof_text:
         proof_text = _clean_preview(path, 180)

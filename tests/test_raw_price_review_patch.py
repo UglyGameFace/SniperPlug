@@ -1,22 +1,14 @@
+from pathlib import Path
+
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.services.raw_price_review_patch import build_review_candidate_cards_with_raw_leads, raw_price_signal
+from sniperplug.services.walmart_review_candidates import build_review_candidate_cards, is_fragrance_or_beauty, safe_markdown_signal
 
 
-def test_raw_price_signal_allows_fragrance_route_without_reference_price():
-    candidate = SourceCandidate(
-        source_key="walmart",
-        retailer="Walmart",
-        title="Dolce Gabbana The One Men Eau De Parfum Spray 5.0 oz",
-        product_url="https://www.walmart.com/ip/1",
-        current_price=65.04,
-        variant_attributes={"finderSourceQuery": "dolce perfume clearance"},
-    )
-    deal = candidate.to_normalized_deal()
-
-    assert raw_price_signal(candidate, deal) is True
+def test_fragrance_detector_keeps_dolce_route_recognizable():
+    assert is_fragrance_or_beauty("Dolce Gabbana The One Men Eau De Parfum Spray 5.0 oz") is True
 
 
-def test_raw_price_signal_rejects_unrelated_generic_product():
+def test_safe_markdown_signal_rejects_unrelated_generic_product_without_signal():
     candidate = SourceCandidate(
         source_key="walmart",
         retailer="Walmart",
@@ -25,12 +17,11 @@ def test_raw_price_signal_rejects_unrelated_generic_product():
         current_price=12.99,
         variant_attributes={"finderSourceQuery": "storage clearance"},
     )
-    deal = candidate.to_normalized_deal()
 
-    assert raw_price_signal(candidate, deal) is False
+    assert safe_markdown_signal(candidate) is False
 
 
-def test_build_review_candidates_adds_raw_price_card_when_base_filter_would_hide_it():
+def test_review_candidates_keep_api_markdown_leads_without_removed_module():
     candidate = SourceCandidate(
         source_key="walmart",
         retailer="Walmart",
@@ -38,14 +29,17 @@ def test_build_review_candidates_adds_raw_price_card_when_base_filter_would_hide
         product_url="https://www.walmart.com/ip/3",
         current_price=65.04,
         sku="123",
+        signals=("clearance",),
         variant_attributes={"finderSourceQuery": "dolce perfume clearance"},
     )
 
-    result = build_review_candidate_cards_with_raw_leads([candidate], limit=5)
+    result = build_review_candidate_cards([candidate], limit=5)
 
     assert len(result.cards) == 1
-    assert getattr(result.cards[0], "raw_price_lead", False) is True
-    assert getattr(result.cards[0], "manual_share_allowed", False) is True
     rendered = str(result.cards[0].embed.to_dict())
-    assert "Raw price lead" in rendered
-    assert "Manual review needed" in rendered
+    assert "Review" in rendered
+    assert "not a verified 50% deal" in rendered
+
+
+def test_raw_price_compat_module_stays_removed():
+    assert not Path("sniperplug/services/raw_price_review_patch.py").exists()

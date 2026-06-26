@@ -1,15 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
-from sniperplug.services.walmart_flip_research_patch import install_walmart_flip_research_patch
-from sniperplug.services.walmart_marketplace_comp_guard import install_walmart_marketplace_comp_guard, flip_estimate
+from sniperplug.services.walmart_marketplace_comp import flip_estimate
 from sniperplug.services.walmart_review_candidates import build_review_candidate_cards
-
-
-install_walmart_marketplace_comp_guard()
-install_walmart_flip_research_patch()
 
 
 def test_best_marketplace_price_is_not_reference_context_math():
@@ -78,3 +75,8 @@ def test_review_card_labels_marketplace_comp_as_flip_context_not_discount_proof(
     assert "eBay sold" in rendered
     assert "Google Shopping" in rendered
     assert "Context math" not in rendered
+
+
+def test_marketplace_comp_compat_modules_stay_removed():
+    assert not Path("sniperplug/services/walmart_marketplace_comp_guard.py").exists()
+    assert not Path("sniperplug/services/walmart_flip_research_patch.py").exists()

@@ -88,6 +88,34 @@ class DealCard:
     variant_attributes: dict[str, object] = field(default_factory=dict)
 
 
+
+
+async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = True, thinking: bool = True) -> bool:
+    """Return False instead of crashing when Discord already expired the interaction."""
+    try:
+        await interaction.response.defer(ephemeral=ephemeral, thinking=thinking)
+        return True
+    except (discord.NotFound, discord.HTTPException, discord.InteractionResponded):
+        return False
+
+
+async def safe_send_interaction(interaction: discord.Interaction, *args, **kwargs) -> bool:
+    """Send response/followup safely. Return False if the interaction is gone."""
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(*args, **kwargs)
+        else:
+            await interaction.response.send_message(*args, **kwargs)
+        return True
+    except discord.InteractionResponded:
+        try:
+            await interaction.followup.send(*args, **kwargs)
+            return True
+        except (discord.NotFound, discord.HTTPException):
+            return False
+    except (discord.NotFound, discord.HTTPException):
+        return False
+
 class DealScannerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -108,7 +136,8 @@ class DealScannerCog(commands.Cog):
         max_results="How many API products to inspect per search route.",
     )
     async def walmart_cash(self, interaction: discord.Interaction, search: str = "walmart cash offers", max_results: app_commands.Range[int, 3, 12] = 8) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await safe_defer(interaction, ephemeral=True, thinking=True):
+            return
         await self._send_walmart_cash_search(interaction, search, int(max_results))
 
     @app_commands.command(name="walmart_api_probe", description="Owner/admin diagnostic for Walmart API promo proof paths.")
@@ -118,7 +147,8 @@ class DealScannerCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def walmart_api_probe(self, interaction: discord.Interaction, query: str = "detergent", max_results: app_commands.Range[int, 1, 8] = 3) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await safe_defer(interaction, ephemeral=True, thinking=True):
+            return
         await self._send_walmart_api_probe(interaction, query, int(max_results))
 
     @app_commands.command(name="walmart_scan", description="Advanced Walmart deal scan for staff/admins.")
@@ -133,12 +163,12 @@ class DealScannerCog(commands.Cog):
     async def _send_walmart_cash_search(self, interaction: discord.Interaction, search: str, max_results: int = 8) -> None:
         provider = provider_registry.get("walmart")
         if provider is None:
-            await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
+            await safe_send_interaction(interaction, "Walmart search is not connected yet.", ephemeral=True)
             return
 
         health = await provider.healthcheck()
         if health.status != ProviderStatus.READY:
-            await interaction.followup.send("Walmart Cash search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
+            await safe_send_interaction(interaction, "Walmart Cash search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
             return
 
         discovery = await run_walmart_cash_discovery(
@@ -198,12 +228,12 @@ class DealScannerCog(commands.Cog):
             capability_notes=discovery.capability.notes,
             promo_counts=discovery.promo_counts,
         )
-        await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], ephemeral=True)
+        await safe_send_interaction(interaction, embeds=[summary] + [card.embed for card in shown_cards], ephemeral=True)
 
     async def _send_walmart_api_probe(self, interaction: discord.Interaction, query: str, max_results: int = 3) -> None:
         provider = provider_registry.get("walmart")
         if provider is None:
-            await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
+            await safe_send_interaction(interaction, "Walmart search is not connected yet.", ephemeral=True)
             return
 
         health = await provider.healthcheck()
@@ -223,7 +253,7 @@ class DealScannerCog(commands.Cog):
     async def _send_walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: int, page: int, max_results: int, sort_value: str | None, order_value: str | None, alerts_only: bool, simple_mode: bool) -> None:
         provider = provider_registry.get("walmart")
         if provider is None:
-            await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
+            await safe_send_interaction(interaction, "Walmart search is not connected yet.", ephemeral=True)
             return
         health = await provider.healthcheck()
         if health.status != ProviderStatus.READY:
@@ -292,11 +322,7 @@ class DealScannerCog(commands.Cog):
 
 
 async def send_command_error(interaction: discord.Interaction, message: str) -> None:
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-    else:
-        await interaction.response.send_message(message, ephemeral=True)
-
+    await safe_send_interaction(interaction, message, ephemeral=True)
 
 class HuntPresetMenuView(discord.ui.View):
     def __init__(self):
@@ -357,10 +383,11 @@ class WalmartCashOffersButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await safe_defer(interaction, ephemeral=True, thinking=True):
+            return
         cog = interaction.client.get_cog("VerifiedDealScannerCog") or interaction.client.get_cog("DealScannerCog")
         if cog is None or not hasattr(cog, "_send_walmart_cash_search"):
-            await interaction.followup.send("Walmart Cash search is not loaded yet.", ephemeral=True)
+            await safe_send_interaction(interaction, "Walmart Cash search is not loaded yet.", ephemeral=True)
             return
         await cog._send_walmart_cash_search(interaction, "walmart cash offers", 8)
 

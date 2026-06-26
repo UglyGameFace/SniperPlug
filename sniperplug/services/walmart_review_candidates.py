@@ -195,6 +195,19 @@ def build_review_card(candidate: SourceCandidate, deal, proof, *, context_price:
         lines.append(f"Walmart API promo: **{api_promo_text[:160]}**")
     embed.add_field(name="💰 API price/value", value="\n".join(lines), inline=False)
 
+    marketplace_lines = marketplace_api_lines(current_price=deal.current_price, attrs=attrs)
+    if marketplace_lines:
+        marketplace_lines = [
+            *marketplace_lines,
+            "• Comp link labels: **eBay sold** • **Google Shopping**",
+            "• Marketplace comp is **flip research only**, not Walmart was/regular/reference proof.",
+        ]
+        embed.add_field(
+            name="📈 Marketplace comp / flip context",
+            value="\n".join(marketplace_lines[:5]),
+            inline=False,
+        )
+
     comp_links = build_free_comp_links(title=deal.title, brand=brand, upc=deal.upc, model=model, sku=deal.sku or candidate.product_id, category=category, max_links=7)
     comp_block = comp_link_block(comp_links, max_links=7)
     if comp_block:

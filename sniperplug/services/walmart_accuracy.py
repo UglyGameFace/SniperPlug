@@ -18,3 +18,27 @@ def install_walmart_accuracy_patches() -> None:
     if deal_scanner.discount_percent is not strict_discount_percent:
         deal_scanner.discount_percent = strict_discount_percent
     deal_scanner._sniperplug_walmart_accuracy_installed = True
+
+def validate_card_variant_accuracy(card) -> bool:
+    """Native card variant sanity check for strict Walmart renderer cards."""
+    warning = (
+        getattr(card, "option_mismatch_warning", None)
+        or getattr(card, "variant_mismatch_warning", None)
+        or getattr(card, "variant_warning", None)
+    )
+    if warning:
+        return False
+
+    embed = getattr(card, "embed", None)
+    if embed is None or not hasattr(embed, "to_dict"):
+        return True
+
+    rendered = str(embed.to_dict()).lower()
+    blocked_markers = (
+        "wrong variant",
+        "variant mismatch",
+        "option mismatch",
+        "selected option mismatch",
+    )
+    return not any(marker in rendered for marker in blocked_markers)
+

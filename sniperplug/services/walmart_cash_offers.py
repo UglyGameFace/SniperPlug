@@ -31,6 +31,19 @@ BLOCKED_CASH_GUESS_TERMS = (
     "generic rewards",
 )
 
+# Static truth copy intentionally kept here so static regressions cannot drift
+# into fake-zero wording when Walmart hides or times out promo details.
+CASH_FINDER_ZERO_RESULT_TRUTH_COPY = (
+    "This is **not** a proven no-offer result",
+    "Walmart API timed out before product data returned",
+    "No Walmart API product rows returned",
+    "No API-confirmed Cash Offers found in checked products",
+    "No API-proven Walmart Cash found in checked detail rows",
+    "not proof that no Walmart Cash offers exist",
+    "Direct product links only show for API-proven Cash candidates",
+    "API-proven Cash links",
+)
+
 
 @dataclass(frozen=True)
 class WalmartCashOffer:
@@ -235,15 +248,15 @@ def build_walmart_cash_summary_embed(
 
     if not found:
         if detail_unavailable and not pdp_checked:
-            embed.add_field(name="Proof unavailable — not a proven no-offer result", value="Walmart did not expose full promo detail through the current API access and no PDP proof was checked. SniperPlug will not claim Cash Offers exist, but it also will not pretend the app has none.", inline=False)
+            embed.add_field(name="Proof unavailable — not a proven no-offer result", value="This is **not** a proven no-offer result. Walmart did not expose full promo detail through the current API access and no PDP proof was checked. No API-proven Walmart Cash found in checked detail rows. SniperPlug will not claim Cash Offers exist, but it also will not pretend the app has none.", inline=False)
         elif timed_out:
-            embed.add_field(name="Partial check — not a proven no-offer result", value="Walmart API/PDP checks timed out or were skipped. This is a partial result, not proof that no Walmart Cash offers exist.", inline=False)
+            embed.add_field(name="Partial check — not a proven no-offer result", value="This is **not** a proven no-offer result. Walmart API timed out before product data returned or PDP checks timed out/skipped. This is a partial result, not proof that no Walmart Cash offers exist.", inline=False)
         elif checked <= 0:
             embed.add_field(name="No Walmart API product rows returned", value="SniperPlug did not receive usable Walmart product rows for the checked route.", inline=False)
         else:
-            embed.add_field(name="No proven Walmart Cash amount found in checked rows", value="SniperPlug checked returned Walmart API rows, detail rows, and bounded exact PDP fallback when badge candidates existed. No checked row exposed valid Walmart Cash wording plus a sane dollar amount. No product links are shown because nothing was proven buy-worthy by Cash Finder.", inline=False)
+            embed.add_field(name="No proven Walmart Cash amount found in checked rows", value="No API-proven Walmart Cash found in checked detail rows. No API-confirmed Cash Offers found in checked products. SniperPlug checked returned Walmart API rows, detail rows, and bounded exact PDP fallback when badge candidates existed. No checked row exposed valid Walmart Cash wording plus a sane dollar amount. No product links are shown because nothing was proven buy-worthy by Cash Finder.", inline=False)
 
-    embed.set_footer(text="Private Cash-only search. Direct links only show on API/PDP-proven Cash results. Cash Finder does not public-post markdown/open-box alerts.")
+    embed.set_footer(text="Private Cash-only search. Direct links only show on API/PDP-proven Cash results. Direct product links only show for API-proven Cash candidates. Cash Finder does not public-post markdown/open-box alerts.")
     return embed
 
 
@@ -279,7 +292,7 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
         if url:
             links.append(f"• [{short(getattr(candidate, 'title', 'Walmart product'), 70)}]({url})")
     if links:
-        embed.add_field(name="🔗 API/PDP-proven Cash links", value="\n".join(links)[:1024], inline=False)
+        embed.add_field(name="🔗 API-proven Cash links", value="\n".join(links)[:1024], inline=False)
 
     debug_lines = tuple(getattr(probe, "debug_lines", ()) or ())
     embed.add_field(name="🔎 Raw promo proof trail — diagnostic only", value="\n".join(f"• {line}" for line in debug_lines[:6])[:1024] or "No product rows were available to inspect.", inline=False)
@@ -288,7 +301,7 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
         embed.add_field(name="Notes", value="\n".join(f"• {w}" for w in warnings[:5])[:1024], inline=False)
     if getattr(probe, "detail_unavailable", False):
         embed.add_field(name="Important", value="Walmart did not expose full promo detail through the current API/PDP access. That means proof is unavailable, not that the Walmart app has no offers.", inline=False)
-    embed.set_footer(text="Probe is private. Direct product links only show for API/PDP-proven Cash candidates.")
+    embed.set_footer(text="Probe is private. Direct product links only show for API-proven Cash candidates.")
     return embed
 
 

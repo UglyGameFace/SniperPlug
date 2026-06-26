@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import discord
 
+from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.services.autoscan_no_post_report import build_autoscan_no_post_report
 from sniperplug.services.autoscan_route_policy import (
@@ -42,6 +43,14 @@ def test_public_hunt_presets_do_not_keep_walmart_cash_routes_after_install():
     assert "walmart cash offers" not in combined
     assert "onepay cash rewards" not in combined
     assert "cash back walmart" not in combined
+
+
+def test_autoscan_route_policy_does_not_remove_legacy_hunt_buttons():
+    install_public_autoscan_route_policy()
+
+    assert "glitch" in deal_scanner.HUNT_PRESETS
+    assert "tech" in deal_scanner.HUNT_PRESETS
+    assert "essentials" in deal_scanner.HUNT_PRESETS
 
 
 def test_cash_finder_keeps_private_walmart_cash_routes():
@@ -95,8 +104,8 @@ def test_walmart_cash_lane_stays_out_of_public_posting():
         score=100,
         discount=90,
         deal_lane=LANE_WALMART_CASH,
-        current_price=9.99,
-        typical_price=99.99,
+        api_current_price=9.99,
+        api_reference_price=99.99,
         direct_product_url="https://www.walmart.com/ip/123",
     )
 

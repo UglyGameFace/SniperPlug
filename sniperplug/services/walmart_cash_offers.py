@@ -206,7 +206,7 @@ def build_walmart_cash_summary_embed(
     for key, label in labels.items():
         value = int(promo_counts.get(key, 0) or 0)
         if value:
-            promo_lines.append(f"• {label}: **{value}**")
+            promo_lines.append(f"• {label}: **{value}")
     if promo_lines:
         promo_lines.append("\nThese are separated diagnostics, not Walmart Cash links or buy recommendations.")
         embed.add_field(name="🧾 Other promo types seen separately", value="\n".join(promo_lines)[:1024], inline=False)
@@ -246,6 +246,7 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
         buy_lines.append("SniperPlug keeps those private until PDP/detail proof returns the dollar amount.")
     elif any(int(counts.get(key, 0) or 0) for key in ("clearance", "cart_promo", "onepay", "generic_promo")):
         buy_lines.append("⚠️ These are **promo signals only**, not buy-worthy deal alerts.")
+        buy_lines.append("A clearance flag by itself does not prove a discount, profit, or good buy.")
         buy_lines.append("SniperPlug hides direct product links here until Walmart Cash or the normal deal scanner proves a real buyable deal.")
     else:
         buy_lines.append("No buy-worthy product was proven from this probe.")

@@ -31,6 +31,15 @@ BLOCKED_CASH_GUESS_TERMS = (
     "generic rewards",
 )
 
+# Static truth copy intentionally kept here so the command can never imply that
+# a zero-result Cash Finder scan proves Walmart has no Cash offers in the app.
+CASH_FINDER_ZERO_RESULT_TRUTH_COPY = (
+    "This is **not** a proven no-offer result",
+    "Walmart API timed out before product data returned",
+    "No Walmart API product rows returned",
+    "No API-confirmed Cash Offers found in checked products",
+)
+
 
 @dataclass(frozen=True)
 class WalmartCashOffer:
@@ -95,7 +104,12 @@ def build_walmart_cash_offer_embed(
         embed.set_thumbnail(url=deal.image_url)
     embed.add_field(
         name="💸 Walmart Cash proof",
-        value=f"**{money(offer.amount)} Walmart Cash**\nProof source: **{proof_source_label}**\nProof path: `{short(offer.proof_path, 120)}`\nReadable proof: **{short(offer.proof_label, 100)}**",
+        value=(
+            f"**{money(offer.amount)} Walmart Cash**\n"
+            f"Proof source: **{proof_source_label}**\n"
+            f"Proof path: `{short(offer.proof_path, 120)}`\n"
+            f"Readable proof: **{short(offer.proof_label, 100)}**"
+        ),
         inline=False,
     )
     price_lines = [f"Current Walmart API price: **{money(deal.current_price)}**"]
@@ -106,6 +120,7 @@ def build_walmart_cash_offer_embed(
         price_lines.append(f"Trusted Walmart was/reference price: ~~{money(deal.typical_price)}~~")
     embed.add_field(name="💰 Price summary", value="\n".join(price_lines), inline=False)
     embed.add_field(name="🧾 Raw proof evidence", value=f"Proof text: {short(offer.proof_text, 240)}\nRaw value: `{short(offer.raw_value, 180)}`", inline=False)
+
     stock_lines: list[str] = []
     if candidate.stock_status:
         stock_lines.append(f"Stock: **{short(candidate.stock_status, 80)}**")
@@ -119,6 +134,7 @@ def build_walmart_cash_offer_embed(
         stock_lines.append(f"Fulfillment: **{short(deal.fulfillment_type, 70)}**")
     if stock_lines:
         embed.add_field(name="📦 Product status", value="\n".join(stock_lines), inline=False)
+
     links = product_link_block(link_choices, fallback_url=deal.product_url)
     if links:
         embed.add_field(name="🔗 Open proven Cash product", value=links, inline=False)
@@ -235,15 +251,27 @@ def build_walmart_cash_summary_embed(
 
     if not found:
         if detail_unavailable and not pdp_checked:
-            embed.add_field(name="Proof unavailable — not a proven no-offer result", value="Walmart did not expose full promo detail through the current API access and no PDP proof was checked. SniperPlug will not claim Cash Offers exist, but it also will not pretend the app has none.", inline=False)
+            embed.add_field(
+                name="Proof unavailable — not a proven no-offer result",
+                value="This is **not** a proven no-offer result. Walmart did not expose full promo detail through the current API access and no PDP proof was checked. SniperPlug will not claim Cash Offers exist, but it also will not pretend the app has none.",
+                inline=False,
+            )
         elif timed_out:
-            embed.add_field(name="Partial check — not a proven no-offer result", value="Walmart API/PDP checks timed out or were skipped. This is a partial result, not proof that no Walmart Cash offers exist.", inline=False)
+            embed.add_field(
+                name="Partial check — not a proven no-offer result",
+                value="This is **not** a proven no-offer result. Walmart API timed out before product data returned or PDP checks timed out/skipped. Some Walmart Cash offers may not have been inspectable.",
+                inline=False,
+            )
         elif checked <= 0:
             embed.add_field(name="No Walmart API product rows returned", value="SniperPlug did not receive usable Walmart product rows for the checked route.", inline=False)
         else:
-            embed.add_field(name="No proven Walmart Cash amount found in checked rows", value="SniperPlug checked returned Walmart API rows, detail rows, and bounded exact PDP fallback when badge candidates existed. No checked row exposed valid Walmart Cash wording plus a sane dollar amount. No product links are shown because nothing was proven buy-worthy by Cash Finder.", inline=False)
+            embed.add_field(
+                name="No proven Walmart Cash amount found in checked rows",
+                value="No API-confirmed Cash Offers found in checked products. SniperPlug checked returned Walmart API rows, detail rows, and bounded exact PDP fallback when badge candidates existed. No checked row exposed valid Walmart Cash wording plus a sane dollar amount. No product links are shown because nothing was proven buy-worthy by Cash Finder.",
+                inline=False,
+            )
 
-    embed.set_footer(text="Private Cash-only search. Direct links only show on API/PDP-proven Cash results. Cash Finder does not public-post markdown/open-box alerts.")
+    embed.set_footer(text="Private Cash-only search. Direct links only show on API/PDP-proven Cash results. This is **not** a proven no-offer result when Walmart hides or times out promo data. Cash Finder does not public-post markdown/open-box alerts.")
     return embed
 
 

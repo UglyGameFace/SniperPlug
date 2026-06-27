@@ -44,11 +44,12 @@ UNLIMITED_AUTOSCAN_INTERVAL_HOURS = 0
 UNLIMITED_AUTOSCAN_DAILY_LIMIT = 0
 UNMETERED_OFFICIAL_RETAILERS = {"walmart"}
 WALMART_AUTOSCAN_SCAN_KEY = "autoscan:walmart_discovery"
+DEAL_CATEGORIES_OPEN_CUSTOM_ID = "sniperplug:panel:deal_categories:open"
 
 
 class DealCategoryDashboardView(discord.ui.View):
     def __init__(self, db, guild_id: int, preferences: dict[str, str], *, page: int = 0, selected_key: str | None = None):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.db = db
         self.guild_id = int(guild_id)
         self.preferences = dict(preferences)
@@ -119,7 +120,7 @@ class DealCategoryDashboardView(discord.ui.View):
             ),
             inline=False,
         )
-        embed.set_footer(text="Private dashboard expires after a few minutes; reopen it with /deal_categories or the Deal Categories button.")
+        embed.set_footer(text="Live panel. Buttons do not expire; every open reloads fresh settings from this server.")
         return embed
 
     async def refresh(self, interaction: discord.Interaction, *, note: str | None = None) -> None:
@@ -176,10 +177,7 @@ class DealCategoryBestSetupButton(discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await apply_preset(self.dashboard.db, self.dashboard.guild_id, "deal_week")
         await apply_preset(self.dashboard.db, self.dashboard.guild_id, "walmart_cash")
-        await self.dashboard.refresh(
-            interaction,
-            note="Applied **Best Setup**: broad Walmart Deal Week coverage plus Walmart Cash eligible deal boosts.",
-        )
+        await self.dashboard.refresh(interaction, note="Applied **Best Setup**: broad Walmart Deal Week coverage plus Walmart Cash eligible deal boosts.")
 
 
 class DealCategoryPresetButton(discord.ui.Button):
@@ -220,22 +218,42 @@ class DealCategoryPageButton(discord.ui.Button):
 
 
 class OpenDealCategoriesButton(discord.ui.Button):
-    def __init__(self, db, guild_id: int):
-        super().__init__(label="Deal Categories", emoji="🏷️", style=discord.ButtonStyle.primary)
+    def __init__(self, db=None, guild_id: int | None = None):
+        super().__init__(label="Deal Categories", emoji="🏷️", style=discord.ButtonStyle.primary, custom_id=DEAL_CATEGORIES_OPEN_CUSTOM_ID)
         self.db = db
-        self.guild_id = int(guild_id)
+        self.guild_id = int(guild_id) if guild_id is not None else None
 
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
-        preferences = await get_category_preferences(self.db, self.guild_id)
-        view = DealCategoryDashboardView(self.db, self.guild_id, preferences)
+        guild_id = int(self.guild_id or interaction.guild_id or 0)
+        db = self.db or getattr(interaction.client, "db", None)
+        if guild_id <= 0 or db is None:
+            await interaction.followup.send("I refreshed this panel, but I need server/database context to open live category controls.", ephemeral=True)
+            return
+        preferences = await get_category_preferences(db, guild_id)
+        view = DealCategoryDashboardView(db, guild_id, preferences)
         await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
 
 class DealCategoriesShortcutView(discord.ui.View):
-    def __init__(self, db, guild_id: int):
-        super().__init__(timeout=300)
+    def __init__(self, db=None, guild_id: int | None = None):
+        super().__init__(timeout=None)
         self.add_item(OpenDealCategoriesButton(db, guild_id))
+
+
+async def register_persistent_public_panel_views(bot: commands.Bot) -> int:
+    """Register live public/setup panel views after every restart.
+
+    These views use static custom_id values and timeout=None, so channel panels
+    keep opening fresh live dashboards instead of turning into dead Discord
+    components after a few minutes or a bot restart.
+    """
+
+    try:
+        bot.add_view(DealCategoriesShortcutView(getattr(bot, "db", None), None))
+        return 1
+    except Exception:
+        return 0
 
 
 class PublicAlertsCog(commands.Cog):
@@ -276,21 +294,11 @@ class PublicAlertsCog(commands.Cog):
             if safe_daily <= 0:
                 safe_daily = DEFAULT_AUTOSCAN_DAILY_LIMIT
 
-        await set_retailer_auto_scan(
-            self.bot.db,
-            interaction.guild_id,
-            key,
-            bool(enabled),
-            interval_hours=safe_interval,
-            daily_limit=safe_daily,
-        )
+        await set_retailer_auto_scan(self.bot.db, interaction.guild_id, key, bool(enabled), interval_hours=safe_interval, daily_limit=safe_daily)
         settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         embed = discord.Embed(
             title="Retailer auto-scan updated",
-            description=(
-                f"`{key}` scheduled auto-scan is now **{'on' if enabled else 'off'}**.\n"
-                "Manual `/deals`, `/hunt`, and `/discover` are still allowed even when background auto-scan is off."
-            ),
+            description=f"`{key}` scheduled auto-scan is now **{'on' if enabled else 'off'}**.\nManual `/deals`, `/hunt`, and `/discover` are still allowed even when background auto-scan is off.",
             color=discord.Color.green() if enabled else discord.Color.orange(),
         )
         embed.add_field(name="Current auto-scan settings", value=format_auto_scan_status(settings), inline=False)
@@ -316,11 +324,7 @@ class PublicAlertsCog(commands.Cog):
             await interaction.followup.send("Use this in a server so I know which auto-scan settings to show.", ephemeral=True)
             return
         settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
-        embed = discord.Embed(
-            title="Retailer Auto-Scan Status",
-            description="Scheduled/background scan gates. Manual commands do not depend on these being enabled.",
-            color=discord.Color.blue(),
-        )
+        embed = discord.Embed(title="Retailer Auto-Scan Status", description="Scheduled/background scan gates. Manual commands do not depend on these being enabled.", color=discord.Color.blue())
         embed.add_field(name="Retailers", value=format_auto_scan_status(settings), inline=False)
         embed.add_field(name="Tip", value="Use `/retailer_autoscan retailer:walmart enabled:true interval_hours:0 daily_limit:0` for unlimited official Walmart background scans.", inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -362,24 +366,10 @@ class PublicAlertsCog(commands.Cog):
         config = await get_public_alert_config(self.bot.db, interaction.guild_id)
         auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         threshold = await get_starting_deal_percent(self.bot.db, interaction.guild_id)
-        embed = public_alert_status_embed(
-            enabled=config["enabled"],
-            retailers=config["retailers"],
-            channel_id=config["channel_id"],
-            auto_scan=auto_scan,
-            threshold=threshold,
-        )
+        embed = public_alert_status_embed(enabled=config["enabled"], retailers=config["retailers"], channel_id=config["channel_id"], auto_scan=auto_scan, threshold=threshold)
         category_preferences = await get_category_preferences(self.bot.db, interaction.guild_id)
-        embed.add_field(
-            name="Category preferences",
-            value=summarize_category_preferences(category_preferences),
-            inline=False,
-        )
-        await interaction.followup.send(
-            embed=embed,
-            view=DealCategoriesShortcutView(self.bot.db, interaction.guild_id),
-            ephemeral=True,
-        )
+        embed.add_field(name="Category preferences", value=summarize_category_preferences(category_preferences), inline=False)
+        await interaction.followup.send(embed=embed, view=DealCategoriesShortcutView(self.bot.db, interaction.guild_id), ephemeral=True)
 
     @app_commands.command(name="autoscan_health", description="Check whether Walmart auto-scan can post and what happened recently.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -388,11 +378,7 @@ class PublicAlertsCog(commands.Cog):
         if interaction.guild_id is None:
             await interaction.followup.send("Use this in a server so I know which auto-scan settings to check.", ephemeral=True)
             return
-        await interaction.followup.send(
-            embed=await build_autoscan_health_embed(self.bot, interaction.guild_id),
-            view=DealCategoriesShortcutView(self.bot.db, interaction.guild_id),
-            ephemeral=True,
-        )
+        await interaction.followup.send(embed=await build_autoscan_health_embed(self.bot, interaction.guild_id), view=DealCategoriesShortcutView(self.bot.db, interaction.guild_id), ephemeral=True)
 
     @autoscan_health.error
     async def autoscan_health_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -411,16 +397,7 @@ class PublicAlertsCog(commands.Cog):
             await interaction.followup.send("Use this in a server so I know which active deal cache to clear.", ephemeral=True)
             return
         cleared = await clear_autoscan_posting_memory(self.bot.db, interaction.guild_id)
-        await interaction.followup.send(
-            (
-                "Cleared SniperPlug auto-scan memory for this server.\n"
-                f"• Active cache: **{cleared['active_cache']}**\n"
-                f"• Public post duplicate memory: **{cleared['public_posts']}**\n"
-                f"• Alert dedupe memory: **{cleared['alert_dedupe']}**\n\n"
-                "This does not delete Discord messages. Run `/autoscan_now force:true` next."
-            ),
-            ephemeral=True,
-        )
+        await interaction.followup.send(("Cleared SniperPlug auto-scan memory for this server.\n" f"• Active cache: **{cleared['active_cache']}**\n" f"• Public post duplicate memory: **{cleared['public_posts']}**\n" f"• Alert dedupe memory: **{cleared['alert_dedupe']}**\n\n" "This does not delete Discord messages. Run `/autoscan_now force:true` next."), ephemeral=True)
 
     @autoscan_clear_cache.error
     async def autoscan_clear_cache_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -449,19 +426,11 @@ def public_alert_channel_missing_permissions(channel: discord.TextChannel, membe
 
 
 def public_alert_channel_missing_permissions_message(channel: discord.TextChannel, missing: list[str]) -> str:
-    return (
-        f"SniperPlug cannot post in {channel.mention} yet.\n\n"
-        "Missing channel permissions:\n"
-        + "\n".join(f"• {perm}" for perm in missing)
-        + "\n\nGive the SniperPlug bot/role those permissions, then run `/setup_sniperplug_here` in that channel."
-    )
+    return f"SniperPlug cannot post in {channel.mention} yet.\n\nMissing channel permissions:\n" + "\n".join(f"• {perm}" for perm in missing) + "\n\nGive the SniperPlug bot/role those permissions, then run `/setup_sniperplug_here` in that channel."
+
 
 def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None, auto_scan: dict[str, dict] | None = None, threshold: int | None = None) -> discord.Embed:
-    embed = discord.Embed(
-        title="📣 Public Alert Settings",
-        description="This is the simple view. Use `/setup_sniperplug_here` for one-step setup, `/deal_categories` for boost/mute categories, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.",
-        color=discord.Color.green() if enabled else discord.Color.dark_gold(),
-    )
+    embed = discord.Embed(title="📣 Public Alert Settings", description="This is the simple view. Use `/setup_sniperplug_here` for one-step setup, `/deal_categories` for boost/mute categories, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.", color=discord.Color.green() if enabled else discord.Color.dark_gold())
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
     embed.add_field(name="Public stores", value=format_retailers(retailers), inline=True)
     embed.add_field(name="Channel", value=f"<#{channel_id}>" if channel_id else "not set", inline=True)
@@ -470,7 +439,7 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
     if auto_scan is not None:
         embed.add_field(name="Auto-scan stores", value=format_auto_scan_status(auto_scan), inline=False)
     embed.add_field(name="Posting logic", value="Auto-scan uses Best Picks ranking plus category preferences. Priority categories rank higher; muted categories hide normal deals, but extreme/nuclear markdowns still override so SniperPlug does not miss amazing finds. The public guard still blocks same-price duplicates, weak proof, non-alertable cards, and low-confidence cards.", inline=False)
-    embed.set_footer(text="Advanced public-alert controls are available through /retailer_autoscan and /retailer_autoscan_status.")
+    embed.set_footer(text="Advanced public-alert controls are live panels. Buttons do not expire and reopen fresh settings every time.")
     return embed
 
 
@@ -490,73 +459,18 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
 
     latest_text = format_latest_report_line(latest_report)
     latest_lower = latest_text.lower()
-    last_run_has_route_error = (
-        "public channel lookup failed" in latest_lower
-        or "ghost guild" in latest_lower
-        or "bot is not currently connected to guild" in latest_lower
-    )
-
-    critical_ok = (
-        bool(config.get("enabled"))
-        and "walmart" in set(config.get("retailers") or ())
-        and channel_status.startswith("✅")
-        and bool(walmart_settings.get("enabled"))
-        and allowed
-        and not last_run_has_route_error
-    )
-    embed = discord.Embed(
-        title="🩺 Walmart Auto-Scan Health",
-        description="This checks setup, channel permissions, schedule gates, and the exact last run decision trail.",
-        color=discord.Color.green() if critical_ok else discord.Color.orange(),
-    )
-    embed.add_field(
-        name="Setup",
-        value=(
-            f"Public alerts: **{'on' if config.get('enabled') else 'off'}**\n"
-            f"Public stores: {format_retailers(tuple(config.get('retailers') or ())) }\n"
-            f"Threshold: **{threshold}%+ verified markdown**\n"
-            f"Walmart auto-scan: **{'on' if walmart_settings.get('enabled') else 'off'}**"
-        ),
-        inline=False,
-    )
+    last_run_has_route_error = "public channel lookup failed" in latest_lower or "ghost guild" in latest_lower or "bot is not currently connected to guild" in latest_lower
+    critical_ok = bool(config.get("enabled")) and "walmart" in set(config.get("retailers") or ()) and channel_status.startswith("✅") and bool(walmart_settings.get("enabled")) and allowed and not last_run_has_route_error
+    embed = discord.Embed(title="🩺 Walmart Auto-Scan Health", description="This checks setup, channel permissions, schedule gates, and the exact last run decision trail.", color=discord.Color.green() if critical_ok else discord.Color.orange())
+    embed.add_field(name="Setup", value=(f"Public alerts: **{'on' if config.get('enabled') else 'off'}**\n" f"Public stores: {format_retailers(tuple(config.get('retailers') or ())) }\n" f"Threshold: **{threshold}%+ verified markdown**\n" f"Walmart auto-scan: **{'on' if walmart_settings.get('enabled') else 'off'}**"), inline=False)
     embed.add_field(name="Self-heal", value=repair.discord_line(), inline=False)
     embed.add_field(name="Channel", value=channel_status, inline=False)
-    embed.add_field(
-        name="Schedule gate",
-        value=(
-            f"Allowed now: **{'yes' if allowed else 'no'}**\n"
-            f"Reason: {reason}\n"
-            f"Interval: **{format_interval(int(walmart_settings.get('interval_hours', DEFAULT_AUTOSCAN_INTERVAL_HOURS)))}**\n"
-            f"Daily limit: **{format_daily_limit(int(walmart_settings.get('daily_limit', DEFAULT_AUTOSCAN_DAILY_LIMIT)))}**"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Recent memory",
-        value=(
-            f"Last scheduled run: **{last_run or 'not logged yet'}**\n"
-            f"Public posts today: **{posts_today}**\n"
-            f"Active cached deals: **{active_cached}**\n"
-            "Cache note: active cached deals are remembered product cards, not Discord posts. "
-            "Use `/autoscan_clear_cache` if stale cache noise is confusing Deal Week testing."
-        ),
-        inline=False,
-    )
+    embed.add_field(name="Schedule gate", value=(f"Allowed now: **{'yes' if allowed else 'no'}**\nReason: {reason}\nInterval: **{format_interval(int(walmart_settings.get('interval_hours', DEFAULT_AUTOSCAN_INTERVAL_HOURS)))}**\nDaily limit: **{format_daily_limit(int(walmart_settings.get('daily_limit', DEFAULT_AUTOSCAN_DAILY_LIMIT)))}**"), inline=False)
+    embed.add_field(name="Recent memory", value=(f"Last scheduled run: **{last_run or 'not logged yet'}**\nPublic posts today: **{posts_today}**\nActive cached deals: **{active_cached}**\nCache note: active cached deals are remembered product cards, not Discord posts. Use `/autoscan_clear_cache` if stale cache noise is confusing Deal Week testing."), inline=False)
     if last_run_has_route_error:
-        embed.add_field(
-            name="🚨 Posting route problem",
-            value=(
-                "SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. "
-                "SniperPlug now repairs saved routes automatically when a safe saved channel exists. If this still appears, run `/autoscan_health` and fix the exact channel/permission issue shown there."
-            ),
-            inline=False,
-        )
+        embed.add_field(name="🚨 Posting route problem", value="SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. SniperPlug now repairs saved routes automatically when a safe saved channel exists. If this still appears, run `/autoscan_health` and fix the exact channel/permission issue shown there.", inline=False)
     embed.add_field(name="Last run decision", value=trim_field(latest_text, 1024), inline=False)
-    embed.add_field(
-        name="How to read this",
-        value="If setup/channel/gate are green but posts stay at 0, check Last run decision. It will show whether threshold, confidence, fresh filter, category preference, duplicate, not-alertable, or disabled guards blocked the candidates.",
-        inline=False,
-    )
+    embed.add_field(name="How to read this", value="If setup/channel/gate are green but posts stay at 0, check Last run decision. It will show whether threshold, confidence, fresh filter, category preference, duplicate, not-alertable, or disabled guards blocked the candidates.", inline=False)
     return embed
 
 
@@ -608,10 +522,7 @@ async def latest_auto_scan_run(db, guild_id: int, retailer: str, *, scan_key: st
         await ensure_retailer_auto_scan_run_table(db)
         conn = db.require_conn()
         key = normalize_retailer_key(retailer)
-        cursor = await conn.execute(
-            "SELECT ran_at FROM guild_retailer_auto_scan_runs WHERE guild_id = ? AND retailer = ? AND scan_key = ? ORDER BY ran_at DESC LIMIT 1",
-            (guild_id, key, scan_key),
-        )
+        cursor = await conn.execute("SELECT ran_at FROM guild_retailer_auto_scan_runs WHERE guild_id = ? AND retailer = ? AND scan_key = ? ORDER BY ran_at DESC LIMIT 1", (guild_id, key, scan_key))
         row = await cursor.fetchone()
         return str(row["ran_at"]) if row and row["ran_at"] else None
     except Exception:
@@ -622,10 +533,7 @@ async def count_public_posts_today(db, guild_id: int) -> int:
     try:
         conn = db.require_conn()
         since = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        cursor = await conn.execute(
-            "SELECT COUNT(*) AS count FROM guild_public_deal_posts WHERE guild_id = ? AND status = 'posted' AND posted_at IS NOT NULL AND posted_at >= ?",
-            (guild_id, since),
-        )
+        cursor = await conn.execute("SELECT COUNT(*) AS count FROM guild_public_deal_posts WHERE guild_id = ? AND status = 'posted' AND posted_at IS NOT NULL AND posted_at >= ?", (guild_id, since))
         row = await cursor.fetchone()
         return int(row["count"] if row and row["count"] is not None else 0)
     except Exception:
@@ -646,16 +554,10 @@ async def clear_active_cached_deals(db, guild_id: int) -> int:
     try:
         await ensure_public_post_tables(db)
         conn = db.require_conn()
-        cursor = await conn.execute(
-            "SELECT COUNT(*) AS count FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active'",
-            (guild_id,),
-        )
+        cursor = await conn.execute("SELECT COUNT(*) AS count FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active'", (guild_id,))
         row = await cursor.fetchone()
         count = int(row["count"] if row and row["count"] is not None else 0)
-        await conn.execute(
-            "UPDATE guild_active_deal_cache SET status = 'cleared' WHERE guild_id = ? AND status = 'active'",
-            (guild_id,),
-        )
+        await conn.execute("UPDATE guild_active_deal_cache SET status = 'cleared' WHERE guild_id = ? AND status = 'active'", (guild_id,))
         await conn.commit()
         return count
     except Exception:
@@ -671,39 +573,14 @@ async def clear_autoscan_posting_memory(db, guild_id: int) -> dict[str, int]:
         row = await cursor.fetchone()
         return int(row["count"] if row and row["count"] is not None else 0)
 
-    active_count = await count_rows(
-        "SELECT COUNT(*) AS count FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active'",
-        (guild_id,),
-    )
-    public_post_count = await count_rows(
-        "SELECT COUNT(*) AS count FROM guild_public_deal_posts WHERE guild_id = ?",
-        (guild_id,),
-    )
-    alert_dedupe_count = await count_rows(
-        "SELECT COUNT(*) AS count FROM alert_dedupe WHERE guild_id = ? AND retailer = 'walmart'",
-        (guild_id,),
-    )
-
-    await conn.execute(
-        "UPDATE guild_active_deal_cache SET status = 'cleared' WHERE guild_id = ? AND status = 'active'",
-        (guild_id,),
-    )
-    await conn.execute(
-        "DELETE FROM guild_public_deal_posts WHERE guild_id = ?",
-        (guild_id,),
-    )
-    await conn.execute(
-        "DELETE FROM alert_dedupe WHERE guild_id = ? AND retailer = 'walmart'",
-        (guild_id,),
-    )
+    active_count = await count_rows("SELECT COUNT(*) AS count FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active'", (guild_id,))
+    public_post_count = await count_rows("SELECT COUNT(*) AS count FROM guild_public_deal_posts WHERE guild_id = ?", (guild_id,))
+    alert_dedupe_count = await count_rows("SELECT COUNT(*) AS count FROM alert_dedupe WHERE guild_id = ? AND retailer = 'walmart'", (guild_id,))
+    await conn.execute("UPDATE guild_active_deal_cache SET status = 'cleared' WHERE guild_id = ? AND status = 'active'", (guild_id,))
+    await conn.execute("DELETE FROM guild_public_deal_posts WHERE guild_id = ?", (guild_id,))
+    await conn.execute("DELETE FROM alert_dedupe WHERE guild_id = ? AND retailer = 'walmart'", (guild_id,))
     await conn.commit()
-
-    return {
-        "active_cache": active_count,
-        "public_posts": public_post_count,
-        "alert_dedupe": alert_dedupe_count,
-    }
-
+    return {"active_cache": active_count, "public_posts": public_post_count, "alert_dedupe": alert_dedupe_count}
 
 
 def trim_field(value: str, limit: int = 1024) -> str:

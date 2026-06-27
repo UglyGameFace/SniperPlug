@@ -8,6 +8,11 @@ import discord
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
 PUBLIC_SCOUT_LANE_FIELD = "🧪 Private scout/review lane"
 
+# Regression guard copy: Public Scout Lane is intentionally disabled.
+# Review/scout/value leads can be shown privately, but they must not public-post
+# unless they pass the verified public deal gate below.
+PUBLIC_SCOUT_LANE_DISABLED_REASON = "Public Scout Lane is intentionally disabled"
+
 LANE_VERIFIED_MARKDOWN = "verified_markdown"
 LANE_PRICE_MEMORY_DROP = "price_memory_drop"
 LANE_OPEN_BOX_LIKE_NEW = "open_box_like_new"
@@ -280,10 +285,12 @@ def public_lane_label(lane: str) -> str:
 
 
 def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
+    # Public Scout Lane is intentionally disabled.
     return False
 
 
 def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
+    # Public Scout Lane is intentionally disabled.
     return False
 
 

@@ -39,7 +39,7 @@ class ReviewCandidateResult:
     exact_match_count: int = 0
 
     def summary_line(self) -> str:
-        return (
+        base = (
             f"review candidates: **{len(self.cards)}** • "
             f"under 50% trusted: **{self.under_threshold_count}** • "
             f"weak reference ignored: **{self.weak_reference_count}** • "
@@ -47,6 +47,22 @@ class ReviewCandidateResult:
             f"missing was/reference: **{self.missing_reference_count}** • "
             f"exact matches rescued: **{self.exact_match_count}**"
         )
+        if not self.cards:
+            return base
+        leads = " | ".join(review_lead_preview(card) for card in self.cards[:3])
+        return f"{base} • strongest private leads kept: {leads}"
+
+
+def review_lead_preview(card: DealCard) -> str:
+    label = " ".join(str(getattr(card, "label", "") or "review lead").split())
+    if len(label) > 46:
+        label = label[:45].rstrip() + "…"
+    price = getattr(card, "current_price", None) or getattr(card, "api_current_price", None)
+    price_text = money(price) if price is not None else "price n/a"
+    lane = "flip/review"
+    if bool(getattr(card, "raw_price_lead", False)):
+        lane = "raw-price review"
+    return f"**{label}** ({price_text}, {lane})"
 
 
 def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: int = REVIEW_CANDIDATE_LIMIT, query: str | None = None) -> ReviewCandidateResult:
@@ -114,7 +130,7 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         review_score = trusted_discount + coupon + cash + api_savings + api_promo_cap + (5 if safe_markdown_signal(candidate) else 0)
 
         card = build_review_card(candidate, deal, proof, context_price=context_price, context_discount=context_discount, ignored_context_price=raw_context_price if context_price is None else None, coupon=coupon, cash=cash, direct_match_score=match_score)
-        scored.append((review_score, card))
+        scored.append((review_score + context_score, card))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     return ReviewCandidateResult(cards=[card for _, card in scored[:limit]], under_threshold_count=under_threshold, missing_reference_count=missing_reference, weak_reference_count=weak_reference, missing_current_count=missing_current, no_value_signal_count=no_value_signal, rejected_bad_value_count=rejected_bad_value, exact_match_count=exact_match_count)

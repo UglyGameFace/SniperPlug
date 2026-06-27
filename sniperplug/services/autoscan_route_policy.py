@@ -17,6 +17,14 @@ PRIVATE_PROMO_ROUTE_TERMS: tuple[str, ...] = (
     "one pay",
 )
 
+PUBLIC_AUTOSCAN_FALLBACK_ROUTES: tuple[str, ...] = (
+    "walmart deals",
+    "rollback",
+    "clearance",
+    "open box electronics",
+    "restored electronics",
+)
+
 PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE = (
     "Public Walmart autoscan routes exclude Walmart Cash, OnePay, and generic cashback terms. "
     "Cash Finder owns those private diagnostics and Walmart Cash never public-posts as markdown/open-box."
@@ -28,15 +36,25 @@ def is_private_promo_route(query: str) -> bool:
     return any(term in text for term in PRIVATE_PROMO_ROUTE_TERMS)
 
 
-def public_autoscan_queries(queries: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+def public_autoscan_queries(queries: tuple[str, ...] | list[str], *, fallback: tuple[str, ...] = PUBLIC_AUTOSCAN_FALLBACK_ROUTES) -> tuple[str, ...]:
     """Return routes safe for public markdown/open-box autoscan.
 
     This deliberately removes private promo/Cash routes without weakening the
     later public proof gates. Routes like rollback, clearance, open-box,
     restored, and refurbished remain eligible because they can produce real
     public markdown or condition-lane candidates.
+
+    If future edits accidentally make a category Cash-only, the fallback keeps
+    autoscan from silently checking zero routes.
     """
 
+    cleaned = dedupe_public_routes(queries or ())
+    if cleaned:
+        return cleaned
+    return dedupe_public_routes(fallback or ())
+
+
+def dedupe_public_routes(queries: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     cleaned: list[str] = []
     seen: set[str] = set()
     for query in queries or ():
@@ -57,34 +75,39 @@ def install_public_autoscan_route_policy() -> None:
     public autoscan from wasting route slots on private-only promo searches.
     """
 
-    if getattr(verified_discount_hunt, "_sniperplug_public_autoscan_route_policy_installed", False):
-        return
+    if not getattr(verified_discount_hunt, "_sniperplug_public_autoscan_route_policy_installed", False):
+        filtered_routes: dict[str, tuple[str, str, str, tuple[str, ...]]] = {}
+        for key, (label, emoji, description, queries) in verified_discount_hunt.CATEGORY_ROUTES.items():
+            filtered_routes[key] = (label, emoji, description, public_autoscan_queries(queries))
 
-    filtered_routes: dict[str, tuple[str, str, str, tuple[str, ...]]] = {}
-    for key, (label, emoji, description, queries) in verified_discount_hunt.CATEGORY_ROUTES.items():
-        filtered_routes[key] = (label, emoji, description, public_autoscan_queries(queries))
+        verified_discount_hunt.CATEGORY_ROUTES.clear()
+        verified_discount_hunt.CATEGORY_ROUTES.update(filtered_routes)
+        verified_discount_hunt.DISCOVERY_QUERIES = verified_discount_hunt.CATEGORY_ROUTES["all"][3]
 
-    verified_discount_hunt.CATEGORY_ROUTES.clear()
-    verified_discount_hunt.CATEGORY_ROUTES.update(filtered_routes)
-    verified_discount_hunt.DISCOVERY_QUERIES = verified_discount_hunt.CATEGORY_ROUTES["all"][3]
+        verified_discount_hunt.HUNT_PRESETS.clear()
+        verified_discount_hunt.HUNT_PRESETS.update(
+            {
+                key: HuntPreset(key, label, emoji, description, queries, verified_discount_hunt.TRUE_DISCOUNT_MIN)
+                for key, (label, emoji, description, queries) in verified_discount_hunt.CATEGORY_ROUTES.items()
+            }
+        )
+        verified_discount_hunt.ALL_VERIFIED_PRESET = HuntPreset(
+            verified_discount_hunt.ALL_VERIFIED_HUNT_KEY,
+            verified_discount_hunt.CATEGORY_ROUTES["all"][0],
+            verified_discount_hunt.CATEGORY_ROUTES["all"][1],
+            verified_discount_hunt.CATEGORY_ROUTES["all"][2],
+            verified_discount_hunt.DISCOVERY_QUERIES,
+            verified_discount_hunt.TRUE_DISCOUNT_MIN,
+        )
 
-    verified_discount_hunt.HUNT_PRESETS.clear()
-    verified_discount_hunt.HUNT_PRESETS.update(
-        {
-            key: HuntPreset(key, label, emoji, description, queries, verified_discount_hunt.TRUE_DISCOUNT_MIN)
-            for key, (label, emoji, description, queries) in verified_discount_hunt.CATEGORY_ROUTES.items()
-        }
-    )
-    verified_discount_hunt.ALL_VERIFIED_PRESET = HuntPreset(
-        verified_discount_hunt.ALL_VERIFIED_HUNT_KEY,
-        verified_discount_hunt.CATEGORY_ROUTES["all"][0],
-        verified_discount_hunt.CATEGORY_ROUTES["all"][1],
-        verified_discount_hunt.CATEGORY_ROUTES["all"][2],
-        verified_discount_hunt.DISCOVERY_QUERIES,
-        verified_discount_hunt.TRUE_DISCOUNT_MIN,
-    )
+        for key, preset in verified_discount_hunt.HUNT_PRESETS.items():
+            verified_discount_hunt.deal_scanner.HUNT_PRESETS[key] = preset
 
-    for key, preset in verified_discount_hunt.HUNT_PRESETS.items():
-        verified_discount_hunt.deal_scanner.HUNT_PRESETS[key] = preset
+        verified_discount_hunt._sniperplug_public_autoscan_route_policy_installed = True
 
-    verified_discount_hunt._sniperplug_public_autoscan_route_policy_installed = True
+    # Autoscan should use observed price memory after route policy is installed.
+    # This keeps Cash out of public routes while letting future runs prove real
+    # same-item price drops from SniperPlug's own remembered Walmart API prices.
+    from sniperplug.services.autoscan_observed_price_memory import install_autoscan_observed_price_memory
+
+    install_autoscan_observed_price_memory()

@@ -325,9 +325,53 @@ def _card_text(card: Any) -> str:
     return " ".join(parts)
 
 
+def _classification_text(card: Any) -> str:
+    """Text used for category detection, excluding safety disclaimers.
+
+    Public-proof embeds often mention blocked proof types, such as "Walmart Cash
+    was not used." That safety copy must not reclassify a real markdown or
+    observed price-memory deal into the Cash category.
+    """
+
+    parts: list[str] = [
+        str(getattr(card, "label", "") or ""),
+        str(getattr(card, "url", "") or ""),
+    ]
+    embed = getattr(card, "embed", None)
+    if embed is not None:
+        parts.append(str(getattr(embed, "title", "") or ""))
+        for field in getattr(embed, "fields", []) or []:
+            name = str(getattr(field, "name", "") or "")
+            if "public deal lane" in name.lower() or "observed price-drop proof" in name.lower():
+                parts.append(str(getattr(field, "value", "") or ""))
+    return " ".join(parts)
+
+
+def _explicit_deal_lane(card: Any) -> str:
+    lane = str(getattr(card, "deal_lane", "") or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if lane:
+        return lane
+    attrs = getattr(card, "variant_attributes", None)
+    if isinstance(attrs, dict):
+        lane = str(attrs.get("dealLane") or attrs.get("deal_lane") or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if lane:
+            return lane
+        if attrs.get("priceMemoryIdentity"):
+            return "price_memory_drop"
+        if attrs.get("walmartCashAmount") or attrs.get("walmartCashSavings"):
+            return "walmart_cash"
+    return ""
+
+
 def category_for_card(card: DealCard) -> OpportunityCategory | None:
-    text = _card_text(card)
+    lane = _explicit_deal_lane(card)
+    if lane == "walmart_cash":
+        return category_by_key().get("walmart_cash")
+
+    text = _classification_text(card)
     lowered = text.lower()
+    if lane == "price_memory_drop":
+        return category_for_title(text)
     if "walmart cash" in lowered or "cashrewards" in lowered or "cash rewards" in lowered:
         return category_by_key().get("walmart_cash")
     return category_for_title(text)
@@ -344,6 +388,11 @@ def is_extreme_card(card: DealCard) -> bool:
             return True
     except Exception:
         pass
+    if _explicit_deal_lane(card) == "price_memory_drop":
+        try:
+            return float(getattr(card, "discount", 0) or 0) >= 50
+        except Exception:
+            return True
     return False
 
 
@@ -368,7 +417,7 @@ def decide_category(card: DealCard, preferences: dict[str, str] | None) -> Categ
                 category.label,
                 mode,
                 "allow_extreme",
-                f"Muted category override: {category.label}, but markdown/score is extreme so SniperPlug will not miss it.",
+                f"Muted category override: {category.label}, but markdown/score is extreme or observed price-memory proof is strong enough so SniperPlug will not miss it.",
             )
         return CategoryDecision(category.key, category.label, mode, "suppress", f"Muted category: {category.label}. Normal deals stay out of the public feed.")
     return CategoryDecision(category.key, category.label, CATEGORY_MODE_NORMAL, "allow", f"Normal category: {category.label}.")
@@ -444,7 +493,7 @@ def summarize_category_preferences(preferences: dict[str, str] | None, *, limit:
     return (
         f"⭐ **Priority ON:** {trim(priority)}\n"
         f"🙈 **Muted:** {trim(muted)}\n"
-        "Muted hides normal deals only. Extreme/nuclear markdowns still break through."
+        "Muted hides normal deals only. Extreme/nuclear markdowns and strong observed price-memory drops still break through."
     )
 
 

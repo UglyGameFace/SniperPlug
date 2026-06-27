@@ -24,6 +24,13 @@ def test_observed_memory_cards_join_autoscan_public_candidate_pool():
     assert "cards = rank_verified_cards(memory_cards)" in OBSERVED
 
 
+def test_observed_memory_summary_names_lane_and_examples():
+    assert "legacy verified-card memory" in OBSERVED
+    assert "observed_drop_examples" in OBSERVED
+    assert "examples:" in OBSERVED
+    assert "price memory enabled, no products checked" in OBSERVED
+
+
 def test_observed_price_memory_lane_is_public_quality_but_not_scout():
     assert "LANE_PRICE_MEMORY_DROP" in PUBLIC_QUALITY
     assert "Public Scout Lane is intentionally disabled" in PUBLIC_QUALITY

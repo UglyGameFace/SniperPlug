@@ -9,6 +9,7 @@ PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
 PUBLIC_SCOUT_LANE_FIELD = "🧪 Private scout/review lane"
 
 LANE_VERIFIED_MARKDOWN = "verified_markdown"
+LANE_PRICE_MEMORY_DROP = "price_memory_drop"
 LANE_OPEN_BOX_LIKE_NEW = "open_box_like_new"
 LANE_RESTORED_REFURBISHED = "restored_refurbished"
 LANE_WALMART_CASH = "walmart_cash"
@@ -19,6 +20,7 @@ LANE_ROLLBACK = "rollback"
 
 PUBLIC_PRICE_LANES = {
     LANE_VERIFIED_MARKDOWN,
+    LANE_PRICE_MEMORY_DROP,
     LANE_OPEN_BOX_LIKE_NEW,
     LANE_RESTORED_REFURBISHED,
 }
@@ -165,6 +167,8 @@ def normalized_lane(card: Any) -> str:
         return LANE_RESTORED_REFURBISHED
 
     attrs = variant_attrs(card)
+    if attrs.get("priceMemoryIdentity") or attrs.get("priceMemoryReason"):
+        return LANE_PRICE_MEMORY_DROP
     if attrs.get("walmartCashSavings") or attrs.get("walmartCashAmount") or attrs.get("walmartCashReward"):
         return LANE_WALMART_CASH
     if attrs.get("onePayCashback") or attrs.get("onepayCashback"):
@@ -193,6 +197,9 @@ def is_restored_condition(condition: str) -> bool:
 
 
 def has_low_trust_reference(card: Any, *, source_label: str = "") -> bool:
+    lane = normalized_lane(card)
+    if lane == LANE_PRICE_MEMORY_DROP:
+        return False
     attrs = variant_attrs(card)
     trusted = str(attrs.get("referencePriceTrusted") or "").strip().lower()
     if trusted == "no":
@@ -254,8 +261,9 @@ def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", mi
     Public deal gate.
 
     Walmart Cash, OnePay, cart promos, and private scout/watchlist cards stay out
-    of public posting. API-proven markdowns and condition deals can post when the
-    structured current/reference math meets the server threshold.
+    of public posting. API-proven markdowns, observed price-memory drops, and
+    condition deals can post when structured current/reference math meets the
+    server threshold.
     """
     if is_review_or_watchlist(card, source_label=source_label):
         return False
@@ -275,6 +283,14 @@ def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", mi
     discount = structured_discount(card) or 0.0
     if discount < max(1, int(min_discount)):
         return False
+
+    if lane == LANE_PRICE_MEMORY_DROP:
+        attrs = variant_attrs(card)
+        if not attrs.get("priceMemoryIdentity"):
+            return False
+        if str(attrs.get("referencePriceTrusted") or "").strip().lower() != "yes":
+            return False
+        return True
 
     if lane in {LANE_OPEN_BOX_LIKE_NEW, LANE_RESTORED_REFURBISHED}:
         condition = normalized_condition(attr_value(card, "api_condition", "condition"))
@@ -310,12 +326,13 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
     embed = getattr(card, "embed", None)
     if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_DEAL_LANE_FIELD for field in embed.fields):
         lane_label = public_lane_label(lane)
+        proof_copy = "SniperPlug's observed price memory" if lane == LANE_PRICE_MEMORY_DROP else "Walmart/API structured math"
         embed.add_field(
             name=PUBLIC_DEAL_LANE_FIELD,
             value=(
-                f"Posted as **{lane_label}** because Walmart/API structured math is **{discount:.0f}%**, "
+                f"Posted as **{lane_label}** because {proof_copy} is **{discount:.0f}%**, "
                 f"meeting this server's **{int(min_discount)}%+** public deal threshold. "
-                "Walmart Cash, OnePay, cart promos, scout leads, and display-only MSRP text did not bypass this gate."
+                "Walmart Cash, OnePay, cart promos, scout leads, marketplace comps, and display-only MSRP text did not bypass this gate."
             ),
             inline=False,
         )
@@ -326,6 +343,7 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
 def public_lane_label(lane: str) -> str:
     labels = {
         LANE_VERIFIED_MARKDOWN: "Verified Markdown",
+        LANE_PRICE_MEMORY_DROP: "Observed Price Drop",
         LANE_OPEN_BOX_LIKE_NEW: "Open Box / Like New",
         LANE_RESTORED_REFURBISHED: "Restored / Refurbished",
         LANE_CLEARANCE: "Clearance Markdown",

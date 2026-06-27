@@ -28,14 +28,38 @@ class AutoscanPriceMemorySelection:
         pieces: list[str] = []
         if self.legacy is not None:
             try:
-                pieces.append(self.legacy.summary_line())
+                pieces.append(f"legacy verified-card memory: {self.legacy.summary_line()}")
             except Exception:
                 pieces.append("legacy verified-card memory used")
         if self.observed is not None:
-            pieces.append(self.observed.summary_line())
+            observed_summary = self.observed.summary_line()
+            examples = observed_drop_examples(self.observed.cards)
+            if examples:
+                observed_summary = f"{observed_summary} • examples: {examples}"
+            pieces.append(observed_summary)
         if not pieces:
             return "price memory enabled, no products checked"
         return " • ".join(pieces)
+
+
+def observed_drop_examples(cards: list[Any], *, limit: int = 3) -> str:
+    examples: list[str] = []
+    for card in cards[: max(1, int(limit))]:
+        label = compact_label(getattr(card, "label", None) or getattr(card, "title", None) or "observed drop")
+        discount = getattr(card, "api_discount_percent", None) or getattr(card, "discount", None)
+        current = getattr(card, "api_current_price", None) or getattr(card, "current_price", None)
+        bits = [label]
+        if discount is not None:
+            bits.append(f"{float(discount):.0f}% drop")
+        if current is not None:
+            bits.append(f"${float(current):,.2f}")
+        examples.append(" (" + ", ".join(bits) + ")" if len(bits) > 1 else label)
+    return ", ".join(examples)
+
+
+def compact_label(value: Any, *, limit: int = 42) -> str:
+    text = " ".join(str(value or "deal").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 async def collect_verified_discount_cards_with_observed_memory(

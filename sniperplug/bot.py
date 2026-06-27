@@ -17,7 +17,7 @@ from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.open_box_deals import OpenBoxDealsCog
-from sniperplug.cogs.public_alerts import PublicAlertsCog
+from sniperplug.cogs.public_alerts import PublicAlertsCog, register_persistent_public_panel_views
 from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.cogs.storage_admin import StorageAdminCog
@@ -76,7 +76,9 @@ class SniperPlugBot(commands.Bot):
         log.info("Storage maintenance completed: %s", maintenance.log_fields())
 
         feedback_views = await register_persistent_feedback_views(self)
+        public_panel_views = await register_persistent_public_panel_views(self)
         log.info("Persistent deal feedback views registered: %s", feedback_views)
+        log.info("Persistent public panel views registered: %s", public_panel_views)
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
         provider_registry.register(CachedWalmartProvider(self.db, WalmartProvider(configured=False)))

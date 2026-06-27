@@ -7,6 +7,7 @@ from typing import Any
 from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.providers.base import ProviderScanResult
+from sniperplug.services.autoscan_no_post_intelligence import build_autoscan_no_post_intelligence
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
 from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT, get_starting_deal_percent, normalize_starting_deal_percent
@@ -225,4 +226,5 @@ def install_autoscan_observed_price_memory() -> None:
     if getattr(auto_scan_runner, "_sniperplug_observed_price_memory_installed", False):
         return
     auto_scan_runner.run_autoscan_verified_category = run_autoscan_verified_category_with_observed_memory
+    auto_scan_runner.autoscan_blocker_summary = build_autoscan_no_post_intelligence
     auto_scan_runner._sniperplug_observed_price_memory_installed = True

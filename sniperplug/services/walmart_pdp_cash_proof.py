@@ -21,6 +21,8 @@ class WalmartPdpCashProof:
     url: str = ""
     proof_path: str = ""
     failure_reason: str = ""
+    html_length: int = 0
+    page_diagnostic: str = ""
 
 
 def candidate_pdp_url(candidate: SourceCandidate) -> str:
@@ -60,7 +62,7 @@ def check_walmart_pdp_cash_truth(
     try:
         html = fetcher(clean_url) if fetcher is not None else fetch_public_walmart_pdp_html(clean_url, timeout=timeout)
     except Exception as exc:
-        return WalmartPdpCashProof(True, False, False, None, url=clean_url, failure_reason=f"PDP fetch unavailable: {type(exc).__name__}")
+        return WalmartPdpCashProof(True, False, False, None, url=clean_url, failure_reason=f"PDP fetch unavailable for {clean_url}: {type(exc).__name__}")
 
     return walmart_pdp_cash_proof_from_html(html, current_price=current_price, url=clean_url)
 
@@ -69,9 +71,19 @@ def fetch_public_walmart_pdp_html(url: str, *, timeout: int = 8) -> str:
     request = urllib.request.Request(
         url,
         headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "User-Agent": "Mozilla/5.0 SniperPlug/1.0 WalmartCashProof",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Upgrade-Insecure-Requests": "1",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36 SniperPlug/1.0"
+            ),
         },
         method="GET",
     )
@@ -82,6 +94,7 @@ def fetch_public_walmart_pdp_html(url: str, *, timeout: int = 8) -> str:
 
 def walmart_pdp_cash_proof_from_html(html: str, *, current_price: float | None, url: str = "") -> WalmartPdpCashProof:
     text = str(html or "")
+    diagnostic = _pdp_page_diagnostic(text)
     wording_seen = _has_walmart_cash_wording(text)
     best: WalmartCashApiTruth | None = None
 
@@ -104,12 +117,30 @@ def walmart_pdp_cash_proof_from_html(html: str, *, current_price: float | None, 
             best = _choose_truth(best, proof)
 
     if best is not None:
-        return WalmartPdpCashProof(True, True, True, best, url=url, proof_path=best.proof_path)
+        return WalmartPdpCashProof(True, True, True, best, url=url, proof_path=best.proof_path, html_length=len(text), page_diagnostic=diagnostic)
 
     if wording_seen:
-        return WalmartPdpCashProof(True, True, True, None, url=url, failure_reason="Walmart Cash wording found, but no sane dollar amount was exposed on the exact PDP.")
+        return WalmartPdpCashProof(
+            True,
+            True,
+            True,
+            None,
+            url=url,
+            failure_reason=f"Walmart Cash wording found on {url}, but no sane dollar amount was exposed. {diagnostic}",
+            html_length=len(text),
+            page_diagnostic=diagnostic,
+        )
 
-    return WalmartPdpCashProof(True, True, False, None, url=url, failure_reason="Exact Walmart PDP checked; no Walmart Cash wording was exposed.")
+    return WalmartPdpCashProof(
+        True,
+        True,
+        False,
+        None,
+        url=url,
+        failure_reason=f"Exact Walmart PDP checked at {url}; no Walmart Cash wording was exposed. {diagnostic}",
+        html_length=len(text),
+        page_diagnostic=diagnostic,
+    )
 
 
 def extract_walmart_cash_from_pdp_html(html: str, *, current_price: float | None = None, url: str = "") -> WalmartCashApiTruth | None:
@@ -237,6 +268,31 @@ def _plain_text(html: str) -> str:
     text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<[^>]+>", " ", text)
     return html_lib.unescape(" ".join(text.split()))
+
+
+def _pdp_page_diagnostic(html: str) -> str:
+    text = str(html or "")
+    lowered = text.lower()
+    script_count = len(re.findall(r"<script\b", text, flags=re.IGNORECASE))
+    title = ""
+    title_match = re.search(r"<title\b[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+    if title_match:
+        title = _clean(html_lib.unescape(title_match.group(1)), 80)
+
+    flags: list[str] = []
+    if "__next_data__" in lowered:
+        flags.append("next_data=yes")
+    if "bootstrapdata" in lowered or "initialdata" in lowered or "redux" in lowered:
+        flags.append("app_state=yes")
+    if any(term in lowered for term in ("robot or human", "blocked", "captcha", "access denied", "verify your identity")):
+        flags.append("possible_block=yes")
+    if len(text) < 5000:
+        flags.append("thin_html=yes")
+    if title:
+        flags.append(f"title={title}")
+    flags.append(f"html_chars={len(text)}")
+    flags.append(f"scripts={script_count}")
+    return "PDP diagnostics: " + "; ".join(flags)
 
 
 def _amount_is_sane(amount: float | None, *, current_price: float | None) -> bool:

@@ -30,6 +30,7 @@ from sniperplug.services.deal_search_modes import (
 )
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
+from sniperplug.services.embed_delivery import batch_cards_for_limit, sanitize_embed, send_summary_and_embeds
 from sniperplug.services.manual_review_share import ManualReviewShareView
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
@@ -105,7 +106,7 @@ class UnifiedDealScannerCog(DealScannerCog):
             cached_rows = await list_cached_active_deals(db, interaction.guild_id, retailer="walmart", query=query, limit=6)
             cached_before = await active_cache_snapshot(db, interaction.guild_id, retailer="walmart", query=query, limit=100)
             if cached_rows and not force_refresh:
-                await interaction.followup.send(embed=build_cached_active_embed(query, cached_rows), ephemeral=True)
+                await interaction.followup.send(embed=sanitize_embed(build_cached_active_embed(query, cached_rows)), ephemeral=True)
 
         starting_discount = await get_starting_deal_percent(db, interaction.guild_id, fallback=min_discount)
         result = await find_walmart_deals_for_query(
@@ -152,24 +153,24 @@ class UnifiedDealScannerCog(DealScannerCog):
             )
             deal_scanner.add_public_posting_field(summary, public_result)
             summary.add_field(name="Product links", value="Each verified card includes its own **App/Web** and **Browser Search** links.", inline=False)
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.verified], ephemeral=True)
+            await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.verified], ephemeral=True)
             if ranked.has_review:
-                await interaction.followup.send(
+                await send_private_card_batches(
+                    interaction,
+                    ranked.review,
                     content="🟨 Extra review/raw/flip/scout leads — private only. Staff can manually publish one after checking it.",
-                    embeds=[card.embed for card in ranked.review],
                     view=ManualReviewShareView(ranked.review),
-                    ephemeral=True,
                 )
             await send_deal_mode_controls(interaction, view, ranked, freshness)
             return
 
         if ranked.has_review:
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.review], ephemeral=True)
+            await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.review], ephemeral=True)
             await send_deal_mode_controls(interaction, view, ranked, freshness)
             return
 
         summary.add_field(name="Nothing useful found yet", value=deal_scanner.no_match_help(query, starting_discount, page, simple_mode), inline=False)
-        await interaction.followup.send(embed=summary, ephemeral=True)
+        await interaction.followup.send(embed=sanitize_embed(summary), ephemeral=True)
         await send_deal_mode_controls(interaction, view, ranked, freshness)
 
 
@@ -259,22 +260,22 @@ class DealSearchModeView(discord.ui.View):
         )
         if ranked.has_verified:
             summary.add_field(name="Mode switched", value="Re-ranked the same scan results without spending another API search.", inline=False)
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.verified], ephemeral=True)
+            await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.verified], ephemeral=True)
             if ranked.has_review:
-                await interaction.followup.send(
+                await send_private_card_batches(
+                    interaction,
+                    ranked.review,
                     content="🟨 Extra review/raw/flip/scout leads — private only. Staff can manually publish one after checking it.",
-                    embeds=[card.embed for card in ranked.review],
                     view=ManualReviewShareView(ranked.review),
-                    ephemeral=True,
                 )
             await send_deal_mode_controls(interaction, view, ranked, self.freshness)
             return
         if ranked.has_review:
-            await interaction.followup.send(embeds=[summary] + [card.embed for card in ranked.review], ephemeral=True)
+            await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.review], ephemeral=True)
             await send_deal_mode_controls(interaction, view, ranked, self.freshness)
             return
         summary.add_field(name="No cards for this mode", value="Try another mode or refresh the search.", inline=False)
-        await interaction.followup.send(embed=summary, ephemeral=True)
+        await interaction.followup.send(embed=sanitize_embed(summary), ephemeral=True)
         await send_deal_mode_controls(interaction, view, ranked, self.freshness)
 
 
@@ -310,7 +311,7 @@ class CachedActiveButton(discord.ui.Button):
         if not isinstance(self.view, DealSearchModeView):
             await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=build_cached_active_embed(self.view.query, self.view.cached_rows), ephemeral=True)
+        await interaction.response.send_message(embed=sanitize_embed(build_cached_active_embed(self.view.query, self.view.cached_rows)), ephemeral=True)
 
 
 class NewSinceScanButton(discord.ui.Button):
@@ -324,15 +325,36 @@ class NewSinceScanButton(discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         freshness = self.view.freshness
         cards = [*freshness.price_drop_cards[:5], *freshness.new_cards[:5]][:5]
-        await interaction.followup.send(embed=build_new_since_scan_embed(self.view.query, freshness), ephemeral=True)
+        await interaction.followup.send(embed=sanitize_embed(build_new_since_scan_embed(self.view.query, freshness)), ephemeral=True)
         if not cards:
             return
         for card in cards:
-            await interaction.followup.send(embed=card.embed, ephemeral=True)
+            await interaction.followup.send(embed=sanitize_embed(card.embed), ephemeral=True)
 
 
 async def send_deal_mode_controls(interaction: discord.Interaction, view: DealSearchModeView, ranked: ModeRankedCards, freshness: ScanFreshness | None = None) -> None:
-    await interaction.followup.send(embed=build_deal_mode_menu_embed(view.query, ranked, freshness), view=view, ephemeral=True)
+    await interaction.followup.send(embed=sanitize_embed(build_deal_mode_menu_embed(view.query, ranked, freshness)), view=view, ephemeral=True)
+
+
+async def send_private_card_batches(
+    interaction: discord.Interaction,
+    cards: list[DealCard],
+    *,
+    content: str | None = None,
+    view: discord.ui.View | None = None,
+) -> None:
+    batches = batch_cards_for_limit(cards)
+    if not batches:
+        if content or view is not None:
+            await interaction.followup.send(content=content, view=view, ephemeral=True)
+        return
+    for index, batch in enumerate(batches):
+        await interaction.followup.send(
+            content=content if index == 0 else None,
+            embeds=[sanitize_embed(card.embed) for card in batch],
+            view=view if index == len(batches) - 1 else None,
+            ephemeral=True,
+        )
 
 
 def add_deal_feed_controls_field(embed: discord.Embed, *, suppressed_count: int = 0, notes: list[str] | tuple[str, ...] | None = None) -> None:
@@ -344,7 +366,6 @@ def add_deal_feed_controls_field(embed: discord.Embed, *, suppressed_count: int 
         lines.append(f"Muted category settings hid **{suppressed_count}** normal public lead(s). Extreme/nuclear deals still break through.")
     lines.extend(f"• {note}" for note in notes[:3])
     embed.add_field(name="🎛️ Deal Feed Controls", value="\n".join(lines)[:1024], inline=False)
-
 
 
 def build_deal_mode_menu_embed(query: str, ranked: ModeRankedCards, freshness: ScanFreshness | None = None) -> discord.Embed:
@@ -437,4 +458,4 @@ def build_deal_finder_summary(result: DealFinderResult, *, ranked: ModeRankedCar
     if result.warnings:
         embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
     embed.set_footer(text="Buttons re-rank results by mode. Fresh Scan bypasses cache. Change starting markdown with /deal_threshold.")
-    return embed
+    return sanitize_embed(embed)

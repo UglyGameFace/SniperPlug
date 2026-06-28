@@ -14,11 +14,12 @@ from sniperplug.services.walmart_review_candidates import build_review_candidate
 
 PRIVATE_AUTOSCAN_REVIEW_QUERY_LIMIT = 3
 PRIVATE_AUTOSCAN_REVIEW_MAX_RESULTS = 12
-PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT = 3
+PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT = 12
+PRIVATE_AUTOSCAN_REVIEW_PAGE_SIZE = 3
 
 
 class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
-    """Native autoscan command surface with private review leads.
+    """Native autoscan command surface with paginated private review leads.
 
     Public auto-posting stays strict. Manual `/autoscan_now` now also shows the
     best private review leads with staff buttons, so useful finds are visible
@@ -77,16 +78,13 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         return cards
 
     async def _send_private_review_cards(self, interaction: discord.Interaction, cards: list[legacy.DealCard], *, report: legacy.AutoScanReport) -> None:
-        content = (
-            "🟨 **Private autoscan review leads**\n"
-            "Nothing passed the automatic public proof gate, but SniperPlug did find leads worth checking. "
-            "Use **Post 1 / Post 2 / Post 3** only after you verify price, seller, exact variant, and comps."
-        )
+        view = ManualReviewShareView(cards, page_size=PRIVATE_AUTOSCAN_REVIEW_PAGE_SIZE, max_cards=PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT)
+        content = view.content(prefix="🟨 **Private autoscan review leads**\nNothing passed the automatic public proof gate, but SniperPlug did find leads worth checking.")
         try:
             await interaction.followup.send(
                 content=content,
-                embeds=[sanitize_embed(card.embed) for card in cards[:PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT]],
-                view=ManualReviewShareView(cards),
+                embeds=view.page_embeds(),
+                view=view,
                 ephemeral=True,
             )
             return

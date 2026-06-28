@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -29,14 +28,17 @@ def test_open_box_command_and_routes_exist():
         assert query in routes
 
 
-def test_open_box_cog_and_autoscan_routes_are_loaded():
+def test_open_box_cog_and_autoscan_routes_are_native():
     bot = read("sniperplug/bot.py")
     routes = read("sniperplug/services/open_box_autoscan_routes.py")
+    policy = read("sniperplug/services/autoscan_route_policy.py")
     assert "from sniperplug.cogs.open_box_deals import OpenBoxDealsCog" in bot
     assert "await self.add_cog(OpenBoxDealsCog(self))" in bot
-    assert "install_open_box_autoscan_routes()" in bot
-    assert "OPEN_BOX_AUTOSCAN_QUERIES" in routes
-    assert "AUTO_SCAN_CATEGORY_ROTATION" in routes
+    assert "install_open_box_autoscan_routes" not in bot
+    assert "install_open_box_autoscan_routes" not in routes
+    assert "open_box_autoscan_preset" in routes
+    assert "public_autoscan_hunt_presets" in policy
+    assert "OPEN_BOX_AUTOSCAN_KEY" in policy
 
 
 def test_existing_deal_and_autoscan_commands_still_exist():
@@ -81,17 +83,10 @@ def test_dealcard_native_public_proof_surface_exists():
     assert "api_reference_price=reference_value" in scanner
 
 
-def test_open_box_builder_does_not_set_proof_fields_dynamically():
+def test_open_box_builder_does_not_set_public_proof_fields_after_card_build():
     source = read("sniperplug/cogs/open_box_deals.py")
-    for forbidden in (
-        "card.deal_lane =",
-        "card.api_current_price =",
-        "card.api_reference_price =",
-        "card.api_discount_percent =",
-        "card.api_condition =",
-        "card.api_condition_path =",
-        "card.api_reference_path =",
-        "card.api_price_path =",
-        "card.direct_product_url =",
-    ):
-        assert forbidden not in source
+    assert "card.deal_lane =" not in source
+    assert "card.api_current_price =" not in source
+    assert "card.api_reference_price =" not in source
+    assert "card.api_discount_percent =" not in source
+    assert "card.direct_product_url =" not in source

@@ -5,6 +5,7 @@ from typing import Any
 import discord
 
 from sniperplug.services.deal_feedback import build_deal_feedback_view, build_feedback_target, ensure_deal_feedback_tables
+from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_posts import card_product_key
 from sniperplug.services.public_posting import normalize_retailer_key
@@ -14,11 +15,35 @@ class ManualReviewShareView(discord.ui.View):
     def __init__(self, cards: list[Any]):
         super().__init__(timeout=300)
         self.cards = cards[:5]
-        if self.cards:
-            self.add_item(ManualShareSelect(self.cards))
+        for index, card in enumerate(self.cards[:5]):
+            self.add_item(ManualShareButton(index=index, label=f"Post {index + 1}"))
+
+
+class ManualShareButton(discord.ui.Button):
+    def __init__(self, *, index: int, label: str):
+        super().__init__(label=label, emoji="📣", style=discord.ButtonStyle.success, row=3, custom_id=f"manual_review_share:{index}")
+        self.index = index
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(self.view, ManualReviewShareView):
+            await interaction.response.send_message("This review menu is no longer active.", ephemeral=True)
+            return
+        permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
+        if permissions is not None and not bool(getattr(permissions, "manage_guild", False)):
+            await interaction.response.send_message("You need **Manage Server** permission to manually post review leads.", ephemeral=True)
+            return
+        try:
+            card = self.view.cards[self.index]
+        except Exception:
+            await interaction.response.send_message("I could not find that review card anymore.", ephemeral=True)
+            return
+        ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
+        await interaction.response.send_message(message, ephemeral=True)
 
 
 class ManualShareSelect(discord.ui.Select):
+    """Legacy select kept for compatibility with older imports/tests; new views use buttons."""
+
     def __init__(self, cards: list[Any]):
         self.cards = cards
         options = [
@@ -65,5 +90,5 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
     product_key = card_product_key(card, retailer=retailer)
     target = build_feedback_target(card, target_key=product_key, retailer=retailer, source_label="staff_shared_review")
     feedback_view = await build_deal_feedback_view(db, guild_id=guild_id, target=target)
-    await channel.send(embed=embed, view=feedback_view)
+    await channel.send(embed=sanitize_embed(embed), view=feedback_view)
     return True, "Posted that review lead to the public deal channel with persistent feedback buttons."

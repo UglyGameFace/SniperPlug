@@ -103,7 +103,6 @@ def _promotion_texts(item: dict[str, Any]) -> list[str]:
             continue
 
         lowered_text = text.lower()
-        lowered_key = key_path.lower().replace("_", " ")
         normalized_key = key_path.lower().replace("_", "").replace("-", "").replace(".", "")
 
         text_has_hint = any(hint in lowered_text for hint in PROMO_TEXT_HINTS)

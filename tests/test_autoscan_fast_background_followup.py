@@ -7,7 +7,7 @@ AUTO = Path("sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
 def test_autoscan_now_has_fast_pass_and_deep_followup():
     assert "Fast pass result" in AUTO
     assert "Deep follow-up result" in AUTO
-    assert "query_count_override=AUTO_SCAN_FAST_QUERY_COUNT" in AUTO
+    assert "query_count_override=AUTO_SCAN_DEEP_QUERY_COUNT if force else None" in AUTO
     assert "query_count_override=AUTO_SCAN_MANUAL_QUERY_COUNT" in AUTO
 
 

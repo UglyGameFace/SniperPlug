@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import asyncio
 
 import discord
 from discord import app_commands

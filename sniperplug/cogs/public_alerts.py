@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from sniperplug.models.deal import utc_now_iso
 from sniperplug.services.autoscan_history import format_latest_report_line, latest_autoscan_report
-from sniperplug.services.deal_threshold_settings import get_starting_deal_percent, set_starting_deal_percent
+from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.deal_category_preferences import (
     CATEGORY_MODE_MUTED,
     CATEGORY_MODE_NORMAL,
@@ -20,7 +20,6 @@ from sniperplug.services.deal_category_preferences import (
     format_category_group_page,
     get_category_preferences,
     mode_label,
-    normalize_category_mode,
     reset_category_preferences,
     set_category_preference,
     summarize_category_preferences,
@@ -34,7 +33,6 @@ from sniperplug.services.public_posting import (
     SUPPORTED_RETAILERS,
     format_retailers,
     normalize_retailer_key,
-    parse_retailer_list,
 )
 
 
@@ -447,7 +445,6 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     db = bot.db
     repair = await repair_public_alert_setup(db, bot, guild_id)
     config = repair.config if repair.config is not None else await get_public_alert_config(db, guild_id)
-    auto_scan = await list_retailer_auto_scan_settings(db, guild_id)
     threshold = await get_starting_deal_percent(db, guild_id)
     allowed, reason, walmart_settings = await auto_scan_allowed(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
     last_run = await latest_auto_scan_run(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
@@ -455,7 +452,6 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     posts_today = await count_public_posts_today(db, guild_id)
     active_cached = await count_active_cached_deals(db, guild_id)
     channel_status = public_alert_channel_status(bot, guild_id, config.get("channel_id"))
-    category_preferences = await get_category_preferences(db, guild_id)
 
     latest_text = format_latest_report_line(latest_report)
     latest_lower = latest_text.lower()

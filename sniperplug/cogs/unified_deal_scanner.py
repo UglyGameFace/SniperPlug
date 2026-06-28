@@ -3,7 +3,7 @@ from __future__ import annotations
 import discord
 
 from sniperplug.cogs import deal_scanner
-from sniperplug.cogs.deal_scanner import DealScannerCog
+from sniperplug.cogs.deal_scanner import DealCard, DealScannerCog
 from sniperplug.providers.base import ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.active_deal_cache import (

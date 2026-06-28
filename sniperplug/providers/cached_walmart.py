@@ -6,7 +6,7 @@ from dataclasses import asdict, fields
 from typing import Any
 
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.providers.base import DealProvider, ProviderHealth, ProviderScanRequest, ProviderScanResult
+from sniperplug.providers.base import DealProvider, ProviderHealth, ProviderScanRequest, ProviderScanResult, ProviderStatus
 from sniperplug.providers.walmart import WalmartProvider
 
 
@@ -20,6 +20,15 @@ _CACHE_SCOPE_METADATA_KEYS = (
     "walmart_store_id",
     "location",
     "fulfillment",
+)
+_HARD_FAILURE_TERMS = (
+    "walmart api http",
+    "walmart api network error",
+    "walmart private key",
+    "missing walmart config",
+    "walmart api returned non-json",
+    "walmart api returned unexpected payload shape",
+    "disabled: set walmart_provider_enabled",
 )
 
 
@@ -39,14 +48,26 @@ class CachedWalmartProvider(DealProvider):
         return getattr(self.inner, "config", None)
 
     async def healthcheck(self) -> ProviderHealth:
-        return await self.inner.healthcheck()
+        health = await self.inner.healthcheck()
+        if not health.ok:
+            return health
+
+        credential_error = walmart_credential_validation_error(self.inner)
+        if credential_error:
+            return ProviderHealth(
+                provider_key=self.provider_key,
+                ok=False,
+                status=ProviderStatus.ERROR,
+                message=credential_error,
+            )
+        return health
 
     async def fetch_product_detail_payload(self, item_id: str) -> dict:
         return await self.inner.fetch_product_detail_payload(item_id)
 
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
         if str(request.metadata.get("skip_scan_cache") or "").lower() in {"1", "true", "yes", "on"}:
-            return await self.inner.scan(request)
+            return mark_hard_provider_failure(await self.inner.scan(request))
 
         scan_id = None
         requested_by = _int_or_none(request.metadata.get("requested_by"))
@@ -61,6 +82,7 @@ class CachedWalmartProvider(DealProvider):
         cache_hits = 0
         cache_misses = 0
         errors: list[str] = []
+        cached_result_used = False
 
         try:
             cached = await self.db.get_scan_result_cache(cache_key)
@@ -69,27 +91,35 @@ class CachedWalmartProvider(DealProvider):
             errors.append(f"walmart scan cache read failed: {exc}")
 
         if cached:
-            result = _result_from_cache(cached["results"])
-            cache_hits = 1
-            warnings = list(result.warnings)
-            warnings.append("Walmart scan cache hit: reused recent normalized scan result.")
-            result = _copy_result(result, warnings=tuple(warnings), metadata={**result.metadata, "cache_hit": True, "cache_key": cache_key})
-        else:
+            cached_result = mark_hard_provider_failure(_result_from_cache(cached["results"]))
+            if provider_scan_had_hard_failure(cached_result):
+                errors.append("ignored cached Walmart provider failure result; forcing a live retry")
+                cached = None
+            else:
+                cache_hits = 1
+                cached_result_used = True
+                warnings = list(cached_result.warnings)
+                warnings.append("Walmart scan cache hit: reused recent normalized scan result.")
+                result = _copy_result(cached_result, warnings=tuple(warnings), metadata={**cached_result.metadata, "cache_hit": True, "cache_key": cache_key})
+        if not cached_result_used:
             cache_misses = 1
             provider_calls = 1
-            result = await self.inner.scan(request)
-            try:
-                await self.db.set_scan_result_cache(
-                    cache_key,
-                    retailer=self.provider_key,
-                    query=request.query,
-                    request=_request_cache_payload(request),
-                    results=_result_cache_payload(result),
-                    total_results=result.total_results or len(result.candidates),
-                    expires_at=_minutes_from_now_iso(WALMART_SCAN_CACHE_MINUTES),
-                )
-            except Exception as exc:
-                errors.append(f"walmart scan cache write failed: {exc}")
+            result = mark_hard_provider_failure(await self.inner.scan(request))
+            if provider_scan_had_hard_failure(result):
+                errors.append(provider_failure_summary(result) or "Walmart provider hard failure")
+            else:
+                try:
+                    await self.db.set_scan_result_cache(
+                        cache_key,
+                        retailer=self.provider_key,
+                        query=request.query,
+                        request=_request_cache_payload(request),
+                        results=_result_cache_payload(result),
+                        total_results=result.total_results or len(result.candidates),
+                        expires_at=_minutes_from_now_iso(WALMART_SCAN_CACHE_MINUTES),
+                    )
+                except Exception as exc:
+                    errors.append(f"walmart scan cache write failed: {exc}")
             result = _copy_result(result, metadata={**result.metadata, "cache_hit": False, "cache_key": cache_key})
 
         await self._persist_candidates(result.candidates)
@@ -98,7 +128,7 @@ class CachedWalmartProvider(DealProvider):
             try:
                 await self.db.finish_scan_run(
                     scan_id,
-                    status="finished",
+                    status="provider_error" if provider_scan_had_hard_failure(result) else "finished",
                     provider_calls=provider_calls,
                     cache_hits=cache_hits,
                     cache_misses=cache_misses,
@@ -150,7 +180,7 @@ class CachedWalmartProvider(DealProvider):
 
     async def _record_query_memory(self, request: ProviderScanRequest, result: ProviderScanResult) -> None:
         guild_id = _int_or_none(request.metadata.get("guild_id")) or 0
-        if guild_id <= 0 or not request.query:
+        if guild_id <= 0 or not request.query or provider_scan_had_hard_failure(result):
             return
         discounts: list[float] = []
         verified_hits = 0
@@ -180,6 +210,58 @@ class CachedWalmartProvider(DealProvider):
             )
         except Exception:
             pass
+
+
+def walmart_credential_validation_error(provider: WalmartProvider) -> str | None:
+    """Return an operator-visible credential error before scans pretend to be empty."""
+
+    loader = getattr(provider, "_load_private_key", None)
+    if not callable(loader):
+        return None
+    try:
+        loader()
+    except Exception as exc:
+        return f"Walmart credentials are present but unusable: {clean_warning_text(exc)}"
+    return None
+
+
+def provider_scan_had_hard_failure(result: ProviderScanResult) -> bool:
+    if result.candidates:
+        return False
+    metadata = dict(result.metadata or {})
+    if truthy(metadata.get("provider_hard_failure")):
+        return True
+    return bool(provider_failure_summary(result))
+
+
+def provider_failure_summary(result: ProviderScanResult) -> str | None:
+    for warning in result.warnings or ():
+        text = clean_warning_text(warning)
+        lowered = text.lower()
+        if any(term in lowered for term in _HARD_FAILURE_TERMS):
+            return text
+    return None
+
+
+def mark_hard_provider_failure(result: ProviderScanResult) -> ProviderScanResult:
+    summary = provider_failure_summary(result)
+    if not summary:
+        return result
+    warnings = tuple(dict.fromkeys((*result.warnings, f"Walmart provider hard failure: {summary}")))
+    return _copy_result(
+        result,
+        warnings=warnings,
+        metadata={**result.metadata, "provider_hard_failure": True, "provider_failure_summary": summary},
+    )
+
+
+def clean_warning_text(value: Any, *, limit: int = 280) -> str:
+    text = " ".join(str(value or "").replace("\n", " ").split())
+    return text[:limit].rstrip() + ("…" if len(text) > limit else "")
+
+
+def truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _copy_result(result: ProviderScanResult, *, warnings: tuple[str, ...] | None = None, metadata: dict[str, Any] | None = None) -> ProviderScanResult:
@@ -288,10 +370,10 @@ def _jsonable(value: Any) -> bool:
         return False
 
 
-def _int_or_none(value) -> int | None:
-    if value is None or value == "":
-        return None
+def _int_or_none(value: Any) -> int | None:
     try:
+        if value is None or value == "":
+            return None
         return int(value)
     except (TypeError, ValueError):
         return None

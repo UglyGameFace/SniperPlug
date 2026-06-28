@@ -30,6 +30,7 @@ _HARD_FAILURE_TERMS = (
     "walmart api returned unexpected payload shape",
     "disabled: set walmart_provider_enabled",
 )
+_LIGHTWEIGHT_SCAN_NOTE = "Autoscan lightweight scan: skipped per-route Turso cache, scan-run, identity, and price-observation writes."
 
 
 class CachedWalmartProvider(DealProvider):
@@ -71,6 +72,15 @@ class CachedWalmartProvider(DealProvider):
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
         if str(request.metadata.get("skip_scan_cache") or "").lower() in {"1", "true", "yes", "on"}:
             return mark_hard_provider_failure(await self._scan_inner_direct(request))
+
+        if lightweight_autoscan_request(request):
+            result = mark_hard_provider_failure(await self._scan_inner_direct(request))
+            warnings = tuple(dict.fromkeys((*result.warnings, _LIGHTWEIGHT_SCAN_NOTE)))
+            return _copy_result(
+                result,
+                warnings=warnings,
+                metadata={**result.metadata, "cache_hit": False, "autoscan_lightweight": True, "db_persistence_skipped": True},
+            )
 
         scan_id = None
         requested_by = _int_or_none(request.metadata.get("requested_by"))
@@ -226,6 +236,12 @@ def walmart_credential_validation_error(provider: WalmartProvider) -> str | None
     except Exception as exc:
         return f"Walmart credentials are present but unusable: {clean_warning_text(exc)}"
     return None
+
+
+def lightweight_autoscan_request(request: ProviderScanRequest) -> bool:
+    if truthy(request.metadata.get("autoscan_lightweight")):
+        return True
+    return str(request.metadata.get("requested_by") or "").strip().lower() == "autoscan"
 
 
 def provider_scan_had_hard_failure(result: ProviderScanResult) -> bool:

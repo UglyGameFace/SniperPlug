@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import discord
@@ -11,12 +12,46 @@ from sniperplug.services.public_deal_posts import card_product_key
 from sniperplug.services.public_posting import normalize_retailer_key
 
 
+DEFAULT_REVIEW_PAGE_SIZE = 3
+DEFAULT_REVIEW_MAX_CARDS = 12
+
+
 class ManualReviewShareView(discord.ui.View):
-    def __init__(self, cards: list[Any]):
+    def __init__(self, cards: list[Any], *, page_size: int = DEFAULT_REVIEW_PAGE_SIZE, max_cards: int = DEFAULT_REVIEW_MAX_CARDS):
         super().__init__(timeout=300)
-        self.cards = cards[:5]
-        for index, card in enumerate(self.cards[:5]):
-            self.add_item(ManualShareButton(index=index, label=f"Post {index + 1}"))
+        self.cards = cards[: max(1, int(max_cards))]
+        self.page_size = max(1, min(5, int(page_size)))
+        self.page = 0
+        self.refresh_items()
+
+    @property
+    def page_count(self) -> int:
+        return max(1, math.ceil(len(self.cards) / self.page_size))
+
+    def page_cards(self) -> list[Any]:
+        start = self.page * self.page_size
+        return self.cards[start : start + self.page_size]
+
+    def page_embeds(self) -> list[discord.Embed]:
+        return [sanitize_embed(card.embed) for card in self.page_cards()]
+
+    def content(self, *, prefix: str | None = None) -> str:
+        header = prefix or "🟨 **Private autoscan review leads**"
+        return (
+            f"{header}\n"
+            f"Page **{self.page + 1}/{self.page_count}** • Showing **{len(self.page_cards())}** of **{len(self.cards)}** lead(s).\n"
+            "Use a **Post** button only after checking price, seller, exact variant, reviews, and comps."
+        )
+
+    def refresh_items(self) -> None:
+        self.clear_items()
+        start = self.page * self.page_size
+        for offset, _card in enumerate(self.page_cards()):
+            absolute_index = start + offset
+            self.add_item(ManualShareButton(index=absolute_index, label=f"Post {absolute_index + 1}"))
+        if self.page_count > 1:
+            self.add_item(ManualReviewPageButton(direction=-1, disabled=self.page <= 0))
+            self.add_item(ManualReviewPageButton(direction=1, disabled=self.page >= self.page_count - 1))
 
 
 class ManualShareButton(discord.ui.Button):
@@ -41,8 +76,24 @@ class ManualShareButton(discord.ui.Button):
         await interaction.response.send_message(message, ephemeral=True)
 
 
+class ManualReviewPageButton(discord.ui.Button):
+    def __init__(self, *, direction: int, disabled: bool = False):
+        label = "Back" if direction < 0 else "Next"
+        emoji = "⬅️" if direction < 0 else "➡️"
+        super().__init__(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=4, disabled=disabled, custom_id=f"manual_review_page:{direction}")
+        self.direction = direction
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not isinstance(self.view, ManualReviewShareView):
+            await interaction.response.send_message("This review menu is no longer active.", ephemeral=True)
+            return
+        self.view.page = max(0, min(self.view.page_count - 1, self.view.page + self.direction))
+        self.view.refresh_items()
+        await interaction.response.edit_message(content=self.view.content(), embeds=self.view.page_embeds(), view=self.view)
+
+
 class ManualShareSelect(discord.ui.Select):
-    """Legacy select kept for compatibility with older imports/tests; new views use buttons."""
+    """Legacy select kept for compatibility with older imports/tests; new views use paginated buttons."""
 
     def __init__(self, cards: list[Any]):
         self.cards = cards

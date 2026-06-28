@@ -35,12 +35,12 @@ AUTO_SCAN_RETAILER = "walmart"
 AUTO_SCAN_SOURCE_LABEL = "autoscan:walmart_discovery"
 AUTO_SCAN_PUBLIC_LIMIT = 5
 AUTO_SCAN_REVIEW_FALLBACK_LIMIT = 3
-AUTO_SCAN_CATEGORY_ROTATION = ("deal_week", "tech", "deal_week", "beauty", "home", "deal_week", "toys", "auto_tools", "essentials")
+AUTO_SCAN_CATEGORY_ROTATION = ("deal_week", "deal_week", "all", "deal_week", "tech", "deal_week", "essentials", "deal_week", "auto_tools", "deal_week", "beauty", "home")
 AUTO_SCAN_PUBLIC_MODE = MODE_BEST
 AUTOSCAN_CONFIDENCE_FLOOR = DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR
-AUTO_SCAN_FAST_QUERY_COUNT = 4
-AUTO_SCAN_DEEP_QUERY_COUNT = 8
-AUTO_SCAN_MANUAL_QUERY_COUNT = 10
+AUTO_SCAN_FAST_QUERY_COUNT = 8
+AUTO_SCAN_DEEP_QUERY_COUNT = 16
+AUTO_SCAN_MANUAL_QUERY_COUNT = 32
 AUTO_SCAN_DEEP_EVERY_BUCKETS = 8
 AUTO_SCAN_PROGRESS_SECONDS = 45
 AUTO_SCAN_DEEP_FOLLOWUP_ENABLED = True
@@ -141,6 +141,7 @@ class AutoScanReport:
             f"Verified before memory: **{self.verified_before_memory}** • Verified after memory/ranking: **{self.total_cards}** • Fresh/new/lower-price: **{self.fresh_cards}** • Sent to public guard: **{self.cards_attempted_for_public}**\n"
             f"Posted: **{result.posted}** • Duplicates blocked: **{result.skipped_duplicate}**{duplicate_breakdown} • Not alertable: **{result.skipped_not_alertable}** • Disabled: **{result.skipped_disabled}**\n"
             f"Bottom line: {plain}\n"
+            "Setup note: green setup means SniperPlug can post; the finder still needs verified Walmart markdown proof before a deal is public-ready. Scout/review leads stay private.\n"
             f"Private review fallback found: **{'yes' if self.used_repeat_fallback else 'no'}**\n"
             f"Fresh filter: {self.repeat_summary or 'n/a'}"
         )
@@ -216,7 +217,7 @@ class AutoScanRunnerCog(commands.Cog):
                     report = await self._run_guild_walmart_discovery(
                         AutoScanGuild(guild_id, config.get("channel_id")),
                         force=force,
-                        query_count_override=AUTO_SCAN_FAST_QUERY_COUNT if force else None,
+                        query_count_override=AUTO_SCAN_DEEP_QUERY_COUNT if force else None,
                         report_label="Fast pass",
                     )
                 finally:
@@ -517,20 +518,22 @@ class AutoScanRunnerCog(commands.Cog):
 
 
 def select_autoscan_preset(guild_id: int, *, force: bool = False, query_count_override: int | None = None) -> HuntPreset:
-    """Rotate categories and query slices so coverage is preserved without hammering Discord/API.
+    """Pick the Walmart auto-scan route.
 
-    Each scheduled run scans a small slice of the current category. The slice
-    rotates every run, so long query lists still get covered over time. Every
-    eighth scheduled bucket runs a wider slice. Manual `/autoscan_now` uses the
-    widest slice so staff can debug without waiting for rotation.
+    Manual `/autoscan_now force:true` always starts with Deal Week so testing
+    does not randomly land on a weak category. Scheduled runs still rotate, but
+    Deal Week appears often and `all` is included for broader coverage.
     """
-    if not AUTO_SCAN_CATEGORY_ROTATION:
+    if force:
+        base = HUNT_PRESETS.get("deal_week") or HUNT_PRESETS.get("all") or next(iter(HUNT_PRESETS.values()))
+    elif not AUTO_SCAN_CATEGORY_ROTATION:
         base = HUNT_PRESETS["tech"]
     else:
         bucket = int(time.time() // (AUTO_SCAN_INTERVAL_MINUTES * 60))
         index = (bucket + int(guild_id)) % len(AUTO_SCAN_CATEGORY_ROTATION)
         key = AUTO_SCAN_CATEGORY_ROTATION[index]
         base = HUNT_PRESETS.get(key) or next(iter(HUNT_PRESETS.values()))
+
     if query_count_override is not None:
         query_count = max(1, int(query_count_override))
     elif force:
@@ -538,8 +541,16 @@ def select_autoscan_preset(guild_id: int, *, force: bool = False, query_count_ov
     else:
         bucket = int(time.time() // (AUTO_SCAN_INTERVAL_MINUTES * 60))
         query_count = AUTO_SCAN_DEEP_QUERY_COUNT if bucket % AUTO_SCAN_DEEP_EVERY_BUCKETS == 0 else AUTO_SCAN_FAST_QUERY_COUNT
+
     queries = rotated_query_slice(base.queries, guild_id=guild_id, query_count=query_count)
-    return HuntPreset(base.key, base.label, base.emoji, f"{base.description} Auto-scan slice preserves coverage over rotation.", queries, base.min_discount)
+    return HuntPreset(
+        base.key,
+        base.label,
+        base.emoji,
+        f"{base.description} Auto-scan slice preserves coverage over rotation.",
+        queries,
+        base.min_discount,
+    )
 
 
 def rotated_query_slice(queries: tuple[str, ...], *, guild_id: int, query_count: int) -> tuple[str, ...]:

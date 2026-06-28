@@ -4,7 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
@@ -12,6 +12,16 @@ from sniperplug.providers.base import ProviderScanResult
 
 DEFAULT_SCAN_CACHE_MINUTES = 10
 _SOURCE_CANDIDATE_FIELDS = {field.name for field in fields(SourceCandidate)}
+_HARD_FAILURE_TERMS = (
+    "walmart api http",
+    "walmart api network error",
+    "walmart private key",
+    "missing walmart config",
+    "provider hard failure",
+    "walmart api returned non-json",
+    "walmart api returned unexpected payload shape",
+    "disabled: set walmart_provider_enabled",
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +48,8 @@ async def cached_provider_scan_or_run(
 
     This cache is intentionally short-lived. It speeds up repeated `/deals` runs
     and button refreshes without letting stale glitches hide for hours.
+    Provider/auth failures are never trusted as cache hits and are never written
+    back to cache, because that turns a real outage into fake empty scans.
     """
     key = scan_cache_key(
         retailer=retailer,
@@ -50,15 +62,16 @@ async def cached_provider_scan_or_run(
     if db is not None and not force_refresh:
         cached = await safe_get_scan_cache(db, key)
         if cached:
-            result = deserialize_provider_scan_result(cached["results"])
-            result.metadata["scan_cache"] = "hit"
-            result.metadata["scan_cache_key"] = key
-            return ScanCacheOutcome(result=result, cache_hit=True, cache_key=key)
+            result = mark_hard_provider_failure(deserialize_provider_scan_result(cached["results"]))
+            if not provider_scan_had_hard_failure(result):
+                result.metadata["scan_cache"] = "hit"
+                result.metadata["scan_cache_key"] = key
+                return ScanCacheOutcome(result=result, cache_hit=True, cache_key=key)
 
-    result = await runner()
-    result.metadata["scan_cache"] = "miss" if db is not None else "disabled"
+    result = mark_hard_provider_failure(await runner())
+    result.metadata["scan_cache"] = "provider_error" if provider_scan_had_hard_failure(result) else ("miss" if db is not None else "disabled")
     result.metadata["scan_cache_key"] = key
-    if db is not None:
+    if db is not None and not provider_scan_had_hard_failure(result):
         await safe_set_scan_cache(
             db,
             key,
@@ -149,3 +162,43 @@ def deserialize_provider_scan_result(payload: dict) -> ProviderScanResult:
         has_next_page=bool(payload.get("has_next_page")),
         metadata=dict(payload.get("metadata") or {}),
     )
+
+
+def provider_scan_had_hard_failure(result: ProviderScanResult) -> bool:
+    if result.candidates:
+        return False
+    if str((result.metadata or {}).get("provider_hard_failure") or "").lower() in {"1", "true", "yes", "on"}:
+        return True
+    return bool(provider_failure_summary(result))
+
+
+def provider_failure_summary(result: ProviderScanResult) -> str | None:
+    for warning in result.warnings or ():
+        text = clean_warning_text(warning)
+        lowered = text.lower()
+        if any(term in lowered for term in _HARD_FAILURE_TERMS):
+            return text
+    return None
+
+
+def mark_hard_provider_failure(result: ProviderScanResult) -> ProviderScanResult:
+    summary = provider_failure_summary(result)
+    if not summary:
+        return result
+    warnings = tuple(dict.fromkeys((*result.warnings, f"Provider hard failure: {summary}")))
+    return ProviderScanResult(
+        provider_key=result.provider_key,
+        candidates=result.candidates,
+        warnings=warnings,
+        total_results=result.total_results,
+        page=result.page,
+        page_size=result.page_size,
+        start_index=result.start_index,
+        has_next_page=result.has_next_page,
+        metadata={**result.metadata, "provider_hard_failure": True, "provider_failure_summary": summary},
+    )
+
+
+def clean_warning_text(value: Any, *, limit: int = 280) -> str:
+    text = " ".join(str(value or "").replace("\n", " ").split())
+    return text[:limit].rstrip() + ("…" if len(text) > limit else "")

@@ -15,6 +15,7 @@ from sniperplug.services.walmart_price_memory import ensure_price_memory_table
 
 
 MIN_MEMORY_DROP_DOLLARS = 5.00
+DEFAULT_OBSERVED_MEMORY_MAX_WRITES = 600
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ObservedPriceMemoryDecision:
 class ObservedPriceMemorySelection:
     cards: list[DealCard]
     decisions: list[ObservedPriceMemoryDecision]
+    skipped_due_to_load_cap: int = 0
 
     def summary_line(self) -> str:
         counts: dict[str, int] = {}
@@ -47,12 +49,27 @@ class ObservedPriceMemorySelection:
             return "observed price memory: no products checked"
         order = ("new", "new_low", "lower_price", "same_or_higher", "missing_identity", "missing_price", "not_buyable")
         parts = [f"{label}: **{counts[label]}**" for label in order if counts.get(label)]
+        if self.skipped_due_to_load_cap:
+            parts.append(f"load-capped: **{self.skipped_due_to_load_cap}**")
         parts.append(f"public price-drop cards: **{len(self.cards)}**")
         return "observed price memory: " + " • ".join(parts)
 
 
-async def select_observed_price_drop_cards(db: Any, *, guild_id: int | None, candidates: list[SourceCandidate], min_discount: int = 50, limit: int = 5) -> ObservedPriceMemorySelection:
-    """Record exact Walmart candidates and return public-safe observed price drops."""
+async def select_observed_price_drop_cards(
+    db: Any,
+    *,
+    guild_id: int | None,
+    candidates: list[SourceCandidate],
+    min_discount: int = 50,
+    limit: int = 5,
+    max_observations: int = DEFAULT_OBSERVED_MEMORY_MAX_WRITES,
+) -> ObservedPriceMemorySelection:
+    """Record exact Walmart candidates and return public-safe observed price drops.
+
+    Autoscan can inspect thousands of rows. Turso/libsql should not receive an
+    upsert per returned product in one loop tick, so this function writes a
+    bounded, buyable/priced subset while keeping public posting strict.
+    """
 
     if db is None or guild_id is None or not candidates:
         return ObservedPriceMemorySelection(cards=[], decisions=[])
@@ -62,8 +79,10 @@ async def select_observed_price_drop_cards(db: Any, *, guild_id: int | None, can
     now = datetime.now(timezone.utc).isoformat()
     decisions: list[ObservedPriceMemoryDecision] = []
     cards: list[DealCard] = []
+    bounded_candidates = prioritized_observation_candidates(candidates, limit=max_observations)
+    skipped_due_to_load_cap = max(0, len(candidates) - len(bounded_candidates))
 
-    for candidate in candidates:
+    for candidate in bounded_candidates:
         retailer = normalize_retailer_key(candidate.retailer) or "walmart"
         if retailer != "walmart":
             continue
@@ -85,7 +104,33 @@ async def select_observed_price_drop_cards(db: Any, *, guild_id: int | None, can
 
     await conn.commit()
     cards.sort(key=lambda card: float(getattr(card, "api_discount_percent", 0) or 0), reverse=True)
-    return ObservedPriceMemorySelection(cards=cards[:limit], decisions=decisions)
+    return ObservedPriceMemorySelection(cards=cards[:limit], decisions=decisions, skipped_due_to_load_cap=skipped_due_to_load_cap)
+
+
+def prioritized_observation_candidates(candidates: list[SourceCandidate], *, limit: int) -> list[SourceCandidate]:
+    limit = max(1, int(limit or DEFAULT_OBSERVED_MEMORY_MAX_WRITES))
+    deduped: list[SourceCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        identity = candidate_identity(candidate)
+        key = identity or canonical_url_key(candidate.product_url) or str(id(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+
+    def rank(candidate: SourceCandidate) -> tuple[int, float, str]:
+        current = float_or_none(candidate.current_price)
+        buyable = is_candidate_buyable(candidate)
+        has_identity = bool(candidate_identity(candidate))
+        has_price = current is not None and current > 0
+        return (
+            0 if has_identity and has_price and buyable else 1 if has_identity and has_price else 2,
+            float(current or 0),
+            str(candidate.title or ""),
+        )
+
+    return sorted(deduped, key=rank)[:limit]
 
 
 def decide_candidate(candidate: SourceCandidate, *, identity_key: str, row: Any, current_price: float | None, buyable: bool, min_discount: int) -> ObservedPriceMemoryDecision:

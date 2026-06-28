@@ -17,6 +17,13 @@ from sniperplug.services.walmart_review_candidates import ReviewCandidateResult,
 from sniperplug.services import verified_discount_hunt as hunt
 
 
+AUTOSCAN_SEARCH_CONCURRENCY = 3
+AUTOSCAN_PAGES_PER_QUERY = 2
+AUTOSCAN_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = ((None, None),)
+AUTOSCAN_MEMORY_RECHECK_LIMIT = 4
+AUTOSCAN_OBSERVED_MEMORY_MAX_WRITES = 300
+
+
 @dataclass(frozen=True)
 class AutoscanPriceMemorySelection:
     legacy: PriceMemorySelection | None
@@ -73,10 +80,9 @@ async def collect_verified_discount_cards_with_observed_memory(
 ) -> hunt.VerifiedHuntResult:
     """Autoscan collector with exact-item observed price memory enabled.
 
-    This mirrors the verified hunt scan path but also records every exact
-    Walmart candidate in price memory, so future scans can public-post a real
-    observed price drop even when Walmart does not provide clean was/reference
-    fields.
+    This is intentionally lighter than manual hunt/deals scans so scheduled
+    autoscan cannot starve Discord interaction acknowledgements. It uses fewer
+    pages, one sort pass, lower concurrency, and a small memory recheck lane.
     """
 
     preset = preset or hunt.ALL_VERIFIED_PRESET
@@ -89,23 +95,24 @@ async def collect_verified_discount_cards_with_observed_memory(
     route_stats: list[SearchRouteStats] = []
     pages_checked = 0
     searches_attempted = 0
-    semaphore = asyncio.Semaphore(hunt.SCAN_CONCURRENCY)
+    semaphore = asyncio.Semaphore(AUTOSCAN_SEARCH_CONCURRENCY)
     memory_seeds: tuple[str, ...] = ()
     if use_price_memory and db is not None and guild_id is not None:
-        memory_seeds = await remembered_walmart_search_seeds(db, guild_id=guild_id, limit=hunt.MEMORY_RECHECK_LIMIT)
+        memory_seeds = await remembered_walmart_search_seeds(db, guild_id=guild_id, limit=AUTOSCAN_MEMORY_RECHECK_LIMIT)
     preset_queries = tuple(hunt.dedupe_strings([*preset.queries, *memory_seeds]))
 
     async def scan_one(query: str, page: int, sort_value: str | None, order_value: str | None) -> tuple[str, ProviderScanResult]:
         nonlocal searches_attempted
         async with semaphore:
             searches_attempted += 1
+            await asyncio.sleep(0)
             return query, await deal_scanner.run_walmart_scan(query, page, hunt.RESULTS_PER_PAGE, sort_value, order_value, requested_by)
 
     tasks = [
         scan_one(query, page, sort_value, order_value)
         for query in preset_queries
-        for sort_value, order_value in hunt.SORT_PASSES
-        for page in range(1, hunt.PAGES_PER_QUERY + 1)
+        for sort_value, order_value in AUTOSCAN_SORT_PASSES
+        for page in range(1, AUTOSCAN_PAGES_PER_QUERY + 1)
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -169,6 +176,7 @@ async def collect_verified_discount_cards_with_observed_memory(
             candidates=list(deduped_candidates),
             min_discount=starting_discount,
             limit=5,
+            max_observations=AUTOSCAN_OBSERVED_MEMORY_MAX_WRITES,
         )
         legacy_memory = await select_price_intelligent_cards(
             db,

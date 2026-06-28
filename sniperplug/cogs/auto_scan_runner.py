@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from sniperplug.cogs.deal_scanner import DealCard, HuntPreset, provider_health_error_message
+from sniperplug.cogs.deal_scanner import DealCard, HuntPreset, provider_health_error_message, safe_defer, safe_send_interaction
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.autoscan_history import save_autoscan_report
 from sniperplug.services.autoscan_decision_trail import explain_autoscan_decision_trail, no_post_plain_english
@@ -167,7 +167,13 @@ class AutoScanRunnerCog(commands.Cog):
             await interaction.response.send_message("Use this in a server so I know which auto-scan settings to test.", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not await safe_defer(interaction, ephemeral=True, thinking=True):
+            log.warning(
+                "Manual /autoscan_now could not acknowledge before Discord expired the interaction guild=%s user=%s",
+                interaction.guild_id,
+                getattr(interaction.user, "id", None),
+            )
+            return
 
         guild_id = int(interaction.guild_id)
         lock = autoscan_lock(guild_id)
@@ -303,20 +309,52 @@ class AutoScanRunnerCog(commands.Cog):
     ) -> None:
         try:
             await interaction.followup.send(content=content, embed=embed, ephemeral=True)
+            return
+        except (discord.NotFound, discord.HTTPException) as exc:
+            if interaction_token_is_gone(exc):
+                if await self._send_autoscan_dm_fallback(interaction, content=content, embed=embed):
+                    log.info("Sent /autoscan_now result by DM because Discord expired the interaction token")
+                    return
+                log.warning("Could not send /autoscan_now result; interaction token expired and DM fallback failed: %s", clean_log_text(exc))
+                return
+            log.exception("Failed to send /autoscan_now followup")
         except Exception:
             log.exception("Failed to send /autoscan_now followup")
+
+    async def _send_autoscan_dm_fallback(
+        self,
+        interaction: discord.Interaction,
+        *,
+        content: str | None = None,
+        embed: discord.Embed | None = None,
+    ) -> bool:
+        user = getattr(interaction, "user", None)
+        send = getattr(user, "send", None)
+        if not callable(send):
+            return False
+        try:
+            prefix = "SniperPlug finished your auto-scan after Discord expired the private command window."
+            if content and embed is None:
+                await send(prefix + "\n\n" + str(content)[:1800])
+            else:
+                await send(prefix, embed=embed)
+            return True
+        except Exception:
+            return False
+
 
     @autoscan_now.error
     async def autoscan_now_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         message = (
             "You need **Manage Server** permission to run an auto-scan test."
             if isinstance(error, app_commands.MissingPermissions)
-            else f"Auto-scan test hit an error: `{error}`"
+            else f"Auto-scan test hit an error: `{clean_log_text(error)}`"
         )
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+        sent = await safe_send_interaction(interaction, message, ephemeral=True)
+        if not sent:
+            log.warning("Could not send /autoscan_now error because Discord interaction already expired: %s", clean_log_text(error))
+
+
 
     @tasks.loop(minutes=AUTO_SCAN_INTERVAL_MINUTES)
     async def auto_scan_loop(self) -> None:
@@ -646,6 +684,13 @@ def watchlist_repeat_summary(base_summary: str, watchlist_cards: list[DealCard],
         f"{base_summary} • Deal Week watchlist fallback selected **{len(watchlist_cards)}** review lead(s) "
         f"• public posted **{public_result.posted}** • public blocked **{blocked}**"
     )
+
+
+def interaction_token_is_gone(exc: Exception) -> bool:
+    code = getattr(exc, "code", None)
+    text = str(exc).lower()
+    return code in {10062, 50027} or "unknown interaction" in text or "invalid webhook token" in text
+
 
 def autoscan_lock(guild_id: int) -> asyncio.Lock:
     lock = _AUTOSCAN_LOCKS.get(guild_id)

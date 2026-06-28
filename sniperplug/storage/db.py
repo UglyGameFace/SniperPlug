@@ -102,12 +102,21 @@ class _LibsqlAsyncConnection:
     @staticmethod
     def _is_retryable_libsql_stream_error(exc: Exception) -> bool:
         text = str(exc).lower()
-        return "hrana" in text and (
-            "stream not found" in text
-            or "stream already in use" in text
-            or "closed stream" in text
-            or "stream closed" in text
+        retry_terms = (
+            "stream not found",
+            "stream already in use",
+            "closed stream",
+            "stream closed",
+            "bad gateway",
+            "status=502",
+            "http 502",
+            "connect to upstream failed",
+            "option::unwrap",
+            "called `option::unwrap()`",
+            "called 'option::unwrap()'",
+            "none value",
         )
+        return "hrana" in text and any(term in text for term in retry_terms)
 
     def _connect_sync(self) -> Any:
         if not self.database or not self.auth_token:
@@ -168,7 +177,7 @@ class _LibsqlAsyncConnection:
                         return await asyncio.to_thread(run)
                     except ValueError as exc:
                         text = str(exc).lower()
-                        if "stream already in use" not in text and "stream not found" not in text:
+                        if not self._is_retryable_libsql_stream_error(exc):
                             raise
                         last_exc = exc
 

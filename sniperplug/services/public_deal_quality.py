@@ -244,7 +244,10 @@ def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", mi
         return False
     if lane == LANE_PRICE_MEMORY_DROP:
         attrs = variant_attrs(card)
-        return bool(attrs.get("priceMemoryIdentity")) and str(attrs.get("referencePriceTrusted") or "").lower() == "yes"
+        identity = attrs.get("priceMemoryIdentity") or attr_value(card, "selected_offer_id", "sku", "upc")
+        current = current_price(card)
+        reference = reference_price(card)
+        return bool(identity) and current is not None and reference is not None and reference > current and discount >= max(1, int(min_discount))
     if lane in {LANE_OPEN_BOX_LIKE_NEW, LANE_RESTORED_REFURBISHED}:
         condition = normalized_condition(attr_value(card, "api_condition", "condition"))
         if not condition or not has_structured_reference_proof(card):

@@ -145,7 +145,7 @@ def env_enabled(name: str, *, default: bool = False) -> bool:
 
 def run() -> None:
     settings = Settings.from_env()
-    configure_runtime_logging(settings=settings, db_path=settings.database_path)
+    configure_runtime_logging()
     install_global_exception_hooks()
     if not settings.discord_token:
         raise RuntimeError("DISCORD_TOKEN is required")

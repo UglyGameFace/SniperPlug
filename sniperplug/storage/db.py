@@ -176,7 +176,6 @@ class _LibsqlAsyncConnection:
                     try:
                         return await asyncio.to_thread(run)
                     except ValueError as exc:
-                        text = str(exc).lower()
                         if not self._is_retryable_libsql_stream_error(exc):
                             raise
                         last_exc = exc

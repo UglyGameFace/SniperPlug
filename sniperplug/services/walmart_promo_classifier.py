@@ -74,7 +74,6 @@ def classify_walmart_api_promos(item: dict[str, Any], *, current_price: float | 
     promo_paths: list[str] = []
 
     for path, value in _walk_leaves(item):
-        text = f"{path} {value}"
         if _is_promo_related(path, value):
             if path not in promo_paths:
                 promo_paths.append(path)

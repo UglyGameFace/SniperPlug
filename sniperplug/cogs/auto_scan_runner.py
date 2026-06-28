@@ -152,6 +152,7 @@ class AutoScanRunnerCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def cog_load(self) -> None:
         self.auto_scan_loop.start()
@@ -188,7 +189,9 @@ class AutoScanRunnerCog(commands.Cog):
             "✅ Auto-scan accepted instantly. I’m running the Walmart scan now and will send the result when it finishes. Duplicate clicks are blocked.",
             ephemeral=True,
         )
-        asyncio.create_task(self._run_autoscan_now_background(interaction, guild_id, force))
+        task = asyncio.create_task(self._run_autoscan_now_background(interaction, guild_id, force))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _run_autoscan_now_background(self, interaction: discord.Interaction, guild_id: int, force: bool) -> None:
         lock = autoscan_lock(guild_id)

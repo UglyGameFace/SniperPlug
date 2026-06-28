@@ -54,4 +54,7 @@ def test_public_quality_allows_observed_price_memory_drop_with_real_reference():
     assert "priceMemoryIdentity" in body
     assert "reference > current" in body
     assert "discount >= max" in body
-    assert "referencePriceTrusted" not in body
+    # The price-memory builder always stamps referencePriceTrusted == "yes" on real
+    # cards, so the public gate must require that trusted marker to keep malformed or
+    # untrusted-reference price-memory cards out of public posting.
+    assert "referencePriceTrusted" in body

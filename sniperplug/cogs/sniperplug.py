@@ -14,10 +14,8 @@ from sniperplug.services.monitor_control import MonitorMode, build_default_monit
 from sniperplug.services.risk_flags import apply_risk_flags
 from sniperplug.services.routing import (
     ALERT_ROUTES,
-    DEFAULT_ROUTE,
     ROUTE_DESCRIPTIONS,
     choose_primary_route,
-    is_valid_route,
     route_label,
 )
 from sniperplug.services.snipe_planner import build_default_snipe_batch

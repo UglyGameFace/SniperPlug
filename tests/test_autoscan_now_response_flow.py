@@ -7,9 +7,9 @@ def test_autoscan_now_defers_before_database_work():
     end = source.index("async def _run_autoscan_now_background(")
     body = source[start:end]
 
-    assert "await interaction.response.defer(ephemeral=True, thinking=True)" in body
+    assert "await safe_defer(interaction, ephemeral=True, thinking=True)" in body
     assert "asyncio.create_task(self._run_autoscan_now_background" in body
-    assert body.index("await interaction.response.defer") < body.index("asyncio.create_task")
+    assert body.index("await safe_defer(interaction") < body.index("asyncio.create_task")
 
 
 def test_autoscan_now_database_work_is_in_background_helper():

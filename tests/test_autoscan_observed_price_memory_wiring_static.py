@@ -3,12 +3,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = (ROOT / "sniperplug/services/autoscan_route_policy.py").read_text(encoding="utf-8")
 OBSERVED = (ROOT / "sniperplug/services/autoscan_observed_price_memory.py").read_text(encoding="utf-8")
+BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 PUBLIC_QUALITY = (ROOT / "sniperplug/services/public_deal_quality.py").read_text(encoding="utf-8")
 
 
-def test_autoscan_route_policy_installs_observed_price_memory():
-    assert "install_autoscan_observed_price_memory" in POLICY
-    assert "install_autoscan_observed_price_memory()" in POLICY
+def test_autoscan_route_policy_is_native_not_installed():
+    assert "public_autoscan_hunt_presets" in POLICY
+    assert "install_public_autoscan_route_policy" not in POLICY
+    assert "install_public_autoscan_route_policy" not in BOT
 
 
 def test_autoscan_collection_uses_observed_memory_from_all_candidates():

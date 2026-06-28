@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.services import verified_discount_hunt
+from sniperplug.services.open_box_autoscan_routes import OPEN_BOX_AUTOSCAN_KEY, open_box_autoscan_preset
 from sniperplug.services.walmart_cash_offers import DEFAULT_CASH_QUERIES
 
 
@@ -67,47 +70,20 @@ def dedupe_public_routes(queries: tuple[str, ...] | list[str]) -> tuple[str, ...
     return tuple(cleaned)
 
 
-def install_public_autoscan_route_policy() -> None:
-    """Scrub private promo routes out of public Walmart hunt/autoscan presets.
+def public_autoscan_hunt_presets(base_presets: Mapping[str, HuntPreset] | None = None) -> dict[str, HuntPreset]:
+    """Build the public-safe autoscan preset map without mutating other modules."""
 
-    This is a native route table normalization step, not a public quality gate
-    bypass. It keeps Walmart Cash available through Cash Finder while preventing
-    public autoscan from wasting route slots on private-only promo searches.
-    """
-
-    if not getattr(verified_discount_hunt, "_sniperplug_public_autoscan_route_policy_installed", False):
-        filtered_routes: dict[str, tuple[str, str, str, tuple[str, ...]]] = {}
-        for key, (label, emoji, description, queries) in verified_discount_hunt.CATEGORY_ROUTES.items():
-            filtered_routes[key] = (label, emoji, description, public_autoscan_queries(queries))
-
-        verified_discount_hunt.CATEGORY_ROUTES.clear()
-        verified_discount_hunt.CATEGORY_ROUTES.update(filtered_routes)
-        verified_discount_hunt.DISCOVERY_QUERIES = verified_discount_hunt.CATEGORY_ROUTES["all"][3]
-
-        verified_discount_hunt.HUNT_PRESETS.clear()
-        verified_discount_hunt.HUNT_PRESETS.update(
-            {
-                key: HuntPreset(key, label, emoji, description, queries, verified_discount_hunt.TRUE_DISCOUNT_MIN)
-                for key, (label, emoji, description, queries) in verified_discount_hunt.CATEGORY_ROUTES.items()
-            }
+    source = base_presets or verified_discount_hunt.HUNT_PRESETS
+    presets: dict[str, HuntPreset] = {}
+    for key, preset in source.items():
+        queries = public_autoscan_queries(tuple(preset.queries))
+        presets[key] = HuntPreset(
+            preset.key,
+            preset.label,
+            preset.emoji,
+            preset.description,
+            queries,
+            preset.min_discount,
         )
-        verified_discount_hunt.ALL_VERIFIED_PRESET = HuntPreset(
-            verified_discount_hunt.ALL_VERIFIED_HUNT_KEY,
-            verified_discount_hunt.CATEGORY_ROUTES["all"][0],
-            verified_discount_hunt.CATEGORY_ROUTES["all"][1],
-            verified_discount_hunt.CATEGORY_ROUTES["all"][2],
-            verified_discount_hunt.DISCOVERY_QUERIES,
-            verified_discount_hunt.TRUE_DISCOUNT_MIN,
-        )
-
-        for key, preset in verified_discount_hunt.HUNT_PRESETS.items():
-            verified_discount_hunt.deal_scanner.HUNT_PRESETS[key] = preset
-
-        verified_discount_hunt._sniperplug_public_autoscan_route_policy_installed = True
-
-    # Autoscan should use observed price memory after route policy is installed.
-    # This keeps Cash out of public routes while letting future runs prove real
-    # same-item price drops from SniperPlug's own remembered Walmart API prices.
-    from sniperplug.services.autoscan_observed_price_memory import install_autoscan_observed_price_memory
-
-    install_autoscan_observed_price_memory()
+    presets[OPEN_BOX_AUTOSCAN_KEY] = open_box_autoscan_preset()
+    return presets

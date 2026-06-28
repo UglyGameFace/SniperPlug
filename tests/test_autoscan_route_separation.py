@@ -7,13 +7,12 @@ from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.services.autoscan_no_post_report import build_autoscan_no_post_report
 from sniperplug.services.autoscan_route_policy import (
     PRIVATE_WALMART_CASH_ROUTES,
-    install_public_autoscan_route_policy,
     is_private_promo_route,
+    public_autoscan_hunt_presets,
     public_autoscan_queries,
 )
-from sniperplug.services.open_box_autoscan_routes import OPEN_BOX_AUTOSCAN_KEY, install_open_box_autoscan_routes
+from sniperplug.services.open_box_autoscan_routes import OPEN_BOX_AUTOSCAN_KEY
 from sniperplug.services.public_deal_quality import LANE_WALMART_CASH, select_public_deal_candidates
-from sniperplug.services.verified_discount_hunt import HUNT_PRESETS
 from sniperplug.services.walmart_cash_offers import DEFAULT_CASH_QUERIES
 
 
@@ -35,9 +34,9 @@ def test_public_autoscan_filters_private_cash_routes():
     assert "cash back walmart" not in filtered
 
 
-def test_public_hunt_presets_do_not_keep_walmart_cash_routes_after_install():
-    install_public_autoscan_route_policy()
-    combined = "\n".join(query.lower() for preset in HUNT_PRESETS.values() for query in preset.queries)
+def test_public_hunt_presets_do_not_keep_walmart_cash_routes():
+    public_presets = public_autoscan_hunt_presets()
+    combined = "\n".join(query.lower() for preset in public_presets.values() for query in preset.queries)
 
     assert "walmart cash eligible" not in combined
     assert "walmart cash offers" not in combined
@@ -45,9 +44,11 @@ def test_public_hunt_presets_do_not_keep_walmart_cash_routes_after_install():
     assert "cash back walmart" not in combined
 
 
-def test_autoscan_route_policy_does_not_remove_legacy_hunt_buttons():
-    install_public_autoscan_route_policy()
+def test_public_autoscan_route_policy_does_not_mutate_legacy_hunt_buttons():
+    before = dict(deal_scanner.HUNT_PRESETS)
+    public_autoscan_hunt_presets()
 
+    assert dict(deal_scanner.HUNT_PRESETS) == before
     assert "glitch" in deal_scanner.HUNT_PRESETS
     assert "tech" in deal_scanner.HUNT_PRESETS
     assert "essentials" in deal_scanner.HUNT_PRESETS
@@ -63,12 +64,11 @@ def test_cash_finder_keeps_private_walmart_cash_routes():
     assert is_private_promo_route("walmart cash eligible")
 
 
-def test_open_box_route_is_not_removed_by_cash_policy():
-    install_public_autoscan_route_policy()
-    install_open_box_autoscan_routes()
+def test_open_box_route_is_native_public_autoscan_preset():
+    public_presets = public_autoscan_hunt_presets()
 
-    assert OPEN_BOX_AUTOSCAN_KEY in HUNT_PRESETS
-    routes = "\n".join(HUNT_PRESETS[OPEN_BOX_AUTOSCAN_KEY].queries).lower()
+    assert OPEN_BOX_AUTOSCAN_KEY in public_presets
+    routes = "\n".join(public_presets[OPEN_BOX_AUTOSCAN_KEY].queries).lower()
     assert "open box" in routes
     assert "restored" in routes
     assert "refurbished" in routes

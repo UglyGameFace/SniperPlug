@@ -10,7 +10,7 @@ from discord.ext import commands
 from sniperplug.config import Settings
 from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
-from sniperplug.cogs.auto_scan_runner import AutoScanRunnerCog
+from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
@@ -39,8 +39,6 @@ from sniperplug.services.error_logging import (
     install_global_exception_hooks,
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
-from sniperplug.services.open_box_autoscan_routes import install_open_box_autoscan_routes
-from sniperplug.services.autoscan_route_policy import install_public_autoscan_route_policy
 from sniperplug.services.storage_maintenance import run_storage_maintenance
 from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
 from sniperplug.storage.db import Database
@@ -84,8 +82,6 @@ class SniperPlugBot(commands.Bot):
         provider_registry.register(CachedWalmartProvider(self.db, WalmartProvider(configured=False)))
         provider_registry.register(HomeDepotProvider())
         provider_registry.register(SerpApiHomeDepotProvider())
-        install_public_autoscan_route_policy()
-        install_open_box_autoscan_routes()
 
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(WorkflowCog(self))
@@ -139,22 +135,19 @@ class SniperPlugBot(commands.Bot):
             except Exception:
                 log.exception("Setup self-heal failed")
 
-    async def close(self) -> None:
-        await self.db.close()
-        await super().close()
-
-
-async def run() -> None:
-    configure_runtime_logging()
-    install_global_exception_hooks()
-    settings = Settings.from_env()
-    bot = SniperPlugBot(settings)
-    async with bot:
-        await bot.start(settings.discord_token)
-
 
 def env_enabled(name: str, *, default: bool = False) -> bool:
     raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
+    if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def run() -> None:
+    settings = Settings.from_env()
+    configure_runtime_logging(settings=settings, db_path=settings.database_path)
+    install_global_exception_hooks()
+    if not settings.discord_token:
+        raise RuntimeError("DISCORD_TOKEN is required")
+    bot = SniperPlugBot(settings)
+    bot.run(settings.discord_token)

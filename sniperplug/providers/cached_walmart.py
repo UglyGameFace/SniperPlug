@@ -65,9 +65,12 @@ class CachedWalmartProvider(DealProvider):
     async def fetch_product_detail_payload(self, item_id: str) -> dict:
         return await self.inner.fetch_product_detail_payload(item_id)
 
+    async def _scan_inner_direct(self, request: ProviderScanRequest) -> ProviderScanResult:
+        return await self.inner.scan(request)
+
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
         if str(request.metadata.get("skip_scan_cache") or "").lower() in {"1", "true", "yes", "on"}:
-            return mark_hard_provider_failure(await self.inner.scan(request))
+            return mark_hard_provider_failure(await self._scan_inner_direct(request))
 
         scan_id = None
         requested_by = _int_or_none(request.metadata.get("requested_by"))
@@ -104,7 +107,7 @@ class CachedWalmartProvider(DealProvider):
         if not cached_result_used:
             cache_misses = 1
             provider_calls = 1
-            result = mark_hard_provider_failure(await self.inner.scan(request))
+            result = mark_hard_provider_failure(await self._scan_inner_direct(request))
             if provider_scan_had_hard_failure(result):
                 errors.append(provider_failure_summary(result) or "Walmart provider hard failure")
             else:

@@ -24,6 +24,15 @@ def test_native_autoscan_category_rotation_is_explicit() -> None:
     assert '"auto_tools"' in source
 
 
+def test_native_manual_autoscan_is_broad_public_safe_sweep() -> None:
+    source = read("sniperplug/cogs/native_auto_scan_runner.py")
+    assert "NATIVE_BROAD_PRESET_KEY" in source
+    assert "build_native_broad_preset" in source
+    assert "Broad Public-Safe Sweep" in source
+    assert "Manual broad sweep spans" in source
+    assert "coverage": "broad_public_safe" or "broad_public_safe" in source
+
+
 def test_native_autoscan_thresholds_are_split() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
     assert "NATIVE_SCOUT_MIN_SCORE = 95" in source

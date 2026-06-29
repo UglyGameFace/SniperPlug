@@ -33,8 +33,8 @@ def test_observed_memory_summary_names_lane_and_examples():
     assert "price memory enabled, no products checked" in OBSERVED
 
 
-def test_observed_price_memory_lane_is_public_quality_but_not_scout():
+def test_observed_price_memory_lane_and_scout_lane_are_distinct():
     assert "LANE_PRICE_MEMORY_DROP" in PUBLIC_QUALITY
-    assert "Public Scout Lane is intentionally disabled" in PUBLIC_QUALITY
+    assert "LANE_PUBLIC_SCOUT" in PUBLIC_QUALITY
     assert "priceMemoryIdentity" in PUBLIC_QUALITY
     assert "referencePriceTrusted" in PUBLIC_QUALITY

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,20 +38,35 @@ class ReviewCandidateResult:
     no_value_signal_count: int = 0
     rejected_bad_value_count: int = 0
     exact_match_count: int = 0
+    ignored_reference_sources: tuple[tuple[str, int], ...] = ()
+    no_value_reasons: tuple[tuple[str, int], ...] = ()
 
     def summary_line(self) -> str:
+        source_text = top_count_text(self.ignored_reference_sources, prefix="ignored refs")
+        value_text = top_count_text(self.no_value_reasons, prefix="no-value reasons")
         base = (
             f"review candidates: **{len(self.cards)}** • "
             f"under 50% trusted: **{self.under_threshold_count}** • "
             f"weak reference ignored: **{self.weak_reference_count}** • "
             f"bad value rejected: **{self.rejected_bad_value_count}** • "
             f"missing was/reference: **{self.missing_reference_count}** • "
-            f"exact matches rescued: **{self.exact_match_count}**"
+            f"search-route exact matches: **{self.exact_match_count}**"
         )
+        if source_text:
+            base += f" • {source_text}"
+        if value_text:
+            base += f" • {value_text}"
         if not self.cards:
             return base
         leads = " | ".join(review_lead_preview(card) for card in self.cards[:3])
         return f"{base} • strongest private leads kept: {leads}"
+
+
+def top_count_text(items: tuple[tuple[str, int], ...], *, prefix: str, limit: int = 3) -> str:
+    if not items:
+        return ""
+    shown = " • ".join(f"{label}: **{count}**" for label, count in items[: max(1, int(limit))])
+    return f"{prefix}: {shown}"
 
 
 def review_lead_preview(card: DealCard) -> str:
@@ -73,6 +89,8 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
     no_value_signal = 0
     rejected_bad_value = 0
     exact_match_count = 0
+    ignored_sources: Counter[str] = Counter()
+    no_value_reasons: Counter[str] = Counter()
 
     scored: list[tuple[float, DealCard]] = []
     for candidate in candidates:
@@ -114,14 +132,17 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
             under_threshold += 1
         elif raw_context_price is not None and context_price is None:
             weak_reference += 1
+            ignored_sources[blocked_reference_label(context_source, current_price=deal.current_price, context_price=raw_context_price, title=deal.title)] += 1
         elif raw_context_price is not None:
             weak_reference += 1
+            ignored_sources[f"context only: {compact_source(context_source)}"] += 1
         else:
             missing_reference += 1
 
         has_value_signal = trusted_discount >= REVIEW_MIN_TRUSTED_DISCOUNT or coupon >= REVIEW_MIN_COUPON_OR_CASH or cash >= REVIEW_MIN_COUPON_OR_CASH or api_value_signal or safe_markdown_signal(candidate)
         if not has_value_signal:
             no_value_signal += 1
+            no_value_reasons[no_value_reason(candidate, deal, proof, is_exact_search_match=is_exact_search_match, raw_context_price=raw_context_price, context_source=context_source)] += 1
             continue
 
         context_score = 0.0
@@ -133,8 +154,58 @@ def build_review_candidate_cards(candidates: list[SourceCandidate], *, limit: in
         scored.append((review_score + context_score, card))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    return ReviewCandidateResult(cards=[card for _, card in scored[:limit]], under_threshold_count=under_threshold, missing_reference_count=missing_reference, weak_reference_count=weak_reference, missing_current_count=missing_current, no_value_signal_count=no_value_signal, rejected_bad_value_count=rejected_bad_value, exact_match_count=exact_match_count)
+    return ReviewCandidateResult(
+        cards=[card for _, card in scored[:limit]],
+        under_threshold_count=under_threshold,
+        missing_reference_count=missing_reference,
+        weak_reference_count=weak_reference,
+        missing_current_count=missing_current,
+        no_value_signal_count=no_value_signal,
+        rejected_bad_value_count=rejected_bad_value,
+        exact_match_count=exact_match_count,
+        ignored_reference_sources=tuple(ignored_sources.most_common(5)),
+        no_value_reasons=tuple(no_value_reasons.most_common(5)),
+    )
 
+
+def blocked_reference_label(context_source: str, *, current_price: float, context_price: float | None, title: str) -> str:
+    source = compact_source(context_source)
+    if is_marketplace_comp_source(str(context_source or "")):
+        return f"marketplace comp: {source}"
+    if context_price is None or context_price <= current_price:
+        return f"not above current: {source or 'unknown'}"
+    ratio = context_price / current_price if current_price > 0 else 0
+    if source.lower().replace("_", "") in LOW_TRUST_REFERENCE_SOURCES:
+        return f"low-trust field: {source}"
+    if ratio >= 6 and is_fragrance_or_beauty(title):
+        return f"suspicious beauty ratio: {source}"
+    if ratio >= 4:
+        return f"suspicious ratio >=4x: {source}"
+    if is_consumable_or_size_sensitive(title) and ratio >= 2.5:
+        return f"size-sensitive ratio: {source}"
+    return f"context only: {source or 'unknown'}"
+
+
+def compact_source(value: Any) -> str:
+    text = " ".join(str(value or "unknown").replace("_", " ").split())
+    if len(text) > 42:
+        text = text[:41].rstrip() + "…"
+    return text
+
+
+def no_value_reason(candidate: SourceCandidate, deal, proof, *, is_exact_search_match: bool, raw_context_price: float | None, context_source: str) -> str:
+    if is_exact_search_match:
+        return "search match only"
+    if raw_context_price is not None:
+        return f"reference context only: {compact_source(context_source)}"
+    if safe_markdown_signal(candidate):
+        return "markdown flag too weak alone"
+    if proof.discount_percent is not None and proof.discount_percent < REVIEW_MIN_TRUSTED_DISCOUNT:
+        return "trusted markdown under review floor"
+    return "no coupon/cash/API savings"
+
+
+# Remaining helpers are unchanged.
 
 
 def review_match_query(candidate: SourceCandidate, query: str | None) -> str:

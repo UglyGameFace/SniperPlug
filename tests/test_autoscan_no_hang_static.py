@@ -9,7 +9,7 @@ def read(path: str) -> str:
 
 def test_native_autoscan_manual_pass_is_bounded() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "NATIVE_MANUAL_QUERY_COUNT = 6" in source
+    assert "NATIVE_MANUAL_QUERY_COUNT = 8" in source
     assert "NATIVE_MANUAL_TIMEOUT_SECONDS = 90" in source
     assert "query_count_override=NATIVE_MANUAL_QUERY_COUNT" in source
     assert "Deep follow-up" not in source

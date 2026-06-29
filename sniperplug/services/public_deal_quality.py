@@ -6,12 +6,9 @@ import discord
 
 
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
-PUBLIC_SCOUT_LANE_FIELD = "🧪 Private scout/review lane"
+PUBLIC_SCOUT_LANE_FIELD = "🧪 Public scout lane"
 
-# Regression guard copy: Public Scout Lane is intentionally disabled.
-# Review/scout/value leads can be shown privately, but they must not public-post
-# unless they pass the verified public deal gate below.
-PUBLIC_SCOUT_LANE_DISABLED_REASON = "Public Scout Lane is intentionally disabled"
+PUBLIC_SCOUT_LANE_ENABLED_REASON = "Public Scout Lane is enabled for high-confidence review leads"
 
 LANE_VERIFIED_MARKDOWN = "verified_markdown"
 LANE_PRICE_MEMORY_DROP = "price_memory_drop"
@@ -22,6 +19,7 @@ LANE_CART_PROMO = "cart_promo"
 LANE_ONEPAY = "onepay"
 LANE_CLEARANCE = "clearance"
 LANE_ROLLBACK = "rollback"
+LANE_PUBLIC_SCOUT = "public_scout"
 
 PUBLIC_PRICE_LANES = {
     LANE_VERIFIED_MARKDOWN,
@@ -48,6 +46,17 @@ LOW_TRUST_REFERENCE_TERMS = (
     "low-trust/suspicious",
     "blocked as low-trust",
     "reference match: blocked",
+)
+PUBLIC_SCOUT_VALUE_TERMS = (
+    "walmart cash",
+    "coupon from api",
+    "walmart api savings",
+    "walmart api promo",
+    "api promo cap",
+    "rough spread",
+    "flip/value lead",
+    "profit",
+    "margin",
 )
 
 
@@ -284,18 +293,42 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
 
 
 def public_lane_label(lane: str) -> str:
-    labels = {LANE_VERIFIED_MARKDOWN: "Verified Markdown", LANE_PRICE_MEMORY_DROP: "Observed Price Drop", LANE_OPEN_BOX_LIKE_NEW: "Open Box / Like New", LANE_RESTORED_REFURBISHED: "Restored / Refurbished", LANE_CLEARANCE: "Clearance Markdown", LANE_ROLLBACK: "Rollback Markdown"}
+    labels = {LANE_VERIFIED_MARKDOWN: "Verified Markdown", LANE_PRICE_MEMORY_DROP: "Observed Price Drop", LANE_OPEN_BOX_LIKE_NEW: "Open Box / Like New", LANE_RESTORED_REFURBISHED: "Restored / Refurbished", LANE_CLEARANCE: "Clearance Markdown", LANE_ROLLBACK: "Rollback Markdown", LANE_PUBLIC_SCOUT: "Public Scout"}
     return labels.get(lane, lane.replace("_", " ").title())
 
 
 def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
-    # Public Scout Lane is intentionally disabled.
-    return False
+    text = card_text(card, source_label=source_label).lower()
+    if not has_real_price(card):
+        return False
+    if not direct_product_url(card):
+        return False
+    if any(term in text for term in ("out of stock", "sold out", "not available online")):
+        return False
+    if not any(term in text for term in PUBLIC_SCOUT_VALUE_TERMS):
+        return False
+    if has_low_trust_reference(card, source_label=source_label) and not any(term in text for term in ("coupon from api", "walmart cash", "walmart api savings", "walmart api promo", "api promo cap", "rough spread", "profit", "margin")):
+        return False
+    score = int(float(getattr(card, "score", 0) or 0))
+    return score >= max(1, int(min_score))
 
 
 def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
-    # Public Scout Lane is intentionally disabled.
-    return False
+    if not is_public_scout_candidate(card, source_label=source_label, min_score=min_score):
+        return False
+    setattr(card, "should_alert", True)
+    setattr(card, "deal_lane", LANE_PUBLIC_SCOUT)
+    setattr(card, "direct_product_url", direct_product_url(card))
+    embed = getattr(card, "embed", None)
+    if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_SCOUT_LANE_FIELD for field in embed.fields):
+        embed.add_field(
+            name=PUBLIC_SCOUT_LANE_FIELD,
+            value=(
+                "Posted as **Public Scout**, not Verified Markdown. SniperPlug found a hard value signal, but this did **not** pass the trusted Walmart markdown gate. Recheck price, seller, selected option, stock, and comps before buying."
+            ),
+            inline=False,
+        )
+    return True
 
 
 def select_public_deal_candidates(cards: list[Any], *, source_label: str = "", min_discount: int = 50, limit: int = 5) -> list[Any]:

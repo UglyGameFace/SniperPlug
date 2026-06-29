@@ -8,12 +8,25 @@ import discord
 from sniperplug.services.deal_feedback import build_deal_feedback_view, build_feedback_target, ensure_deal_feedback_tables
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config
-from sniperplug.services.public_deal_posts import card_product_key
+from sniperplug.services.public_deal_posts import (
+    PUBLIC_SCOUT_ALERT_KEY,
+    alert_expires_at,
+    card_deal_key,
+    card_product_key,
+    mark_public_deal_posted,
+    release_public_deal_reservation,
+    reserve_public_deal_post,
+    resolve_public_alert_channel,
+    safe_find_recent_alert,
+    should_suppress_recent_alert,
+)
 from sniperplug.services.public_posting import normalize_retailer_key
 
 
 DEFAULT_REVIEW_PAGE_SIZE = 3
 DEFAULT_REVIEW_MAX_CARDS = 12
+MANUAL_REVIEW_SOURCE_LABEL = "staff_shared_review_scout"
+MANUAL_REVIEW_POST_PREFIX = "scout:staff_review"
 
 
 class ManualReviewShareView(discord.ui.View):
@@ -72,7 +85,7 @@ class ManualShareButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("I could not find that review card anymore.", ephemeral=True)
             return
-        ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
+        _ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
         await interaction.response.send_message(message, ephemeral=True)
 
 
@@ -109,7 +122,7 @@ class ManualShareSelect(discord.ui.Select):
         except Exception:
             await interaction.response.send_message("I could not find that review card anymore.", ephemeral=True)
             return
-        ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
+        _ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
         await interaction.response.send_message(message, ephemeral=True)
 
 
@@ -122,24 +135,89 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
     await ensure_deal_feedback_tables(db)
     config = await get_public_alert_config(db, guild_id)
     channel_id = config.get("channel_id")
-    if not channel_id:
+    if not config.get("enabled") or not channel_id:
         return False, "No public deal channel is configured yet. Set it with `/setup_sniperplug_here` first."
     retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
     if retailer not in set(config.get("retailers") or ()): 
         return False, f"Public posting is not enabled for `{retailer}` in this server."
-    channel = bot.get_channel(channel_id)
+
+    channel, channel_note = await resolve_public_alert_channel(bot, db, guild_id=guild_id, configured_channel_id=channel_id)
     if channel is None:
-        channel = await bot.fetch_channel(channel_id)
+        return False, channel_note or "Public deal channel could not be found."
     if not hasattr(channel, "send"):
         return False, "Configured public deal channel is not sendable."
-    embed = card.embed.copy()
+
+    current_price = float_or_none(getattr(card, "current_price", None) or getattr(card, "api_current_price", None))
+    product_key = card_product_key(card, retailer=retailer)
+    recent_alert = await safe_find_recent_alert(
+        db,
+        guild_id=guild_id,
+        retailer=retailer,
+        product_key=product_key,
+        current_price=current_price,
+        alert_key=PUBLIC_SCOUT_ALERT_KEY,
+    )
+    if recent_alert and should_suppress_recent_alert(recent_alert, current_price):
+        return False, "That lead was already posted recently at the same or better price, so I blocked the duplicate public post."
+
+    deal_key = f"{MANUAL_REVIEW_POST_PREFIX}:{card_deal_key(card, retailer=retailer)}"
+    reserved = await reserve_public_deal_post(db, guild_id=guild_id, retailer=retailer, deal_key=deal_key, source_label=MANUAL_REVIEW_SOURCE_LABEL)
+    if not reserved:
+        return False, "That lead is already being posted or was posted recently, so I blocked the duplicate public post."
+
+    try:
+        embed = aligned_public_review_embed(card)
+        target = build_feedback_target(card, target_key=product_key, retailer=retailer, source_label=MANUAL_REVIEW_SOURCE_LABEL)
+        feedback_view = await build_deal_feedback_view(db, guild_id=guild_id, target=target)
+        message = await channel.send(embed=sanitize_embed(embed), view=feedback_view)
+    except Exception as exc:
+        await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
+        return False, f"Public post failed: `{clean_error_text(exc)}`"
+
+    await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
+    try:
+        await db.record_alert_dedupe(
+            guild_id=guild_id,
+            retailer=retailer,
+            product_key=product_key,
+            alert_key=PUBLIC_SCOUT_ALERT_KEY,
+            current_price=current_price,
+            channel_id=getattr(channel, "id", channel_id),
+            message_id=getattr(message, "id", None),
+            threshold_price=current_price,
+            expires_at=alert_expires_at(hours=6),
+        )
+    except Exception:
+        pass
+
+    suffix = f" {channel_note}" if channel_note else ""
+    return True, "Posted that review lead to the public deal channel with aligned duplicate protection and feedback buttons." + suffix
+
+
+def aligned_public_review_embed(card: Any) -> discord.Embed:
+    source = getattr(card, "embed", None)
+    if isinstance(source, discord.Embed):
+        embed = source.copy()
+    else:
+        embed = discord.Embed(title=str(getattr(card, "label", None) or "SniperPlug review lead"), url=str(getattr(card, "url", "") or ""))
     embed.add_field(
         name="📣 Staff-shared review lead",
-        value="Manually shared from a private SniperPlug review card. Recheck price, seller, exact variant, and comps before buying.",
+        value="A staff member manually shared this from SniperPlug private review results. Recheck price, seller, exact variant, reviews, and comps before buying.",
         inline=False,
     )
-    product_key = card_product_key(card, retailer=retailer)
-    target = build_feedback_target(card, target_key=product_key, retailer=retailer, source_label="staff_shared_review")
-    feedback_view = await build_deal_feedback_view(db, guild_id=guild_id, target=target)
-    await channel.send(embed=sanitize_embed(embed), view=feedback_view)
-    return True, "Posted that review lead to the public deal channel with persistent feedback buttons."
+    embed.set_footer(text="SniperPlug staff-shared review lead • not an automatic verified public markdown post")
+    return embed
+
+
+def float_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value).replace("$", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def clean_error_text(value: Any, *, limit: int = 180) -> str:
+    text = " ".join(str(value or "").replace("\n", " ").split())
+    return text[:limit].rstrip() + ("…" if len(text) > limit else "")

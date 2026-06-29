@@ -31,7 +31,8 @@ def test_autoscan_private_review_panel_is_wired() -> None:
 
 def test_autoscan_private_review_cards_are_bounded_and_paginated() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "NATIVE_MANUAL_QUERY_COUNT = 6" in source
+    assert "NATIVE_MANUAL_QUERY_COUNT = 8" in source
+    assert "NATIVE_BROAD_PRESET_KEY" in source
     assert "NATIVE_REVIEW_CARD_LIMIT = 12" in source
     assert "NATIVE_REVIEW_PAGE_SIZE = 3" in source
     assert "NATIVE_MANUAL_TIMEOUT_SECONDS = 90" in source

@@ -30,7 +30,7 @@ def test_native_manual_autoscan_is_broad_public_safe_sweep() -> None:
     assert "build_native_broad_preset" in source
     assert "Broad Public-Safe Sweep" in source
     assert "Manual broad sweep spans" in source
-    assert "coverage": "broad_public_safe" or "broad_public_safe" in source
+    assert "broad_public_safe" in source
 
 
 def test_native_autoscan_thresholds_are_split() -> None:

@@ -12,19 +12,18 @@ from sniperplug.services.manual_review_share import ManualReviewShareView
 from sniperplug.services.walmart_review_candidates import build_review_candidate_cards
 
 
-PRIVATE_AUTOSCAN_REVIEW_QUERY_LIMIT = 3
+PRIVATE_AUTOSCAN_REVIEW_QUERY_LIMIT = 2
 PRIVATE_AUTOSCAN_REVIEW_MAX_RESULTS = 12
 PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT = 12
 PRIVATE_AUTOSCAN_REVIEW_PAGE_SIZE = 3
 
+legacy.AUTO_SCAN_DEEP_FOLLOWUP_ENABLED = False
+legacy.AUTO_SCAN_DEEP_QUERY_COUNT = 6
+legacy.AUTO_SCAN_MANUAL_QUERY_COUNT = 6
+
 
 class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
-    """Native autoscan command surface with paginated private review leads.
-
-    Public auto-posting stays strict. Manual `/autoscan_now` now also shows the
-    best private review leads with staff buttons, so useful finds are visible
-    even when they are not safe enough for automatic public posting.
-    """
+    """Native autoscan command surface with paginated private review leads."""
 
     async def _send_autoscan_report(self, interaction: discord.Interaction, report: legacy.AutoScanReport, *, label: str = "Auto-scan test result") -> None:
         await super()._send_autoscan_report(interaction, report, label=label)

@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from sniperplug.services.public_deal_quality import (
     is_public_deal_candidate,
     is_public_scout_candidate,
+    prepare_public_scout_candidate,
+    public_scout_signal_score,
 )
 from sniperplug.services.direct_search_rescue import direct_match_score
 
@@ -44,6 +46,14 @@ def test_public_scout_lane_requires_hard_value_signal():
 
     with_value = card(discount=0, score=150, label="Scout lead Walmart API promo cap $20")
     assert is_public_scout_candidate(with_value, source_label="autoscan:walmart:scout", min_score=95)
+
+
+def test_zero_score_review_card_can_become_public_scout_when_value_is_hard():
+    c = card(discount=0, score=0, label="Review candidate Walmart API promo cap $20")
+    assert public_scout_signal_score(c, source_label="autoscan:walmart:scout") >= 95
+    assert is_public_scout_candidate(c, source_label="autoscan:walmart:scout", min_score=95)
+    assert prepare_public_scout_candidate(c, source_label="autoscan:walmart:scout", min_score=95)
+    assert c.score >= 95
 
 
 def test_generic_category_search_is_not_exact_product_proof():

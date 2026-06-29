@@ -31,7 +31,7 @@ def test_autoscan_private_review_panel_is_wired() -> None:
 
 def test_autoscan_private_review_scan_is_bounded_and_paginated() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "PRIVATE_AUTOSCAN_REVIEW_QUERY_LIMIT = 3" in source
+    assert "PRIVATE_AUTOSCAN_REVIEW_QUERY_LIMIT = 2" in source
     assert "PRIVATE_AUTOSCAN_REVIEW_MAX_RESULTS = 12" in source
     assert "PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT = 12" in source
     assert "PRIVATE_AUTOSCAN_REVIEW_PAGE_SIZE = 3" in source

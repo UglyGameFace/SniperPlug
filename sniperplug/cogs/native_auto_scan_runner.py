@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import discord
 
 from sniperplug.cogs import auto_scan_runner as legacy
+from sniperplug.cogs.deal_scanner import HuntPreset
+from sniperplug.services.autoscan_route_policy import PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE, public_autoscan_hunt_presets
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.manual_review_share import ManualReviewShareView
 
@@ -14,15 +17,21 @@ NATIVE_REVIEW_CARD_LIMIT = 12
 NATIVE_REVIEW_PAGE_SIZE = 3
 NATIVE_MANUAL_TIMEOUT_SECONDS = 90
 NATIVE_PUBLIC_SCOUT_LIMIT = 2
+NATIVE_SCOUT_MIN_SCORE = 95
+NATIVE_CATEGORY_ROTATION = (
+    "deal_week",
+    "tech",
+    "auto_tools",
+    "home",
+    "open_box",
+    "beauty",
+    "toys",
+    "essentials",
+)
 
 
 class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
-    """Single-pass autoscan runner.
-
-    The manual command does one bounded pass, posts verified public cards when
-    available, then falls back to conservative public scout posts and private
-    review cards from the same result object.
-    """
+    """Single-pass autoscan runner with public-safe category selection."""
 
     def __init__(self, bot):
         super().__init__(bot)
@@ -78,11 +87,13 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         else:
             settings = {"forced": True, "retailer": legacy.AUTO_SCAN_RETAILER}
 
-        preset = legacy.select_autoscan_preset(guild.guild_id, force=force, query_count_override=query_count_override)
+        preset = select_native_autoscan_preset(guild.guild_id, force=force, query_count_override=query_count_override)
         result = await legacy.run_autoscan_verified_category(self.bot.db, guild.guild_id, preset=preset)
         warnings = legacy.clean_warning_list(result.warnings)
+        warnings.append(PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE)
+        warnings.append(f"Threshold split: verified markdown requires **{result.min_discount}%+** trusted Walmart proof; Public Scout fallback requires rank **{NATIVE_SCOUT_MIN_SCORE}/150+** plus a hard value signal.")
         if report_label:
-            warnings.append(f"{report_label}: scanned **{len(preset.queries)}** route(s) in this pass.")
+            warnings.append(f"{report_label}: scanned **{len(preset.queries)}** public-safe route(s) in **{preset.label}**.")
         diagnostics = legacy.autoscan_diagnostics(result)
 
         unique_cards = legacy.dedupe_cards(result.cards)
@@ -137,6 +148,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                     source_label=f"{legacy.AUTO_SCAN_SOURCE_LABEL}:{preset.key}:public_scout",
                     fallback_retailer=legacy.AUTO_SCAN_RETAILER,
                     min_public_discount=result.min_discount,
+                    min_alert_score=NATIVE_SCOUT_MIN_SCORE,
                     allow_review_scout=True,
                 )
                 if scout_public_result.posted:
@@ -168,7 +180,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 fresh_cards=0,
                 cards_attempted_for_public=scout_public_result.attempted,
                 used_repeat_fallback=bool(review_cards),
-                repeat_summary=f"{fresh_selection.summary_line()} • public scout attempted: **{scout_public_result.attempted}** • private review/scout cards ready: **{len(review_cards)}**",
+                repeat_summary=f"{fresh_selection.summary_line()} • public scout attempted: **{scout_public_result.attempted}** • public scout posted: **{scout_public_result.posted}** • private review/scout cards ready: **{len(review_cards)}**",
                 public_result=scout_public_result,
                 warnings=tuple(warnings),
             )
@@ -243,6 +255,26 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 if await self._send_autoscan_dm_fallback(interaction, content=content, embed=sanitize_embed(cards[0].embed)):
                     return
             legacy.log.exception("Failed to send autoscan private review leads")
+
+
+def select_native_autoscan_preset(guild_id: int, *, force: bool = False, query_count_override: int | None = None) -> HuntPreset:
+    presets = public_autoscan_hunt_presets()
+    if force:
+        key = "deal_week"
+    else:
+        bucket = int(time.time() // (legacy.AUTO_SCAN_INTERVAL_MINUTES * 60))
+        key = NATIVE_CATEGORY_ROTATION[(bucket + int(guild_id)) % len(NATIVE_CATEGORY_ROTATION)]
+    base = presets.get(key) or presets.get("deal_week") or presets.get("all") or next(iter(presets.values()))
+    query_count = max(1, int(query_count_override if query_count_override is not None else NATIVE_MANUAL_QUERY_COUNT if force else legacy.AUTO_SCAN_FAST_QUERY_COUNT))
+    queries = legacy.rotated_query_slice(tuple(base.queries), guild_id=guild_id, query_count=query_count)
+    return HuntPreset(
+        base.key,
+        base.label,
+        base.emoji,
+        f"{base.description} Native autoscan uses public-safe route policy and separate verified/scout thresholds.",
+        queries,
+        base.min_discount,
+    )
 
 
 def annotate_private_review_card(card: legacy.DealCard, *, index: int) -> None:

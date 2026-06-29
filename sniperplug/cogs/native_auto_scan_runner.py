@@ -12,12 +12,13 @@ from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.manual_review_share import ManualReviewShareView
 
 
-NATIVE_MANUAL_QUERY_COUNT = 6
+NATIVE_MANUAL_QUERY_COUNT = 8
 NATIVE_REVIEW_CARD_LIMIT = 12
 NATIVE_REVIEW_PAGE_SIZE = 3
 NATIVE_MANUAL_TIMEOUT_SECONDS = 90
 NATIVE_PUBLIC_SCOUT_LIMIT = 2
 NATIVE_SCOUT_MIN_SCORE = 95
+NATIVE_BROAD_PRESET_KEY = "broad_public_safe"
 NATIVE_CATEGORY_ROTATION = (
     "deal_week",
     "tech",
@@ -61,7 +62,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                             legacy.AutoScanGuild(guild_id, config.get("channel_id")),
                             force=force,
                             query_count_override=NATIVE_MANUAL_QUERY_COUNT,
-                            report_label="Manual pass",
+                            report_label="Manual broad pass" if force else "Manual pass",
                         ),
                         timeout=NATIVE_MANUAL_TIMEOUT_SECONDS,
                     )
@@ -85,13 +86,15 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
                 return report
         else:
-            settings = {"forced": True, "retailer": legacy.AUTO_SCAN_RETAILER}
+            settings = {"forced": True, "retailer": legacy.AUTO_SCAN_RETAILER, "coverage": "broad_public_safe"}
 
         preset = select_native_autoscan_preset(guild.guild_id, force=force, query_count_override=query_count_override)
         result = await legacy.run_autoscan_verified_category(self.bot.db, guild.guild_id, preset=preset)
         warnings = legacy.clean_warning_list(result.warnings)
         warnings.append(PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE)
         warnings.append(f"Threshold split: verified markdown requires **{result.min_discount}%+** trusted Walmart proof; Public Scout fallback requires rank **{NATIVE_SCOUT_MIN_SCORE}/150+** plus a hard value signal.")
+        if preset.key == NATIVE_BROAD_PRESET_KEY:
+            warnings.append("Manual broad sweep spans the major public-safe categories instead of staying inside one category.")
         if report_label:
             warnings.append(f"{report_label}: scanned **{len(preset.queries)}** public-safe route(s) in **{preset.label}**.")
         diagnostics = legacy.autoscan_diagnostics(result)
@@ -259,13 +262,13 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
 
 def select_native_autoscan_preset(guild_id: int, *, force: bool = False, query_count_override: int | None = None) -> HuntPreset:
     presets = public_autoscan_hunt_presets()
-    if force:
-        key = "deal_week"
-    else:
-        bucket = int(time.time() // (legacy.AUTO_SCAN_INTERVAL_MINUTES * 60))
-        key = NATIVE_CATEGORY_ROTATION[(bucket + int(guild_id)) % len(NATIVE_CATEGORY_ROTATION)]
-    base = presets.get(key) or presets.get("deal_week") or presets.get("all") or next(iter(presets.values()))
     query_count = max(1, int(query_count_override if query_count_override is not None else NATIVE_MANUAL_QUERY_COUNT if force else legacy.AUTO_SCAN_FAST_QUERY_COUNT))
+    if force:
+        return build_native_broad_preset(presets, guild_id=guild_id, query_count=query_count)
+
+    bucket = int(time.time() // (legacy.AUTO_SCAN_INTERVAL_MINUTES * 60))
+    key = NATIVE_CATEGORY_ROTATION[(bucket + int(guild_id)) % len(NATIVE_CATEGORY_ROTATION)]
+    base = presets.get(key) or presets.get("deal_week") or presets.get("all") or next(iter(presets.values()))
     queries = legacy.rotated_query_slice(tuple(base.queries), guild_id=guild_id, query_count=query_count)
     return HuntPreset(
         base.key,
@@ -273,6 +276,44 @@ def select_native_autoscan_preset(guild_id: int, *, force: bool = False, query_c
         base.emoji,
         f"{base.description} Native autoscan uses public-safe route policy and separate verified/scout thresholds.",
         queries,
+        base.min_discount,
+    )
+
+
+def build_native_broad_preset(presets: dict[str, HuntPreset], *, guild_id: int, query_count: int) -> HuntPreset:
+    selected: list[str] = []
+    seen: set[str] = set()
+    categories = [key for key in NATIVE_CATEGORY_ROTATION if key in presets]
+    categories.extend(key for key in ("deal_week", "all") if key in presets and key not in categories)
+    for offset, key in enumerate(categories):
+        if len(selected) >= max(1, int(query_count)):
+            break
+        preset = presets[key]
+        slice_one = legacy.rotated_query_slice(tuple(preset.queries), guild_id=guild_id + offset, query_count=1)
+        for query in slice_one:
+            normalized = " ".join(str(query or "").split()).lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                selected.append(str(query))
+                break
+
+    if len(selected) < max(1, int(query_count)):
+        fallback = presets.get("deal_week") or presets.get("all") or next(iter(presets.values()))
+        for query in legacy.rotated_query_slice(tuple(fallback.queries), guild_id=guild_id, query_count=max(1, int(query_count))):
+            normalized = " ".join(str(query or "").split()).lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                selected.append(str(query))
+            if len(selected) >= max(1, int(query_count)):
+                break
+
+    base = presets.get("deal_week") or presets.get("all") or next(iter(presets.values()))
+    return HuntPreset(
+        NATIVE_BROAD_PRESET_KEY,
+        "Broad Public-Safe Sweep",
+        "🌐",
+        "Manual broad sweep across the major public-safe Walmart categories, with private promo routes removed before scanning.",
+        tuple(selected[: max(1, int(query_count))]),
         base.min_discount,
     )
 

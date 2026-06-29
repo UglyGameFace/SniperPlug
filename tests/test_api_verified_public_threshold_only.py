@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from sniperplug.services.public_deal_quality import (
     is_public_deal_candidate,
     is_public_scout_candidate,
+    prepare_public_scout_candidate,
+    public_scout_signal_score,
 )
 from sniperplug.services.direct_search_rescue import direct_match_score
 
@@ -18,7 +20,7 @@ def card(*, discount=0, price=10.0, score=150, label=""):
     )
 
 
-def test_walmart_cash_or_score_cannot_bypass_50_percent_threshold():
+def test_walmart_cash_or_score_cannot_bypass_verified_50_percent_threshold():
     c = card(discount=0, score=150, label="Walmart Cash from API: $10")
     assert not is_public_deal_candidate(c, source_label="autoscan:walmart", min_discount=50)
 
@@ -38,9 +40,20 @@ def test_low_trust_reference_blocks_even_high_discount_number():
     assert not is_public_deal_candidate(c, source_label="autoscan:walmart", min_discount=50)
 
 
-def test_public_scout_lane_is_disabled():
-    c = card(discount=0, score=150, label="Scout lead Walmart API promo")
-    assert not is_public_scout_candidate(c, source_label="autoscan:walmart:scout", min_score=95)
+def test_public_scout_lane_requires_hard_value_signal():
+    search_only = card(discount=0, score=150, label="Scout lead search route match only")
+    assert not is_public_scout_candidate(search_only, source_label="autoscan:walmart:scout", min_score=95)
+
+    with_value = card(discount=0, score=150, label="Scout lead Walmart API promo cap $20")
+    assert is_public_scout_candidate(with_value, source_label="autoscan:walmart:scout", min_score=95)
+
+
+def test_zero_score_review_card_can_become_public_scout_when_value_is_hard():
+    c = card(discount=0, score=0, label="Review candidate Walmart API promo cap $20")
+    assert public_scout_signal_score(c, source_label="autoscan:walmart:scout") >= 95
+    assert is_public_scout_candidate(c, source_label="autoscan:walmart:scout", min_score=95)
+    assert prepare_public_scout_candidate(c, source_label="autoscan:walmart:scout", min_score=95)
+    assert c.score >= 95
 
 
 def test_generic_category_search_is_not_exact_product_proof():

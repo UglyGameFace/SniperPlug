@@ -6,12 +6,9 @@ import discord
 
 
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
-PUBLIC_SCOUT_LANE_FIELD = "🧪 Private scout/review lane"
+PUBLIC_SCOUT_LANE_FIELD = "🧪 Public scout lane"
 
-# Regression guard copy: Public Scout Lane is intentionally disabled.
-# Review/scout/value leads can be shown privately, but they must not public-post
-# unless they pass the verified public deal gate below.
-PUBLIC_SCOUT_LANE_DISABLED_REASON = "Public Scout Lane is intentionally disabled"
+PUBLIC_SCOUT_LANE_ENABLED_REASON = "Public Scout Lane is enabled for high-confidence review leads"
 
 LANE_VERIFIED_MARKDOWN = "verified_markdown"
 LANE_PRICE_MEMORY_DROP = "price_memory_drop"
@@ -22,6 +19,7 @@ LANE_CART_PROMO = "cart_promo"
 LANE_ONEPAY = "onepay"
 LANE_CLEARANCE = "clearance"
 LANE_ROLLBACK = "rollback"
+LANE_PUBLIC_SCOUT = "public_scout"
 
 PUBLIC_PRICE_LANES = {
     LANE_VERIFIED_MARKDOWN,
@@ -48,6 +46,17 @@ LOW_TRUST_REFERENCE_TERMS = (
     "low-trust/suspicious",
     "blocked as low-trust",
     "reference match: blocked",
+)
+PUBLIC_SCOUT_VALUE_TERMS = (
+    "walmart cash",
+    "coupon from api",
+    "walmart api savings",
+    "walmart api promo",
+    "api promo cap",
+    "rough spread",
+    "flip/value lead",
+    "profit",
+    "margin",
 )
 
 
@@ -284,18 +293,100 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
 
 
 def public_lane_label(lane: str) -> str:
-    labels = {LANE_VERIFIED_MARKDOWN: "Verified Markdown", LANE_PRICE_MEMORY_DROP: "Observed Price Drop", LANE_OPEN_BOX_LIKE_NEW: "Open Box / Like New", LANE_RESTORED_REFURBISHED: "Restored / Refurbished", LANE_CLEARANCE: "Clearance Markdown", LANE_ROLLBACK: "Rollback Markdown"}
+    labels = {LANE_VERIFIED_MARKDOWN: "Verified Markdown", LANE_PRICE_MEMORY_DROP: "Observed Price Drop", LANE_OPEN_BOX_LIKE_NEW: "Open Box / Like New", LANE_RESTORED_REFURBISHED: "Restored / Refurbished", LANE_CLEARANCE: "Clearance Markdown", LANE_ROLLBACK: "Rollback Markdown", LANE_PUBLIC_SCOUT: "Public Scout"}
     return labels.get(lane, lane.replace("_", " ").title())
 
 
+def existing_score(card: Any) -> int:
+    try:
+        return int(float(getattr(card, "score", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def public_scout_signal_score(card: Any, *, source_label: str = "") -> int:
+    """Score review cards using their embedded hard-value proof.
+
+    Review candidate cards are usually created with score=0, so the public scout
+    gate must derive a score from API promo/coupon/cash or comp-profit fields.
+    Search-route match text alone deliberately earns only a small bonus.
+    """
+
+    text = card_text(card, source_label=source_label).lower()
+    score = existing_score(card)
+    if has_real_price(card):
+        score += 10
+    if direct_product_url(card):
+        score += 10
+    discount = structured_discount(card) or 0.0
+    if discount >= 40:
+        score += 35
+    elif discount >= 25:
+        score += 20
+
+    if "coupon from api" in text:
+        score += 80
+    if "walmart cash" in text:
+        score += 80
+    if "walmart api savings" in text or "walmart api promo" in text or "api promo cap" in text:
+        score += 80
+    if "rough spread" in text or "flip/value lead" in text or "profit" in text or "margin" in text:
+        score += 85
+
+    if "search route match" in text or "direct search match" in text or "exact product match" in text:
+        score += 8
+    if "stock: **available" in text or "available online" in text:
+        score += 5
+    if "rollback" in text:
+        score += 5
+    if "clearance" in text:
+        score += 5
+
+    if has_low_trust_reference(card, source_label=source_label) and not any(term in text for term in ("coupon from api", "walmart cash", "walmart api savings", "walmart api promo", "api promo cap", "rough spread", "profit", "margin")):
+        score -= 50
+    if any(term in text for term in ("out of stock", "sold out", "not available online")):
+        score -= 60
+    return max(0, min(150, int(score)))
+
+
+def has_public_scout_value_signal(card: Any, *, source_label: str = "") -> bool:
+    text = card_text(card, source_label=source_label).lower()
+    return any(term in text for term in PUBLIC_SCOUT_VALUE_TERMS)
+
+
 def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
-    # Public Scout Lane is intentionally disabled.
-    return False
+    text = card_text(card, source_label=source_label).lower()
+    if not has_real_price(card):
+        return False
+    if not direct_product_url(card):
+        return False
+    if any(term in text for term in ("out of stock", "sold out", "not available online")):
+        return False
+    if not has_public_scout_value_signal(card, source_label=source_label):
+        return False
+    if has_low_trust_reference(card, source_label=source_label) and not any(term in text for term in ("coupon from api", "walmart cash", "walmart api savings", "walmart api promo", "api promo cap", "rough spread", "profit", "margin")):
+        return False
+    return public_scout_signal_score(card, source_label=source_label) >= max(1, int(min_score))
 
 
 def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
-    # Public Scout Lane is intentionally disabled.
-    return False
+    if not is_public_scout_candidate(card, source_label=source_label, min_score=min_score):
+        return False
+    score = public_scout_signal_score(card, source_label=source_label)
+    setattr(card, "score", max(existing_score(card), score))
+    setattr(card, "should_alert", True)
+    setattr(card, "deal_lane", LANE_PUBLIC_SCOUT)
+    setattr(card, "direct_product_url", direct_product_url(card))
+    embed = getattr(card, "embed", None)
+    if isinstance(embed, discord.Embed) and not any(str(field.name or "") == PUBLIC_SCOUT_LANE_FIELD for field in embed.fields):
+        embed.add_field(
+            name=PUBLIC_SCOUT_LANE_FIELD,
+            value=(
+                f"Posted as **Public Scout**, not Verified Markdown. Scout score: **{score}/150**. SniperPlug found a hard value signal, but this did **not** pass the trusted Walmart markdown gate. Recheck price, seller, selected option, stock, and comps before buying."
+            ),
+            inline=False,
+        )
+    return True
 
 
 def select_public_deal_candidates(cards: list[Any], *, source_label: str = "", min_discount: int = 50, limit: int = 5) -> list[Any]:

@@ -1,22 +1,29 @@
 from pathlib import Path
 
 AUTO = Path("sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
+NATIVE = Path("sniperplug/cogs/native_auto_scan_runner.py").read_text(encoding="utf-8")
 QUALITY = Path("sniperplug/services/public_deal_quality.py").read_text(encoding="utf-8")
 REVIEW = Path("sniperplug/services/walmart_review_candidates.py").read_text(encoding="utf-8")
 SCOUT = Path("sniperplug/services/scout_lane_polish.py").read_text(encoding="utf-8")
 
 
-def test_autoscan_does_not_public_post_scout_lane():
+def test_legacy_autoscan_does_not_directly_post_scout_lane():
     assert "allow_review_scout=True" not in AUTO
-    assert "Public Scout Lane is disabled for public posts" in AUTO
     assert "Auto-scan posted public Scout Lane lead" not in AUTO
 
 
-def test_public_quality_has_no_score_or_cash_bypass():
+def test_native_autoscan_uses_public_scout_fallback():
+    assert "allow_review_scout=True" in NATIVE
+    assert "NATIVE_PUBLIC_SCOUT_LIMIT = 2" in NATIVE
+    assert "Verified API Threshold + Public Scout Fallback" in NATIVE
+
+
+def test_public_quality_has_conservative_scout_gate():
     assert "score >= 80" not in QUALITY
     assert "Walmart Cash / extra value signal detected" not in QUALITY
     assert "has_verified_api_threshold_discount" in QUALITY
-    assert "Public Scout Lane is intentionally disabled" in QUALITY
+    assert "PUBLIC_SCOUT_VALUE_TERMS" in QUALITY
+    assert "has_low_trust_reference" in QUALITY
 
 
 def test_review_cards_do_not_claim_exact_match_as_deal_proof():
@@ -26,6 +33,6 @@ def test_review_cards_do_not_claim_exact_match_as_deal_proof():
     assert "card.manual_share_allowed = False" in REVIEW
 
 
-def test_scout_backup_gate_is_false():
-    assert "Public Scout Lane is disabled" in SCOUT
+def test_scout_ranker_still_exists_for_private_reviews():
+    assert "def scout_rank" in SCOUT
     assert "return False" in SCOUT

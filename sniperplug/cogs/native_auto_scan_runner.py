@@ -1,19 +1,15 @@
 from __future__ import annotations
 
+import contextvars
+from typing import Any
+
 import discord
 
 from sniperplug.cogs import auto_scan_runner as legacy
-from sniperplug.cogs import deal_scanner
-from sniperplug.providers.base import ProviderScanResult
-from sniperplug.services.autoscan_route_policy import public_autoscan_hunt_presets
-from sniperplug.services.deal_ranking import rank_review_cards
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.manual_review_share import ManualReviewShareView
-from sniperplug.services.walmart_review_candidates import build_review_candidate_cards
 
 
-PRIVATE_AUTOSCAN_REVIEW_QUERY_LIMIT = 2
-PRIVATE_AUTOSCAN_REVIEW_MAX_RESULTS = 12
 PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT = 12
 PRIVATE_AUTOSCAN_REVIEW_PAGE_SIZE = 3
 
@@ -21,64 +17,61 @@ legacy.AUTO_SCAN_DEEP_FOLLOWUP_ENABLED = False
 legacy.AUTO_SCAN_DEEP_QUERY_COUNT = 6
 legacy.AUTO_SCAN_MANUAL_QUERY_COUNT = 6
 
+_CURRENT_AUTOSCAN_GUILD_ID: contextvars.ContextVar[int | None] = contextvars.ContextVar("sniperplug_current_autoscan_guild_id", default=None)
+_CAPTURED_REVIEW_CARDS: dict[int, tuple[legacy.DealCard, ...]] = {}
+
+_ORIGINAL_PREPARE_REVIEW_WATCHLIST_CARDS = getattr(
+    legacy,
+    "_sniperplug_original_prepare_review_watchlist_cards",
+    legacy.prepare_review_watchlist_cards,
+)
+legacy._sniperplug_original_prepare_review_watchlist_cards = _ORIGINAL_PREPARE_REVIEW_WATCHLIST_CARDS
+
+
+def _capture_review_watchlist_cards(result: Any, *, limit: int = legacy.AUTO_SCAN_REVIEW_FALLBACK_LIMIT) -> list[legacy.DealCard]:
+    cards = list(_ORIGINAL_PREPARE_REVIEW_WATCHLIST_CARDS(result, limit=limit))
+    guild_id = _CURRENT_AUTOSCAN_GUILD_ID.get()
+    if guild_id is not None and cards:
+        _CAPTURED_REVIEW_CARDS[int(guild_id)] = tuple(cards[:PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT])
+    return cards
+
+
+legacy.prepare_review_watchlist_cards = _capture_review_watchlist_cards
+
 
 class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
-    """Native autoscan command surface with paginated private review leads."""
+    """Native autoscan command surface with captured private review leads."""
+
+    async def _run_guild_walmart_discovery(self, guild: legacy.AutoScanGuild, *, force: bool = False, query_count_override: int | None = None, report_label: str = "") -> legacy.AutoScanReport:
+        token = _CURRENT_AUTOSCAN_GUILD_ID.set(int(guild.guild_id))
+        try:
+            return await super()._run_guild_walmart_discovery(
+                guild,
+                force=force,
+                query_count_override=query_count_override,
+                report_label=report_label,
+            )
+        finally:
+            _CURRENT_AUTOSCAN_GUILD_ID.reset(token)
 
     async def _send_autoscan_report(self, interaction: discord.Interaction, report: legacy.AutoScanReport, *, label: str = "Auto-scan test result") -> None:
         await super()._send_autoscan_report(interaction, report, label=label)
         if not report.allowed or report.public_result.posted:
             return
-        cards = await self._private_review_cards_for_report(report)
+        cards = list(_CAPTURED_REVIEW_CARDS.pop(int(report.guild_id), ()))[:PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT]
         if not cards:
+            await self._safe_autoscan_followup(
+                interaction,
+                "🟨 SniperPlug found private review diagnostics, but no reusable review cards were captured from this pass. Try `/deals` with one of the strongest lead names shown above.",
+            )
             return
-        await self._send_private_review_cards(interaction, cards, report=report)
-
-    async def _private_review_cards_for_report(self, report: legacy.AutoScanReport) -> list[legacy.DealCard]:
-        presets = public_autoscan_hunt_presets()
-        preset = presets.get(report.category_key) or presets.get("deal_week") or presets.get("all") or next(iter(presets.values()), None)
-        if preset is None:
-            return []
-
-        all_candidates = []
-        warnings: list[str] = []
-        for query in tuple(preset.queries)[:PRIVATE_AUTOSCAN_REVIEW_QUERY_LIMIT]:
-            try:
-                result = await deal_scanner.run_walmart_scan(
-                    query,
-                    1,
-                    PRIVATE_AUTOSCAN_REVIEW_MAX_RESULTS,
-                    None,
-                    None,
-                    "autoscan",
-                )
-            except Exception as exc:
-                warnings.append(legacy.clean_log_text(exc))
-                continue
-            all_candidates.extend(result.candidates)
-            warnings.extend(w for w in result.warnings if w not in warnings)
-
-        if not all_candidates:
-            return []
-        deduped = deal_scanner.dedupe_candidates(all_candidates)
-        aggregate = ProviderScanResult(
-            provider_key="walmart",
-            candidates=tuple(deduped),
-            warnings=tuple(warnings),
-            page=1,
-            page_size=len(deduped),
-            start_index=1,
-            has_next_page=False,
-        )
-        review = build_review_candidate_cards(list(aggregate.candidates), limit=PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT)
-        cards = rank_review_cards(review.cards)[:PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT]
         for index, card in enumerate(cards, start=1):
             annotate_private_review_card(card, index=index)
-        return cards
+        await self._send_private_review_cards(interaction, cards, report=report)
 
     async def _send_private_review_cards(self, interaction: discord.Interaction, cards: list[legacy.DealCard], *, report: legacy.AutoScanReport) -> None:
         view = ManualReviewShareView(cards, page_size=PRIVATE_AUTOSCAN_REVIEW_PAGE_SIZE, max_cards=PRIVATE_AUTOSCAN_REVIEW_CARD_LIMIT)
-        content = view.content(prefix="🟨 **Private autoscan review leads**\nNothing passed the automatic public proof gate, but SniperPlug did find leads worth checking.")
+        content = view.content(prefix="🟨 **Private autoscan review leads**\nThese are the exact review cards from the fast pass. They did not auto-post because they need staff verification first.")
         try:
             await interaction.followup.send(
                 content=content,
@@ -106,8 +99,8 @@ def annotate_private_review_card(card: legacy.DealCard, *, index: int) -> None:
     embed.add_field(
         name="🟨 Private autoscan lead",
         value=(
-            f"Lead #{index}. This did **not** pass automatic public posting proof. "
-            "A staff member can manually post it with the button below after checking price, seller, exact variant, reviews, and comps."
+            f"Lead #{index}. This is from the same autoscan pass, but it did **not** pass automatic public posting proof. "
+            "Use the Post button only after checking price, seller, exact variant, reviews, and comps."
         ),
         inline=False,
     )

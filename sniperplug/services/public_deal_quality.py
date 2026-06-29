@@ -297,6 +297,63 @@ def public_lane_label(lane: str) -> str:
     return labels.get(lane, lane.replace("_", " ").title())
 
 
+def existing_score(card: Any) -> int:
+    try:
+        return int(float(getattr(card, "score", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def public_scout_signal_score(card: Any, *, source_label: str = "") -> int:
+    """Score review cards using their embedded hard-value proof.
+
+    Review candidate cards are usually created with score=0, so the public scout
+    gate must derive a score from API promo/coupon/cash or comp-profit fields.
+    Search-route match text alone deliberately earns only a small bonus.
+    """
+
+    text = card_text(card, source_label=source_label).lower()
+    score = existing_score(card)
+    if has_real_price(card):
+        score += 10
+    if direct_product_url(card):
+        score += 10
+    discount = structured_discount(card) or 0.0
+    if discount >= 40:
+        score += 35
+    elif discount >= 25:
+        score += 20
+
+    if "coupon from api" in text:
+        score += 80
+    if "walmart cash" in text:
+        score += 80
+    if "walmart api savings" in text or "walmart api promo" in text or "api promo cap" in text:
+        score += 80
+    if "rough spread" in text or "flip/value lead" in text or "profit" in text or "margin" in text:
+        score += 85
+
+    if "search route match" in text or "direct search match" in text or "exact product match" in text:
+        score += 8
+    if "stock: **available" in text or "available online" in text:
+        score += 5
+    if "rollback" in text:
+        score += 5
+    if "clearance" in text:
+        score += 5
+
+    if has_low_trust_reference(card, source_label=source_label) and not any(term in text for term in ("coupon from api", "walmart cash", "walmart api savings", "walmart api promo", "api promo cap", "rough spread", "profit", "margin")):
+        score -= 50
+    if any(term in text for term in ("out of stock", "sold out", "not available online")):
+        score -= 60
+    return max(0, min(150, int(score)))
+
+
+def has_public_scout_value_signal(card: Any, *, source_label: str = "") -> bool:
+    text = card_text(card, source_label=source_label).lower()
+    return any(term in text for term in PUBLIC_SCOUT_VALUE_TERMS)
+
+
 def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
     text = card_text(card, source_label=source_label).lower()
     if not has_real_price(card):
@@ -305,17 +362,18 @@ def is_public_scout_candidate(card: Any, *, source_label: str = "", min_score: i
         return False
     if any(term in text for term in ("out of stock", "sold out", "not available online")):
         return False
-    if not any(term in text for term in PUBLIC_SCOUT_VALUE_TERMS):
+    if not has_public_scout_value_signal(card, source_label=source_label):
         return False
     if has_low_trust_reference(card, source_label=source_label) and not any(term in text for term in ("coupon from api", "walmart cash", "walmart api savings", "walmart api promo", "api promo cap", "rough spread", "profit", "margin")):
         return False
-    score = int(float(getattr(card, "score", 0) or 0))
-    return score >= max(1, int(min_score))
+    return public_scout_signal_score(card, source_label=source_label) >= max(1, int(min_score))
 
 
 def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_score: int = 95) -> bool:
     if not is_public_scout_candidate(card, source_label=source_label, min_score=min_score):
         return False
+    score = public_scout_signal_score(card, source_label=source_label)
+    setattr(card, "score", max(existing_score(card), score))
     setattr(card, "should_alert", True)
     setattr(card, "deal_lane", LANE_PUBLIC_SCOUT)
     setattr(card, "direct_product_url", direct_product_url(card))
@@ -324,7 +382,7 @@ def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_sco
         embed.add_field(
             name=PUBLIC_SCOUT_LANE_FIELD,
             value=(
-                "Posted as **Public Scout**, not Verified Markdown. SniperPlug found a hard value signal, but this did **not** pass the trusted Walmart markdown gate. Recheck price, seller, selected option, stock, and comps before buying."
+                f"Posted as **Public Scout**, not Verified Markdown. Scout score: **{score}/150**. SniperPlug found a hard value signal, but this did **not** pass the trusted Walmart markdown gate. Recheck price, seller, selected option, stock, and comps before buying."
             ),
             inline=False,
         )

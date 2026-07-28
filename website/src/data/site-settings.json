@@ -1,0 +1,111 @@
+{
+  "version": 2,
+  "branding": {
+    "name": "SniperPlug",
+    "productName": "Deal Intelligence",
+    "brandMark": "SP",
+    "tagline": "Verify faster. Buy smarter. Catch better deals."
+  },
+  "homepage": {
+    "eyebrow": "Verified retail intelligence from SniperPlug",
+    "headlinePrefix": "Find real deals.",
+    "headlineHighlight": "Verify the exact offer.",
+    "headlineSuffix": "Move before it disappears.",
+    "lead": "A fast, no-fluff library for checking markdowns, variants, coupons, cashback, local inventory, and resale value before you spend.",
+    "primaryCtaLabel": "Browse all guides",
+    "secondaryCtaLabel": "Get live deal alerts",
+    "trustItems": [
+      "Variant-safe proof",
+      "Official retailer links",
+      "Clear savings math"
+    ],
+    "showTerminal": true,
+    "terminalTitle": "SNIPERPLUG_INTEL.exe",
+    "terminalStatus": "READY",
+    "showCategories": true,
+    "showFeatured": true,
+    "featuredMinimum": 3,
+    "libraryKicker": "Intel database",
+    "libraryTitle": "All deal and shopping guides",
+    "libraryDescription": "Search by retailer, product, offer type, or verification method.",
+    "showSearch": true,
+    "showAlertsBanner": true
+  },
+  "navigation": {
+    "browseLabel": "Browse",
+    "allHacksLabel": "All Guides",
+    "allHacksDescription": "Complete intelligence library"
+  },
+  "categories": {
+    "deal-alerts": {
+      "label": "Deal Alerts",
+      "shortLabel": "Deals",
+      "description": "Verify fast-moving price drops, coupons, and promotions before checkout.",
+      "visible": true,
+      "order": 1,
+      "icon": "bolt",
+      "accent": "red"
+    },
+    "clearance-guides": {
+      "label": "Clearance Guides",
+      "shortLabel": "Clearance",
+      "description": "Check local markdowns, store-specific prices, inventory, and condition.",
+      "visible": true,
+      "order": 2,
+      "icon": "tag",
+      "accent": "amber"
+    },
+    "store-guides": {
+      "label": "Store Guides",
+      "shortLabel": "Stores",
+      "description": "Retailer-specific workflows for finding and validating the exact offer.",
+      "visible": true,
+      "order": 3,
+      "icon": "store",
+      "accent": "cyan"
+    },
+    "cashback-stacks": {
+      "label": "Cashback Stacks",
+      "shortLabel": "Cashback",
+      "description": "Combine eligible rewards and coupons without hiding the real final cost.",
+      "visible": true,
+      "order": 4,
+      "icon": "wallet",
+      "accent": "lime"
+    },
+    "resale-opportunities": {
+      "label": "Resale Opportunities",
+      "shortLabel": "Resale",
+      "description": "Evaluate demand, fees, condition, sell-through, and downside before buying.",
+      "visible": true,
+      "order": 5,
+      "icon": "package",
+      "accent": "violet"
+    }
+  },
+  "alerts": {
+    "sidebarStatus": "Deal feed online",
+    "sidebarTitle": "Get the newest verified finds.",
+    "sidebarDescription": "Use SniperPlug alerts for fresh price drops, local markdowns, and fast-moving opportunities.",
+    "sidebarButtonLabel": "Get deal alerts",
+    "mobileDescription": "Fresh verified finds, price drops, and local markdowns.",
+    "bannerKicker": "The guide is step one",
+    "bannerTitle": "See fresh SniperPlug deal alerts.",
+    "bannerDescription": "Use the library for evergreen verification methods. Use alerts for current prices, stock changes, and time-sensitive opportunities.",
+    "bannerButtonLabel": "Open deal alerts",
+    "url": "https://sniperplug.com/alerts/"
+  },
+  "footer": {
+    "description": "Verified retail intelligence, deal-checking workflows, and partner-safe shopping guides.",
+    "alertsButtonLabel": "Deal alerts"
+  },
+  "seo": {
+    "title": "SniperPlug | Verified Deals & Retail Intelligence",
+    "description": "Verify retail deals, clearance prices, cashback stacks, local inventory, and exact product variants with SniperPlug.",
+    "shareImage": "/og-card.svg"
+  },
+  "theme": {
+    "accentPreset": "red",
+    "density": "compact"
+  }
+}

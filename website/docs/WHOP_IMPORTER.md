@@ -11,8 +11,8 @@ https://sniperplug.com/api/whop-oauth-callback
 ## Required private Cloudflare Pages secrets
 
 ```text
-WHOP_CLIENT_ID=app_...
-WHOP_TOKEN_SECRET=<separate high-entropy secret>
+WHOP_CLIENT_ID=app_replace_me
+WHOP_TOKEN_SECRET=replace-with-a-separate-high-entropy-secret
 WHOP_REDIRECT_URI=https://sniperplug.com/api/whop-oauth-callback
 WHOP_OAUTH_SCOPES=openid profile email forum:read member:basic:read member:email:read
 ```

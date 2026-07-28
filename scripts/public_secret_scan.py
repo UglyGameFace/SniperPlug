@@ -202,6 +202,20 @@ def scan_history() -> list[tuple[str, str, str]]:
     return findings
 
 
+def refs_containing(commit: str) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["git", "branch", "-r", "--contains", commit, "--format=%(refname:short)"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    refs = sorted({line.strip() for line in result.stdout.splitlines() if line.strip() and "->" not in line})
+    return tuple(refs)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fail when public repository content appears to contain a credential.")
     parser.add_argument("--history", action="store_true", help="Also scan every Git commit patch reachable from all refs.")
@@ -215,12 +229,20 @@ def main() -> int:
         for path, line_number, label in worktree_findings:
             print(f"- working tree: {path}:{line_number} — {label}", file=sys.stderr)
         seen: set[tuple[str, str, str]] = set()
+        ref_cache: dict[str, tuple[str, ...]] = {}
         for commit, path, label in history_findings:
             key = (commit, path, label)
             if key in seen:
                 continue
             seen.add(key)
-            print(f"- history: commit {commit[:12]} in {path} — {label}", file=sys.stderr)
+            refs = ref_cache.setdefault(commit, refs_containing(commit))
+            rendered_refs = ", ".join(refs[:12]) if refs else "no current remote branch"
+            if len(refs) > 12:
+                rendered_refs += f", plus {len(refs) - 12} more"
+            print(
+                f"- history: commit {commit[:12]} in {path} — {label}; refs: {rendered_refs}",
+                file=sys.stderr,
+            )
         print("Matched values are intentionally redacted. Rotate any real credential before removing it from Git history.", file=sys.stderr)
         return 1
 

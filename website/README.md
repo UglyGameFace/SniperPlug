@@ -1,6 +1,10 @@
 # SniperPlug Website
 
-Standalone Astro + Cloudflare Pages website for `https://sniperplug.com`, stored inside the private SniperPlug monorepo.
+Standalone Astro + Cloudflare Pages website for `https://sniperplug.com`, stored inside the public SniperPlug monorepo.
+
+## Public repository safety
+
+All real secrets belong in Cloudflare Pages environment variables, never in Git. The repository includes a history-aware credential scanner, and `.env` files remain ignored. `.env.example` contains variable names and obvious placeholders only.
 
 ## Isolation
 

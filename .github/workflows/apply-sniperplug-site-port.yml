@@ -1,0 +1,58 @@
+name: Apply SniperPlug website port
+
+on:
+  push:
+    branches:
+      - agent/sniperplug-site-parity
+    paths:
+      - '.site-port/**'
+      - '.github/workflows/apply-sniperplug-site-port.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-sniperplug-site-port
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: ${{ hashFiles('.site-port/READY') != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/sniperplug-site-parity
+          fetch-depth: 1
+      - name: Download source template
+        env:
+          SOURCE_URL: 'https://sdmntprsoutheastus3.oaiusercontent.com/files/00000000-73ec-820c-9ea5-7d629eb8cf8d/raw?se=2026-07-28T18:40:22Z&sp=r&sv=2026-02-06&sr=b&scid=73855ddd-551f-5080-a71e-c77f3c4b6f05&skoid=e9d2f8b1-028a-4cff-8eb1-d0e66fbefcca&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-28T07:20:17Z&ske=2026-07-30T07:20:17Z&sks=b&skv=2026-02-06&sig=W7jzDufktHzGrH9RVT39Pdmx1fZF2S/we%2BJmK9KAIlw%3D'
+        run: |
+          curl --fail --location --retry 3 "$SOURCE_URL" --output /tmp/lobby-template.zip
+          mkdir -p /tmp/lobby-template
+          unzip -q /tmp/lobby-template.zip -d /tmp/lobby-template
+      - name: Reconstruct audited website
+        run: |
+          rm -rf website
+          mkdir -p website
+          rsync -a \
+            --exclude='.github' \
+            --exclude='ACTIVE_TASK.md' \
+            --exclude='reports' \
+            --exclude='vercel.json' \
+            --exclude='README.md' \
+            /tmp/lobby-template/ website/
+          cat .site-port/patch.part.* | base64 --decode | gzip --decompress > /tmp/sniperplug-site.patch
+          git apply --binary /tmp/sniperplug-site.patch
+      - name: Commit one clean site snapshot
+        run: |
+          rm -rf .site-port
+          rm -f .github/workflows/apply-sniperplug-site-port.yml
+          rm -f .github/workflows/export-sniperplug-repo.yml
+          git config user.name 'SniperPlug Site Port'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'Port Lobby site architecture to SniperPlug'
+          git push origin HEAD:agent/sniperplug-site-parity

@@ -117,7 +117,7 @@ def looks_like_placeholder(raw: str) -> bool:
     lowered = value.lower()
     if not value or value in {"''", '""', "none", "null"}:
         return True
-    if value.startswith("<") and value.endswith(">"):
+    if value.startswith("<"):
         return True
     return any(marker in lowered for marker in PLACEHOLDER_MARKERS)
 

@@ -24,4 +24,4 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run import smoke check
-        run: python scripts/smoke_imports.py
+        run: PYTHONPATH=. python scripts/smoke_imports.py

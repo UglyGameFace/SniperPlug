@@ -26,7 +26,7 @@ jobs:
         run: test -f .site-port/READY
       - name: Download source template
         env:
-          SOURCE_URL: 'https://sdmntprsoutheastus3.oaiusercontent.com/files/00000000-73ec-820c-9ea5-7d629eb8cf8d/raw?se=2026-07-28T18:40:22Z&sp=r&sv=2026-02-06&sr=b&scid=73855ddd-551f-5080-a71e-c77f3c4b6f05&skoid=e9d2f8b1-028a-4cff-8eb1-d0e66fbefcca&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-28T07:20:17Z&ske=2026-07-30T07:20:17Z&sks=b&skv=2026-02-06&sig=W7jzDufktHzGrH9RVT39Pdmx1fZF2S/we%2BJmK9KAIlw%3D'
+          SOURCE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-ec08-81f5-97e5-c34660224f1d/raw?se=2026-07-28T19:05:23Z&sp=r&sv=2026-02-06&sr=b&scid=712742e3-5668-5099-bdfa-de24e9cd4aa6&skoid=e9d2f8b1-028a-4cff-8eb1-d0e66fbefcca&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-28T12:28:15Z&ske=2026-07-30T12:28:15Z&sks=b&skv=2026-02-06&sig=B0KXvXV/K0ZtSgtqDvlRr4oJm1i3UhWbtqTA9cGwbL8%3D'
         run: |
           curl --fail --location --retry 3 "$SOURCE_URL" --output /tmp/lobby-template.zip
           mkdir -p /tmp/lobby-template

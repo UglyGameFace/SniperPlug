@@ -2,7 +2,15 @@
 
 ## Target
 
-Build the standalone `https://sniperplug.com` website inside this private repository under `website/`, using the proven responsive publishing architecture from the 420 Lobby site without copying its branding, content, community configuration, or Discord bot settings.
+Build the standalone `https://sniperplug.com` website inside this public repository under `website/`, using the proven responsive publishing architecture from the 420 Lobby site without copying its branding, content, community configuration, or Discord bot settings.
+
+## Public repository safety
+
+- All credentials must remain in Discloud or Cloudflare environment variables; never commit real values.
+- Root and website ignore rules block `.env` files, local databases, build output, and runtime data.
+- Pull requests and `main` pushes run a history-aware secret scan with redacted findings.
+- Example environment files may contain variable names and unmistakable placeholders only.
+- If a real credential is ever committed, rotate it immediately before cleaning Git history.
 
 ## Isolation
 
@@ -30,10 +38,11 @@ Build the standalone `https://sniperplug.com` website inside this private reposi
 
 ## Validation status
 
-- Complete Node audit suite: passed locally.
-- Responsive, category, content-integrity, stale-brand, Whop completeness, bulk-action, and draft-isolation audits: passed locally.
-- JavaScript syntax validation: passed through the audit suite.
+- Complete Node audit suite: passed in GitHub Actions.
+- Astro type checking and Cloudflare production build: passed in GitHub Actions.
+- Responsive, category, content-integrity, stale-brand, Whop completeness, bulk-action, and draft-isolation audits: passed.
+- Python compile and bot import smoke checks: passed.
 - Bot tree outside the isolated website and CI/scope files: unchanged.
 - Permanent website CI: added; installs Node 22 dependencies and runs the full Astro production build.
-- Existing bot smoke workflow: fixed to include the repository root on `PYTHONPATH`.
-- Cloudflare Pages production deployment and live-domain cutover remain blocked until the PR build is green and the owner approves merge/configuration.
+- Public repository secret scan: added for the working tree and complete reachable Git history.
+- Cloudflare Pages production deployment and live-domain cutover remain blocked until the PR is ready, merged, and the project is connected to this repository with `website` as its root.

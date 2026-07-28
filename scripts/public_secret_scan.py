@@ -96,6 +96,7 @@ PLACEHOLDER_MARKERS = (
     "your_",
     "your-",
     "test-token",
+    "high-entropy secret",
     "app_replace_me",
     "github_pat_replace_me",
     "os.getenv",
@@ -115,6 +116,8 @@ def looks_like_placeholder(raw: str) -> bool:
     value = normalized_value(raw)
     lowered = value.lower()
     if not value or value in {"''", '""', "none", "null"}:
+        return True
+    if value.startswith("<") and value.endswith(">"):
         return True
     return any(marker in lowered for marker in PLACEHOLDER_MARKERS)
 

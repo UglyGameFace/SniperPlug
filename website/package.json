@@ -1,0 +1,28 @@
+{
+  "name": "sniperplug-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "audit": "node tools/audit-site.mjs && node tools/audit-post-method.mjs && node tools/audit-control-center-tabs.mjs && node tools/audit-layout-consistency.mjs && node tools/audit-category-persistence.mjs && node tools/audit-category-icons.mjs && node tools/audit-site-wide-propagation.mjs && node tools/audit-automatic-method-order.mjs && node tools/audit-production-readiness.mjs && node tools/audit-responsive-content-safety.mjs && node tools/audit-guide-content-integrity.mjs && node tools/audit-whop-importer.mjs && node tools/audit-whop-membership-completeness.mjs && node tools/audit-whop-draft-isolation.mjs && node tools/audit-sniperplug-port.mjs",
+    "check": "npm run audit && astro check",
+    "build": "npm run audit && astro check && astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@tailwindcss/typography": "^0.5.20",
+    "@tailwindcss/vite": "^4.3.2",
+    "astro": "^7.0.7",
+    "tailwindcss": "^4.3.2"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.6",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.26.1"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}

@@ -1,0 +1,293 @@
+/* Final shared safeguards for editable content and extreme viewport sizes. */
+
+:root {
+  --accent-border: rgb(var(--accent-rgb) / .3);
+  --accent-glow: rgb(var(--accent-rgb) / .55);
+  --accent-faint: rgb(var(--accent-rgb) / .045);
+}
+
+:where(img, video, canvas, svg) {
+  max-width: 100%;
+}
+
+:where(button, input, textarea, select) {
+  max-width: 100%;
+  font: inherit;
+}
+
+:where(main, section, article, aside, nav, header, footer, form, fieldset, div) {
+  min-width: 0;
+}
+
+:where(h1, h2, h3, h4, p, strong, small, a, button, label) {
+  overflow-wrap: anywhere;
+}
+
+:where(a, button, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 3px;
+}
+
+.primary-cta,
+.not-found > a,
+.cc-command-actions .cc-publish-button,
+.cc-publish-confirm [data-cc-confirm-publish] {
+  color: var(--on-accent);
+}
+
+.eyebrow > span,
+.reading-progress {
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.sidebar-link.active,
+.search-field:focus-within,
+.status-chip.live-active,
+.guide-notice,
+.toc-card nav a:hover,
+.related-grid > a:hover,
+.brand-mark,
+.desk-action-button:hover,
+.desk-action-button:focus-visible {
+  border-color: var(--accent-border);
+}
+
+.site-sidebar {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.sidebar-nav {
+  flex: 0 0 auto;
+}
+
+.sidebar-promo {
+  flex: 0 0 auto;
+}
+
+.brand-mark span {
+  max-width: calc(100% - .45rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-link-copy strong,
+.sidebar-link-copy small,
+.mobile-drawer-nav strong,
+.mobile-drawer-nav small,
+.footer-actions,
+.site-footer p {
+  overflow-wrap: anywhere;
+}
+
+.hero-content,
+.hero-console,
+.guide-content-wrap,
+.guide-prose,
+.guide-end-card section,
+.alerts-banner > div {
+  min-width: 0;
+}
+
+.hero-actions > *,
+.alerts-banner > a,
+.guide-end-card > a,
+.footer-actions > * {
+  min-width: 0;
+}
+
+.hack-card-topline,
+.hack-card-footer,
+.guide-meta,
+.footer-actions {
+  flex-wrap: wrap;
+}
+
+.hack-card h3,
+.related-grid h3,
+.guide-hero h1,
+.alerts-banner h2,
+.not-found h1 {
+  overflow-wrap: anywhere;
+}
+
+.status-chip {
+  max-width: min(12rem, 48%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-buttons {
+  overscroll-behavior-inline: contain;
+}
+
+.guide-toc .toc-card {
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.guide-prose :where(pre) {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.guide-prose :where(table) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.mobile-drawer {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.mobile-header {
+  padding-top: env(safe-area-inset-top);
+}
+
+.mobile-menu-backdrop,
+.mobile-drawer {
+  top: 0;
+  height: 100dvh;
+}
+
+.site-footer {
+  overflow: hidden;
+}
+
+@media (max-height: 760px) and (min-width: 768px) {
+  .site-sidebar {
+    padding-top: .85rem;
+    padding-bottom: .85rem;
+  }
+
+  .sidebar-brand-wrap {
+    padding-bottom: .9rem;
+  }
+
+  .sidebar-nav {
+    gap: .25rem;
+    padding-block: .8rem;
+  }
+
+  .sidebar-link {
+    min-height: 3.5rem;
+  }
+
+  .sidebar-promo {
+    padding: .75rem;
+  }
+
+  .sidebar-promo > p {
+    margin-bottom: .7rem;
+    -webkit-line-clamp: 2;
+  }
+}
+
+@media (max-width: 1199px) and (min-width: 768px) {
+  .hero-content h1,
+  .guide-hero h1 {
+    overflow-wrap: anywhere;
+  }
+
+  .guide-end-card {
+    min-width: 0;
+  }
+
+  .filter-panel {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --header-mobile: calc(4.5rem + env(safe-area-inset-top));
+  }
+
+  .mobile-header {
+    height: var(--header-mobile);
+    padding-right: max(1rem, env(safe-area-inset-right));
+    padding-left: max(1rem, env(safe-area-inset-left));
+  }
+
+  .mobile-drawer {
+    width: min(92vw, 23rem);
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+
+  .mobile-drawer-nav > a {
+    min-width: 0;
+  }
+
+  .mobile-drawer-nav > a span {
+    min-width: 0;
+  }
+
+  .mobile-drawer-nav strong,
+  .mobile-drawer-nav small {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+  }
+
+  .mobile-drawer-nav strong { -webkit-line-clamp: 2; }
+  .mobile-drawer-nav small { -webkit-line-clamp: 3; }
+
+  .guide-end-card {
+    min-width: 0;
+  }
+
+  .guide-end-card section {
+    min-width: 0;
+  }
+
+  .site-footer,
+  .footer-actions {
+    width: 100%;
+  }
+
+  .footer-actions a,
+  .footer-actions span {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 360px) {
+  .mobile-header .brand-copy strong {
+    max-width: 9rem;
+  }
+
+  .mobile-header-actions {
+    gap: .35rem;
+  }
+
+  .mobile-alerts,
+  .mobile-menu-button {
+    width: 2.45rem;
+    height: 2.45rem;
+  }
+
+  .guide-end-card {
+    grid-template-columns: minmax(0,1fr);
+  }
+
+  .guide-end-card > div {
+    width: 2.8rem;
+    height: 2.8rem;
+  }
+
+  .guide-end-card > a {
+    grid-column: auto;
+  }
+}

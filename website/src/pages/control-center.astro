@@ -1,0 +1,45 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import SniperPlugControlCenter from '../components/SniperPlugControlCenter.astro';
+import WhopImporter from '../components/WhopImporter.astro';
+import '../styles/deal-desk.css';
+import '../styles/method-manager.css';
+import '../styles/control-center.css';
+import '../styles/production-readiness.css';
+import '../styles/owner-content-safety.css';
+---
+
+<BaseLayout
+  title="SniperPlug Control Center | SniperPlug"
+  description="Private website and method controls for SniperPlug."
+  noindex
+  chrome={false}
+>
+  <SniperPlugControlCenter />
+  <WhopImporter />
+</BaseLayout>
+
+<style is:global>
+  @media (min-width: 1101px) {
+    .sniperplug-control-center .desk-selection-panel {
+      top: 6rem;
+    }
+  }
+</style>
+
+<script is:inline>
+  if (!window.CSS) window.CSS = {};
+  if (typeof window.CSS.escape !== 'function') {
+    window.CSS.escape = function (value) {
+      return String(value).replace(/[^a-zA-Z0-9_-]/g, function (character) {
+        return '\\' + character;
+      });
+    };
+  }
+</script>
+<script>
+  import '../scripts/deal-desk.js';
+  import '../scripts/control-center.js';
+  import '../scripts/owner-readiness.js';
+  import '../scripts/method-draft-safety.js';
+</script>

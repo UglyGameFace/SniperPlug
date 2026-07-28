@@ -1,0 +1,201 @@
+---
+import CategoryIconOptions from './CategoryIconOptions.astro';
+import { SITE_SETTINGS } from '../config';
+---
+
+<form class="cc-settings-form" data-site-settings-form>
+  <section class="cc-panel" data-control-panel="homepage" hidden>
+    <header class="cc-panel-header">
+      <div><span>Public landing page</span><h2>First impression</h2><p>Edit the hero, terminal, library heading, and section visibility.</p></div>
+      <button type="button" data-cc-open-preview>Preview changes</button>
+    </header>
+
+    <div class="cc-form-grid">
+      <label class="cc-field cc-wide"><span>Eyebrow</span><input data-setting="homepage.eyebrow" maxlength="90" /></label>
+      <label class="cc-field"><span>Headline — first line</span><input data-setting="homepage.headlinePrefix" maxlength="70" /></label>
+      <label class="cc-field"><span>Headline — highlighted line</span><input data-setting="homepage.headlineHighlight" maxlength="70" /></label>
+      <label class="cc-field cc-wide"><span>Headline — final line</span><input data-setting="homepage.headlineSuffix" maxlength="70" /></label>
+      <label class="cc-field cc-wide"><span>Hero description</span><textarea data-setting="homepage.lead" rows="4" maxlength="320"></textarea></label>
+      <label class="cc-field"><span>Primary button</span><input data-setting="homepage.primaryCtaLabel" maxlength="36" /></label>
+      <label class="cc-field"><span>Alerts button</span><input data-setting="homepage.secondaryCtaLabel" maxlength="42" /></label>
+
+      <fieldset class="cc-field cc-wide cc-trust-editor">
+        <legend>Trust strip</legend>
+        <div>
+          <input data-setting="homepage.trustItems.0" maxlength="48" aria-label="First trust item" />
+          <input data-setting="homepage.trustItems.1" maxlength="48" aria-label="Second trust item" />
+          <input data-setting="homepage.trustItems.2" maxlength="48" aria-label="Third trust item" />
+        </div>
+      </fieldset>
+
+      <label class="cc-field"><span>Terminal title</span><input data-setting="homepage.terminalTitle" maxlength="40" /></label>
+      <label class="cc-field"><span>Terminal status</span><input data-setting="homepage.terminalStatus" maxlength="20" /></label>
+      <label class="cc-field"><span>Library kicker</span><input data-setting="homepage.libraryKicker" maxlength="48" /></label>
+      <label class="cc-field"><span>Library heading</span><input data-setting="homepage.libraryTitle" maxlength="90" /></label>
+      <label class="cc-field cc-wide"><span>Library description</span><input data-setting="homepage.libraryDescription" maxlength="180" /></label>
+      <label class="cc-field"><span>Featured minimum</span><input type="number" min="1" max="12" inputmode="numeric" data-setting="homepage.featuredMinimum" /></label>
+    </div>
+
+    <div class="cc-visibility-grid">
+      <button type="button" class="cc-toggle-card" data-setting-toggle="homepage.showTerminal"><i></i><span><strong>Terminal panel</strong><small>Show SniperPlug Intel status</small></span></button>
+      <button type="button" class="cc-toggle-card" data-setting-toggle="homepage.showCategories"><i></i><span><strong>Category strip</strong><small>Show quick category links</small></span></button>
+      <button type="button" class="cc-toggle-card" data-setting-toggle="homepage.showFeatured"><i></i><span><strong>Featured section</strong><small>Show when minimum is met</small></span></button>
+      <button type="button" class="cc-toggle-card" data-setting-toggle="homepage.showSearch"><i></i><span><strong>Search and filters</strong><small>Show library controls</small></span></button>
+      <button type="button" class="cc-toggle-card" data-setting-toggle="homepage.showAlertsBanner"><i></i><span><strong>Alerts banner</strong><small>Show the final deal-alert CTA</small></span></button>
+    </div>
+  </section>
+
+  <section class="cc-panel" data-control-panel="branding" hidden>
+    <header class="cc-panel-header">
+      <div><span>Site identity</span><h2>Your identity</h2><p>Change the name and labels used across the header, sidebar, footer, and sharing metadata.</p></div>
+      <button type="button" data-cc-open-preview>Preview changes</button>
+    </header>
+    <div class="cc-form-grid">
+      <label class="cc-field"><span>Brand name</span><input data-setting="branding.name" maxlength="64" /></label>
+      <label class="cc-field"><span>Site product name</span><input data-setting="branding.productName" maxlength="64" /></label>
+      <label class="cc-field"><span>Brand mark</span><input data-setting="branding.brandMark" maxlength="8" /></label>
+      <label class="cc-field"><span>Short tagline</span><input data-setting="branding.tagline" maxlength="140" /></label>
+    </div>
+    <div class="cc-brand-sample">
+      <span data-preview-brand-mark>{SITE_SETTINGS.branding.brandMark}</span>
+      <div><strong data-preview-brand-name>{SITE_SETTINGS.branding.name}</strong><small data-preview-product-name>{SITE_SETTINGS.branding.productName}</small></div>
+    </div>
+  </section>
+
+  <section class="cc-panel" data-control-panel="navigation" hidden>
+    <header class="cc-panel-header">
+      <div><span>Public menus</span><h2>Browse labels</h2><p>Edit the names members see in the desktop sidebar and mobile menu.</p></div>
+    </header>
+    <div class="cc-form-grid">
+      <label class="cc-field"><span>Navigation section label</span><input data-setting="navigation.browseLabel" maxlength="24" /></label>
+      <label class="cc-field"><span>All-guides label</span><input data-setting="navigation.allHacksLabel" maxlength="32" /></label>
+      <label class="cc-field cc-wide"><span>All-guides description</span><input data-setting="navigation.allHacksDescription" maxlength="80" /></label>
+    </div>
+  </section>
+
+  <section class="cc-panel" data-control-panel="categories" hidden>
+    <header class="cc-panel-header">
+      <div><span>Guide taxonomy</span><h2>Library organization</h2><p>Add, rename, describe, hide, style, or reorder categories used everywhere on the site.</p></div>
+      <button type="button" data-cc-open-preview>Preview changes</button>
+    </header>
+
+    <section class="cc-category-create" aria-labelledby="cc-category-create-title">
+      <header><div><span>New category</span><h3 id="cc-category-create-title">Create a custom category</h3><p>Choose from site-matched outline icons or upload your own path-based SVG. Every icon is fitted into the same square slot.</p></div></header>
+      <div class="cc-form-grid">
+        <label class="cc-field"><span>Full label</span><input data-category-create-label maxlength="48" placeholder="Gaming Deals" /></label>
+        <label class="cc-field"><span>Short label</span><input data-category-create-short maxlength="20" placeholder="Gaming" /></label>
+        <label class="cc-field cc-wide"><span>Description</span><textarea data-category-create-description rows="2" maxlength="180" placeholder="Console, game, accessory, and subscription methods."></textarea></label>
+        <label class="cc-field"><span>Icon</span><select data-category-create-icon><CategoryIconOptions /></select></label>
+        <label class="cc-field"><span>Accent</span><select data-category-create-accent><option value="red">Sniper Red</option><option value="lime">Signal Lime</option><option value="cyan">Signal Cyan</option><option value="amber">Alert Amber</option><option value="violet">Signal Violet</option></select></label>
+        <div class="cc-field cc-wide cc-custom-icon-upload" data-category-create-custom-wrap hidden>
+          <span>Custom SVG</span>
+          <div class="cc-custom-icon-row">
+            <label class="cc-custom-icon-file"><input type="file" accept=".svg,image/svg+xml" data-category-create-custom-icon /><strong>Choose SVG</strong><small>Path-based outline file</small></label>
+            <div class="cc-custom-icon-preview" data-category-create-custom-preview aria-label="Custom icon preview"></div>
+          </div>
+          <small>Any valid viewBox is scaled into the site’s fixed 24 × 24 icon slot. Simple outline SVGs without transforms work best.</small>
+          <p data-category-create-custom-status hidden></p>
+        </div>
+      </div>
+      <div class="cc-category-create-actions"><p data-category-create-error hidden></p><button type="button" data-category-create>Add custom category</button></div>
+    </section>
+
+    <div class="cc-category-stack" data-category-stack></div>
+  </section>
+
+  <section class="cc-panel" data-control-panel="community" hidden>
+    <header class="cc-panel-header">
+      <div><span>Alerts and public links</span><h2>Alert destinations</h2><p>Edit where shoppers go for live deals, notifications, and community updates without touching environment variables or code.</p></div>
+      <button type="button" data-cc-open-preview>Preview changes</button>
+    </header>
+    <div class="cc-form-grid">
+      <label class="cc-field cc-wide"><span>Primary alerts or community URL <small>Leave blank to use the Cloudflare Pages variable</small></span><input type="url" data-setting="alerts.url" placeholder="https://sniperplug.com/alerts/" /></label>
+      <label class="cc-field"><span>Sidebar status</span><input data-setting="alerts.sidebarStatus" maxlength="42" /></label>
+      <label class="cc-field"><span>Sidebar heading</span><input data-setting="alerts.sidebarTitle" maxlength="90" /></label>
+      <label class="cc-field cc-wide"><span>Sidebar description</span><textarea data-setting="alerts.sidebarDescription" rows="3" maxlength="220"></textarea></label>
+      <label class="cc-field"><span>Sidebar button</span><input data-setting="alerts.sidebarButtonLabel" maxlength="36" /></label>
+      <label class="cc-field"><span>Mobile drawer description</span><input data-setting="alerts.mobileDescription" maxlength="160" /></label>
+      <label class="cc-field"><span>Banner kicker</span><input data-setting="alerts.bannerKicker" maxlength="48" /></label>
+      <label class="cc-field"><span>Banner heading</span><input data-setting="alerts.bannerTitle" maxlength="110" /></label>
+      <label class="cc-field cc-wide"><span>Banner description</span><textarea data-setting="alerts.bannerDescription" rows="3" maxlength="260"></textarea></label>
+      <label class="cc-field"><span>Banner button</span><input data-setting="alerts.bannerButtonLabel" maxlength="42" /></label>
+    </div>
+  </section>
+
+  <section class="cc-panel" data-control-panel="footer-seo" hidden>
+    <header class="cc-panel-header">
+      <div><span>Footer and metadata</span><h2>Finishing details</h2><p>Control the public footer and how the website appears in search results and shared links.</p></div>
+    </header>
+    <div class="cc-subsection-title"><span>Footer</span></div>
+    <div class="cc-form-grid">
+      <label class="cc-field cc-wide"><span>Footer description</span><textarea data-setting="footer.description" rows="3" maxlength="260"></textarea></label>
+      <label class="cc-field"><span>Footer alerts button</span><input data-setting="footer.alertsButtonLabel" maxlength="36" /></label>
+    </div>
+    <div class="cc-subsection-title"><span>Search and sharing</span></div>
+    <div class="cc-form-grid">
+      <label class="cc-field cc-wide"><span>Browser and search title</span><input data-setting="seo.title" maxlength="70" /></label>
+      <label class="cc-field cc-wide"><span>Search description</span><textarea data-setting="seo.description" rows="3" maxlength="180"></textarea></label>
+      <label class="cc-field cc-wide"><span>Share image path</span><input data-setting="seo.shareImage" maxlength="180" placeholder="/og-card.svg" /></label>
+    </div>
+  </section>
+
+  <section class="cc-panel" data-control-panel="appearance" hidden>
+    <header class="cc-panel-header">
+      <div><span>Theme and spacing</span><h2>Safe style controls</h2><p>Choose from tested presets so the site stays readable on phones, tablets, and desktops.</p></div>
+      <button type="button" data-cc-open-preview>Preview changes</button>
+    </header>
+
+    <fieldset class="cc-choice-field">
+      <legend>Electric highlight</legend>
+      <div class="cc-choice-grid cc-color-grid">
+        <button type="button" data-setting-choice="theme.accentPreset" data-choice-value="red"><i style="--choice:#ff3b3b"></i><strong>Sniper Red</strong><small>Primary brand look</small></button>
+        <button type="button" data-setting-choice="theme.accentPreset" data-choice-value="lime"><i style="--choice:#b7ff3c"></i><strong>Signal Lime</strong><small>High-visibility alternative</small></button>
+        <button type="button" data-setting-choice="theme.accentPreset" data-choice-value="cyan"><i style="--choice:#55dff4"></i><strong>Signal Cyan</strong><small>Cool technical look</small></button>
+        <button type="button" data-setting-choice="theme.accentPreset" data-choice-value="amber"><i style="--choice:#ffbd4a"></i><strong>Alert Amber</strong><small>Warm deal-hunting look</small></button>
+        <button type="button" data-setting-choice="theme.accentPreset" data-choice-value="violet"><i style="--choice:#a78bfa"></i><strong>Signal Violet</strong><small>Community-focused look</small></button>
+      </div>
+    </fieldset>
+
+    <fieldset class="cc-choice-field">
+      <legend>Page density</legend>
+      <div class="cc-choice-grid cc-density-grid">
+        <button type="button" data-setting-choice="theme.density" data-choice-value="compact"><strong>Compact</strong><small>Less scrolling on phones</small></button>
+        <button type="button" data-setting-choice="theme.density" data-choice-value="comfortable"><strong>Comfortable</strong><small>Balanced spacing</small></button>
+        <button type="button" data-setting-choice="theme.density" data-choice-value="spacious"><strong>Spacious</strong><small>Roomier desktop presentation</small></button>
+      </div>
+    </fieldset>
+  </section>
+</form>
+
+<div class="cc-preview-backdrop" data-cc-preview-backdrop hidden>
+  <section class="cc-preview-modal" role="dialog" aria-modal="true" aria-labelledby="cc-preview-title">
+    <header>
+      <div><span>Live draft preview</span><h2 id="cc-preview-title">Homepage preview</h2></div>
+      <button type="button" data-cc-close-preview aria-label="Close preview">×</button>
+    </header>
+    <div class="cc-device-switcher" role="group" aria-label="Preview device">
+      <button type="button" data-preview-device="phone" class="active">Phone</button>
+      <button type="button" data-preview-device="tablet">Tablet</button>
+      <button type="button" data-preview-device="desktop">Desktop</button>
+    </div>
+    <div class="cc-preview-stage">
+      <div class="cc-preview-device device-phone" data-preview-device-frame>
+        <div class="cc-preview-page">
+          <div class="cc-preview-nav"><span data-preview-brand-mark>{SITE_SETTINGS.branding.brandMark}</span><div><strong data-preview-brand-name>{SITE_SETTINGS.branding.name}</strong><small data-preview-product-name>{SITE_SETTINGS.branding.productName}</small></div><b>☰</b></div>
+          <section class="cc-preview-hero">
+            <small data-preview-eyebrow>{SITE_SETTINGS.homepage.eyebrow}</small>
+            <h1><span data-preview-headline-prefix>{SITE_SETTINGS.homepage.headlinePrefix}</span><em data-preview-headline-highlight>{SITE_SETTINGS.homepage.headlineHighlight}</em><span data-preview-headline-suffix>{SITE_SETTINGS.homepage.headlineSuffix}</span></h1>
+            <p data-preview-lead></p>
+            <div><button data-preview-primary>{SITE_SETTINGS.homepage.primaryCtaLabel}</button><button data-preview-secondary>{SITE_SETTINGS.homepage.secondaryCtaLabel}</button></div>
+            <article data-preview-terminal><i></i><strong>1 ACTIVE GUIDE</strong><small data-preview-terminal-status>{SITE_SETTINGS.homepage.terminalStatus}</small></article>
+          </section>
+          <section class="cc-preview-categories" data-preview-categories></section>
+          <section class="cc-preview-library"><small data-preview-library-kicker>{SITE_SETTINGS.homepage.libraryKicker}</small><h2 data-preview-library-title>{SITE_SETTINGS.homepage.libraryTitle}</h2><p data-preview-library-description>{SITE_SETTINGS.homepage.libraryDescription}</p><article><span>METHOD CATEGORY</span><strong>Example method card</strong><small>Live site methods remain unchanged until published.</small></article></section>
+          <section class="cc-preview-alerts" data-preview-alerts><small data-preview-banner-kicker></small><strong data-preview-banner-title></strong><button data-preview-banner-button></button></section>
+          <footer><strong data-preview-footer-name>{SITE_SETTINGS.branding.name}</strong><small data-preview-footer-description>{SITE_SETTINGS.footer.description}</small></footer>
+        </div>
+      </div>
+    </div>
+    <footer><span>Preview updates instantly. Publishing still requires confirmation.</span><button type="button" data-cc-close-preview>Back to editor</button></footer>
+  </section>
+</div>

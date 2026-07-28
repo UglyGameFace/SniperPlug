@@ -1,0 +1,229 @@
+---
+import CategoryIconOptions from './CategoryIconOptions.astro';
+import SiteSettingsPanels from './SiteSettingsPanels.astro';
+---
+
+<section class="deal-desk sniperplug-control-center" data-deal-desk data-control-center>
+  <header class="desk-hero">
+    <div>
+      <span class="desk-kicker">Private website operations</span>
+      <h1>SniperPlug<br /><em>Control Center</em></h1>
+      <p>Edit methods, homepage copy, branding, navigation, categories, Alerts & links, appearance, footer, and SEO without opening Termux.</p>
+    </div>
+    <div class="desk-system-card" aria-label="Control Center system summary">
+      <span><i></i> Owner-controlled publishing</span>
+      <strong>One place for the whole site</strong>
+      <small>Preview changes instantly, keep a local draft, then publish through GitHub and Cloudflare Pages when everything looks right.</small>
+    </div>
+  </header>
+
+  <section class="desk-login" data-login-panel>
+    <div class="desk-lock-mark" aria-hidden="true">SP</div>
+    <div>
+      <span class="desk-kicker">Owner access</span>
+      <h2>Unlock the Control Center</h2>
+      <p>Use the private password stored in your Cloudflare Pages environment variables.</p>
+    </div>
+    <form data-login-form>
+      <label>
+        <span>Control Center password</span>
+        <input type="password" name="password" autocomplete="current-password" required />
+      </label>
+      <button type="submit">Unlock Control Center</button>
+    </form>
+    <p class="desk-inline-error" data-login-error role="alert" aria-live="assertive" hidden></p>
+  </section>
+
+  <section class="desk-app cc-app" data-desk-app hidden>
+    <header class="cc-command-bar">
+      <div class="cc-command-title">
+        <span class="desk-kicker">SniperPlug Control Center</span>
+        <h2 data-cc-section-title>Methods</h2>
+        <p data-cc-section-description>Manage active, expiring, paused, and expired guides.</p>
+      </div>
+      <div class="cc-publish-state" aria-live="polite" aria-atomic="true">
+        <span class="cc-state-dot"></span>
+        <div><strong data-cc-save-state>Published</strong><small data-cc-save-detail>No unpublished site changes</small></div>
+      </div>
+      <div class="cc-deployment-state" data-cc-deployment-state data-state="pending" role="status" aria-live="polite" aria-atomic="true" hidden>
+        <span class="cc-deployment-dot" aria-hidden="true"></span>
+        <div>
+          <strong data-cc-deployment-label>Publishing to production</strong>
+          <small data-cc-deployment-detail>Waiting for Cloudflare Pages.</small>
+          <a data-cc-deployment-link target="_blank" rel="noreferrer" hidden>View deployment ↗</a>
+        </div>
+      </div>
+      <div class="cc-command-actions">
+        <button type="button" data-cc-undo disabled><span>↶</span><b>Undo</b></button>
+        <button type="button" data-cc-redo disabled><span>↷</span><b>Redo</b></button>
+        <button type="button" data-cc-open-preview><span>▣</span><b>Preview</b></button>
+        <button type="button" data-cc-discard disabled><span>×</span><b>Discard</b></button>
+        <button type="button" class="cc-publish-button" data-cc-publish disabled><span>↑</span><b>Publish site</b></button>
+        <button type="button" class="cc-lock-button" data-logout><span>⌁</span><b>Lock</b></button>
+      </div>
+    </header>
+
+    <nav class="cc-section-picker" aria-label="Control Center sections">
+      <button type="button" class="active" data-control-tab="methods" data-title="Methods" data-description="Manage active, expiring, paused, and expired guides."><span>01</span><strong>Methods</strong><small>Guides &amp; status</small></button>
+      <button type="button" data-control-tab="homepage" data-title="Homepage" data-description="Edit the hero, terminal, library, and section visibility."><span>02</span><strong>Homepage</strong><small>Copy &amp; sections</small></button>
+      <button type="button" data-control-tab="branding" data-title="Branding" data-description="Change the community name, site name, mark, and tagline."><span>03</span><strong>Branding</strong><small>Name &amp; identity</small></button>
+      <button type="button" data-control-tab="navigation" data-title="Navigation" data-description="Edit labels used in the desktop sidebar and mobile menu."><span>04</span><strong>Navigation</strong><small>Menus &amp; labels</small></button>
+      <button type="button" data-control-tab="categories" data-title="Categories" data-description="Add, rename, hide, style, and reorder guide categories."><span>05</span><strong>Categories</strong><small>Library structure</small></button>
+      <button type="button" data-control-tab="community" data-title="Alerts & links" data-description="Control the alerts URL and public calls to action."><span>06</span><strong>Community</strong><small>Alerts & links</small></button>
+      <button type="button" data-control-tab="footer-seo" data-title="Footer & SEO" data-description="Edit footer text, search metadata, and the social sharing image."><span>07</span><strong>Footer &amp; SEO</strong><small>Search &amp; sharing</small></button>
+      <button type="button" data-control-tab="appearance" data-title="Appearance" data-description="Choose safe highlight and spacing presets for every screen size."><span>08</span><strong>Appearance</strong><small>Color &amp; density</small></button>
+    </nav>
+
+    <section class="cc-methods-panel" data-control-panel="methods">
+      <div class="desk-topbar cc-methods-topbar">
+        <div>
+          <span class="desk-kicker">Method control</span>
+          <h2>Current operations</h2>
+        </div>
+        <div class="desk-top-actions" aria-label="Method actions">
+          <button type="button" class="desk-action-button desk-action-primary" data-new-method>
+            <span class="desk-action-icon" aria-hidden="true">+</span>
+            <span class="desk-action-copy"><strong>New method</strong><small>Add a guide</small></span>
+          </button>
+          <button type="button" class="desk-action-button" data-refresh>
+            <span class="desk-action-icon" aria-hidden="true">↻</span>
+            <span class="desk-action-copy"><strong>Refresh</strong><small>Reload methods</small></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="desk-stats" role="group" aria-label="Filter methods by current status">
+        <button type="button" class="desk-stat-button status-active" data-stat-filter="active" aria-pressed="false">
+          <span class="desk-stat-label"><i></i>Active</span><strong data-stat-active>0</strong><small>View methods <b>→</b></small>
+        </button>
+        <button type="button" class="desk-stat-button status-expiring" data-stat-filter="expiring" aria-pressed="false">
+          <span class="desk-stat-label"><i></i>Expiring soon</span><strong data-stat-expiring>0</strong><small>View methods <b>→</b></small>
+        </button>
+        <button type="button" class="desk-stat-button status-paused" data-stat-filter="paused" aria-pressed="false">
+          <span class="desk-stat-label"><i></i>Paused</span><strong data-stat-paused>0</strong><small>View methods <b>→</b></small>
+        </button>
+        <button type="button" class="desk-stat-button status-expired" data-stat-filter="expired" aria-pressed="false">
+          <span class="desk-stat-label"><i></i>Expired</span><strong data-stat-expired>0</strong><small>View methods <b>→</b></small>
+        </button>
+      </div>
+
+      <div class="desk-workspace">
+        <aside class="desk-selection-panel">
+          <span class="desk-kicker">Dedicated picker</span>
+          <h3>Choose a method</h3>
+          <p>Search and select from Active, Expiring Soon, Paused, or Expired methods.</p>
+          <button type="button" class="desk-picker-launch" data-open-picker>
+            <span><small>Selected method</small><strong data-selected-label>None selected</strong></span><b>Open picker →</b>
+          </button>
+          <div class="desk-selected-live" data-selected-live hidden>
+            <span data-live-dot></span><div><strong data-live-label></strong><small data-live-detail></small></div>
+          </div>
+          <div class="desk-fast-note">
+            <strong>Need it gone fast?</strong>
+            <p>Select the method and use <b>Expire now</b>. The public library hides it without waiting for a new build.</p>
+          </div>
+        </aside>
+
+        <main class="desk-editor-shell">
+          <div class="desk-empty-editor" data-empty-editor>
+            <span>↗</span><h3>No method selected</h3><p>Open the dedicated picker or create a new method.</p><button type="button" data-open-picker>Choose method</button>
+          </div>
+
+          <form class="desk-editor" data-editor hidden>
+            <div class="desk-editor-heading">
+              <div><span class="desk-kicker" data-editor-mode>Edit method</span><h3 data-editor-title>Method editor</h3><p data-editor-id></p></div>
+              <button type="button" class="desk-preview-link" data-open-public hidden>Open public guide ↗</button>
+            </div>
+
+            <section class="desk-quick-controls" data-quick-controls>
+              <div class="desk-control-heading"><div><span>Live controls</span><strong>Changes here are immediate</strong></div><small data-live-control-summary></small></div>
+              <div class="desk-control-grid">
+                <button type="button" data-status-action="verify">✓ Verify now</button><button type="button" data-extend-hours="1">+1 hour</button><button type="button" data-extend-hours="6">+6 hours</button><button type="button" data-extend-hours="24">+24 hours</button><button type="button" data-status-action="pause">Pause</button><button type="button" class="danger" data-status-action="expire">Expire now</button>
+              </div>
+              <div class="desk-expiry-control">
+                <label><span>Custom expiration</span><input type="datetime-local" data-custom-expiry /></label><button type="button" data-set-custom-expiry>Set expiration</button><button type="button" data-clear-expiry>Clear timer</button>
+              </div>
+            </section>
+
+            <div class="desk-field-grid">
+              <label class="desk-field desk-field-wide"><span>Title</span><input name="title" maxlength="140" required /></label>
+              <label class="desk-field desk-field-wide"><span>Card description</span><textarea name="description" rows="3" maxlength="260" required></textarea></label>
+              <fieldset class="desk-field desk-field-wide desk-category-field">
+                <legend>Category</legend>
+                <div class="desk-category-picker" data-category-picker></div>
+                <div class="desk-category-inline-actions"><button type="button" data-open-method-category>+ Add custom category</button></div>
+                <div class="desk-method-category-creator" data-method-category-creator hidden>
+                  <div class="desk-field-grid">
+                    <label class="desk-field"><span>Full label</span><input data-method-category-label maxlength="48" placeholder="Gaming Deals" /></label>
+                    <label class="desk-field"><span>Short label</span><input data-method-category-short maxlength="20" placeholder="Gaming" /></label>
+                    <label class="desk-field desk-field-wide"><span>Description</span><textarea data-method-category-description rows="2" maxlength="180" placeholder="Console, game, accessory, and subscription methods."></textarea></label>
+                    <label class="desk-field"><span>Icon</span><select data-method-category-icon><CategoryIconOptions /></select></label>
+                    <label class="desk-field"><span>Accent</span><select data-method-category-accent><option value="red">Sniper Red</option><option value="lime">Signal Lime</option><option value="cyan">Signal Cyan</option><option value="amber">Alert Amber</option><option value="violet">Signal Violet</option></select></label>
+                    <div class="desk-field desk-field-wide desk-custom-icon-upload" data-method-category-custom-wrap hidden>
+                      <span>Custom SVG</span>
+                      <div class="cc-custom-icon-row">
+                        <label class="cc-custom-icon-file"><input type="file" accept=".svg,image/svg+xml" data-method-category-custom-icon /><strong>Choose SVG</strong><small>Path-based outline file</small></label>
+                        <div class="cc-custom-icon-preview" data-method-category-custom-preview aria-label="Custom icon preview"></div>
+                      </div>
+                      <small>Any valid viewBox is centered and scaled into the fixed site icon slot. Simple outline SVGs without transforms work best.</small>
+                      <p data-method-category-custom-status role="status" aria-live="polite" hidden></p>
+                    </div>
+                  </div>
+                  <p data-method-category-error role="alert" hidden></p>
+                  <div><button type="button" data-cancel-method-category>Cancel</button><button type="button" data-create-method-category>Create and select</button></div>
+                </div>
+              </fieldset>
+              <label class="desk-field"><span>Badge</span><input name="badge" maxlength="36" placeholder="Active, YMMV, New..." /></label>
+              <label class="desk-field"><span>Read time</span><input name="readTime" maxlength="12" placeholder="3 min" /></label>
+              <label class="desk-field desk-field-wide"><span>Search keywords</span><input name="keywords" placeholder="Starbucks, GoPuff, promo code" /></label>
+              <div class="desk-field desk-switch-field"><span>Homepage placement</span><button type="button" class="desk-toggle" data-feature-toggle aria-pressed="false"><i></i><b>Not featured</b></button></div>
+              <div class="desk-field desk-switch-field"><span>Publishing</span><button type="button" class="desk-toggle" data-draft-toggle aria-pressed="false"><i></i><b>Public</b></button></div>
+              <label class="desk-field desk-field-wide"><span>Guide content <small>Markdown supported</small></span><textarea class="desk-body-editor" name="body" rows="22" required></textarea></label>
+            </div>
+
+            <div class="desk-savebar"><p><strong>Status controls:</strong> immediate. <strong>Content saves:</strong> publish after Cloudflare Pages rebuilds.</p><button type="submit" class="desk-button desk-button-primary" data-save-method>Save method</button></div>
+          </form>
+        </main>
+      </div>
+    </section>
+
+    <SiteSettingsPanels />
+  </section>
+
+  <div class="desk-modal-backdrop" data-picker-backdrop aria-hidden="true" hidden>
+    <section class="desk-picker" role="dialog" aria-modal="true" aria-labelledby="picker-title" aria-describedby="picker-description">
+      <header><div><span class="desk-kicker">Dedicated method picker</span><h2 id="picker-title">Choose a method</h2></div><button type="button" class="desk-icon-button" data-close-picker aria-label="Close picker">×</button></header>
+      <p id="picker-description" class="sr-only">Search, filter, and choose a method to edit.</p>
+      <div class="desk-picker-layout">
+        <aside>
+          <label class="desk-picker-search"><span>⌕</span><input type="search" placeholder="Search title, app, code..." data-picker-search /></label>
+          <nav class="desk-picker-filters" aria-label="Filter methods">
+            <button type="button" class="active" data-picker-filter="all" aria-pressed="true">All methods <b data-filter-count="all">0</b></button>
+            <button type="button" data-picker-filter="active" aria-pressed="false">Active <b data-filter-count="active">0</b></button>
+            <button type="button" data-picker-filter="expiring" aria-pressed="false">Expiring soon <b data-filter-count="expiring">0</b></button>
+            <button type="button" data-picker-filter="paused" aria-pressed="false">Paused <b data-filter-count="paused">0</b></button>
+            <button type="button" data-picker-filter="expired" aria-pressed="false">Expired <b data-filter-count="expired">0</b></button>
+          </nav>
+          <button type="button" class="desk-picker-new" data-new-method>+ Create new method</button>
+        </aside>
+        <div class="desk-picker-results"><div class="desk-picker-result-head"><strong data-picker-result-count aria-live="polite">0 methods</strong><span>Tap one to edit</span></div><div class="desk-method-list" data-method-list></div><div class="desk-picker-empty" data-picker-empty hidden><strong>No matching method</strong><p>Try a broader keyword or another status.</p></div></div>
+      </div>
+      <footer><button type="button" data-close-picker>Cancel</button></footer>
+    </section>
+  </div>
+
+  <div class="desk-modal-backdrop" data-confirm-backdrop aria-hidden="true" hidden>
+    <section class="desk-confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+      <span class="desk-confirm-mark">!</span><h2 id="confirm-title" data-confirm-title>Confirm action</h2><p id="confirm-description" data-confirm-copy></p><div><button type="button" data-confirm-back>Back</button><button type="button" class="danger" data-confirm-go>Confirm</button></div>
+    </section>
+  </div>
+
+  <div class="cc-confirm-backdrop" data-cc-publish-confirm aria-hidden="true" hidden>
+    <section class="cc-publish-confirm" role="alertdialog" aria-modal="true" aria-labelledby="cc-publish-title" aria-describedby="cc-publish-description">
+      <span>↑</span><h2 id="cc-publish-title">Publish website changes?</h2><p id="cc-publish-description">This saves the draft to GitHub and starts a Cloudflare Pages rebuild. Your current public site stays online while the new version deploys.</p><div><button type="button" data-cc-cancel-publish>Keep editing</button><button type="button" data-cc-confirm-publish>Publish site</button></div>
+    </section>
+  </div>
+
+  <div class="desk-toast" data-desk-toast role="status" aria-live="polite" aria-atomic="true" hidden></div>
+  <div class="cc-toast" data-cc-toast role="status" aria-live="polite" aria-atomic="true" hidden></div>
+</section>

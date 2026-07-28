@@ -1,0 +1,49 @@
+/* Build-time layout presets. Optional sections are rendered or omitted by Astro. */
+
+body.density-comfortable .hero-section {
+  min-height: 42rem;
+}
+
+body.density-comfortable .library-section,
+body.density-comfortable .featured-section {
+  padding-block: 4.5rem;
+}
+
+body.density-spacious .hero-section {
+  min-height: 48rem;
+  padding-block: 7rem;
+}
+
+body.density-spacious .library-section,
+body.density-spacious .featured-section {
+  padding-block: 6rem;
+}
+
+@media (max-width: 767px) {
+  body.density-compact .hero-section {
+    padding-top: 2rem;
+    padding-bottom: 1.6rem;
+  }
+
+  body.density-comfortable .hero-section {
+    min-height: auto;
+    padding-top: 2.75rem;
+    padding-bottom: 2.1rem;
+  }
+
+  body.density-spacious .hero-section {
+    min-height: auto;
+    padding-top: 3.5rem;
+    padding-bottom: 2.8rem;
+  }
+
+  body.density-comfortable .library-section,
+  body.density-comfortable .featured-section {
+    padding-block: 3rem;
+  }
+
+  body.density-spacious .library-section,
+  body.density-spacious .featured-section {
+    padding-block: 4rem;
+  }
+}

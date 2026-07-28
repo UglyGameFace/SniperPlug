@@ -1,0 +1,334 @@
+/* Canonical spacing, surface, and responsive layout system for public and owner pages. */
+
+:root {
+  --layout-gutter: clamp(1rem, 4vw, 5rem);
+  --layout-section-space: clamp(2.75rem, 5vw, 5rem);
+  --surface-radius: .8rem;
+  --surface-radius-large: 1rem;
+  --control-radius: .5rem;
+  --control-height: 2.75rem;
+  --surface-padding: clamp(.95rem, 2vw, 1.25rem);
+}
+
+/* Shared public alignment and component geometry. */
+.hero-section,
+.featured-section,
+.library-section,
+.related-guides,
+.guide-hero,
+.guide-layout,
+.site-footer {
+  padding-right: var(--layout-gutter);
+  padding-left: var(--layout-gutter);
+}
+
+.alerts-banner {
+  margin-right: var(--layout-gutter);
+  margin-left: var(--layout-gutter);
+}
+
+.hack-card,
+.filter-panel,
+.alerts-banner,
+.guide-notice,
+.guide-end-card,
+.related-grid > a,
+.toc-card,
+.mobile-drawer-nav > a,
+.mobile-drawer-cta {
+  border-radius: var(--surface-radius);
+}
+
+.primary-cta,
+.secondary-cta,
+.alerts-button,
+.alerts-banner > a,
+.filter-buttons button,
+.empty-state button,
+.guide-end-card > a,
+.not-found > a {
+  min-height: var(--control-height);
+  border-radius: var(--control-radius);
+}
+
+.section-heading {
+  margin-bottom: clamp(1.25rem, 2.5vw, 2rem);
+}
+
+.section-heading h2,
+.library-heading h2 {
+  max-width: 22ch;
+}
+
+/* Private application pages never reserve space for public mobile chrome. */
+.no-site-chrome .site-shell {
+  padding-top: 0;
+}
+
+/* The command bar is the unlocked application header; the marketing hero is only for the locked screen. */
+.sniperplug-control-center.is-unlocked > .desk-hero {
+  display: none;
+}
+
+.sniperplug-control-center .cc-app {
+  padding: 1rem var(--layout-gutter) 4rem;
+}
+
+.sniperplug-control-center .cc-command-bar {
+  grid-template-areas:
+    "title state"
+    "actions actions";
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 18rem);
+  gap: .75rem 1rem;
+  margin-bottom: .75rem;
+  border-radius: var(--surface-radius);
+  padding: var(--surface-padding);
+}
+
+.sniperplug-control-center .cc-command-title {
+  grid-area: title;
+  align-self: center;
+}
+
+.sniperplug-control-center .cc-publish-state {
+  grid-area: state;
+  width: 100%;
+  max-width: none;
+  min-height: var(--control-height);
+  border-radius: var(--control-radius);
+}
+
+.sniperplug-control-center .cc-command-actions {
+  grid-area: actions;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: .45rem;
+}
+
+.sniperplug-control-center .cc-command-actions > :is(a, button) {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height);
+  margin: 0;
+  border-radius: var(--control-radius);
+  padding: .58rem .5rem;
+}
+
+.sniperplug-control-center .cc-command-actions > :is(a, button) b {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sniperplug-control-center .cc-section-picker {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: .45rem;
+  overflow: visible;
+  margin: 0 0 .75rem;
+  padding: 0;
+}
+
+.sniperplug-control-center .cc-section-picker button {
+  width: auto;
+  min-width: 0;
+  min-height: 4.35rem;
+  border-radius: var(--surface-radius);
+  padding: .72rem;
+}
+
+.sniperplug-control-center .cc-section-picker button strong,
+.sniperplug-control-center .cc-section-picker button small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Methods and settings use the same surface language. */
+.sniperplug-control-center .cc-methods-panel,
+.sniperplug-control-center .cc-panel {
+  overflow: clip;
+  border: 1px solid var(--line);
+  border-radius: var(--surface-radius-large);
+  background: var(--panel);
+}
+
+.sniperplug-control-center .cc-methods-panel {
+  padding: var(--surface-padding);
+}
+
+.sniperplug-control-center .cc-methods-panel > .desk-topbar {
+  margin-bottom: 1rem;
+}
+
+.sniperplug-control-center .cc-panel-header {
+  min-height: 6rem;
+  gap: 1rem;
+  padding: var(--surface-padding);
+}
+
+.sniperplug-control-center .cc-panel-header h2 {
+  margin-top: .32rem;
+  font-size: clamp(1.4rem, 2.5vw, 2.1rem);
+}
+
+.sniperplug-control-center .cc-panel-header > button,
+.sniperplug-control-center .cc-category-create-actions button,
+.sniperplug-control-center [data-create-method-category],
+.sniperplug-control-center .cc-category-editor > header button {
+  min-height: var(--control-height);
+  border-radius: var(--control-radius);
+}
+
+.sniperplug-control-center .cc-form-grid,
+.sniperplug-control-center .cc-category-stack,
+.sniperplug-control-center .cc-choice-field,
+.sniperplug-control-center .cc-visibility-grid {
+  padding: var(--surface-padding);
+}
+
+.sniperplug-control-center .cc-form-grid {
+  gap: .8rem;
+}
+
+.sniperplug-control-center .cc-field :is(input, textarea, select),
+.sniperplug-control-center .desk-field :is(input, textarea, select),
+.sniperplug-control-center .cc-trust-editor input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-height);
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  outline: 0;
+  background: #090c0e;
+  color: var(--text);
+  padding: .75rem .82rem;
+}
+
+.sniperplug-control-center .cc-field select,
+.sniperplug-control-center .desk-field select {
+  appearance: auto;
+}
+
+.sniperplug-control-center .cc-field :is(input, textarea, select):focus,
+.sniperplug-control-center .desk-field :is(input, textarea, select):focus,
+.sniperplug-control-center .cc-trust-editor input:focus {
+  border-color: color-mix(in srgb, var(--lime) 48%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lime) 6.5%, transparent);
+}
+
+.sniperplug-control-center .cc-toggle-card,
+.sniperplug-control-center .cc-choice-grid button,
+.sniperplug-control-center .cc-category-editor,
+.sniperplug-control-center .cc-category-create,
+.sniperplug-control-center .desk-selection-panel,
+.sniperplug-control-center .desk-editor-shell,
+.sniperplug-control-center .desk-stat-button {
+  border-radius: var(--surface-radius);
+}
+
+.sniperplug-control-center .cc-choice-grid button,
+.sniperplug-control-center .cc-toggle-card {
+  min-height: 4.35rem;
+  padding: .78rem;
+}
+
+.sniperplug-control-center .cc-density-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sniperplug-control-center .cc-category-create {
+  margin: var(--surface-padding);
+  margin-bottom: 0;
+}
+
+@media (max-width: 1399px) {
+  .sniperplug-control-center .cc-command-actions,
+  .sniperplug-control-center .cc-section-picker {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  :root {
+    --layout-gutter: clamp(1rem, 3vw, 2rem);
+  }
+
+  .sniperplug-control-center .cc-form-grid,
+  .sniperplug-control-center .cc-trust-editor > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sniperplug-control-center .cc-color-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sniperplug-control-center .cc-density-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .sniperplug-control-center .cc-visibility-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --layout-gutter: 1rem;
+    --surface-padding: .9rem;
+  }
+
+  .hero-section,
+  .featured-section,
+  .library-section,
+  .related-guides,
+  .guide-hero,
+  .guide-layout,
+  .site-footer {
+    padding-right: var(--layout-gutter);
+    padding-left: var(--layout-gutter);
+  }
+
+  .alerts-banner {
+    margin-right: var(--layout-gutter);
+    margin-left: var(--layout-gutter);
+  }
+
+  .sniperplug-control-center .cc-app {
+    padding-top: .75rem;
+    padding-bottom: 2rem;
+  }
+
+  .sniperplug-control-center .cc-command-bar {
+    grid-template-areas:
+      "title"
+      "state"
+      "actions";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sniperplug-control-center .cc-command-actions,
+  .sniperplug-control-center .cc-section-picker {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sniperplug-control-center .cc-form-grid,
+  .sniperplug-control-center .cc-trust-editor > div,
+  .sniperplug-control-center .cc-color-grid,
+  .sniperplug-control-center .cc-density-grid,
+  .sniperplug-control-center .cc-choice-grid,
+  .sniperplug-control-center .cc-visibility-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sniperplug-control-center .cc-panel-header {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 380px) {
+  .sniperplug-control-center .cc-section-picker {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

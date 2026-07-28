@@ -1,0 +1,24 @@
+/* Full-width application pages can opt out of the public navigation chrome. */
+
+.no-site-chrome .site-shell {
+  width: 100%;
+  min-width: 0;
+  margin-left: 0;
+}
+
+.no-site-chrome #main-content {
+  width: 100%;
+  min-width: 0;
+}
+
+.no-site-chrome .deal-desk {
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-left: env(safe-area-inset-left);
+}
+
+@media (max-width: 767px) {
+  .no-site-chrome .site-shell {
+    margin-top: 0;
+  }
+}

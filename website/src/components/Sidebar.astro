@@ -1,0 +1,106 @@
+---
+import Brand from './Brand.astro';
+import Icon from './Icon.astro';
+import { CATEGORY_ENTRIES, getCategory, SITE, SITE_SETTINGS, type CategoryKey } from '../config';
+import { OWNER_PAGE_LINK, POST_METHOD_LINK, PUBLIC_PAGE_LINKS, type PublicGuideLink } from '../navigation';
+
+interface Props {
+  activeCategory?: CategoryKey | 'all';
+  guideLinks?: PublicGuideLink[];
+}
+
+const { activeCategory = 'all', guideLinks = [] } = Astro.props;
+const currentPath = Astro.url.pathname;
+const pageIsActive = (page: (typeof PUBLIC_PAGE_LINKS)[number]) => {
+  if (page.id === 'home') return currentPath === '/';
+  if (page.id === 'library') return false;
+  return currentPath === page.href || currentPath.startsWith(page.href);
+};
+const railLabel = (page: (typeof PUBLIC_PAGE_LINKS)[number]) => {
+  if (page.id === 'home') return 'Home';
+  if (page.id === 'library') return 'Guides';
+  if (page.id === 'deals') return 'Deals';
+  if (page.id === 'partners') return 'Partners';
+  return page.label;
+};
+const pageLinks = PUBLIC_PAGE_LINKS.map((page) => page.id === 'library'
+  ? {
+      ...page,
+      label: SITE_SETTINGS.navigation.allHacksLabel,
+      description: SITE_SETTINGS.navigation.allHacksDescription,
+    }
+  : page);
+---
+
+<aside class="site-sidebar" aria-label="Primary navigation">
+  <div class="sidebar-brand-wrap"><Brand /></div>
+
+  <nav class="sidebar-nav">
+    <p class="sidebar-section-label">Pages</p>
+    {pageLinks.map((page) => (
+      <a
+        class:list={['sidebar-link', 'sidebar-page-link', { active: pageIsActive(page) }]}
+        href={page.href}
+      >
+        <span class="sidebar-icon"><Icon name={page.icon} /></span>
+        <span class="sidebar-link-copy"><strong>{page.label}</strong><small>{page.description}</small></span>
+        <span class="rail-label">{railLabel(page)}</span>
+      </a>
+    ))}
+
+    <p class="sidebar-section-label">{SITE_SETTINGS.navigation.browseLabel}</p>
+    {CATEGORY_ENTRIES.map(([key, category]) => (
+      <a
+        class:list={['sidebar-link', `accent-${category.accent}`, { active: activeCategory === key }]}
+        href={`/?category=${key}#library`}
+      >
+        <span class="sidebar-icon"><Icon name={category.icon} customIcon={category.customIcon} /></span>
+        <span class="sidebar-link-copy"><strong>{category.label}</strong><small>{category.description}</small></span>
+        <span class="rail-label">{category.shortLabel}</span>
+      </a>
+    ))}
+
+    {guideLinks.length > 0 && (
+      <>
+        <p class="sidebar-section-label">Guide pages</p>
+        {guideLinks.map((guide) => {
+          const category = getCategory(guide.category);
+          return (
+            <a
+              class:list={['sidebar-link', 'sidebar-guide-link', `accent-${category.accent}`, { active: currentPath === guide.href }]}
+              href={guide.href}
+              data-guide-nav-id={guide.id}
+            >
+              <span class="sidebar-icon"><Icon name={category.icon} customIcon={category.customIcon} /></span>
+              <span class="sidebar-link-copy"><strong>{guide.label}</strong><small>{guide.description}</small></span>
+              <span class="rail-label">Guide</span>
+            </a>
+          );
+        })}
+      </>
+    )}
+
+    <p class="sidebar-section-label">Owner</p>
+    <a class="sidebar-link sidebar-post-link" href={POST_METHOD_LINK.href}>
+      <span class="sidebar-icon"><Icon name={POST_METHOD_LINK.icon} /></span>
+      <span class="sidebar-link-copy"><strong>{POST_METHOD_LINK.label}</strong><small>{POST_METHOD_LINK.description}</small></span>
+      <span class="rail-label">Post</span>
+    </a>
+    <a class="sidebar-link sidebar-owner-link" href={OWNER_PAGE_LINK.href}>
+      <span class="sidebar-icon"><Icon name={OWNER_PAGE_LINK.icon} /></span>
+      <span class="sidebar-link-copy"><strong>{OWNER_PAGE_LINK.label}</strong><small>{OWNER_PAGE_LINK.description}</small></span>
+      <span class="rail-label">Owner</span>
+    </a>
+  </nav>
+
+  <div class="sidebar-promo">
+    <div class="promo-status"><span></span> {SITE_SETTINGS.alerts.sidebarStatus}</div>
+    <strong>{SITE_SETTINGS.alerts.sidebarTitle}</strong>
+    <p>{SITE_SETTINGS.alerts.sidebarDescription}</p>
+    <a href={SITE.alertsUrl} target="_blank" rel="noreferrer" class="alerts-button sidebar-alerts">
+      <Icon name="external" />
+      <span class="desktop-only">{SITE_SETTINGS.alerts.sidebarButtonLabel}</span>
+      <span class="sr-only tablet-only">{SITE_SETTINGS.alerts.sidebarButtonLabel}</span>
+    </a>
+  </div>
+</aside>

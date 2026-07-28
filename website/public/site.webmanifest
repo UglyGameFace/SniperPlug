@@ -1,0 +1,16 @@
+{
+  "name": "SniperPlug Deal Intelligence",
+  "short_name": "SniperPlug",
+  "description": "Verified retail deals, clearance checks, and shopping intelligence.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08090c",
+  "theme_color": "#08090c",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+name = "sniperplug-site"
+pages_build_output_dir = "./dist"
+compatibility_date = "2026-07-28"
+compatibility_flags = ["nodejs_compat", "nodejs_compat_populate_process_env"]

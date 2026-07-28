@@ -1,0 +1,64 @@
+---
+import {
+  CATEGORY_ICON_DEFINITIONS,
+  sanitizeCustomIconDefinition,
+} from '../lib/category-icons.js';
+
+const staticPaths = {
+  home: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5"/><path d="M9 20v-6h6v6"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  close: '<path d="m6 6 12 12M18 6 6 18"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  calendar: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16"/>',
+  chevron: '<path d="m9 18 6-6-6-6"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/>',
+} as const;
+
+const categoryPaths = Object.fromEntries(
+  Object.entries(CATEGORY_ICON_DEFINITIONS).map(([key, definition]) => [key, definition.body]),
+);
+const paths = { ...staticPaths, ...categoryPaths } as Record<string, string>;
+type IconName = keyof typeof staticPaths | keyof typeof CATEGORY_ICON_DEFINITIONS | 'custom';
+
+interface CustomIconDefinition {
+  viewBox: string;
+  paths: string[];
+}
+
+interface Props {
+  name: IconName;
+  customIcon?: CustomIconDefinition;
+  class?: string;
+  strokeWidth?: number;
+}
+
+const {
+  name,
+  customIcon,
+  class: className = 'size-5',
+  strokeWidth = 1.8,
+} = Astro.props;
+const cleanCustomIcon = name === 'custom'
+  ? sanitizeCustomIconDefinition(customIcon) as CustomIconDefinition | null
+  : null;
+const viewBox = cleanCustomIcon?.viewBox || '0 0 24 24';
+const body = name === 'custom' ? '' : paths[name] || paths.tag;
+---
+
+<svg
+  class={className}
+  viewBox={viewBox}
+  fill="none"
+  stroke="currentColor"
+  stroke-width={strokeWidth}
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  preserveAspectRatio="xMidYMid meet"
+  aria-hidden="true"
+>
+  {cleanCustomIcon
+    ? cleanCustomIcon.paths.map((path) => <path d={path} />)
+    : <g set:html={body}></g>}
+</svg>

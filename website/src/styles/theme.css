@@ -1,0 +1,68 @@
+/* Central theme-token application. Category-specific amber/cyan accents stay independent. */
+
+.hero-section {
+  background:
+    radial-gradient(circle at 78% 18%, rgb(var(--accent-rgb) / .1), transparent 30%),
+    linear-gradient(180deg, rgba(255,255,255,.015), transparent);
+}
+
+.eyebrow > span,
+.promo-status > span,
+.reading-progress {
+  box-shadow: 0 0 9px rgb(var(--accent-rgb) / .55);
+}
+
+.primary-cta,
+.not-found > a,
+.desk-action-primary,
+.cc-command-actions .cc-publish-button,
+.cc-publish-confirm [data-cc-confirm-publish] {
+  color: var(--on-accent);
+}
+
+.sidebar-link.active,
+.search-field:focus-within,
+.hack-card:hover,
+.related-grid > a:hover,
+.guide-notice,
+.toc-card nav a:hover {
+  border-color: rgb(var(--accent-rgb) / .32);
+}
+
+.sidebar-link.active,
+.search-field:focus-within,
+.status-chip.live-active,
+.guide-notice {
+  background: var(--lime-soft);
+}
+
+.hero-console,
+.alerts-banner {
+  box-shadow:
+    0 25px 75px rgba(0,0,0,.35),
+    0 0 0 1px rgb(var(--accent-rgb) / .018) inset;
+}
+
+.brand-mark,
+.category-summary-icon,
+.guide-category,
+.guide-end-card > div {
+  text-shadow: 0 0 18px rgb(var(--accent-rgb) / .12);
+}
+
+.console-mobile-led,
+.desk-system-card i,
+.cc-state-dot,
+.method-status-dot {
+  box-shadow: 0 0 11px rgb(var(--accent-rgb) / .58);
+}
+
+@supports not (color: color-mix(in srgb, white, black)) {
+  .sidebar-link.active,
+  .search-field:focus-within,
+  .status-chip.live-active,
+  .guide-notice {
+    border-color: rgb(var(--accent-rgb) / .3);
+    background: rgb(var(--accent-rgb) / .09);
+  }
+}

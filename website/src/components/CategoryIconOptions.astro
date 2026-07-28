@@ -1,0 +1,6 @@
+---
+import { CATEGORY_ICON_OPTIONS } from '../lib/category-icons.js';
+---
+
+{CATEGORY_ICON_OPTIONS.map((option) => <option value={option.value}>{option.label}</option>)}
+<option value="custom">Custom SVG upload</option>

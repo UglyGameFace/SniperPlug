@@ -1,0 +1,144 @@
+---
+import Brand from './Brand.astro';
+import Icon from './Icon.astro';
+import { SITE, SITE_SETTINGS, CATEGORY_ENTRIES, getCategory } from '../config';
+import { OWNER_PAGE_LINK, POST_METHOD_LINK, PUBLIC_PAGE_LINKS, type PublicGuideLink } from '../navigation';
+
+interface Props {
+  guideLinks?: PublicGuideLink[];
+}
+
+const { guideLinks = [] } = Astro.props;
+const currentPath = Astro.url.pathname;
+const pageIsActive = (page: (typeof PUBLIC_PAGE_LINKS)[number]) => {
+  if (page.id === 'home') return currentPath === '/';
+  if (page.id === 'library') return false;
+  return currentPath === page.href || currentPath.startsWith(page.href);
+};
+const pageLinks = PUBLIC_PAGE_LINKS.map((page) => page.id === 'library'
+  ? {
+      ...page,
+      label: SITE_SETTINGS.navigation.allHacksLabel,
+      description: SITE_SETTINGS.navigation.allHacksDescription,
+    }
+  : page);
+---
+
+<header class="mobile-header">
+  <Brand compact />
+  <div class="mobile-header-actions">
+    <a class="mobile-alerts" href={SITE.alertsUrl} target="_blank" rel="noreferrer" aria-label={`Open ${SITE.name} alerts`}>
+      <Icon name="external" />
+    </a>
+    <button class="mobile-menu-button" type="button" data-menu-open aria-label="Open navigation" aria-expanded="false" aria-controls="mobile-navigation-drawer">
+      <Icon name="menu" />
+    </button>
+  </div>
+</header>
+
+<div class="mobile-menu-backdrop" data-menu-backdrop aria-hidden="true"></div>
+<aside
+  id="mobile-navigation-drawer"
+  class="mobile-drawer"
+  data-mobile-menu
+  role="dialog"
+  aria-modal="true"
+  aria-label="Mobile navigation"
+  aria-hidden="true"
+>
+  <div class="mobile-drawer-head">
+    <Brand />
+    <button type="button" data-menu-close aria-label="Close navigation"><Icon name="close" /></button>
+  </div>
+
+  <nav class="mobile-drawer-nav">
+    <p class="mobile-nav-label">Pages</p>
+    {pageLinks.map((page) => (
+      <a class:list={{ active: pageIsActive(page) }} href={page.href}>
+        <Icon name={page.icon} />
+        <span><strong>{page.label}</strong><small>{page.description}</small></span>
+      </a>
+    ))}
+
+    <p class="mobile-nav-label">{SITE_SETTINGS.navigation.browseLabel}</p>
+    {CATEGORY_ENTRIES.map(([key, category]) => (
+      <a href={`/?category=${key}#library`}>
+        <Icon name={category.icon} customIcon={category.customIcon} />
+        <span><strong>{category.label}</strong><small>{category.description}</small></span>
+      </a>
+    ))}
+
+    {guideLinks.length > 0 && (
+      <>
+        <p class="mobile-nav-label">Guide pages</p>
+        {guideLinks.map((guide) => {
+          const category = getCategory(guide.category);
+          return (
+            <a
+              class:list={['mobile-guide-link', { active: currentPath === guide.href }]}
+              href={guide.href}
+              data-guide-nav-id={guide.id}
+            >
+              <Icon name={category.icon} customIcon={category.customIcon} />
+              <span><strong>{guide.label}</strong><small>{guide.description}</small></span>
+            </a>
+          );
+        })}
+      </>
+    )}
+
+    <p class="mobile-nav-label">Owner</p>
+    <a class="mobile-post-link" href={POST_METHOD_LINK.href}>
+      <Icon name={POST_METHOD_LINK.icon} />
+      <span><strong>{POST_METHOD_LINK.label}</strong><small>{POST_METHOD_LINK.description}</small></span>
+    </a>
+    <a class="mobile-owner-link" href={OWNER_PAGE_LINK.href}>
+      <Icon name={OWNER_PAGE_LINK.icon} />
+      <span><strong>{OWNER_PAGE_LINK.label}</strong><small>{OWNER_PAGE_LINK.description}</small></span>
+    </a>
+  </nav>
+
+  <div class="mobile-drawer-cta">
+    <p>{SITE_SETTINGS.alerts.mobileDescription}</p>
+    <a class="alerts-button" href={SITE.alertsUrl} target="_blank" rel="noreferrer"><Icon name="external" /> {SITE_SETTINGS.alerts.sidebarButtonLabel}</a>
+  </div>
+</aside>
+
+<script>
+  import { activateFocusScope } from '../lib/focus-scope.js';
+
+  const openButton = document.querySelector('[data-menu-open]');
+  const closeButton = document.querySelector('[data-menu-close]');
+  const drawer = document.querySelector('[data-mobile-menu]');
+  const backdrop = document.querySelector('[data-menu-backdrop]');
+  let releaseFocus: null | ((restoreFocus?: boolean) => void) = null;
+
+  function setMenu(open: boolean) {
+    if (!(drawer instanceof HTMLElement) || !(backdrop instanceof HTMLElement)) return;
+    drawer.classList.toggle('open', open);
+    backdrop.classList.toggle('open', open);
+    drawer.setAttribute('aria-hidden', String(!open));
+    backdrop.setAttribute('aria-hidden', String(!open));
+    openButton?.setAttribute('aria-expanded', String(open));
+    document.documentElement.classList.toggle('menu-open', open);
+
+    if (open) {
+      releaseFocus?.(false);
+      releaseFocus = activateFocusScope(drawer, {
+        initialFocus: closeButton instanceof HTMLElement ? closeButton : drawer,
+        onEscape: () => setMenu(false),
+        returnFocus: openButton instanceof HTMLElement ? openButton : null,
+      });
+    } else {
+      releaseFocus?.();
+      releaseFocus = null;
+    }
+  }
+
+  openButton?.addEventListener('click', () => setMenu(true));
+  closeButton?.addEventListener('click', () => setMenu(false));
+  backdrop?.addEventListener('click', () => setMenu(false));
+  window.matchMedia('(min-width: 768px)').addEventListener('change', (event) => {
+    if (event.matches) setMenu(false);
+  });
+</script>

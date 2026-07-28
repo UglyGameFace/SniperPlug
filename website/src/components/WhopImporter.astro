@@ -1,0 +1,133 @@
+---
+import '../styles/whop-importer.css';
+---
+
+<section class="whop-importer" data-whop-importer hidden>
+  <header class="whop-importer-head">
+    <div>
+      <span class="desk-kicker">Authorized post transfer</span>
+      <h3>Import from Whop</h3>
+      <p>Connect once, choose Black Box, Hidden Files, or another joined group, then approve the posts that should become hidden drafts.</p>
+    </div>
+    <div class="whop-connection" data-whop-connection data-state="checking" role="status" aria-live="polite">
+      <span aria-hidden="true"></span>
+      <div><strong data-whop-connection-title>Checking Whop</strong><small data-whop-connection-detail>No password is shared with SniperPlug.</small></div>
+    </div>
+  </header>
+
+  <div class="whop-connect-actions">
+    <a class="desk-button desk-button-primary" href="/api/whop-oauth-start" data-whop-connect>Continue with Whop</a>
+    <button type="button" data-whop-disconnect hidden>Disconnect Whop</button>
+  </div>
+
+  <section class="whop-source-browser" data-whop-source-browser hidden>
+    <header>
+      <div>
+        <span class="desk-kicker">Your joined groups</span>
+        <h3>Choose where to import from</h3>
+        <p data-whop-source-summary>Finding the Whop forums your connected account can read…</p>
+      </div>
+      <button type="button" data-whop-refresh-sources>Refresh groups</button>
+    </header>
+
+    <div class="whop-source-toolbar">
+      <label><input type="checkbox" data-whop-select-defaults /> <span>Select every Black Box and Hidden Files forum</span></label>
+      <div>
+        <button type="button" class="whop-approve" data-whop-approve-selected disabled>Approve selected</button>
+        <button type="button" class="whop-disapprove" data-whop-disapprove-selected disabled>Disapprove selected</button>
+        <button type="button" data-whop-clear-source-selection disabled>Clear selection</button>
+      </div>
+    </div>
+
+    <div class="whop-group-list" data-whop-group-list></div>
+    <div class="whop-empty" data-whop-source-empty hidden>
+      <strong>No readable Whop forums found</strong>
+      <p>Reconnect after enabling the membership permissions, or use the advanced fallback below.</p>
+    </div>
+  </section>
+
+  <details class="whop-advanced-source" data-whop-advanced-source hidden>
+    <summary>Advanced fallback: paste a Whop experience ID or link</summary>
+    <form class="whop-scan-form" data-whop-scan-form>
+      <label class="desk-field desk-field-wide">
+        <span>Experience ID or link</span>
+        <input name="source" placeholder="exp_xxxxxxxxxxxxxx or a link containing it" autocomplete="off" />
+        <small>This is only a fallback when Whop cannot automatically list a forum.</small>
+      </label>
+      <button type="submit" class="desk-button desk-button-primary" data-whop-scan>Check forum</button>
+    </form>
+  </details>
+
+  <div class="whop-scan-status" data-whop-scan-status role="status" aria-live="polite" hidden></div>
+
+  <section class="whop-source-review" data-whop-source-review hidden>
+    <div>
+      <span class="desk-kicker">Forum permission</span>
+      <h3 data-whop-source-title>Whop forum</h3>
+      <p data-whop-source-detail>Approve this forum before scanning its posts.</p>
+    </div>
+    <strong class="whop-decision-badge" data-whop-source-state data-state="pending">Needs decision</strong>
+    <div class="whop-decision-actions">
+      <button type="button" class="whop-approve" data-whop-source-approve>Approve forum</button>
+      <button type="button" class="whop-disapprove" data-whop-source-disapprove>Disapprove forum</button>
+    </div>
+  </section>
+
+  <section class="whop-review" data-whop-review hidden>
+    <header>
+      <div><span class="desk-kicker">Post review</span><h3 data-whop-experience-title>Whop posts</h3><p data-whop-scan-summary></p></div>
+      <div class="whop-selection-actions">
+        <button type="button" class="whop-approve" data-whop-approve-ready>Approve all ready</button>
+        <button type="button" class="whop-disapprove" data-whop-disapprove-all>Disapprove all</button>
+        <button type="button" data-whop-reset-decisions>Reset choices</button>
+      </div>
+    </header>
+
+    <div class="whop-import-settings">
+      <label class="desk-field"><span>Website category</span><select data-whop-category required></select></label>
+      <label class="whop-rights-confirm"><input type="checkbox" data-whop-rights /> <span>I own these posts or have explicit permission to republish them on SniperPlug.</span></label>
+    </div>
+
+    <div class="whop-decision-summary" aria-live="polite">
+      <span><strong data-whop-approved-count>0</strong> approved</span>
+      <span><strong data-whop-disapproved-count>0</strong> disapproved</span>
+      <span><strong data-whop-pending-count>0</strong> need a decision</span>
+      <span><strong data-whop-blocked-count>0</strong> blocked</span>
+    </div>
+
+    <div class="whop-guide-list" data-whop-guide-list></div>
+    <div class="whop-empty" data-whop-empty hidden><strong>No importable posts found</strong><p>This forum may be empty or your Whop access may not include its posts.</p></div>
+
+    <footer>
+      <p><strong data-whop-selected-count>0 approved for import</strong><span>Everything imports as a hidden draft. Nothing becomes public automatically.</span></p>
+      <button type="button" class="desk-button desk-button-primary" data-whop-import disabled>Import approved drafts</button>
+    </footer>
+  </section>
+
+  <div class="desk-modal-backdrop whop-preview-backdrop" data-whop-preview-backdrop aria-hidden="true" hidden>
+    <section class="whop-preview" role="dialog" aria-modal="true" aria-labelledby="whop-preview-title">
+      <header><div><span class="desk-kicker">Exact source preview</span><h2 id="whop-preview-title" data-whop-preview-title>Post preview</h2></div><button type="button" data-whop-preview-close aria-label="Close preview">×</button></header>
+      <div class="whop-preview-meta" data-whop-preview-meta></div>
+      <pre data-whop-preview-body></pre>
+      <footer><button type="button" data-whop-preview-close>Close preview</button></footer>
+    </section>
+  </div>
+</section>
+
+<script is:inline>
+  (() => {
+    const mount = () => {
+      const importer = document.querySelector('[data-whop-importer]');
+      const methods = document.querySelector('[data-control-panel="methods"]');
+      const topbar = methods?.querySelector('.cc-methods-topbar');
+      if (!(importer instanceof HTMLElement) || !(methods instanceof HTMLElement)) return;
+      if (importer.parentElement !== methods) methods.insertBefore(importer, topbar?.nextSibling || methods.firstChild);
+      importer.hidden = false;
+    };
+    window.addEventListener('sniperplug-settings-loaded', mount);
+  })();
+</script>
+
+<script>
+  import '../scripts/whop-importer.js';
+</script>

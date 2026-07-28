@@ -1,0 +1,309 @@
+---
+import { getCollection } from 'astro:content';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import HackCard from '../components/HackCard.astro';
+import Icon from '../components/Icon.astro';
+import { CATEGORY_ENTRIES, CATEGORIES, SITE, SITE_SETTINGS } from '../config';
+
+const hacks = (await getCollection('hacks', ({ data }) => data.managed && !data.draft))
+  .sort((a, b) => Number(b.data.featured) - Number(a.data.featured) || a.data.order - b.data.order);
+const featured = hacks.filter((hack) => hack.data.featured).slice(0, 12);
+const showFeatured = SITE_SETTINGS.homepage.showFeatured
+  && featured.length >= SITE_SETTINGS.homepage.featuredMinimum;
+const methodWord = hacks.length === 1 ? 'METHOD' : 'METHODS';
+const categoryCounts = Object.keys(CATEGORIES).reduce<Record<string, number>>((counts, key) => {
+  counts[key] = hacks.filter((hack) => hack.data.category === key).length;
+  return counts;
+}, {});
+const trustIcons = ['shield', 'spark', 'clock'] as const;
+---
+
+<BaseLayout>
+  <section class="hero-section">
+    <div class="hero-grid-overlay"></div>
+    <div class="hero-content">
+      <div class="eyebrow"><span></span> {SITE_SETTINGS.homepage.eyebrow}</div>
+      <h1>{SITE_SETTINGS.homepage.headlinePrefix}<br /><em>{SITE_SETTINGS.homepage.headlineHighlight}</em> {SITE_SETTINGS.homepage.headlineSuffix}</h1>
+      <p class="hero-lead">{SITE_SETTINGS.homepage.lead}</p>
+      <div class="hero-actions">
+        <a class="primary-cta" href="#library"><Icon name="book" /> {SITE_SETTINGS.homepage.primaryCtaLabel}</a>
+        <a class="secondary-cta" href={SITE.alertsUrl} target="_blank" rel="noreferrer"><Icon name="external" /> {SITE_SETTINGS.homepage.secondaryCtaLabel}</a>
+      </div>
+      <div class="hero-trust">
+        {SITE_SETTINGS.homepage.trustItems.map((item, index) => (
+          <span><Icon name={trustIcons[index] ?? 'shield'} /> {item}</span>
+        ))}
+      </div>
+    </div>
+
+    {SITE_SETTINGS.homepage.showTerminal && (
+      <div class="hero-console" data-mobile-console data-expanded="false">
+        <button
+          type="button"
+          class="console-mobile-summary"
+          data-console-toggle
+          aria-expanded="false"
+          aria-controls="sniperplug-console-details"
+        >
+          <span class="console-mobile-led" aria-hidden="true"></span>
+          <span class="console-mobile-copy">
+            <strong><span data-console-method-count>{hacks.length}</span> ACTIVE <span data-console-method-word>{methodWord}</span></strong>
+            <small>System {SITE_SETTINGS.homepage.terminalStatus.toLowerCase()} · tap for details</small>
+          </span>
+          <b aria-hidden="true">⌄</b>
+        </button>
+        <div class="console-bar"><span></span><span></span><span></span><small>{SITE_SETTINGS.homepage.terminalTitle}</small></div>
+        <div class="console-body" id="sniperplug-console-details">
+          <p><span class="console-prompt">$</span> loading guide index...</p>
+          <p><span class="console-ok">✓</span> {hacks.length} active field guides</p>
+          <p><span class="console-ok">✓</span> {CATEGORY_ENTRIES.length} tactical categories</p>
+          <p><span class="console-ok">✓</span> static + fast by default</p>
+          <div class="console-divider"></div>
+          <p class="console-dim">STATUS <span>{SITE_SETTINGS.homepage.terminalStatus}</span></p>
+        </div>
+      </div>
+    )}
+  </section>
+
+  {SITE_SETTINGS.homepage.showCategories && (
+    <section class="category-strip" aria-label="Guide categories">
+      {CATEGORY_ENTRIES.map(([key, category]) => (
+        <a href={`/?category=${key}#library`} class={`category-summary accent-${category.accent}`}>
+          <span class="category-summary-icon"><Icon name={category.icon} customIcon={category.customIcon} /></span>
+          <span><strong>{category.label}</strong><small>{categoryCounts[key]} guides available</small></span>
+          <Icon name="chevron" class="category-chevron" />
+        </a>
+      ))}
+    </section>
+  )}
+
+  {showFeatured && (
+    <section class="featured-section">
+      <div class="section-heading">
+        <div><span class="kicker">Start here</span><h2>Featured plays</h2></div>
+        <p>The clearest, highest-utility guides for new members.</p>
+      </div>
+      <div class="featured-grid">
+        {featured.map((hack) => <HackCard hack={hack} />)}
+      </div>
+    </section>
+  )}
+
+  <section id="library" class="library-section">
+    <div class="section-heading library-heading">
+      <div><span class="kicker">{SITE_SETTINGS.homepage.libraryKicker}</span><h2>{SITE_SETTINGS.homepage.libraryTitle}</h2></div>
+      <p>{SITE_SETTINGS.homepage.libraryDescription}</p>
+    </div>
+
+    {SITE_SETTINGS.homepage.showSearch && (
+      <div class="filter-panel">
+        <label class="search-field" for="hack-search">
+          <Icon name="search" />
+          <input id="hack-search" type="search" placeholder="Search guides, stores, apps..." autocomplete="off" data-search-input />
+          <kbd>/</kbd>
+        </label>
+        <div class="filter-buttons" role="group" aria-label="Filter guides by category">
+          <button type="button" class="active" data-filter="all">All <span>{hacks.length}</span></button>
+          {CATEGORY_ENTRIES.map(([key, category]) => (
+            <button type="button" data-filter={key}>{category.label} <span>{categoryCounts[key]}</span></button>
+          ))}
+        </div>
+        <div class="result-status" aria-live="polite"><span data-result-count>{hacks.length}</span> guides shown</div>
+      </div>
+    )}
+
+    <div class="hack-grid" data-card-grid>
+      {hacks.map((hack) => <HackCard hack={hack} />)}
+    </div>
+
+    <div class="empty-state" data-empty-state hidden>
+      <span><Icon name="search" /></span>
+      <h3>No matching field guide</h3>
+      <p>Try a broader keyword or clear the category filter.</p>
+      <button type="button" data-clear-search>Reset search</button>
+    </div>
+  </section>
+
+  {SITE_SETTINGS.homepage.showAlertsBanner && (
+    <section class="alerts-banner">
+      <div>
+        <span class="kicker">{SITE_SETTINGS.alerts.bannerKicker}</span>
+        <h2>{SITE_SETTINGS.alerts.bannerTitle}</h2>
+        <p>{SITE_SETTINGS.alerts.bannerDescription}</p>
+      </div>
+      <a href={SITE.alertsUrl} target="_blank" rel="noreferrer"><Icon name="external" /> {SITE_SETTINGS.alerts.bannerButtonLabel} <Icon name="arrow" /></a>
+    </section>
+  )}
+</BaseLayout>
+
+<script>
+  // @ts-nocheck
+  const input = document.querySelector('[data-search-input]');
+  const cards = [...document.querySelectorAll('[data-hack-card]')];
+  const filterButtons = [...document.querySelectorAll('[data-filter]')];
+  const count = document.querySelector('[data-result-count]');
+  const empty = document.querySelector('[data-empty-state]');
+  const clear = document.querySelector('[data-clear-search]');
+  const consolePanel = document.querySelector('[data-mobile-console]');
+  const consoleToggle = document.querySelector('[data-console-toggle]');
+  const consoleMethodCount = document.querySelector('[data-console-method-count]');
+  const consoleMethodWord = document.querySelector('[data-console-method-word]');
+  let activeFilter = 'all';
+  let liveStatuses = {};
+
+  if (consolePanel instanceof HTMLElement && consoleToggle instanceof HTMLButtonElement) {
+    consoleToggle.addEventListener('click', () => {
+      const expanded = consolePanel.dataset.expanded !== 'true';
+      consolePanel.dataset.expanded = String(expanded);
+      consoleToggle.setAttribute('aria-expanded', String(expanded));
+    });
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const initialCategory = params.get('category');
+  if (initialCategory && filterButtons.some((button) => button.getAttribute('data-filter') === initialCategory)) {
+    activeFilter = initialCategory;
+  }
+
+  function effectiveStatus(entry) {
+    if (window.SniperPlugStatus?.effectiveStatus) return window.SniperPlugStatus.effectiveStatus(entry);
+    if (!entry) return 'active';
+    if (entry.expiresAt && Date.parse(entry.expiresAt) <= Date.now()) return 'expired';
+    return entry.status || 'active';
+  }
+
+  function remainingLabel(expiresAt) {
+    const diff = Date.parse(expiresAt) - Date.now();
+    if (diff <= 0) return 'Expired';
+    const minutes = Math.ceil(diff / 60000);
+    if (minutes < 60) return `Ends in ${minutes}m`;
+    const hours = Math.ceil(minutes / 60);
+    if (hours < 48) return `Ends in ${hours}h`;
+    return `Ends in ${Math.ceil(hours / 24)}d`;
+  }
+
+  function updateConsoleSummary() {
+    const activeCount = cards.reduce((total, card) => {
+      if (!(card instanceof HTMLElement)) return total;
+      const entry = card.dataset.guideId ? liveStatuses[card.dataset.guideId] : null;
+      return total + (effectiveStatus(entry) === 'active' ? 1 : 0);
+    }, 0);
+    if (consoleMethodCount) consoleMethodCount.textContent = String(activeCount);
+    if (consoleMethodWord) consoleMethodWord.textContent = activeCount === 1 ? 'METHOD' : 'METHODS';
+  }
+
+  function applyLiveStatuses() {
+    cards.forEach((card) => {
+      if (!(card instanceof HTMLElement)) return;
+      const id = card.dataset.guideId;
+      const entry = id ? liveStatuses[id] : null;
+      const status = effectiveStatus(entry);
+      const visible = status !== 'paused' && status !== 'expired';
+      card.dataset.liveVisible = visible ? 'true' : 'false';
+      card.dataset.liveStatus = status;
+
+      const badge = card.querySelector('[data-live-status-label]');
+      if (!(badge instanceof HTMLElement)) return;
+      const staticBadge = badge.dataset.staticBadge || '';
+      badge.classList.remove('live-active', 'live-expiring');
+
+      if (!entry) {
+        badge.textContent = staticBadge;
+        badge.hidden = !staticBadge;
+        return;
+      }
+
+      if (status === 'active' && entry.expiresAt) {
+        badge.textContent = remainingLabel(entry.expiresAt);
+        badge.hidden = false;
+        const remaining = Date.parse(entry.expiresAt) - Date.now();
+        badge.classList.toggle('live-expiring', remaining > 0 && remaining <= 6 * 60 * 60 * 1000);
+        return;
+      }
+
+      if (status === 'active') {
+        badge.textContent = staticBadge || 'Active';
+        badge.hidden = false;
+        badge.classList.add('live-active');
+      }
+    });
+    updateConsoleSummary();
+  }
+
+  function applyFilters() {
+    const query = input instanceof HTMLInputElement ? input.value.trim().toLowerCase() : '';
+    let visible = 0;
+    cards.forEach((card) => {
+      if (!(card instanceof HTMLElement)) return;
+      const matchesCategory = activeFilter === 'all' || card.dataset.category === activeFilter;
+      const matchesSearch = !query || card.dataset.search?.includes(query);
+      const liveVisible = card.dataset.liveVisible !== 'false';
+      const show = Boolean(matchesCategory && matchesSearch && liveVisible);
+      card.hidden = !show;
+      if (show) visible += 1;
+    });
+    if (count) count.textContent = String(visible);
+    if (empty instanceof HTMLElement) empty.hidden = visible !== 0;
+    filterButtons.forEach((button) => {
+      button.classList.toggle('active', button.getAttribute('data-filter') === activeFilter);
+      button.setAttribute('aria-pressed', String(button.getAttribute('data-filter') === activeFilter));
+    });
+  }
+
+  function consumeLiveStatuses(payload = {}) {
+    liveStatuses = payload.statuses || {};
+    applyLiveStatuses();
+    applyFilters();
+  }
+
+  async function connectLiveStatuses() {
+    if (!window.SniperPlugStatus) {
+      window.addEventListener('sniperplug-status-ready', connectLiveStatuses, { once: true });
+      return;
+    }
+
+    window.SniperPlugStatus.subscribe(consumeLiveStatuses);
+    try {
+      consumeLiveStatuses(await window.SniperPlugStatus.get());
+    } catch {
+      // The static library stays usable if live status cannot be loaded.
+    }
+  }
+
+  filterButtons.forEach((button) => button.addEventListener('click', () => {
+    activeFilter = button.getAttribute('data-filter') ?? 'all';
+    const nextUrl = new URL(window.location.href);
+    if (activeFilter === 'all') nextUrl.searchParams.delete('category');
+    else nextUrl.searchParams.set('category', activeFilter);
+    history.replaceState({}, '', nextUrl);
+    applyFilters();
+  }));
+
+  input?.addEventListener('input', applyFilters);
+  clear?.addEventListener('click', () => {
+    if (input instanceof HTMLInputElement) input.value = '';
+    activeFilter = 'all';
+    history.replaceState({}, '', window.location.pathname + '#library');
+    applyFilters();
+    if (input instanceof HTMLInputElement) input.focus();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    const target = event.target;
+    const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+    if (event.key === '/' && !typing) {
+      event.preventDefault();
+      if (input instanceof HTMLInputElement) input.focus();
+    }
+    if (event.key === 'Escape' && input instanceof HTMLInputElement && document.activeElement === input) {
+      input.value = '';
+      applyFilters();
+      input.blur();
+    }
+  });
+
+  applyLiveStatuses();
+  applyFilters();
+  connectLiveStatuses();
+  window.setInterval(() => { applyLiveStatuses(); applyFilters(); }, 60000);
+</script>

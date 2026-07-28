@@ -1,0 +1,19 @@
+/*
+  Content-Security-Policy: default-src 'self'; connect-src 'self' https://api.github.com https://api.whop.com; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Cross-Origin-Opener-Policy: same-origin
+
+/control-center/*
+  Cache-Control: no-store
+  X-Robots-Tag: noindex, nofollow, noarchive
+
+/api/*
+  Cache-Control: no-store
+  X-Robots-Tag: noindex, nofollow, noarchive
+
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable

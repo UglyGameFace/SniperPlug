@@ -1,0 +1,200 @@
+---
+import { getCollection, render, type CollectionEntry } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import Icon from '../../components/Icon.astro';
+import { getCategory, SITE } from '../../config';
+
+export async function getStaticPaths() {
+  const hacks = (await getCollection('hacks', ({ data }) => data.managed && !data.draft))
+    .sort((left, right) => left.data.order - right.data.order);
+
+  return hacks.map((hack) => ({
+    params: { id: hack.id },
+    props: {
+      hack,
+      related: hacks
+        .filter((item) => item.id !== hack.id && item.data.category === hack.data.category)
+        .slice(0, 3),
+    },
+  }));
+}
+
+interface Props {
+  hack: CollectionEntry<'hacks'>;
+  related: CollectionEntry<'hacks'>[];
+}
+const { hack, related } = Astro.props;
+const { Content, headings } = await render(hack);
+const category = getCategory(hack.data.category);
+const formatDate = (date: Date) => new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+---
+
+<BaseLayout
+  title={`${hack.data.title} | ${SITE.name}`}
+  description={hack.data.description}
+  activeCategory={hack.data.category}
+  article
+>
+  <div class="reading-progress" data-reading-progress></div>
+  <article class="guide-page" data-guide-id={hack.id}>
+    <header class={`guide-hero accent-${category.accent}`}>
+      <a href={`/?category=${hack.data.category}#library`} class="guide-back"><span>←</span> Back to {category.label}</a>
+      <div class="guide-category"><Icon name={category.icon} customIcon={category.customIcon} /> {category.label}</div>
+      <h1>{hack.data.title}</h1>
+      <p>{hack.data.description}</p>
+      <div class="guide-meta">
+        <span><Icon name="clock" /> {hack.data.readTime} read</span>
+        <span><Icon name="calendar" /> Updated {formatDate(hack.data.updated ?? hack.data.published)}</span>
+        <span><Icon name="shield" /> Community guide</span>
+        <span data-guide-live-status hidden></span>
+      </div>
+    </header>
+
+    <div class="guide-live-alert" data-guide-live-alert hidden>
+      <strong data-guide-live-title>Method status changed</strong>
+      <p data-guide-live-copy></p>
+      <a href="/#library">Browse current methods</a>
+    </div>
+
+    <div class="guide-layout" data-guide-live-content>
+      <div class="guide-content-wrap">
+        <div class="guide-notice">
+          <Icon name="shield" />
+          <p><strong>Play it clean.</strong> Follow store terms, use accurate information, and verify prices or rewards before spending.</p>
+        </div>
+        <div class="guide-prose prose prose-invert max-w-none">
+          <Content />
+        </div>
+        <div class="guide-end-card">
+          <div><span>SP</span></div>
+          <section><strong>Found this useful?</strong><p>Share corrections and current findings through SniperPlug alerts.</p></section>
+          <a href={SITE.alertsUrl} target="_blank" rel="noreferrer"><Icon name="external" /> Open deal alerts</a>
+        </div>
+      </div>
+
+      <aside class="guide-toc" aria-label="Table of contents">
+        <div class="toc-card">
+          <span class="toc-label">On this page</span>
+          <nav>
+            {headings.filter((heading) => heading.depth <= 3).map((heading) => (
+              <a class:list={[`depth-${heading.depth}`]} href={`#${heading.slug}`}>{heading.text}</a>
+            ))}
+          </nav>
+          <div class="toc-divider"></div>
+          <a class="toc-alerts" href={SITE.alertsUrl} target="_blank" rel="noreferrer"><Icon name="external" /> Join SniperPlug</a>
+        </div>
+      </aside>
+    </div>
+
+    {related.length > 0 && (
+      <section class="related-guides" data-guide-live-related>
+        <div class="section-heading"><div><span class="kicker">Keep learning</span><h2>More {category.label}</h2></div></div>
+        <div class="related-grid">
+          {related.map((item) => (
+            <a href={`/guides/${item.id}/`}>
+              <span>{item.data.readTime}</span>
+              <h3>{item.data.title}</h3>
+              <p>{item.data.description}</p>
+              <strong>Read guide <Icon name="arrow" /></strong>
+            </a>
+          ))}
+        </div>
+      </section>
+    )}
+  </article>
+</BaseLayout>
+
+<script>
+  // @ts-nocheck
+  const progress = document.querySelector('[data-reading-progress]');
+  const page = document.querySelector('[data-guide-id]');
+  const alert = document.querySelector('[data-guide-live-alert]');
+  const alertTitle = document.querySelector('[data-guide-live-title]');
+  const alertCopy = document.querySelector('[data-guide-live-copy]');
+  const liveStatus = document.querySelector('[data-guide-live-status]');
+  const content = document.querySelector('[data-guide-live-content]');
+  const related = document.querySelector('[data-guide-live-related]');
+
+  function updateProgress() {
+    if (!(progress instanceof HTMLElement)) return;
+    const height = document.documentElement.scrollHeight - window.innerHeight;
+    const value = height > 0 ? Math.min(100, Math.max(0, (window.scrollY / height) * 100)) : 0;
+    progress.style.width = `${value}%`;
+  }
+
+  function remainingLabel(expiresAt) {
+    const diff = Date.parse(expiresAt) - Date.now();
+    if (diff <= 0) return 'Expired';
+    const minutes = Math.ceil(diff / 60000);
+    if (minutes < 60) return `Ends in ${minutes}m`;
+    const hours = Math.ceil(minutes / 60);
+    if (hours < 48) return `Ends in ${hours}h`;
+    return `Ends in ${Math.ceil(hours / 24)}d`;
+  }
+
+  function renderLiveStatus(payload = {}) {
+    if (!(page instanceof HTMLElement)) return;
+    const entry = payload.statuses?.[page.dataset.guideId];
+    if (!entry) return;
+    const status = window.SniperPlugStatus?.effectiveStatus
+      ? window.SniperPlugStatus.effectiveStatus(entry)
+      : entry.expiresAt && Date.parse(entry.expiresAt) <= Date.now() ? 'expired' : entry.status;
+
+    if (status === 'expired' || status === 'paused') {
+      if (alert instanceof HTMLElement) {
+        alert.hidden = false;
+        alert.dataset.status = status;
+      }
+      if (alertTitle) alertTitle.textContent = status === 'expired' ? 'This method has expired' : 'This method is temporarily paused';
+      if (alertCopy) alertCopy.textContent = status === 'expired'
+        ? 'The Deal Desk marked this method inactive, so the instructions are hidden until it is reactivated.'
+        : 'The method is under review or temporarily unavailable. Check back later or browse current methods.';
+      if (content instanceof HTMLElement) content.hidden = true;
+      if (related instanceof HTMLElement) related.hidden = true;
+      if (liveStatus instanceof HTMLElement) {
+        liveStatus.hidden = false;
+        liveStatus.textContent = status;
+        liveStatus.dataset.status = status;
+      }
+      return;
+    }
+
+    if (alert instanceof HTMLElement) alert.hidden = true;
+    if (content instanceof HTMLElement) content.hidden = false;
+    if (related instanceof HTMLElement) related.hidden = false;
+    if (liveStatus instanceof HTMLElement) {
+      liveStatus.hidden = false;
+      liveStatus.textContent = entry.expiresAt ? remainingLabel(entry.expiresAt) : 'Active';
+      liveStatus.dataset.status = entry.expiresAt ? 'expiring' : 'active';
+    }
+  }
+
+  async function connectLiveStatus() {
+    if (!window.SniperPlugStatus) {
+      window.addEventListener('sniperplug-status-ready', connectLiveStatus, { once: true });
+      return;
+    }
+
+    window.SniperPlugStatus.subscribe(renderLiveStatus);
+    try {
+      renderLiveStatus(await window.SniperPlugStatus.get());
+    } catch {
+      // The static guide remains readable if live status cannot be loaded.
+    }
+  }
+
+  updateProgress();
+  connectLiveStatus();
+  document.addEventListener('scroll', updateProgress, { passive: true });
+</script>
+
+<style>
+  .guide-live-alert { margin: 2rem clamp(2rem,6vw,7rem) 0; border: 1px solid rgba(255,105,97,.32); border-left: 4px solid #ff6961; border-radius: .65rem; background: rgba(255,105,97,.08); padding: 1.1rem 1.2rem; }
+  .guide-live-alert[data-status="paused"] { border-color: rgba(255,189,74,.3); border-left-color: var(--amber); background: rgba(255,189,74,.07); }
+  .guide-live-alert strong { display: block; font: 800 .82rem/1 var(--mono); text-transform: uppercase; }
+  .guide-live-alert p { margin: .55rem 0 .8rem; color: var(--muted); font-size: .8rem; line-height: 1.55; }
+  .guide-live-alert a { color: var(--lime); font: 750 .64rem/1 var(--mono); text-transform: uppercase; }
+  [data-guide-live-status] { border: 1px solid rgba(183,255,60,.25); border-radius: 99px; background: var(--lime-soft); color: var(--lime); padding: .38rem .55rem; }
+  [data-guide-live-status][data-status="expired"] { border-color: rgba(255,105,97,.25); background: rgba(255,105,97,.08); color: #ff8983; }
+  [data-guide-live-status][data-status="paused"], [data-guide-live-status][data-status="expiring"] { border-color: rgba(255,189,74,.25); background: rgba(255,189,74,.08); color: var(--amber); }
+</style>

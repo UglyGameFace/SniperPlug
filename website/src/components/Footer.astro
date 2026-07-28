@@ -1,0 +1,17 @@
+---
+import Icon from './Icon.astro';
+import { SITE, SITE_SETTINGS } from '../config';
+const year = new Date().getFullYear();
+---
+
+<footer class="site-footer">
+  <div>
+    <strong>{SITE.name}</strong>
+    <p>{SITE_SETTINGS.footer.description}</p>
+  </div>
+  <div class="footer-actions">
+    <nav aria-label="Legal"><a href="/privacy/">Privacy</a><a href="/terms/">Terms</a><a href="/affiliate-disclosure/">Affiliate disclosure</a><a href="/contact/">Contact</a></nav>
+    <a href={SITE.alertsUrl} target="_blank" rel="noreferrer"><Icon name="external" /> {SITE_SETTINGS.footer.alertsButtonLabel}</a>
+    <span>© {year} {SITE.name}</span>
+  </div>
+</footer>

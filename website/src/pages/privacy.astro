@@ -1,0 +1,16 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+<BaseLayout title="Privacy Policy | SniperPlug" description="Privacy policy">
+  <article class="legal-page"><span class="kicker">Last updated July 28, 2026</span><h1>Privacy policy</h1><p>SniperPlug limits data collection to what is needed to operate the website, protect owner tools, answer messages, and measure reliability.</p><h2>Information processed</h2><p>Standard request metadata may be processed by Cloudflare for delivery and security. Owner-only tools use secure cookies and server-side credentials. Private OAuth tokens and passwords are never placed in public pages or repositories.</p><h2>Third-party links</h2><p>Retailer and partner links lead to third-party services with their own privacy practices.</p><h2>Contact</h2><p>Privacy questions may be sent to <a href="mailto:support@sniperplug.com">support@sniperplug.com</a>.</p></article>
+</BaseLayout>
+<style>
+.legal-page { max-width: 68rem; margin: 0 auto; padding: clamp(3rem,7vw,7rem) clamp(1.2rem,5vw,5rem); }
+.legal-page h1 { margin:.5rem 0 1.2rem; font-size:clamp(2.6rem,7vw,5.8rem); line-height:.9; letter-spacing:-.055em; text-transform:uppercase; }
+.legal-page h2 { margin:2rem 0 .6rem; font-size:1.15rem; text-transform:uppercase; }
+.legal-page p { max-width:52rem; color:var(--muted); line-height:1.8; }
+.legal-page a { color:var(--lime); }
+.legal-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(16rem,1fr)); gap:1rem; margin-top:2rem; }
+.legal-grid section { border:1px solid var(--line); border-radius:.8rem; background:var(--panel); padding:1.3rem; }
+.legal-cta { display:inline-flex; margin-top:1.5rem; border-radius:.5rem; background:var(--lime); color:var(--on-accent)!important; padding:.85rem 1rem; font-weight:800; text-transform:uppercase; }
+</style>

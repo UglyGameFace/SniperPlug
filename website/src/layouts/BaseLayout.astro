@@ -1,0 +1,97 @@
+---
+import '../styles/global.css';
+import '../styles/live-status.css';
+import '../styles/home-compact.css';
+import '../styles/site-settings.css';
+import '../styles/theme.css';
+import '../styles/site-hardening.css';
+import '../styles/app-shell.css';
+import '../styles/navigation-buttons.css';
+import '../styles/custom-categories.css';
+import '../styles/layout-system.css';
+import '../styles/responsive-content-safety.css';
+import Sidebar from '../components/Sidebar.astro';
+import MobileHeader from '../components/MobileHeader.astro';
+import Footer from '../components/Footer.astro';
+import statusDocument from '../data/deal-status.json';
+import { ACTIVE_THEME, SITE, SITE_SETTINGS, type CategoryKey } from '../config';
+import { getPublicGuideLinks } from '../navigation';
+
+interface Props {
+  title?: string;
+  description?: string;
+  image?: string;
+  activeCategory?: CategoryKey | 'all';
+  article?: boolean;
+  noindex?: boolean;
+  chrome?: boolean;
+}
+
+const {
+  title = SITE.title,
+  description = SITE.description,
+  image = SITE.shareImage,
+  activeCategory = 'all',
+  article = false,
+  noindex = false,
+  chrome = true,
+} = Astro.props;
+const canonical = new URL(Astro.url.pathname, SITE.siteUrl);
+const ogImage = new URL(image, SITE.siteUrl);
+const themeVariables = [
+  `--lime:${ACTIVE_THEME.accent}`,
+  `--accent-rgb:${ACTIVE_THEME.rgb}`,
+  `--lime-soft:${ACTIVE_THEME.soft}`,
+  `--on-accent:${ACTIVE_THEME.onAccent}`,
+].join(';');
+const guideLinks = chrome ? await getPublicGuideLinks() : [];
+const buildVersion = String(
+  import.meta.env.CF_PAGES_COMMIT_SHA
+  || import.meta.env.GITHUB_SHA
+  || 'local',
+).slice(0, 12);
+const statusBootstrap = JSON.stringify({
+  statuses: statusDocument,
+  checkedAt: null,
+  buildVersion,
+}).replace(/</g, '\\u003c');
+---
+
+<!doctype html>
+<html lang="en" style={themeVariables} data-build-version={buildVersion}>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#090b0e" />
+    <meta name="description" content={description} />
+    <meta name="site-build" content={buildVersion} />
+    {noindex && <meta name="robots" content="noindex, nofollow, noarchive" />}
+    <meta name="generator" content={Astro.generator} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:type" content={article ? 'article' : 'website'} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:site_name" content={SITE.name} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <title>{title}</title>
+  </head>
+  <body class:list={[`density-${SITE_SETTINGS.theme.density}`, { 'no-site-chrome': !chrome }]}>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    {chrome && <Sidebar activeCategory={activeCategory} guideLinks={guideLinks} />}
+    {chrome && <MobileHeader guideLinks={guideLinks} />}
+    <div class="site-shell">
+      <main id="main-content"><slot /></main>
+      {chrome && <Footer />}
+    </div>
+    <script type="application/json" id="sniperplug-status-bootstrap" set:html={statusBootstrap}></script>
+    <script src={`/site-status.js?v=${buildVersion}`} defer></script>
+    <script src={`/navigation-buttons.js?v=${buildVersion}`} defer></script>
+  </body>
+</html>

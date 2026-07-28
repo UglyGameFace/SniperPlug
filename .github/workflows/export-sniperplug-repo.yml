@@ -1,0 +1,29 @@
+name: Export SniperPlug repository
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Upload repository snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: sniperplug-private-repository
+          path: |
+            .
+            !.git/**
+            !.venv/**
+            !node_modules/**
+            !dist/**
+          include-hidden-files: true
+          retention-days: 1

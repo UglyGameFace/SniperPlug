@@ -1,0 +1,45 @@
+name: SniperPlug website validation
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      - '.github/workflows/sniperplug-site-validation.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'website/**'
+      - '.github/workflows/sniperplug-site-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sniperplug-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Run full website production build
+        run: npm run build
+      - name: Verify Cloudflare Pages output
+        run: |
+          test -f dist/index.html
+          test -f dist/control-center/index.html
+          test -f public/_routes.json
+          test -f functions/api/'[[path]].js'

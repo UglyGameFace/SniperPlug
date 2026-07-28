@@ -32,6 +32,14 @@ export const PUBLIC_PAGE_LINKS = [
   },
 ] as const;
 
+export type PublicPageLink = {
+  id: (typeof PUBLIC_PAGE_LINKS)[number]['id'];
+  label: string;
+  description: string;
+  href: string;
+  icon: (typeof PUBLIC_PAGE_LINKS)[number]['icon'];
+};
+
 export const POST_METHOD_LINK = {
   id: 'post-method',
   label: 'Post a Method',

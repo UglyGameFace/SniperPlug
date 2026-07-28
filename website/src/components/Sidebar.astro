@@ -2,7 +2,7 @@
 import Brand from './Brand.astro';
 import Icon from './Icon.astro';
 import { CATEGORY_ENTRIES, getCategory, SITE, SITE_SETTINGS, type CategoryKey } from '../config';
-import { OWNER_PAGE_LINK, POST_METHOD_LINK, PUBLIC_PAGE_LINKS, type PublicGuideLink } from '../navigation';
+import { OWNER_PAGE_LINK, POST_METHOD_LINK, PUBLIC_PAGE_LINKS, type PublicGuideLink, type PublicPageLink } from '../navigation';
 
 interface Props {
   activeCategory?: CategoryKey | 'all';
@@ -11,19 +11,18 @@ interface Props {
 
 const { activeCategory = 'all', guideLinks = [] } = Astro.props;
 const currentPath = Astro.url.pathname;
-const pageIsActive = (page: (typeof PUBLIC_PAGE_LINKS)[number]) => {
+const pageIsActive = (page: PublicPageLink) => {
   if (page.id === 'home') return currentPath === '/';
   if (page.id === 'library') return false;
   return currentPath === page.href || currentPath.startsWith(page.href);
 };
-const railLabel = (page: (typeof PUBLIC_PAGE_LINKS)[number]) => {
+const railLabel = (page: PublicPageLink) => {
   if (page.id === 'home') return 'Home';
   if (page.id === 'library') return 'Guides';
   if (page.id === 'deals') return 'Deals';
-  if (page.id === 'partners') return 'Partners';
-  return page.label;
+  return 'Partners';
 };
-const pageLinks = PUBLIC_PAGE_LINKS.map((page) => page.id === 'library'
+const pageLinks: PublicPageLink[] = PUBLIC_PAGE_LINKS.map((page) => page.id === 'library'
   ? {
       ...page,
       label: SITE_SETTINGS.navigation.allHacksLabel,

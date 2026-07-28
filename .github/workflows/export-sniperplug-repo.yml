@@ -26,7 +26,7 @@ jobs:
         run: test -f .site-port/READY
       - name: Download source template
         env:
-          SOURCE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-ae78-81f5-93c1-9bf75b31da70/raw?se=2026-07-28T19:11:30Z&sp=r&sv=2026-02-06&sr=b&scid=e0c24d7b-14cc-5ff5-8efd-37b17cf80256&skoid=e9d2f8b1-028a-4cff-8eb1-d0e66fbefcca&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-28T07:20:17Z&ske=2026-07-30T07:20:17Z&sks=b&skv=2026-02-06&sig=Ues/qLCDlvb2S8qJGrKcSWYX2qkEIITCjI2/uzV83/g%3D'
+          SOURCE_URL: 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-9378-81f5-9b69-485dc2cc1c65/raw?se=2026-07-28T19:12:54Z&sp=r&sv=2026-02-06&sr=b&scid=474cf312-9de6-5405-a414-a9e062d3fb52&skoid=e9d2f8b1-028a-4cff-8eb1-d0e66fbefcca&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-07-27T21:33:46Z&ske=2026-07-29T21:33:46Z&sks=b&skv=2026-02-06&sig=Q90NzN7UNDiwu8v8Wg5iSC4SpNhDFtg0dTDw6NafelA%3D'
         run: |
           curl --fail --location --retry 3 "$SOURCE_URL" --output /tmp/lobby-template.zip
           mkdir -p /tmp/lobby-template
@@ -43,6 +43,10 @@ jobs:
             --exclude='README.md' \
             /tmp/lobby-template/ website/
           cat .site-port/patch.part.* | base64 --decode | gzip --decompress > /tmp/sniperplug-site.patch
+          sed -i \
+            -e 's#^rename from /mnt/data/patch_old/#rename from #' \
+            -e 's#^rename to /mnt/data/patch_new/#rename to #' \
+            /tmp/sniperplug-site.patch
           git apply --binary /tmp/sniperplug-site.patch
       - name: Commit one clean site snapshot
         run: |

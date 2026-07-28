@@ -2,7 +2,7 @@
 import Brand from './Brand.astro';
 import Icon from './Icon.astro';
 import { SITE, SITE_SETTINGS, CATEGORY_ENTRIES, getCategory } from '../config';
-import { OWNER_PAGE_LINK, POST_METHOD_LINK, PUBLIC_PAGE_LINKS, type PublicGuideLink } from '../navigation';
+import { OWNER_PAGE_LINK, POST_METHOD_LINK, PUBLIC_PAGE_LINKS, type PublicGuideLink, type PublicPageLink } from '../navigation';
 
 interface Props {
   guideLinks?: PublicGuideLink[];
@@ -10,12 +10,12 @@ interface Props {
 
 const { guideLinks = [] } = Astro.props;
 const currentPath = Astro.url.pathname;
-const pageIsActive = (page: (typeof PUBLIC_PAGE_LINKS)[number]) => {
+const pageIsActive = (page: PublicPageLink) => {
   if (page.id === 'home') return currentPath === '/';
   if (page.id === 'library') return false;
   return currentPath === page.href || currentPath.startsWith(page.href);
 };
-const pageLinks = PUBLIC_PAGE_LINKS.map((page) => page.id === 'library'
+const pageLinks: PublicPageLink[] = PUBLIC_PAGE_LINKS.map((page) => page.id === 'library'
   ? {
       ...page,
       label: SITE_SETTINGS.navigation.allHacksLabel,

@@ -11,6 +11,7 @@ from sniperplug.services.public_posting import normalize_retailer_key
 
 
 ACTIVE_CACHE_STALE_HOURS = 24
+ACTIVE_CACHE_QUERY_LIMIT = 500
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ async def list_cached_active_deals(db, guild_id: int, *, retailer: str = "walmar
     await ensure_public_post_tables(db)
     await mark_stale_active_deals(db, guild_id)
     conn = db.require_conn()
-    safe_limit = max(1, min(int(limit), 15))
+    safe_limit = max(1, min(int(limit), ACTIVE_CACHE_QUERY_LIMIT))
     retailer_key = normalize_retailer_key(retailer) or retailer
     terms = significant_terms(query or "")[:4]
     params: list[Any] = [guild_id, retailer_key]
@@ -180,7 +181,7 @@ def row_from_mapping(row: dict[str, Any]) -> CachedDealRow:
         url=str(row.get("url") or ""),
         current_price=float_or_none(row.get("current_price")),
         discount=float_or_none(row.get("discount")),
-        score=int(row["score"]) if row.get("score") is not None else None,
+        score=int_or_none(row.get("score")),
         source_label=str(row.get("source_label") or "unknown"),
         status=str(row.get("status") or "active"),
         first_seen_at=str(row.get("first_seen_at") or "unknown"),
@@ -212,6 +213,15 @@ def float_or_none(value: Any) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 

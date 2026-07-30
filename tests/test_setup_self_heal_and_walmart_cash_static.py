@@ -12,7 +12,7 @@ API_TRUTH = Path("sniperplug/services/walmart_cash_api_truth.py").read_text(enco
 CATALOG = Path("sniperplug/services/command_catalog.py").read_text(encoding="utf-8")
 
 
-def test_setup_self_heal_exists_and_cleans_ghost_rows():
+def test_setup_repair_service_exists_and_cleans_ghost_rows():
     assert "repair_public_alert_setup" in SELF_HEAL
     assert "repair_all_public_alert_setups" in SELF_HEAL
     assert "cleanup_ghost_setup_rows" in SELF_HEAL
@@ -20,9 +20,14 @@ def test_setup_self_heal_exists_and_cleans_ghost_rows():
     assert "guild_retailer_auto_scan_settings" in SELF_HEAL
 
 
-def test_setup_self_heal_runs_on_ready_and_autoscan_now():
-    assert "repair_all_public_alert_setups" in BOT
-    assert "Setup self-heal complete" in BOT
+def test_setup_repair_is_not_installed_in_bot_startup():
+    assert "repair_all_public_alert_setups" not in BOT
+    assert "Setup self-heal complete" not in BOT
+    assert "_setup_self_heal_done" not in BOT
+    assert "from sniperplug.services.setup_self_heal" not in BOT
+
+
+def test_autoscan_can_repair_explicit_setup_without_startup_guard():
     assert "repair_public_alert_setup" in AUTO
     assert "Public alerts are still missing after self-heal" in AUTO
     assert "This should only require setup on first install" in AUTO

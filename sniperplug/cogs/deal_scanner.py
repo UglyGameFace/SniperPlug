@@ -356,14 +356,14 @@ class HuntPresetButton(discord.ui.Button):
                 await interaction.followup.send(embed=summary, view=HuntPresetMenuView(), ephemeral=True)
                 return
             shown_cards = cards[:5]
-            public_cards = select_public_deal_candidates(shown_cards, source_label=f"hunt:{self.preset.key}", min_discount=self.preset.min_discount, limit=5)
+            public_cards = select_public_deal_candidates(shown_cards, source_label=f"hunt:{self.preset.key}", min_discount=shown_discount, limit=5)
             public_result = await maybe_post_public_deal_cards(
                 bot=interaction.client,
                 guild_id=interaction.guild_id,
                 cards=public_cards,
                 source_label=f"hunt:{self.preset.key}",
                 fallback_retailer="walmart",
-                min_public_discount=self.preset.min_discount,
+                min_public_discount=shown_discount,
             )
             add_public_posting_field(summary, public_result)
             await interaction.followup.send(embeds=[summary] + [card.embed for card in shown_cards], view=PresetResultView(shown_cards), ephemeral=True)
@@ -434,12 +434,19 @@ class DealSearchControlView(discord.ui.View):
             summary = build_scan_summary(result, self.query, min_discount, shown_discount, self.alerts_only, self.simple_mode)
             if cards:
                 shown_cards = cards[:5]
+                public_cards = select_public_deal_candidates(
+                    shown_cards,
+                    source_label="deal_rerun",
+                    min_discount=shown_discount,
+                    limit=5,
+                )
                 public_result = await maybe_post_public_deal_cards(
                     bot=interaction.client,
                     guild_id=interaction.guild_id,
-                    cards=shown_cards,
+                    cards=public_cards,
                     source_label="deal_rerun",
                     fallback_retailer="walmart",
+                    min_public_discount=shown_discount,
                 )
                 summary.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
                 add_public_posting_field(summary, public_result)

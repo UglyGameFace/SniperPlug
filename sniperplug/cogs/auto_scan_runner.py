@@ -832,7 +832,19 @@ async def list_public_alert_guilds(db, *, bot: Any | None = None) -> list[AutoSc
         live_guild_ids = {int(guild.id) for guild in list(getattr(bot, "guilds", []) or [])}
 
     for row in rows:
-        guild_id = int(row["guild_id"])
+        try:
+            raw_guild_id = row["guild_id"]
+        except Exception:
+            try:
+                raw_guild_id = row[0]
+            except Exception:
+                log.warning("Auto-scan skipped malformed public-alert row without guild_id: %r", row)
+                continue
+        try:
+            guild_id = int(raw_guild_id)
+        except (TypeError, ValueError):
+            log.warning("Auto-scan skipped malformed public-alert guild id: %r", raw_guild_id)
+            continue
 
         if live_guild_ids is not None and guild_id not in live_guild_ids:
             log.warning(
@@ -840,15 +852,28 @@ async def list_public_alert_guilds(db, *, bot: Any | None = None) -> list[AutoSc
                 guild_id,
                 sorted(live_guild_ids),
             )
-            await delete_ghost_public_alert_guild_row(db, guild_id)
+            try:
+                await delete_ghost_public_alert_guild_row(db, guild_id)
+            except Exception:
+                log.exception("Auto-scan failed to clean stale guild row but discovery will continue guild=%s", guild_id)
             continue
 
-        config = await get_public_alert_config(db, guild_id)
-        if AUTO_SCAN_RETAILER in set(config.get("retailers") or ()) and config.get("channel_id"):
-            if guild_id in seen:
-                continue
-            seen.add(guild_id)
-            guilds.append(AutoScanGuild(guild_id=guild_id, channel_id=int(config["channel_id"])))
+        try:
+            config = await get_public_alert_config(db, guild_id)
+        except Exception:
+            log.exception("Auto-scan skipped guild because public-alert config could not be read guild=%s", guild_id)
+            continue
+        if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()) or not config.get("channel_id"):
+            continue
+        try:
+            channel_id = int(config["channel_id"])
+        except (TypeError, ValueError):
+            log.warning("Auto-scan skipped guild with malformed public-alert channel id guild=%s channel=%r", guild_id, config.get("channel_id"))
+            continue
+        if guild_id in seen:
+            continue
+        seen.add(guild_id)
+        guilds.append(AutoScanGuild(guild_id=guild_id, channel_id=channel_id))
     return guilds
 
 

@@ -79,29 +79,39 @@ class CachedWalmartProvider(DealProvider):
             return _copy_result(
                 result,
                 warnings=warnings,
-                metadata={**result.metadata, "cache_hit": False, "autoscan_lightweight": True, "db_persistence_skipped": True},
+                metadata={
+                    **result.metadata,
+                    "cache_hit": False,
+                    "autoscan_lightweight": True,
+                    "db_persistence_skipped": True,
+                },
             )
 
         scan_id = None
         requested_by = _int_or_none(request.metadata.get("requested_by"))
         guild_id = _int_or_none(request.metadata.get("guild_id"))
+        errors: list[str] = []
         try:
-            scan_id = await self.db.start_scan_run(guild_id=guild_id, user_id=requested_by, retailer=self.provider_key, query=request.query)
-        except Exception:
-            scan_id = None
+            scan_id = await self.db.start_scan_run(
+                guild_id=guild_id,
+                user_id=requested_by,
+                retailer=self.provider_key,
+                query=request.query,
+            )
+        except Exception as exc:
+            errors.append(f"walmart scan-run start failed: {clean_warning_text(exc)}")
 
         cache_key = _scan_cache_key(request)
         provider_calls = 0
         cache_hits = 0
         cache_misses = 0
-        errors: list[str] = []
         cached_result_used = False
 
         try:
             cached = await self.db.get_scan_result_cache(cache_key)
         except Exception as exc:
             cached = None
-            errors.append(f"walmart scan cache read failed: {exc}")
+            errors.append(f"walmart scan cache read failed: {clean_warning_text(exc)}")
 
         if cached:
             cached_result = mark_hard_provider_failure(_result_from_cache(cached["results"]))
@@ -113,7 +123,12 @@ class CachedWalmartProvider(DealProvider):
                 cached_result_used = True
                 warnings = list(cached_result.warnings)
                 warnings.append("Walmart scan cache hit: reused recent normalized scan result.")
-                result = _copy_result(cached_result, warnings=tuple(warnings), metadata={**cached_result.metadata, "cache_hit": True, "cache_key": cache_key})
+                result = _copy_result(
+                    cached_result,
+                    warnings=tuple(warnings),
+                    metadata={**cached_result.metadata, "cache_hit": True, "cache_key": cache_key},
+                )
+
         if not cached_result_used:
             cache_misses = 1
             provider_calls = 1
@@ -132,11 +147,12 @@ class CachedWalmartProvider(DealProvider):
                         expires_at=_minutes_from_now_iso(WALMART_SCAN_CACHE_MINUTES),
                     )
                 except Exception as exc:
-                    errors.append(f"walmart scan cache write failed: {exc}")
+                    errors.append(f"walmart scan cache write failed: {clean_warning_text(exc)}")
             result = _copy_result(result, metadata={**result.metadata, "cache_hit": False, "cache_key": cache_key})
 
-        await self._persist_candidates(result.candidates)
-        await self._record_query_memory(request, result)
+        errors.extend(await self._persist_candidates(result.candidates))
+        errors.extend(await self._record_query_memory(request, result))
+
         if scan_id:
             try:
                 await self.db.finish_scan_run(
@@ -148,11 +164,24 @@ class CachedWalmartProvider(DealProvider):
                     results_found=len(result.candidates),
                     errors=errors,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                errors.append(f"walmart scan-run finish failed: {clean_warning_text(exc)}")
+
+        if errors:
+            warnings = tuple(dict.fromkeys((*result.warnings, *(f"Walmart persistence warning: {item}" for item in errors))))
+            result = _copy_result(
+                result,
+                warnings=warnings,
+                metadata={
+                    **result.metadata,
+                    "persistence_degraded": True,
+                    "persistence_errors": tuple(errors[:12]),
+                },
+            )
         return result
 
-    async def _persist_candidates(self, candidates: tuple[SourceCandidate, ...]) -> None:
+    async def _persist_candidates(self, candidates: tuple[SourceCandidate, ...]) -> list[str]:
+        errors: list[str] = []
         for candidate in candidates:
             product_key = _product_key(candidate)
             if not product_key:
@@ -171,8 +200,9 @@ class CachedWalmartProvider(DealProvider):
                     image_url=candidate.image_url,
                     last_seen_price=candidate.current_price,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                errors.append(f"identity write failed for {product_key}: {clean_warning_text(exc)}")
+
             if candidate.current_price is not None and candidate.current_price > 0:
                 try:
                     await self.db.record_price_observation(
@@ -185,16 +215,19 @@ class CachedWalmartProvider(DealProvider):
                         title=candidate.title,
                         product_url=candidate.product_url,
                         reference_price=candidate.typical_price,
-                        reference_source=(candidate.variant_attributes or {}).get("trustedReferenceSource") or (candidate.variant_attributes or {}).get("reference_price_source"),
+                        reference_source=(candidate.variant_attributes or {}).get("trustedReferenceSource")
+                        or (candidate.variant_attributes or {}).get("reference_price_source"),
                         source_key=candidate.source_key,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    errors.append(f"price observation failed for {product_key}: {clean_warning_text(exc)}")
+        return errors
 
-    async def _record_query_memory(self, request: ProviderScanRequest, result: ProviderScanResult) -> None:
+    async def _record_query_memory(self, request: ProviderScanRequest, result: ProviderScanResult) -> list[str]:
         guild_id = _int_or_none(request.metadata.get("guild_id")) or 0
         if guild_id <= 0 or not request.query or provider_scan_had_hard_failure(result):
-            return
+            return []
+
         discounts: list[float] = []
         verified_hits = 0
         review_hits = 0
@@ -209,6 +242,7 @@ class CachedWalmartProvider(DealProvider):
                     review_hits += 1
             else:
                 blocked_hits += 1
+
         avg_discount = sum(discounts) / len(discounts) if discounts else 0.0
         try:
             await self.db.record_query_performance(
@@ -221,8 +255,9 @@ class CachedWalmartProvider(DealProvider):
                 blocked_hits=blocked_hits,
                 avg_discount=avg_discount,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            return [f"query performance write failed: {clean_warning_text(exc)}"]
+        return []
 
 
 def walmart_credential_validation_error(provider: WalmartProvider) -> str | None:
@@ -283,7 +318,12 @@ def truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _copy_result(result: ProviderScanResult, *, warnings: tuple[str, ...] | None = None, metadata: dict[str, Any] | None = None) -> ProviderScanResult:
+def _copy_result(
+    result: ProviderScanResult,
+    *,
+    warnings: tuple[str, ...] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> ProviderScanResult:
     return ProviderScanResult(
         provider_key=result.provider_key,
         candidates=result.candidates,

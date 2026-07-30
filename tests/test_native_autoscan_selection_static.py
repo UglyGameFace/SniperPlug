@@ -33,9 +33,10 @@ def test_native_manual_autoscan_is_broad_public_safe_sweep() -> None:
     assert "broad_public_safe" in source
 
 
-def test_native_autoscan_thresholds_are_split() -> None:
+def test_native_autoscan_uses_verified_only_public_threshold() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "NATIVE_SCOUT_MIN_SCORE = 95" in source
-    assert "verified markdown requires" in source
-    assert "Public Scout fallback requires" in source
-    assert "min_alert_score=NATIVE_SCOUT_MIN_SCORE" in source
+    assert "Verified-only public policy" in source
+    assert "Anything uncertain remains private for staff review" in source
+    assert "min_public_discount=result.min_discount" in source
+    assert "NATIVE_SCOUT_MIN_SCORE" not in source
+    assert "allow_review_scout=True" not in source

@@ -27,6 +27,7 @@ DEFAULT_REVIEW_PAGE_SIZE = 3
 DEFAULT_REVIEW_MAX_CARDS = 12
 MANUAL_REVIEW_SOURCE_LABEL = "staff_shared_review_scout"
 MANUAL_REVIEW_POST_PREFIX = "scout:staff_review"
+MANUAL_REVIEW_PERMISSION_ERROR = "You need **Manage Server** permission to manually post review leads."
 
 
 class ManualReviewShareView(discord.ui.View):
@@ -76,9 +77,8 @@ class ManualShareButton(discord.ui.Button):
         if not isinstance(self.view, ManualReviewShareView):
             await interaction.response.send_message("This review menu is no longer active.", ephemeral=True)
             return
-        permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
-        if permissions is not None and not bool(getattr(permissions, "manage_guild", False)):
-            await interaction.response.send_message("You need **Manage Server** permission to manually post review leads.", ephemeral=True)
+        if not can_manually_post_review(interaction):
+            await interaction.response.send_message(MANUAL_REVIEW_PERMISSION_ERROR, ephemeral=True)
             return
         try:
             card = self.view.cards[self.index]
@@ -117,6 +117,9 @@ class ManualShareSelect(discord.ui.Select):
         super().__init__(placeholder="Staff: manually post one lead to public", min_values=1, max_values=1, options=options, row=3)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if not can_manually_post_review(interaction):
+            await interaction.response.send_message(MANUAL_REVIEW_PERMISSION_ERROR, ephemeral=True)
+            return
         try:
             card = self.cards[int(self.values[0])]
         except Exception:
@@ -124,6 +127,12 @@ class ManualShareSelect(discord.ui.Select):
             return
         _ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
         await interaction.response.send_message(message, ephemeral=True)
+
+
+def can_manually_post_review(interaction: discord.Interaction) -> bool:
+    """Fail closed when Discord does not provide guild permission context."""
+    permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
+    return bool(permissions is not None and getattr(permissions, "manage_guild", False))
 
 
 async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallback_retailer: str = "walmart") -> tuple[bool, str]:
@@ -138,7 +147,7 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
     if not config.get("enabled") or not channel_id:
         return False, "No public deal channel is configured yet. Set it with `/setup_sniperplug_here` first."
     retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
-    if retailer not in set(config.get("retailers") or ()): 
+    if retailer not in set(config.get("retailers") or ()):
         return False, f"Public posting is not enabled for `{retailer}` in this server."
 
     channel, channel_note = await resolve_public_alert_channel(bot, db, guild_id=guild_id, configured_channel_id=channel_id)

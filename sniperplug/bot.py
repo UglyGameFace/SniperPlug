@@ -29,7 +29,7 @@ from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
-from sniperplug.providers.walmart import WalmartProvider
+from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
 from sniperplug.services.deal_feedback import register_persistent_feedback_views
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
@@ -40,7 +40,6 @@ from sniperplug.services.error_logging import (
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.storage_maintenance import run_storage_maintenance
-from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
 from sniperplug.storage.db import Database
 
 
@@ -54,7 +53,6 @@ class SniperPlugBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self.settings = settings
         self.db = Database(settings.database_path)
-        self._setup_self_heal_done = False
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
     async def setup_hook(self) -> None:
@@ -78,10 +76,18 @@ class SniperPlugBot(commands.Bot):
         log.info("Persistent deal feedback views registered: %s", feedback_views)
         log.info("Persistent public panel views registered: %s", public_panel_views)
 
+        provider_registry.clear()
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
-        provider_registry.register(CachedWalmartProvider(self.db, WalmartProvider(configured=False)))
+        walmart_provider = WalmartProvider(walmart_affiliate_config(self.settings))
+        provider_registry.register(CachedWalmartProvider(self.db, walmart_provider))
         provider_registry.register(HomeDepotProvider())
         provider_registry.register(SerpApiHomeDepotProvider())
+        log.info(
+            "Walmart provider registered: enabled=%s configured=%s publisher_id=%s",
+            walmart_provider.config.enabled,
+            walmart_provider.config.configured,
+            bool(walmart_provider.config.publisher_id),
+        )
 
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(WorkflowCog(self))
@@ -127,13 +133,17 @@ class SniperPlugBot(commands.Bot):
 
     async def on_ready(self) -> None:
         log.info("SniperPlug online as %s (%s)", self.user, self.user.id if self.user else "unknown")
-        if not self._setup_self_heal_done:
-            self._setup_self_heal_done = True
-            try:
-                repair_summary = await repair_all_public_alert_setups(self.db, self)
-                log.info("Setup self-heal complete: %s", repair_summary)
-            except Exception:
-                log.exception("Setup self-heal failed")
+
+
+def walmart_affiliate_config(settings: Settings) -> WalmartAffiliateConfig:
+    """Build the Walmart runtime config from the already-validated Settings object."""
+    return WalmartAffiliateConfig(
+        consumer_id=settings.walmart_consumer_id,
+        key_version=settings.walmart_key_version or "1",
+        private_key_b64=settings.walmart_private_key_b64,
+        publisher_id=settings.walmart_publisher_id,
+        enabled=settings.walmart_provider_enabled,
+    )
 
 
 def env_enabled(name: str, *, default: bool = False) -> bool:

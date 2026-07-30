@@ -6,8 +6,9 @@ on:
   pull_request:
 
 jobs:
-  compile:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -17,12 +18,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          python -m pip install pytest
 
       - name: Compile Python files
-        run: |
-          python -m compileall .
+        run: python -m compileall -q sniperplug scripts tests
+
+      - name: Run import smoke check
+        run: python scripts/smoke_imports.py
+
+      - name: Run full test suite
+        env:
+          PYTHONHASHSEED: "0"
+        run: python -m pytest -q

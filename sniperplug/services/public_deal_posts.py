@@ -69,15 +69,39 @@ async def maybe_post_public_deal_cards(
         return PublicPostResult(attempted=attempted, errors=("public posting skipped: bot database unavailable",))
 
     fallback_key = normalize_retailer_key(fallback_retailer)
-    config = await get_public_alert_config(db, guild_id)
+    try:
+        config = await get_public_alert_config(db, guild_id)
+    except Exception as exc:
+        return PublicPostResult(
+            attempted=attempted,
+            errors=(f"public alert configuration read failed: {clean_error_text(exc)}",),
+        )
     if not config["enabled"] or not config["channel_id"]:
         return PublicPostResult(attempted=attempted, skipped_disabled=attempted)
 
-    channel, channel_note = await resolve_public_alert_channel(bot, db, guild_id=guild_id, configured_channel_id=config["channel_id"])
+    try:
+        from sniperplug.services.deal_category_preferences import get_category_preferences
+
+        category_preferences = await get_category_preferences(db, guild_id)
+    except Exception as exc:
+        return PublicPostResult(
+            attempted=attempted,
+            errors=(f"public category preference read failed; posting blocked: {clean_error_text(exc)}",),
+        )
+
+    channel, channel_note = await resolve_public_alert_channel(
+        bot,
+        db,
+        guild_id=guild_id,
+        configured_channel_id=config["channel_id"],
+    )
     if channel is None:
         return PublicPostResult(attempted=attempted, errors=(channel_note or "public channel lookup failed",))
     if not hasattr(channel, "send"):
-        return PublicPostResult(attempted=attempted, errors=(f"configured public alert channel <#{getattr(channel, 'id', config['channel_id'])}> is not sendable",))
+        return PublicPostResult(
+            attempted=attempted,
+            errors=(f"configured public alert channel <#{getattr(channel, 'id', config['channel_id'])}> is not sendable",),
+        )
 
     allowed_retailers = set(config["retailers"])
     posted = 0
@@ -91,6 +115,18 @@ async def maybe_post_public_deal_cards(
         notes.append(channel_note)
 
     for card in cards:
+        try:
+            from sniperplug.services.deal_category_preferences import decide_category
+
+            category_decision = decide_category(card, category_preferences)
+        except Exception as exc:
+            notes.append(f"public category decision failed; card blocked: {clean_error_text(exc)}")
+            skipped_not_alertable += 1
+            continue
+        if category_decision.action == "suppress":
+            skipped_not_alertable += 1
+            continue
+
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or fallback_key
         if retailer not in allowed_retailers:
             skipped_wrong_retailer += 1
@@ -99,7 +135,11 @@ async def maybe_post_public_deal_cards(
         if allow_review_scout:
             public_ready = prepare_public_scout_candidate(card, source_label=source_label)
         else:
-            public_ready = prepare_public_deal_candidate(card, source_label=source_label, min_discount=min_public_discount)
+            public_ready = prepare_public_deal_candidate(
+                card,
+                source_label=source_label,
+                min_discount=min_public_discount,
+            )
         if not public_ready:
             skipped_not_alertable += 1
             continue
@@ -121,48 +161,93 @@ async def maybe_post_public_deal_cards(
             product_key=product_key,
             current_price=current_price,
             alert_key=alert_key,
+            errors=notes,
         )
         if recent_alert and should_suppress_recent_alert(recent_alert, current_price):
             skipped_recent_alert_duplicate += 1
             continue
 
         deal_key = getattr(card, "public_post_key", None) or card_deal_key(card, retailer=retailer)
-        reserved = await reserve_public_deal_post(db, guild_id=guild_id, retailer=retailer, deal_key=deal_key, source_label=source_label)
+        try:
+            reserved = await reserve_public_deal_post(
+                db,
+                guild_id=guild_id,
+                retailer=retailer,
+                deal_key=deal_key,
+                source_label=source_label,
+            )
+        except Exception as exc:
+            notes.append(f"public post reservation failed for {retailer}: {clean_error_text(exc)}")
+            continue
         if not reserved:
             skipped_reserved_duplicate += 1
             continue
 
         try:
-            target = build_feedback_target(card, target_key=product_key, retailer=retailer, source_label=source_label)
+            await mark_public_deal_sending(db, guild_id=guild_id, deal_key=deal_key)
+        except Exception as exc:
+            try:
+                await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
+            except Exception:
+                pass
+            notes.append(f"public post delivery-state write failed for {retailer}; send blocked: {clean_error_text(exc)}")
+            continue
+
+        try:
+            target = build_feedback_target(
+                card,
+                target_key=product_key,
+                retailer=retailer,
+                source_label=source_label,
+            )
             feedback_view = await build_deal_feedback_view(db, guild_id=guild_id, target=target)
             message = await channel.send(embed=sanitize_embed(card.embed), view=feedback_view)
         except Exception as exc:  # pragma: no cover
-            await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
-            notes.append(f"public post failed for {retailer} in <#{getattr(channel, 'id', config['channel_id'])}>: {clean_error_text(exc)}")
+            try:
+                await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
+            except Exception as release_exc:
+                notes.append(f"reservation cleanup failed for {retailer}: {clean_error_text(release_exc)}")
+            notes.append(
+                f"public post failed for {retailer} in <#{getattr(channel, 'id', config['channel_id'])}>: "
+                f"{clean_error_text(exc)}"
+            )
             continue
 
-        await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
-        try:
-            await db.record_alert_dedupe(
-                guild_id=guild_id,
-                retailer=retailer,
-                product_key=product_key,
-                alert_key=alert_key,
-                current_price=current_price,
-                channel_id=getattr(channel, "id", config["channel_id"]),
-                message_id=getattr(message, "id", None),
-                threshold_price=current_price,
-                expires_at=alert_expires_at(hours=SCOUT_ALERT_DEDUPE_HOURS if allow_review_scout else None),
+        finalized, finalize_notes = await finalize_successful_public_post(
+            db,
+            guild_id=guild_id,
+            retailer=retailer,
+            deal_key=deal_key,
+            product_key=product_key,
+            alert_key=alert_key,
+            current_price=current_price,
+            channel_id=getattr(channel, "id", config["channel_id"]),
+            message_id=getattr(message, "id", None),
+            allow_review_scout=allow_review_scout,
+        )
+        notes.extend(finalize_notes)
+        if not finalized:
+            notes.append(
+                f"CRITICAL: public post for {retailer} was sent but no durable duplicate guard could be confirmed; "
+                "the reservation was intentionally retained for stale-time protection"
             )
-        except Exception as exc:
-            notes.append(f"alert dedupe write failed for {retailer}: {clean_error_text(exc)}")
         if not allow_review_scout:
             cache_after_posting.append(card)
         posted += 1
 
     cached_active = 0
     if cache_after_posting:
-        cached_active = await cache_active_deal_cards(db, guild_id=guild_id, cards=cache_after_posting, source_label=source_label, fallback_retailer=fallback_key)
+        try:
+            cached_active = await cache_active_deal_cards(
+                db,
+                guild_id=guild_id,
+                cards=cache_after_posting,
+                source_label=source_label,
+                fallback_retailer=fallback_key,
+                min_discount=min_public_discount,
+            )
+        except Exception as exc:
+            notes.append(f"active deal cache write failed: {clean_error_text(exc)}")
 
     skipped_duplicate = skipped_recent_alert_duplicate + skipped_reserved_duplicate
     return PublicPostResult(
@@ -175,19 +260,23 @@ async def maybe_post_public_deal_cards(
         skipped_disabled=0,
         skipped_wrong_retailer=skipped_wrong_retailer,
         cached_active=cached_active,
-        errors=tuple(notes[:5]),
+        errors=tuple(notes[:8]),
     )
 
 
-async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, configured_channel_id: int | str) -> tuple[Any | None, str | None]:
+async def resolve_public_alert_channel(
+    bot: Any,
+    db: Any,
+    *,
+    guild_id: int,
+    configured_channel_id: int | str,
+) -> tuple[Any | None, str | None]:
     channel_id = decode_channel_id(configured_channel_id)
     if channel_id is None:
         return None, f"stored public alert channel id is invalid: `{configured_channel_id}`"
 
     guild = bot.get_guild(guild_id)
     if guild is None:
-        # This usually means an old/stale DB row is using a guild ID the bot is
-        # no longer connected to. Do not silently fail as "no deals"; explain it.
         try:
             fetched = await bot.fetch_channel(channel_id)
             fetched_guild_id = getattr(getattr(fetched, "guild", None), "id", None)
@@ -211,7 +300,10 @@ async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, conf
         fetched = await bot.fetch_channel(channel_id)
         fetched_guild_id = getattr(getattr(fetched, "guild", None), "id", None)
         if fetched_guild_id is not None and int(fetched_guild_id) != int(guild_id):
-            fetch_error = f"stored public alert channel <#{channel_id}> belongs to another guild (`{fetched_guild_id}`), not this one (`{guild_id}`)"
+            fetch_error = (
+                f"stored public alert channel <#{channel_id}> belongs to another guild "
+                f"(`{fetched_guild_id}`), not this one (`{guild_id}`)"
+            )
         else:
             permission_error = public_channel_permission_error(guild, fetched)
             return (None, permission_error) if permission_error else (fetched, None)
@@ -226,7 +318,10 @@ async def resolve_public_alert_channel(bot: Any, db: Any, *, guild_id: int, conf
     if permission_error:
         return None, permission_error
 
-    await set_public_alert_channel_id(db, guild_id=guild_id, channel_id=repaired.id)
+    try:
+        await set_public_alert_channel_id(db, guild_id=guild_id, channel_id=repaired.id)
+    except Exception as exc:
+        return None, f"found replacement public channel <#{repaired.id}> but failed to save repaired route: {clean_error_text(exc)}"
     return repaired, f"Public alert channel auto-repaired from stale <#{channel_id}> to live <#{repaired.id}> (`#{repaired.name}`)."
 
 
@@ -302,7 +397,14 @@ def public_post_key(
     return ":".join((normalize_retailer_key(retailer), identity, price_part))
 
 
-def active_cache_key(*, retailer: str, url: str, selected_offer_id: str | None = None, sku: str | None = None, upc: str | None = None) -> str:
+def active_cache_key(
+    *,
+    retailer: str,
+    url: str,
+    selected_offer_id: str | None = None,
+    sku: str | None = None,
+    upc: str | None = None,
+) -> str:
     return ":".join((normalize_retailer_key(retailer), selected_offer_id or sku or upc or canonical_url_key(url)))
 
 
@@ -325,6 +427,7 @@ async def safe_find_recent_alert(
     product_key: str,
     current_price: float | None,
     alert_key: str | None = None,
+    errors: list[str] | None = None,
 ) -> dict[str, Any] | None:
     try:
         return await db.find_recent_alert(
@@ -334,7 +437,9 @@ async def safe_find_recent_alert(
             current_price=current_price,
             alert_key=alert_key,
         )
-    except Exception:
+    except Exception as exc:
+        if errors is not None:
+            errors.append(f"alert dedupe read failed for {retailer}: {clean_error_text(exc)}")
         return None
 
 
@@ -362,7 +467,15 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-async def cache_active_deal_cards(db, *, guild_id: int, cards: list[Any], source_label: str, fallback_retailer: str | None = None) -> int:
+async def cache_active_deal_cards(
+    db,
+    *,
+    guild_id: int,
+    cards: list[Any],
+    source_label: str,
+    fallback_retailer: str | None = None,
+    min_discount: int = 50,
+) -> int:
     await ensure_public_post_tables(db)
     conn = db.require_conn()
     now = datetime.now(timezone.utc).isoformat()
@@ -371,47 +484,59 @@ async def cache_active_deal_cards(db, *, guild_id: int, cards: list[Any], source
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
         if not retailer:
             continue
-        if not is_public_deal_candidate(card, source_label=source_label, min_discount=50):
-            continue
-        url = getattr(card, "url", "") or ""
-        key = active_cache_key(
-            retailer=retailer,
-            url=url,
-            selected_offer_id=getattr(card, "selected_offer_id", None),
-            sku=getattr(card, "sku", None),
-            upc=getattr(card, "upc", None),
-        )
-        await conn.execute(
-            """
-            INSERT INTO guild_active_deal_cache (
-                guild_id, active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-            ON CONFLICT(guild_id, active_key) DO UPDATE SET
-                title = excluded.title,
-                url = excluded.url,
-                current_price = excluded.current_price,
-                discount = excluded.discount,
-                score = excluded.score,
-                source_label = excluded.source_label,
-                status = 'active',
-                last_seen_at = excluded.last_seen_at
-            """,
-            (
-                guild_id,
-                key,
-                retailer,
-                getattr(card, "label", None) or "deal",
-                url,
-                getattr(card, "current_price", None),
-                getattr(card, "discount", None),
-                getattr(card, "score", None),
-                source_label,
-                now,
-                now,
-            ),
-        )
-        cached += 1
-    await conn.commit()
+        try:
+            if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
+                continue
+            url = getattr(card, "url", "") or ""
+            key = active_cache_key(
+                retailer=retailer,
+                url=url,
+                selected_offer_id=getattr(card, "selected_offer_id", None),
+                sku=getattr(card, "sku", None),
+                upc=getattr(card, "upc", None),
+            )
+            await conn.execute(
+                """
+                INSERT INTO guild_active_deal_cache (
+                    guild_id, active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                ON CONFLICT(guild_id, active_key) DO UPDATE SET
+                    title = excluded.title,
+                    url = excluded.url,
+                    current_price = excluded.current_price,
+                    discount = excluded.discount,
+                    score = excluded.score,
+                    source_label = excluded.source_label,
+                    status = 'active',
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    guild_id,
+                    key,
+                    retailer,
+                    getattr(card, "label", None) or "deal",
+                    url,
+                    getattr(card, "current_price", None),
+                    getattr(card, "discount", None),
+                    getattr(card, "score", None),
+                    source_label,
+                    now,
+                    now,
+                ),
+            )
+            await conn.commit()
+            cached += 1
+        except Exception as exc:
+            rollback = getattr(conn, "rollback", None)
+            if callable(rollback):
+                try:
+                    await rollback()
+                except Exception:
+                    pass
+            print(
+                f"active deal cache skipped one malformed card for guild={guild_id} "
+                f"retailer={retailer}: {clean_error_text(exc)}"
+            )
     return cached
 
 
@@ -457,7 +582,14 @@ async def ensure_public_post_tables(db) -> None:
     await conn.commit()
 
 
-async def reserve_public_deal_post(db, *, guild_id: int, retailer: str, deal_key: str, source_label: str) -> bool:
+async def reserve_public_deal_post(
+    db,
+    *,
+    guild_id: int,
+    retailer: str,
+    deal_key: str,
+    source_label: str,
+) -> bool:
     await ensure_public_post_tables(db)
     conn = db.require_conn()
     now_dt = datetime.now(timezone.utc)
@@ -481,6 +613,11 @@ async def reserve_public_deal_post(db, *, guild_id: int, retailer: str, deal_key
         "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'reserved' AND first_seen_at < ?",
         (guild_id, deal_key, stale_before),
     )
+    sending_stale_before = (now_dt - timedelta(days=30)).isoformat()
+    await conn.execute(
+        "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'sending' AND first_seen_at < ?",
+        (guild_id, deal_key, sending_stale_before),
+    )
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO guild_public_deal_posts (guild_id, deal_key, retailer, source_label, status, first_seen_at)
@@ -497,13 +634,76 @@ async def reserve_public_deal_post(db, *, guild_id: int, retailer: str, deal_key
         except (TypeError, ValueError):
             pass
 
-    # Turso/libsql cursors do not expose rowcount. Verify whether this exact
-    # reservation was created instead of treating every insert as a duplicate.
     check = await conn.execute(
         "SELECT 1 FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'reserved' AND first_seen_at = ? LIMIT 1",
         (guild_id, deal_key, now),
     )
     return bool(await check.fetchone())
+
+
+async def mark_public_deal_sending(db, *, guild_id: int, deal_key: str) -> None:
+    conn = db.require_conn()
+    await conn.execute(
+        "UPDATE guild_public_deal_posts SET status = 'sending' WHERE guild_id = ? AND deal_key = ? AND status = 'reserved'",
+        (guild_id, deal_key),
+    )
+    await conn.commit()
+    cursor = await conn.execute(
+        "SELECT status FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? LIMIT 1",
+        (guild_id, deal_key),
+    )
+    row = await cursor.fetchone()
+    status = row["status"] if row is not None else None
+    if status != "sending":
+        raise RuntimeError("public post reservation could not be confirmed as sending")
+
+
+async def finalize_successful_public_post(
+    db,
+    *,
+    guild_id: int,
+    retailer: str,
+    deal_key: str,
+    product_key: str,
+    alert_key: str,
+    current_price: float | None,
+    channel_id: int | str | None,
+    message_id: int | str | None,
+    allow_review_scout: bool,
+) -> tuple[bool, list[str]]:
+    notes: list[str] = []
+    posted_state_saved = False
+    dedupe_saved = False
+
+    for attempt in range(1, 3):
+        try:
+            await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
+            posted_state_saved = True
+            break
+        except Exception as exc:
+            if attempt == 2:
+                notes.append(f"public post state write failed for {retailer} after retry: {clean_error_text(exc)}")
+
+    for attempt in range(1, 3):
+        try:
+            await db.record_alert_dedupe(
+                guild_id=guild_id,
+                retailer=retailer,
+                product_key=product_key,
+                alert_key=alert_key,
+                current_price=current_price,
+                channel_id=channel_id,
+                message_id=message_id,
+                threshold_price=current_price,
+                expires_at=alert_expires_at(hours=SCOUT_ALERT_DEDUPE_HOURS if allow_review_scout else None),
+            )
+            dedupe_saved = True
+            break
+        except Exception as exc:
+            if attempt == 2:
+                notes.append(f"alert dedupe write failed for {retailer} after retry: {clean_error_text(exc)}")
+
+    return posted_state_saved or dedupe_saved, notes
 
 
 async def mark_public_deal_posted(db, *, guild_id: int, deal_key: str) -> None:
@@ -514,12 +714,20 @@ async def mark_public_deal_posted(db, *, guild_id: int, deal_key: str) -> None:
         (now, guild_id, deal_key),
     )
     await conn.commit()
+    cursor = await conn.execute(
+        "SELECT status FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? LIMIT 1",
+        (guild_id, deal_key),
+    )
+    row = await cursor.fetchone()
+    status = row["status"] if row is not None else None
+    if status != "posted":
+        raise RuntimeError("public post reservation could not be confirmed as posted")
 
 
 async def release_public_deal_reservation(db, *, guild_id: int, deal_key: str) -> None:
     conn = db.require_conn()
     await conn.execute(
-        "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'reserved'",
+        "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status IN ('reserved', 'sending')",
         (guild_id, deal_key),
     )
     await conn.commit()

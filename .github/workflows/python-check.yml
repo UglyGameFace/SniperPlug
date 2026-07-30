@@ -5,6 +5,9 @@ on:
     branches: ["main", "master"]
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: fix/walmart-cash-proven-filter
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,11 +25,30 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Apply Walmart Cash hardening
+        run: python tools/apply_walmart_cash_hardening.py
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m pip install pytest
+
+      - name: Run focused Walmart Cash regressions
+        run: python -m pytest -q tests/test_walmart_cash_proven_filter.py
+
+      - name: Commit proven Walmart Cash changes
+        if: github.actor != 'github-actions[bot]'
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add sniperplug/services/walmart_cash_api_truth.py sniperplug/services/walmart_pdp_cash_proof.py sniperplug/services/walmart_cash_offers.py tests/test_walmart_cash_proven_filter.py
+          if git diff --cached --quiet; then
+            echo "Walmart Cash source already hardened"
+          else
+            git commit -m "Harden Walmart Cash proof and manufacturer-offer discovery"
+            git push origin HEAD:fix/walmart-cash-proven-filter
+          fi
 
       - name: Compile Python files
         run: python -m compileall -q sniperplug scripts tests

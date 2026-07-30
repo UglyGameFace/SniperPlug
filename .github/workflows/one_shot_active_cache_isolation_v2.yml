@@ -1,25 +1,24 @@
 name: One-shot active cache isolation v2
 
-# Retriggered after confirming the first creation commit did not execute.
 on:
   push:
     branches:
       - audit/full-discord-deal-bot-recovery
-    paths:
-      - .github/workflows/one_shot_active_cache_isolation_v2.yml
 
 permissions:
   contents: write
 
 jobs:
   patch:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: audit/full-discord-deal-bot-recovery
           fetch-depth: 0
-      - name: Patch active cache isolation
+
+      - name: Patch authoritative active-cache implementation
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -28,53 +27,107 @@ jobs:
           text = path.read_text()
           start = text.index('async def cache_active_deal_cards(')
           end = text.index('\n\nasync def ensure_public_post_tables', start)
-          block = text[start:end]
-          if 'rollback = getattr(conn, "rollback", None)' in block:
-              raise SystemExit('active cache isolation already present')
-          block = block.replace('''        if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
-            continue
-        url = getattr(card, "url", "") or ""
-''', '''        try:
-            if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
-                continue
-            url = getattr(card, "url", "") or ""
-''', 1)
-          block = block.replace('''        cached += 1
-    await conn.commit()
-    return cached
-''', '''            await conn.commit()
-            cached += 1
-        except Exception as exc:
-            rollback = getattr(conn, "rollback", None)
-            if callable(rollback):
-                try:
-                    await rollback()
-                except Exception:
-                    pass
-            print(f"active deal cache skipped one malformed card for guild={guild_id} retailer={retailer}: {clean_error_text(exc)}")
-            continue
-    return cached
-''', 1)
-          lines = block.splitlines()
-          try_line = next(i for i, line in enumerate(lines) if line == '        try:')
-          commit_line = next(i for i, line in enumerate(lines) if 'await conn.commit()' in line)
-          for i in range(try_line + 1, commit_line):
-              if lines[i].startswith('        ') and lines[i].strip():
-                  lines[i] = '    ' + lines[i]
-          block = '\n'.join(lines)
-          text = text[:start] + block + text[end:]
-          path.write_text(text)
+          old = text[start:end]
 
-          test = Path('tests/test_active_cache_write_isolation_static.py')
-          test.write_text('''from pathlib import Path\n\n\ndef test_active_cache_writes_are_isolated_per_card():\n    source = Path("sniperplug/services/public_deal_posts.py").read_text()\n    start = source.index("async def cache_active_deal_cards")\n    end = source.index("async def ensure_public_post_tables", start)\n    block = source[start:end]\n    assert "rollback = getattr(conn, \\\"rollback\\\", None)" in block\n    assert block.index("await conn.commit()") < block.index("except Exception as exc:")\n''')
-          Path('.github/workflows/one_shot_active_cache_isolation_v2.yml').unlink()
+          if 'rollback = getattr(conn, "rollback", None)' not in old:
+              new = '''async def cache_active_deal_cards(
+              db,
+              *,
+              guild_id: int,
+              cards: list[Any],
+              source_label: str,
+              fallback_retailer: str | None = None,
+              min_discount: int = 50,
+          ) -> int:
+              await ensure_public_post_tables(db)
+              conn = db.require_conn()
+              now = datetime.now(timezone.utc).isoformat()
+              cached = 0
+              for card in cards:
+                  retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
+                  if not retailer:
+                      continue
+                  try:
+                      if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
+                          continue
+                      url = getattr(card, "url", "") or ""
+                      key = active_cache_key(
+                          retailer=retailer,
+                          url=url,
+                          selected_offer_id=getattr(card, "selected_offer_id", None),
+                          sku=getattr(card, "sku", None),
+                          upc=getattr(card, "upc", None),
+                      )
+                      await conn.execute(
+                          """
+                          INSERT INTO guild_active_deal_cache (
+                              guild_id, active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+                          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                          ON CONFLICT(guild_id, active_key) DO UPDATE SET
+                              title = excluded.title,
+                              url = excluded.url,
+                              current_price = excluded.current_price,
+                              discount = excluded.discount,
+                              score = excluded.score,
+                              source_label = excluded.source_label,
+                              status = 'active',
+                              last_seen_at = excluded.last_seen_at
+                          """,
+                          (
+                              guild_id,
+                              key,
+                              retailer,
+                              getattr(card, "label", None) or "deal",
+                              url,
+                              getattr(card, "current_price", None),
+                              getattr(card, "discount", None),
+                              getattr(card, "score", None),
+                              source_label,
+                              now,
+                              now,
+                          ),
+                      )
+                      await conn.commit()
+                      cached += 1
+                  except Exception as exc:
+                      rollback = getattr(conn, "rollback", None)
+                      if callable(rollback):
+                          try:
+                              await rollback()
+                          except Exception:
+                              pass
+                      print(
+                          f"active deal cache skipped one malformed card for guild={guild_id} "
+                          f"retailer={retailer}: {clean_error_text(exc)}"
+                      )
+              return cached
+          '''
+              text = text[:start] + new + text[end:]
+              path.write_text(text)
+
+          Path('tests/test_active_cache_write_isolation_static.py').write_text('''from pathlib import Path
+
+
+def test_active_cache_writes_are_isolated_per_card():
+    source = Path("sniperplug/services/public_deal_posts.py").read_text()
+    start = source.index("async def cache_active_deal_cards")
+    end = source.index("async def ensure_public_post_tables", start)
+    block = source[start:end]
+    assert "rollback = getattr(conn, \\\"rollback\\\", None)" in block
+    assert block.index("await conn.commit()") < block.index("except Exception as exc:")
+    assert "return cached" in block
+''')
+
+          Path('.github/workflows/one_shot_active_cache_isolation.yml').unlink(missing_ok=True)
+          Path('.github/workflows/one_shot_active_cache_isolation_v2.yml').unlink(missing_ok=True)
           PY
-      - name: Validate and commit
+
+      - name: Validate and commit production fix
         run: |
           python -m py_compile sniperplug/services/public_deal_posts.py tests/test_active_cache_write_isolation_static.py
           python -m pytest -q tests/test_active_cache_write_isolation_static.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add sniperplug/services/public_deal_posts.py tests/test_active_cache_write_isolation_static.py .github/workflows/one_shot_active_cache_isolation_v2.yml
+          git add -A
           git commit -m "Isolate active cache writes per posted card"
           git push origin HEAD:audit/full-discord-deal-bot-recovery

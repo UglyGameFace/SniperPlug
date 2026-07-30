@@ -12,10 +12,13 @@ def test_legacy_autoscan_does_not_directly_post_scout_lane():
     assert "Auto-scan posted public Scout Lane lead" not in AUTO
 
 
-def test_native_autoscan_uses_public_scout_fallback():
-    assert "allow_review_scout=True" in NATIVE
-    assert "NATIVE_PUBLIC_SCOUT_LIMIT = 2" in NATIVE
-    assert "Verified API Threshold + Public Scout Fallback" in NATIVE
+def test_native_autoscan_keeps_scout_fallback_private():
+    assert "allow_review_scout=True" not in NATIVE
+    assert "NATIVE_PUBLIC_SCOUT_LIMIT" not in NATIVE
+    assert "Verified API Threshold + Public Scout Fallback" not in NATIVE
+    assert "Verified API Threshold Only" in NATIVE
+    assert "private review cards ready" in NATIVE
+    assert "public review posts: **0**" in NATIVE
 
 
 def test_public_quality_has_conservative_scout_gate():

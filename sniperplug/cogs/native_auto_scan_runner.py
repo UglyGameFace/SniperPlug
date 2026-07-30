@@ -32,9 +32,9 @@ NATIVE_CATEGORY_ROTATION = (
 class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
     """Single-pass autoscan runner with verified-only public posting.
 
-    The legacy runner still owns shared scheduling, locking, diagnostics, and
-    persistence helpers. This class is the only registered autoscan cog and
-    deliberately keeps unverified scout/review cards private.
+    Verified public deals and private staff-review leads are independent outputs
+    from the same scan. A successful public post must never discard or hide
+    uncertain review cards.
     """
 
     def __init__(self, bot):
@@ -163,10 +163,12 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         )
 
         shown_cards = list(fresh_selection.fresh)
-        review_cards = legacy.prepare_review_watchlist_cards(result, limit=NATIVE_REVIEW_CARD_LIMIT) if not shown_cards else []
+        review_cards = legacy.prepare_review_watchlist_cards(result, limit=NATIVE_REVIEW_CARD_LIMIT)
         if review_cards:
             self._review_cards_by_guild[int(guild.guild_id)] = tuple(review_cards[:NATIVE_REVIEW_CARD_LIMIT])
-            warnings.append("Private review cards were captured from this same autoscan pass; they were not auto-posted.")
+            warnings.append(
+                f"Captured **{len(review_cards[:NATIVE_REVIEW_CARD_LIMIT])}** private review lead(s) from this same pass; none were auto-posted."
+            )
         else:
             self._review_cards_by_guild.pop(int(guild.guild_id), None)
 
@@ -243,8 +245,11 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             verified_before_memory=result.total_verified_cards,
             fresh_cards=len(fresh_selection.fresh),
             cards_attempted_for_public=len(shown_cards),
-            used_repeat_fallback=False,
-            repeat_summary=legacy.watchlist_repeat_summary(fresh_selection.summary_line(), [], public_result),
+            used_repeat_fallback=bool(review_cards),
+            repeat_summary=(
+                legacy.watchlist_repeat_summary(fresh_selection.summary_line(), [], public_result)
+                + f" • private review cards ready: **{len(review_cards)}**"
+            ),
             public_result=public_result,
             warnings=tuple(warnings),
         )
@@ -264,11 +269,12 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         label: str = "Auto-scan test result",
     ) -> None:
         await super()._send_autoscan_report(interaction, report, label=label)
-        if not report.allowed or report.public_result.posted:
+        if not report.allowed:
             return
         cards = list(self._review_cards_by_guild.pop(int(report.guild_id), ()))[:NATIVE_REVIEW_CARD_LIMIT]
         if not cards:
-            await self._safe_autoscan_followup(interaction, "🟨 No reusable private review cards were produced from this pass.")
+            if not report.public_result.posted:
+                await self._safe_autoscan_followup(interaction, "🟨 No reusable private review cards were produced from this pass.")
             return
         for index, card in enumerate(cards, start=1):
             annotate_private_review_card(card, index=index)

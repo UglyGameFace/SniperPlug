@@ -12,6 +12,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.candidate_pipeline import evaluate_candidate
+from sniperplug.services.embed_delivery import send_summary_and_card_batches
 from sniperplug.services.open_box_autoscan_routes import OPEN_BOX_AUTOSCAN_QUERIES
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.public_deal_quality import (
@@ -119,7 +120,7 @@ class OpenBoxDealsCog(commands.Cog):
                 value="I found no item where Walmart/API returned current price, condition, trusted reference price, discount math, and a direct product URL together.",
                 inline=False,
             )
-        await interaction.followup.send(embeds=[summary] + [card.embed for card in cards[:5]], ephemeral=True)
+        await send_summary_and_card_batches(interaction, summary=summary, cards=cards[:5], ephemeral=True)
 
 
 def build_open_box_cards(result: ProviderScanResult, *, min_discount: int) -> list[DealCard]:

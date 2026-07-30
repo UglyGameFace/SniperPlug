@@ -26,72 +26,66 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
 
           walmart = Path('sniperplug/providers/cached_walmart.py')
-          text = walmart.read_text()
-          pattern = re.compile(
-              r'        if errors:\n'
-              r'            warnings = tuple\(dict\.fromkeys\(\(\*result\.warnings, \*\(f"Walmart persistence warning: \{item\}" for item in errors\)\)\)\)\n'
-              r'            result = _copy_result\(\n'
-              r'                result,\n'
-              r'                warnings=warnings,\n'
-              r'                metadata=\{\n'
-              r'                    \*\*result\.metadata,\n'
-              r'                    "persistence_degraded": True,\n'
-              r'                    "persistence_errors": tuple\(errors\[:12\]\),\n'
-              r'                \},\n'
-              r'            \)\n'
-          )
-          replacement = '''        if errors:
-              unique_errors = tuple(dict.fromkeys(errors))
-              sample = "; ".join(unique_errors[:2])
-              summary = f"Walmart persistence degraded: {len(unique_errors)} write error(s)"
-              if sample:
-                  summary += f" (sample: {sample})"
-              warnings = tuple(dict.fromkeys((*result.warnings, clean_warning_text(summary))))
-              result = _copy_result(
-                  result,
-                  warnings=warnings,
-                  metadata={
-                      **result.metadata,
-                      "persistence_degraded": True,
-                      "persistence_error_count": len(unique_errors),
-                      "persistence_errors": unique_errors[:12],
-                  },
-              )
-          '''
-          text, count = pattern.subn(replacement, text, count=1)
-          if count != 1:
-              raise SystemExit(f'cached_walmart structural patch count={count}')
-          walmart.write_text(text)
+          lines = walmart.read_text().splitlines()
+          start = next((i for i, line in enumerate(lines) if line.strip() == 'if errors:' and i + 1 < len(lines) and 'Walmart persistence warning:' in lines[i + 1]), None)
+          if start is None:
+              raise SystemExit('cached_walmart start block not found')
+          end = start + 1
+          while end < len(lines) and lines[end] != '            )':
+              end += 1
+          if end >= len(lines):
+              raise SystemExit('cached_walmart end block not found')
+          replacement = [
+              '        if errors:',
+              '            unique_errors = tuple(dict.fromkeys(errors))',
+              '            sample = "; ".join(unique_errors[:2])',
+              '            summary = f"Walmart persistence degraded: {len(unique_errors)} write error(s)"',
+              '            if sample:',
+              '                summary += f" (sample: {sample})"',
+              '            warnings = tuple(dict.fromkeys((*result.warnings, clean_warning_text(summary))))',
+              '            result = _copy_result(',
+              '                result,',
+              '                warnings=warnings,',
+              '                metadata={',
+              '                    **result.metadata,',
+              '                    "persistence_degraded": True,',
+              '                    "persistence_error_count": len(unique_errors),',
+              '                    "persistence_errors": unique_errors[:12],',
+              '                },',
+              '            )',
+          ]
+          lines[start:end + 1] = replacement
+          walmart.write_text('\n'.join(lines) + '\n')
 
           posts = Path('sniperplug/services/public_deal_posts.py')
-          text = posts.read_text()
-          if 'import logging\n' not in text:
-              text = text.replace('from __future__ import annotations\n\n', 'from __future__ import annotations\n\nimport logging\n\n', 1)
-          marker = 'RESERVATION_STALE_MINUTES = 20\n_MISSING_ROWCOUNT = object()\n'
-          if 'log = logging.getLogger("sniperplug")' not in text:
-              if marker not in text:
-                  raise SystemExit('public_deal_posts logger marker not found')
-              text = text.replace(marker, marker + 'log = logging.getLogger("sniperplug")\n', 1)
-          print_pattern = re.compile(
-              r'            print\(\n'
-              r'                f"active deal cache skipped one malformed card for guild=\{guild_id\} "\n'
-              r'                f"retailer=\{retailer\}: \{clean_error_text\(exc\)\}"\n'
-              r'            \)\n'
-          )
-          log_replacement = '''            log.exception(
-                  "active deal cache skipped one malformed card for guild=%s retailer=%s: %s",
-                  guild_id,
-                  retailer,
-                  clean_error_text(exc),
-              )
-          '''
-          text, count = print_pattern.subn(log_replacement, text, count=1)
-          if count != 1:
-              raise SystemExit(f'public_deal_posts structural patch count={count}')
-          posts.write_text(text)
+          lines = posts.read_text().splitlines()
+          if 'import logging' not in lines:
+              future_index = lines.index('from __future__ import annotations')
+              lines[future_index + 1:future_index + 1] = ['', 'import logging']
+          logger_line = 'log = logging.getLogger("sniperplug")'
+          if logger_line not in lines:
+              marker_index = lines.index('_MISSING_ROWCOUNT = object()')
+              lines.insert(marker_index + 1, logger_line)
+          start = next((i for i, line in enumerate(lines) if line.strip() == 'print(' and i + 1 < len(lines) and 'active deal cache skipped one malformed card' in lines[i + 1]), None)
+          if start is None:
+              raise SystemExit('public_deal_posts print block not found')
+          end = start
+          while end < len(lines) and lines[end] != '            )':
+              end += 1
+          if end >= len(lines):
+              raise SystemExit('public_deal_posts print block end not found')
+          replacement = [
+              '            log.exception(',
+              '                "active deal cache skipped one malformed card for guild=%s retailer=%s: %s",',
+              '                guild_id,',
+              '                retailer,',
+              '                clean_error_text(exc),',
+              '            )',
+          ]
+          lines[start:end + 1] = replacement
+          posts.write_text('\n'.join(lines) + '\n')
 
           test = Path('tests/test_post_125_review_findings_static.py')
           test.write_text('''from pathlib import Path\n\n\ndef test_walmart_persistence_warning_is_bounded():\n    source = Path("sniperplug/providers/cached_walmart.py").read_text()\n    assert "Walmart persistence degraded:" in source\n    assert "persistence_error_count" in source\n    assert "*(f\\\"Walmart persistence warning:" not in source\n\n\ndef test_active_cache_uses_structured_logging():\n    source = Path("sniperplug/services/public_deal_posts.py").read_text()\n    assert 'log = logging.getLogger("sniperplug")' in source\n    assert "log.exception(" in source\n    section = source[source.index("async def cache_active_deal_cards"):source.index("async def ensure_public_post_tables")]\n    assert "active deal cache skipped one malformed card" in section\n    assert "print(" not in section\n''')

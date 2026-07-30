@@ -1,5 +1,6 @@
 name: Apply Walmart Cash proof hardening
 
+# Branch-only source applicator. Removed before merge.
 on:
   push:
     branches:

@@ -5,6 +5,8 @@ def test_walmart_persistence_warning_is_bounded():
     source = Path("sniperplug/providers/cached_walmart.py").read_text()
     assert "Walmart persistence degraded:" in source
     assert "persistence_error_count" in source
+    assert 'sample = "; ".join(unique_errors[:2])' in source
+    assert '"persistence_errors": unique_errors[:12]' in source
     assert "*(f\"Walmart persistence warning:" not in source
 
 

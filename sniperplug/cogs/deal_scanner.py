@@ -228,7 +228,7 @@ class DealScannerCog(commands.Cog):
             capability_notes=discovery.capability.notes,
             promo_counts=discovery.promo_counts,
         )
-        await send_summary_and_card_batches(interaction, summary=summary, cards=shown_cards, ephemeral=True)
+        await send_summary_and_card_batches(interaction, summary=summary, cards=list(shown_cards), ephemeral=True)
 
     async def _send_walmart_api_probe(self, interaction: discord.Interaction, query: str, max_results: int = 3) -> None:
         provider = provider_registry.get("walmart")
@@ -298,7 +298,7 @@ class DealScannerCog(commands.Cog):
             await send_summary_and_card_batches(
                 interaction,
                 summary=summary,
-                cards=shown_cards,
+                cards=list(shown_cards),
                 view_factory=lambda _batch: DealSearchControlView(query, page, max(0, shown_discount), max_results, sort_value, order_value, alerts_only, simple_mode, shown_cards, result.has_next_page),
                 ephemeral=True,
             )
@@ -376,7 +376,7 @@ class HuntPresetButton(discord.ui.Button):
             await send_summary_and_card_batches(
                 interaction,
                 summary=summary,
-                cards=shown_cards,
+                cards=list(shown_cards),
                 view_factory=lambda _batch: PresetResultView(shown_cards),
                 ephemeral=True,
             )
@@ -466,7 +466,7 @@ class DealSearchControlView(discord.ui.View):
                 await send_summary_and_card_batches(
                     interaction,
                     summary=summary,
-                    cards=shown_cards,
+                    cards=list(shown_cards),
                     view_factory=lambda _batch: self._copy_for(page, shown_discount, shown_cards, result.has_next_page),
                     ephemeral=True,
                 )
@@ -513,7 +513,7 @@ class DealSearchControlView(discord.ui.View):
                     await send_summary_and_card_batches(
                         interaction,
                         summary=summary,
-                        cards=shown_cards,
+                        cards=list(shown_cards),
                         view_factory=lambda _batch: self._copy_for(page, min_discount, shown_cards, has_next_page),
                         ephemeral=True,
                     )
@@ -540,7 +540,7 @@ class DealSearchControlView(discord.ui.View):
                 await send_summary_and_card_batches(
                     interaction,
                     summary=summary,
-                    cards=shown_cards,
+                    cards=list(shown_cards),
                     view_factory=lambda _batch: self._copy_for(self.page, shown_discount, shown_cards, has_next_page),
                     ephemeral=True,
                 )

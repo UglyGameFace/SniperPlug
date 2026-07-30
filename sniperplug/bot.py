@@ -45,6 +45,7 @@ from sniperplug.storage.db import Database
 
 
 log = logging.getLogger("sniperplug")
+MAX_SETUP_SELF_HEAL_ATTEMPTS = 3
 
 
 class SniperPlugBot(commands.Bot):
@@ -55,6 +56,7 @@ class SniperPlugBot(commands.Bot):
         self.settings = settings
         self.db = Database(settings.database_path)
         self._setup_self_heal_done = False
+        self._setup_self_heal_attempts = 0
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
     async def setup_hook(self) -> None:
@@ -78,9 +80,6 @@ class SniperPlugBot(commands.Bot):
         log.info("Persistent deal feedback views registered: %s", feedback_views)
         log.info("Persistent public panel views registered: %s", public_panel_views)
 
-        # The registry is process-global. Clear stale provider objects before every
-        # fresh bot setup so reconnects, test lifecycles, and controlled reloads do
-        # not crash or retain a provider wired to an old database/configuration.
         provider_registry.clear()
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
         walmart_provider = WalmartProvider(walmart_affiliate_config(self.settings))
@@ -138,13 +137,20 @@ class SniperPlugBot(commands.Bot):
 
     async def on_ready(self) -> None:
         log.info("SniperPlug online as %s (%s)", self.user, self.user.id if self.user else "unknown")
-        if not self._setup_self_heal_done:
-            self._setup_self_heal_done = True
-            try:
-                repair_summary = await repair_all_public_alert_setups(self.db, self)
-                log.info("Setup self-heal complete: %s", repair_summary)
-            except Exception:
-                log.exception("Setup self-heal failed")
+        if self._setup_self_heal_done or self._setup_self_heal_attempts >= MAX_SETUP_SELF_HEAL_ATTEMPTS:
+            return
+        self._setup_self_heal_attempts += 1
+        try:
+            repair_summary = await repair_all_public_alert_setups(self.db, self)
+        except Exception:
+            log.exception(
+                "Setup self-heal failed attempt=%s/%s; it will retry on the next ready event",
+                self._setup_self_heal_attempts,
+                MAX_SETUP_SELF_HEAL_ATTEMPTS,
+            )
+            return
+        self._setup_self_heal_done = True
+        log.info("Setup self-heal complete attempt=%s summary=%s", self._setup_self_heal_attempts, repair_summary)
 
 
 def walmart_affiliate_config(settings: Settings) -> WalmartAffiliateConfig:

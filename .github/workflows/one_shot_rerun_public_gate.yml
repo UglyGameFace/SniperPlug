@@ -1,0 +1,47 @@
+name: One-shot rerun public posting parity
+
+on:
+  push:
+    branches:
+      - audit/full-discord-deal-bot-recovery
+    paths:
+      - .github/workflows/one_shot_rerun_public_gate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/full-discord-deal-bot-recovery
+          fetch-depth: 0
+      - name: Patch rerun posting parity
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('sniperplug/cogs/deal_scanner.py')
+          text = path.read_text()
+
+          old = '''            if cards:\n                shown_cards = cards[:5]\n                public_result = await maybe_post_public_deal_cards(\n                    bot=interaction.client,\n                    guild_id=interaction.guild_id,\n                    cards=shown_cards,\n                    source_label="deal_rerun",\n                    fallback_retailer="walmart",\n                )\n'''
+          new = '''            if cards:\n                shown_cards = cards[:5]\n                public_cards = select_public_deal_candidates(\n                    shown_cards,\n                    source_label="deal_rerun",\n                    min_discount=shown_discount,\n                    limit=5,\n                )\n                public_result = await maybe_post_public_deal_cards(\n                    bot=interaction.client,\n                    guild_id=interaction.guild_id,\n                    cards=public_cards,\n                    source_label="deal_rerun",\n                    fallback_retailer="walmart",\n                    min_public_discount=shown_discount,\n                )\n'''
+          if old not in text:
+              raise SystemExit('rerun posting anchor not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+
+          test = Path('tests/test_deal_rerun_public_posting_parity_static.py')
+          test.write_text('''from pathlib import Path\n\n\ndef test_rerun_uses_public_selection_and_actual_threshold():\n    source = Path("sniperplug/cogs/deal_scanner.py").read_text()\n    start = source.index("async def _rerun")\n    end = source.index("async def _hunt_pages", start)\n    block = source[start:end]\n    assert "public_cards = select_public_deal_candidates(" in block\n    assert "min_discount=shown_discount" in block\n    assert "cards=public_cards" in block\n    assert "min_public_discount=shown_discount" in block\n    assert "cards=shown_cards" not in block\n''')
+
+          Path('.github/workflows/one_shot_rerun_public_gate.yml').unlink()
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sniperplug/cogs/deal_scanner.py tests/test_deal_rerun_public_posting_parity_static.py .github/workflows/one_shot_rerun_public_gate.yml
+          git commit -m "Align rerun public posting with scan policy"
+          git push origin HEAD:audit/full-discord-deal-bot-recovery

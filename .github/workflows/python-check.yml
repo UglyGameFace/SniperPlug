@@ -28,6 +28,23 @@ jobs:
       - name: Apply Walmart Cash hardening
         run: python tools/apply_walmart_cash_hardening.py
 
+      - name: Reject vague reverse Cash amount matches
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          pattern = '        r"walmart\\s+cash[^$0-9]{0,40}\\$\\s*(\\d+(?:\\.\\d{1,2})?)",\n'
+          for name in (
+              "sniperplug/services/walmart_cash_api_truth.py",
+              "sniperplug/services/walmart_pdp_cash_proof.py",
+          ):
+              path = Path(name)
+              text = path.read_text()
+              if pattern not in text:
+                  raise SystemExit(f"reverse Cash amount pattern missing in {name}")
+              path.write_text(text.replace(pattern, "", 1))
+          PY
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

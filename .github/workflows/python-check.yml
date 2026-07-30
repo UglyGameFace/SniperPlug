@@ -5,7 +5,179 @@ on:
     branches: ["main", "master"]
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
+  repair-active-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout recovery branch
+        uses: actions/checkout@v4
+        with:
+          ref: audit/full-discord-deal-bot-recovery
+          fetch-depth: 0
+
+      - name: Repair authoritative active-cache implementation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          source_path = Path('sniperplug/services/public_deal_posts.py')
+          source = source_path.read_text()
+          start = source.index('async def cache_active_deal_cards(')
+          end = source.index('\n\nasync def ensure_public_post_tables', start)
+          block = source[start:end]
+
+          if 'rollback = getattr(conn, "rollback", None)' not in block:
+              replacement = dedent('''
+                  async def cache_active_deal_cards(
+                      db,
+                      *,
+                      guild_id: int,
+                      cards: list[Any],
+                      source_label: str,
+                      fallback_retailer: str | None = None,
+                      min_discount: int = 50,
+                  ) -> int:
+                      await ensure_public_post_tables(db)
+                      conn = db.require_conn()
+                      now = datetime.now(timezone.utc).isoformat()
+                      cached = 0
+                      for card in cards:
+                          retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
+                          if not retailer:
+                              continue
+                          try:
+                              if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
+                                  continue
+                              url = getattr(card, "url", "") or ""
+                              key = active_cache_key(
+                                  retailer=retailer,
+                                  url=url,
+                                  selected_offer_id=getattr(card, "selected_offer_id", None),
+                                  sku=getattr(card, "sku", None),
+                                  upc=getattr(card, "upc", None),
+                              )
+                              await conn.execute(
+                                  """
+                                  INSERT INTO guild_active_deal_cache (
+                                      guild_id, active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+                                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                                  ON CONFLICT(guild_id, active_key) DO UPDATE SET
+                                      title = excluded.title,
+                                      url = excluded.url,
+                                      current_price = excluded.current_price,
+                                      discount = excluded.discount,
+                                      score = excluded.score,
+                                      source_label = excluded.source_label,
+                                      status = 'active',
+                                      last_seen_at = excluded.last_seen_at
+                                  """,
+                                  (
+                                      guild_id,
+                                      key,
+                                      retailer,
+                                      getattr(card, "label", None) or "deal",
+                                      url,
+                                      getattr(card, "current_price", None),
+                                      getattr(card, "discount", None),
+                                      getattr(card, "score", None),
+                                      source_label,
+                                      now,
+                                      now,
+                                  ),
+                              )
+                              await conn.commit()
+                              cached += 1
+                          except Exception as exc:
+                              rollback = getattr(conn, "rollback", None)
+                              if callable(rollback):
+                                  try:
+                                      await rollback()
+                                  except Exception:
+                                      pass
+                              print(
+                                  f"active deal cache skipped one malformed card for guild={guild_id} "
+                                  f"retailer={retailer}: {clean_error_text(exc)}"
+                              )
+                      return cached
+              ''').lstrip()
+              source_path.write_text(source[:start] + replacement + source[end:])
+
+          Path('tests/test_active_cache_write_isolation_static.py').write_text(dedent('''
+              from pathlib import Path
+
+
+              def test_active_cache_writes_are_isolated_per_card():
+                  source = Path("sniperplug/services/public_deal_posts.py").read_text()
+                  start = source.index("async def cache_active_deal_cards")
+                  end = source.index("async def ensure_public_post_tables", start)
+                  block = source[start:end]
+                  assert "rollback = getattr(conn, \\\"rollback\\\", None)" in block
+                  assert block.index("await conn.commit()") < block.index("except Exception as exc:")
+                  assert "return cached" in block
+          ''').lstrip())
+
+          Path('.github/workflows/one_shot_active_cache_isolation.yml').unlink(missing_ok=True)
+          Path('.github/workflows/one_shot_active_cache_isolation_v2.yml').unlink(missing_ok=True)
+
+          Path('.github/workflows/python-check.yml').write_text(dedent('''
+              name: Python Check
+
+              on:
+                push:
+                  branches: ["main", "master"]
+                pull_request:
+
+              jobs:
+                test:
+                  runs-on: ubuntu-latest
+                  timeout-minutes: 20
+
+                  steps:
+                    - name: Checkout
+                      uses: actions/checkout@v4
+
+                    - name: Set up Python
+                      uses: actions/setup-python@v5
+                      with:
+                        python-version: "3.12"
+                        cache: "pip"
+
+                    - name: Install dependencies
+                      run: |
+                        python -m pip install --upgrade pip
+                        pip install -r requirements.txt
+                        python -m pip install pytest
+
+                    - name: Compile Python files
+                      run: python -m compileall -q sniperplug scripts tests
+
+                    - name: Run import smoke check
+                      run: python scripts/smoke_imports.py
+
+                    - name: Run full test suite
+                      env:
+                        PYTHONHASHSEED: "0"
+                      run: python -m pytest -q
+          ''').lstrip())
+          PY
+
+      - name: Validate repaired source
+        run: |
+          python -m py_compile sniperplug/services/public_deal_posts.py tests/test_active_cache_write_isolation_static.py
+          python -m pytest -q tests/test_active_cache_write_isolation_static.py
+
+      - name: Commit clean production repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Isolate active cache writes per posted card"
+          git push origin HEAD:audit/full-discord-deal-bot-recovery
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20

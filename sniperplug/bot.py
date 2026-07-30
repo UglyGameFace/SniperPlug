@@ -40,12 +40,10 @@ from sniperplug.services.error_logging import (
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.storage_maintenance import run_storage_maintenance
-from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
 from sniperplug.storage.db import Database
 
 
 log = logging.getLogger("sniperplug")
-MAX_SETUP_SELF_HEAL_ATTEMPTS = 3
 
 
 class SniperPlugBot(commands.Bot):
@@ -55,8 +53,6 @@ class SniperPlugBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self.settings = settings
         self.db = Database(settings.database_path)
-        self._setup_self_heal_done = False
-        self._setup_self_heal_attempts = 0
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
     async def setup_hook(self) -> None:
@@ -137,20 +133,6 @@ class SniperPlugBot(commands.Bot):
 
     async def on_ready(self) -> None:
         log.info("SniperPlug online as %s (%s)", self.user, self.user.id if self.user else "unknown")
-        if self._setup_self_heal_done or self._setup_self_heal_attempts >= MAX_SETUP_SELF_HEAL_ATTEMPTS:
-            return
-        self._setup_self_heal_attempts += 1
-        try:
-            repair_summary = await repair_all_public_alert_setups(self.db, self)
-        except Exception:
-            log.exception(
-                "Setup self-heal failed attempt=%s/%s; it will retry on the next ready event",
-                self._setup_self_heal_attempts,
-                MAX_SETUP_SELF_HEAL_ATTEMPTS,
-            )
-            return
-        self._setup_self_heal_done = True
-        log.info("Setup self-heal complete attempt=%s summary=%s", self._setup_self_heal_attempts, repair_summary)
 
 
 def walmart_affiliate_config(settings: Settings) -> WalmartAffiliateConfig:

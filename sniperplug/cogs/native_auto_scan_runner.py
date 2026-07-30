@@ -16,8 +16,6 @@ NATIVE_MANUAL_QUERY_COUNT = 8
 NATIVE_REVIEW_CARD_LIMIT = 12
 NATIVE_REVIEW_PAGE_SIZE = 3
 NATIVE_MANUAL_TIMEOUT_SECONDS = 90
-NATIVE_PUBLIC_SCOUT_LIMIT = 2
-NATIVE_SCOUT_MIN_SCORE = 95
 NATIVE_BROAD_PRESET_KEY = "broad_public_safe"
 NATIVE_CATEGORY_ROTATION = (
     "deal_week",
@@ -32,7 +30,12 @@ NATIVE_CATEGORY_ROTATION = (
 
 
 class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
-    """Single-pass autoscan runner with public-safe category selection."""
+    """Single-pass autoscan runner with verified-only public posting.
+
+    The legacy runner still owns shared scheduling, locking, diagnostics, and
+    persistence helpers. This class is the only registered autoscan cog and
+    deliberately keeps unverified scout/review cards private.
+    """
 
     def __init__(self, bot):
         super().__init__(bot)
@@ -51,7 +54,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 if not config.get("enabled") or not config.get("channel_id"):
                     await self._safe_autoscan_followup(interaction, "Public alerts are missing. Run `/autoscan_health` for the exact blocker.")
                     return
-                if legacy.AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()): 
+                if legacy.AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):
                     await self._safe_autoscan_followup(interaction, "Walmart is not enabled for public alerts in this server. Run `/autoscan_health`.")
                     return
 
@@ -76,11 +79,23 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 legacy.log.exception("Manual /autoscan_now failed guild=%s", guild_id)
                 await self._safe_autoscan_followup(interaction, f"Auto-scan hit an error after starting: `{legacy.clean_log_text(exc)}`")
 
-    async def _run_guild_walmart_discovery(self, guild: legacy.AutoScanGuild, *, force: bool = False, query_count_override: int | None = None, report_label: str = "") -> legacy.AutoScanReport:
+    async def _run_guild_walmart_discovery(
+        self,
+        guild: legacy.AutoScanGuild,
+        *,
+        force: bool = False,
+        query_count_override: int | None = None,
+        report_label: str = "",
+    ) -> legacy.AutoScanReport:
         scan_key = legacy.AUTO_SCAN_SOURCE_LABEL
         settings: dict = {}
         if not force:
-            allowed, reason, settings = await legacy.auto_scan_allowed(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)
+            allowed, reason, settings = await legacy.auto_scan_allowed(
+                self.bot.db,
+                guild.guild_id,
+                legacy.AUTO_SCAN_RETAILER,
+                scan_key=scan_key,
+            )
             if not allowed:
                 report = legacy.AutoScanReport(guild_id=guild.guild_id, allowed=False, reason=reason, settings=settings)
                 await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
@@ -92,21 +107,38 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         result = await legacy.run_autoscan_verified_category(self.bot.db, guild.guild_id, preset=preset)
         warnings = legacy.clean_warning_list(result.warnings)
         warnings.append(PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE)
-        warnings.append(f"Threshold split: verified markdown requires **{result.min_discount}%+** trusted Walmart proof; Public Scout fallback requires rank **{NATIVE_SCOUT_MIN_SCORE}/150+** plus a hard value signal.")
+        warnings.append(
+            f"Verified-only public policy: auto-posting requires **{result.min_discount}%+** trusted Walmart markdown proof. "
+            "Anything uncertain remains private for staff review."
+        )
         if preset.key == NATIVE_BROAD_PRESET_KEY:
             warnings.append("Manual broad sweep spans the major public-safe categories instead of staying inside one category.")
         if report_label:
             warnings.append(f"{report_label}: scanned **{len(preset.queries)}** public-safe route(s) in **{preset.label}**.")
-        diagnostics = legacy.autoscan_diagnostics(result)
 
+        diagnostics = legacy.autoscan_diagnostics(result)
         unique_cards = legacy.dedupe_cards(result.cards)
-        unique_cards = legacy.rank_for_search_mode(unique_cards, [], legacy.AUTO_SCAN_PUBLIC_MODE, limit=max(len(unique_cards), legacy.AUTO_SCAN_PUBLIC_LIMIT)).verified
-        unique_cards = await legacy.apply_feedback_learning_to_cards(self.bot.db, guild_id=guild.guild_id, cards=unique_cards, fallback_retailer=legacy.AUTO_SCAN_RETAILER)
+        unique_cards = legacy.rank_for_search_mode(
+            unique_cards,
+            [],
+            legacy.AUTO_SCAN_PUBLIC_MODE,
+            limit=max(len(unique_cards), legacy.AUTO_SCAN_PUBLIC_LIMIT),
+        ).verified
+        unique_cards = await legacy.apply_feedback_learning_to_cards(
+            self.bot.db,
+            guild_id=guild.guild_id,
+            cards=unique_cards,
+            fallback_retailer=legacy.AUTO_SCAN_RETAILER,
+        )
         feedback_summary = legacy.summarize_feedback_learning(unique_cards)
         confidence_selection = legacy.select_confident_public_cards(unique_cards, floor=legacy.AUTOSCAN_CONFIDENCE_FLOOR)
         public_candidates = list(confidence_selection.cards)
-        rescued_cards = legacy.select_public_deal_candidates(unique_cards, source_label=f"{legacy.AUTO_SCAN_SOURCE_LABEL}:{preset.key}", min_discount=result.min_discount, limit=legacy.AUTO_SCAN_PUBLIC_LIMIT)
-        for card in rescued_cards:
+        for card in legacy.select_public_deal_candidates(
+            unique_cards,
+            source_label=f"{legacy.AUTO_SCAN_SOURCE_LABEL}:{preset.key}",
+            min_discount=result.min_discount,
+            limit=legacy.AUTO_SCAN_PUBLIC_LIMIT,
+        ):
             if card not in public_candidates:
                 public_candidates.append(card)
 
@@ -134,7 +166,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         review_cards = legacy.prepare_review_watchlist_cards(result, limit=NATIVE_REVIEW_CARD_LIMIT) if not shown_cards else []
         if review_cards:
             self._review_cards_by_guild[int(guild.guild_id)] = tuple(review_cards[:NATIVE_REVIEW_CARD_LIMIT])
-            warnings.append("Private review cards were captured from this same autoscan pass.")
+            warnings.append("Private review cards were captured from this same autoscan pass; they were not auto-posted.")
         else:
             self._review_cards_by_guild.pop(int(guild.guild_id), None)
 
@@ -142,23 +174,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             await legacy.record_auto_scan_run(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)
 
         if not shown_cards:
-            scout_public_result = legacy.PublicPostResult()
-            if review_cards:
-                scout_public_result = await legacy.maybe_post_public_deal_cards(
-                    bot=self.bot,
-                    guild_id=guild.guild_id,
-                    cards=review_cards[:NATIVE_PUBLIC_SCOUT_LIMIT],
-                    source_label=f"{legacy.AUTO_SCAN_SOURCE_LABEL}:{preset.key}:public_scout",
-                    fallback_retailer=legacy.AUTO_SCAN_RETAILER,
-                    min_public_discount=result.min_discount,
-                    min_alert_score=NATIVE_SCOUT_MIN_SCORE,
-                    allow_review_scout=True,
-                )
-                if scout_public_result.posted:
-                    warnings.append(f"Public Scout Lane posted **{scout_public_result.posted}** high-confidence review lead(s).")
-                elif scout_public_result.attempted:
-                    warnings.append("Public Scout Lane checked review leads but did not find one safe enough to auto-post.")
-
+            public_result = legacy.PublicPostResult()
             report = legacy.AutoScanReport(
                 guild_id=guild.guild_id,
                 allowed=True,
@@ -167,7 +183,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 category_key=preset.key,
                 category_label=preset.label,
                 min_discount=result.min_discount,
-                public_mode="Verified API Threshold + Public Scout Fallback",
+                public_mode="Verified API Threshold Only",
                 confidence_floor=legacy.AUTOSCAN_CONFIDENCE_FLOOR,
                 confidence_summary=confidence_selection.summary_line(),
                 feedback_learning_summary=feedback_summary,
@@ -181,14 +197,14 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 total_cards=len(unique_cards),
                 verified_before_memory=result.total_verified_cards,
                 fresh_cards=0,
-                cards_attempted_for_public=scout_public_result.attempted,
+                cards_attempted_for_public=0,
                 used_repeat_fallback=bool(review_cards),
-                repeat_summary=f"{fresh_selection.summary_line()} • public scout attempted: **{scout_public_result.attempted}** • public scout posted: **{scout_public_result.posted}** • private review/scout cards ready: **{len(review_cards)}**",
-                public_result=scout_public_result,
+                repeat_summary=f"{fresh_selection.summary_line()} • private review cards ready: **{len(review_cards)}** • public review posts: **0**",
+                public_result=public_result,
                 warnings=tuple(warnings),
             )
             await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
-            legacy.log.info("Auto-scan completed with public scout fallback %s", report.log_fields())
+            legacy.log.info("Auto-scan completed with private review fallback %s", report.log_fields())
             return report
 
         category_preferences = await legacy.get_category_preferences(self.bot.db, guild.guild_id)
@@ -212,7 +228,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             category_key=preset.key,
             category_label=preset.label,
             min_discount=result.min_discount,
-            public_mode="Best Picks",
+            public_mode="Verified API Threshold Only",
             confidence_floor=legacy.AUTOSCAN_CONFIDENCE_FLOOR,
             confidence_summary=confidence_selection.summary_line(),
             feedback_learning_summary=feedback_summary,
@@ -227,16 +243,26 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             verified_before_memory=result.total_verified_cards,
             fresh_cards=len(fresh_selection.fresh),
             cards_attempted_for_public=len(shown_cards),
-            used_repeat_fallback=bool(review_cards),
-            repeat_summary=legacy.watchlist_repeat_summary(fresh_selection.summary_line(), review_cards, public_result),
+            used_repeat_fallback=False,
+            repeat_summary=legacy.watchlist_repeat_summary(fresh_selection.summary_line(), [], public_result),
             public_result=public_result,
             warnings=tuple(warnings),
         )
         await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
-        legacy.log.info("Auto-scan completed %s reason=%s", report.log_fields(), legacy.compact_log_text(legacy.explain_public_post_result(public_result)))
+        legacy.log.info(
+            "Auto-scan completed %s reason=%s",
+            report.log_fields(),
+            legacy.compact_log_text(legacy.explain_public_post_result(public_result)),
+        )
         return report
 
-    async def _send_autoscan_report(self, interaction: discord.Interaction, report: legacy.AutoScanReport, *, label: str = "Auto-scan test result") -> None:
+    async def _send_autoscan_report(
+        self,
+        interaction: discord.Interaction,
+        report: legacy.AutoScanReport,
+        *,
+        label: str = "Auto-scan test result",
+    ) -> None:
         await super()._send_autoscan_report(interaction, report, label=label)
         if not report.allowed or report.public_result.posted:
             return
@@ -250,7 +276,9 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
 
     async def _send_private_review_cards(self, interaction: discord.Interaction, cards: list[legacy.DealCard]) -> None:
         view = ManualReviewShareView(cards, page_size=NATIVE_REVIEW_PAGE_SIZE, max_cards=NATIVE_REVIEW_CARD_LIMIT)
-        content = view.content(prefix="🟨 **Private autoscan review leads**\nThese are from the same autoscan pass. They need staff verification before public posting.")
+        content = view.content(
+            prefix="🟨 **Private autoscan review leads**\nThese are from the same autoscan pass. They need staff verification before public posting."
+        )
         try:
             await interaction.followup.send(content=content, embeds=view.page_embeds(), view=view, ephemeral=True)
         except (discord.NotFound, discord.HTTPException) as exc:
@@ -260,9 +288,21 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             legacy.log.exception("Failed to send autoscan private review leads")
 
 
-def select_native_autoscan_preset(guild_id: int, *, force: bool = False, query_count_override: int | None = None) -> HuntPreset:
+def select_native_autoscan_preset(
+    guild_id: int,
+    *,
+    force: bool = False,
+    query_count_override: int | None = None,
+) -> HuntPreset:
     presets = public_autoscan_hunt_presets()
-    query_count = max(1, int(query_count_override if query_count_override is not None else NATIVE_MANUAL_QUERY_COUNT if force else legacy.AUTO_SCAN_FAST_QUERY_COUNT))
+    query_count = max(
+        1,
+        int(
+            query_count_override
+            if query_count_override is not None
+            else NATIVE_MANUAL_QUERY_COUNT if force else legacy.AUTO_SCAN_FAST_QUERY_COUNT
+        ),
+    )
     if force:
         return build_native_broad_preset(presets, guild_id=guild_id, query_count=query_count)
 
@@ -274,7 +314,7 @@ def select_native_autoscan_preset(guild_id: int, *, force: bool = False, query_c
         base.key,
         base.label,
         base.emoji,
-        f"{base.description} Native autoscan uses public-safe route policy and separate verified/scout thresholds.",
+        f"{base.description} Native autoscan uses public-safe routes and verified-only public posting.",
         queries,
         base.min_discount,
     )
@@ -289,8 +329,7 @@ def build_native_broad_preset(presets: dict[str, HuntPreset], *, guild_id: int, 
         if len(selected) >= max(1, int(query_count)):
             break
         preset = presets[key]
-        slice_one = legacy.rotated_query_slice(tuple(preset.queries), guild_id=guild_id + offset, query_count=1)
-        for query in slice_one:
+        for query in legacy.rotated_query_slice(tuple(preset.queries), guild_id=guild_id + offset, query_count=1):
             normalized = " ".join(str(query or "").split()).lower()
             if normalized and normalized not in seen:
                 seen.add(normalized)

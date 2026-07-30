@@ -11,6 +11,7 @@ from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.candidate_pipeline import evaluate_candidate
 from sniperplug.services.price_proof import verified_deal_value
 from sniperplug.services.safe_links import product_link_choices
+from sniperplug.services.variant_identity import derived_variant_identity
 
 
 MAX_FIELD_VALUE = 1024
@@ -67,9 +68,28 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
         # Walmart Cash value even without a trusted was-price markdown.
         card.should_alert = decision.should_alert and (discount is not None or has_coupon_or_cash)
         card.current_price = deal.current_price
-        card.selected_offer_id = deal.selected_offer_id
+        card.selected_offer_id = deal.selected_offer_id or derived_variant_identity(
+            variant_label=deal.variant_label,
+            variant_attributes=deal.variant_attributes,
+            pack_size=deal.pack_size,
+            color=deal.color,
+            platform=deal.platform,
+            model=deal.model,
+            seller_name=deal.seller_name,
+            fulfillment_type=deal.fulfillment_type,
+            condition=deal.condition,
+        )
         card.sku = deal.sku
         card.upc = deal.upc
+        card.variant_label = deal.variant_label
+        card.variant_attributes = dict(deal.variant_attributes or {})
+        card.pack_size = deal.pack_size
+        card.color = deal.color
+        card.platform = deal.platform
+        card.model = deal.model
+        card.seller_name = deal.seller_name
+        card.fulfillment_type = deal.fulfillment_type
+        card.condition = deal.condition
         cards.append(card)
     return cards
 

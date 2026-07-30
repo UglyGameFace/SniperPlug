@@ -79,6 +79,16 @@ async def maybe_post_public_deal_cards(
     if not config["enabled"] or not config["channel_id"]:
         return PublicPostResult(attempted=attempted, skipped_disabled=attempted)
 
+    try:
+        from sniperplug.services.deal_category_preferences import get_category_preferences
+
+        category_preferences = await get_category_preferences(db, guild_id)
+    except Exception as exc:
+        return PublicPostResult(
+            attempted=attempted,
+            errors=(f"public category preference read failed; posting blocked: {clean_error_text(exc)}",),
+        )
+
     channel, channel_note = await resolve_public_alert_channel(
         bot,
         db,
@@ -105,6 +115,18 @@ async def maybe_post_public_deal_cards(
         notes.append(channel_note)
 
     for card in cards:
+        try:
+            from sniperplug.services.deal_category_preferences import decide_category
+
+            category_decision = decide_category(card, category_preferences)
+        except Exception as exc:
+            notes.append(f"public category decision failed; card blocked: {clean_error_text(exc)}")
+            skipped_not_alertable += 1
+            continue
+        if category_decision.action == "suppress":
+            skipped_not_alertable += 1
+            continue
+
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or fallback_key
         if retailer not in allowed_retailers:
             skipped_wrong_retailer += 1

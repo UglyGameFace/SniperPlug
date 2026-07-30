@@ -28,7 +28,7 @@ jobs:
       - name: Apply Walmart Cash hardening
         run: python tools/apply_walmart_cash_hardening.py
 
-      - name: Reject vague reverse Cash amount matches
+      - name: Reject vague and nearby-price Cash matches
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -39,14 +39,23 @@ jobs:
           ):
               path = Path(name)
               lines = path.read_text().splitlines(keepends=True)
-              kept = [
-                  line
-                  for line in lines
-                  if 'r"walmart\\s+cash[^' not in line
-              ]
+              kept = [line for line in lines if 'r"walmart\\s+cash[^' not in line]
               if len(kept) == len(lines):
                   raise SystemExit(f"unsafe reverse Cash amount pattern missing in {name}")
               path.write_text("".join(kept))
+
+          pdp = Path("sniperplug/services/walmart_pdp_cash_proof.py")
+          text = pdp.read_text()
+          nearest_money = '''    money_matches = list(re.finditer(r"\\$\\s*(\\d+(?:\\.\\d{1,2})?)", raw))
+    nearby_money = [match for match in money_matches if abs(match.start() - cash_index) <= 90]
+    if nearby_money:
+        best = min(nearby_money, key=lambda match: abs(match.start() - cash_index))
+        return _float_or_none(best.group(1))
+
+'''
+          if nearest_money not in text:
+              raise SystemExit("PDP nearest-dollar shortcut missing")
+          pdp.write_text(text.replace(nearest_money, "", 1))
           PY
 
       - name: Install dependencies

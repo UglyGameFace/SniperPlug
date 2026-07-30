@@ -1,0 +1,58 @@
+name: One-shot autoscan completion checkpoint
+
+on:
+  push:
+    branches:
+      - audit/full-discord-deal-bot-recovery
+    paths:
+      - .github/workflows/one_shot_autoscan_completion_checkpoint.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/full-discord-deal-bot-recovery
+          fetch-depth: 0
+      - name: Patch autoscan completion checkpoint
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('sniperplug/cogs/native_auto_scan_runner.py')
+          text = path.read_text()
+
+          early = '''        if not force:\n            await legacy.record_auto_scan_run(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)\n\n'''
+          if early not in text:
+              raise SystemExit('early autoscan checkpoint not found')
+          text = text.replace(early, '', 1)
+
+          no_cards_anchor = '''            await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)\n            legacy.log.info("Auto-scan completed with private review fallback %s", report.log_fields())\n'''
+          no_cards_replacement = '''            await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)\n            if not force:\n                await legacy.record_auto_scan_run(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)\n            legacy.log.info("Auto-scan completed with private review fallback %s", report.log_fields())\n'''
+          if no_cards_anchor not in text:
+              raise SystemExit('no-cards completion anchor not found')
+          text = text.replace(no_cards_anchor, no_cards_replacement, 1)
+
+          posted_anchor = '''        await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)\n        legacy.log.info(\n'''
+          posted_replacement = '''        await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)\n        if not force:\n            await legacy.record_auto_scan_run(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)\n        legacy.log.info(\n'''
+          if posted_anchor not in text:
+              raise SystemExit('posted completion anchor not found')
+          text = text.replace(posted_anchor, posted_replacement, 1)
+          path.write_text(text)
+
+          test = Path('tests/test_native_autoscan_completion_checkpoint_static.py')
+          test.write_text('''from pathlib import Path\n\n\ndef test_native_autoscan_records_interval_only_after_persisted_completion():\n    source = Path("sniperplug/cogs/native_auto_scan_runner.py").read_text()\n    start = source.index("async def _run_guild_walmart_discovery")\n    end = source.index("async def _send_autoscan_report", start)\n    block = source[start:end]\n    first_record = block.index("await legacy.record_auto_scan_run")\n    first_persist = block.index("await legacy.persist_autoscan_report")\n    assert first_record > first_persist\n    assert block.count("await legacy.record_auto_scan_run") == 2\n    assert block.count("await legacy.persist_autoscan_report") == 3\n''')
+
+          Path('.github/workflows/one_shot_autoscan_completion_checkpoint.yml').unlink()
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sniperplug/cogs/native_auto_scan_runner.py tests/test_native_autoscan_completion_checkpoint_static.py .github/workflows/one_shot_autoscan_completion_checkpoint.yml
+          git commit -m "Record autoscan interval after completed persistence"
+          git push origin HEAD:audit/full-discord-deal-bot-recovery

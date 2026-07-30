@@ -184,6 +184,16 @@ async def maybe_post_public_deal_cards(
             continue
 
         try:
+            await mark_public_deal_sending(db, guild_id=guild_id, deal_key=deal_key)
+        except Exception as exc:
+            try:
+                await release_public_deal_reservation(db, guild_id=guild_id, deal_key=deal_key)
+            except Exception:
+                pass
+            notes.append(f"public post delivery-state write failed for {retailer}; send blocked: {clean_error_text(exc)}")
+            continue
+
+        try:
             target = build_feedback_target(
                 card,
                 target_key=product_key,
@@ -591,6 +601,11 @@ async def reserve_public_deal_post(
         "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'reserved' AND first_seen_at < ?",
         (guild_id, deal_key, stale_before),
     )
+    sending_stale_before = (now_dt - timedelta(days=30)).isoformat()
+    await conn.execute(
+        "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'sending' AND first_seen_at < ?",
+        (guild_id, deal_key, sending_stale_before),
+    )
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO guild_public_deal_posts (guild_id, deal_key, retailer, source_label, status, first_seen_at)
@@ -612,6 +627,23 @@ async def reserve_public_deal_post(
         (guild_id, deal_key, now),
     )
     return bool(await check.fetchone())
+
+
+async def mark_public_deal_sending(db, *, guild_id: int, deal_key: str) -> None:
+    conn = db.require_conn()
+    await conn.execute(
+        "UPDATE guild_public_deal_posts SET status = 'sending' WHERE guild_id = ? AND deal_key = ? AND status = 'reserved'",
+        (guild_id, deal_key),
+    )
+    await conn.commit()
+    cursor = await conn.execute(
+        "SELECT status FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? LIMIT 1",
+        (guild_id, deal_key),
+    )
+    row = await cursor.fetchone()
+    status = row["status"] if row is not None else None
+    if status != "sending":
+        raise RuntimeError("public post reservation could not be confirmed as sending")
 
 
 async def finalize_successful_public_post(
@@ -683,7 +715,7 @@ async def mark_public_deal_posted(db, *, guild_id: int, deal_key: str) -> None:
 async def release_public_deal_reservation(db, *, guild_id: int, deal_key: str) -> None:
     conn = db.require_conn()
     await conn.execute(
-        "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status = 'reserved'",
+        "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? AND status IN ('reserved', 'sending')",
         (guild_id, deal_key),
     )
     await conn.commit()

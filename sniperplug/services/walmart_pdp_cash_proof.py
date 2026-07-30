@@ -227,15 +227,9 @@ def _amount_near_walmart_cash(text: str) -> float | None:
         return None
     cash_index = cash_match.start()
 
-    money_matches = list(re.finditer(r"\$\s*(\d+(?:\.\d{1,2})?)", raw))
-    nearby_money = [match for match in money_matches if abs(match.start() - cash_index) <= 90]
-    if nearby_money:
-        best = min(nearby_money, key=lambda match: abs(match.start() - cash_index))
-        return _float_or_none(best.group(1))
-
     patterns = (
-        r"(?:earn|get|receive|save)\s+(\d+(?:\.\d{1,2})?)\s+(?:in\s+)?walmart\s+cash",
-        r"walmart\s+cash[^0-9$]{0,80}(\d+(?:\.\d{1,2})?)",
+        r"(?:earn|get|receive|claim)\s+\$?\s*(\d+(?:\.\d{1,2})?)\s+(?:in\s+)?walmart\s+cash",
+        r"\$\s*(\d+(?:\.\d{1,2})?)\s+walmart\s+cash",
     )
     for pattern in patterns:
         match = re.search(pattern, lowered)

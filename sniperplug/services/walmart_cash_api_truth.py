@@ -14,6 +14,16 @@ WALMART_CASH_KEY_MARKERS = (
     "walmart cash",
 )
 
+WALMART_CASH_AMOUNT_KEY_MARKERS = (
+    "amount",
+    "value",
+    "savings",
+    "saving",
+    "reward",
+    "rebate",
+)
+
+
 PROMO_CONTEXT_MARKERS = (
     "promo",
     "promotion",
@@ -206,13 +216,8 @@ def _amount_from_cash_object(obj: dict[str, Any], *, path: str, text: str) -> fl
 
     for key, value in obj.items():
         key_norm = _norm(key)
-        path_norm = _norm(path)
-        is_cash_key = "walmartcash" in key_norm or "walmartcash" in path_norm
-        is_amount_key = any(token in key_norm for token in ("amount", "value", "savings", "saving", "reward", "cash"))
-
-        if not (is_cash_key or is_amount_key):
+        if not _is_dedicated_cash_amount_key(key_norm):
             continue
-
         parsed = _float_or_none(value)
         if parsed is not None and (best is None or parsed > best):
             best = parsed
@@ -226,7 +231,8 @@ def _amount_from_cash_object(obj: dict[str, Any], *, path: str, text: str) -> fl
 
 def _amount_from_leaf(path: str, value: Any, *, text: str) -> float | None:
     path_norm = _norm(path)
-    if "walmartcash" in path_norm or any(token in path_norm for token in ("amount", "value", "savings", "saving", "reward", "cash")):
+    leaf_key = _norm(path.rsplit(".", 1)[-1].split("[", 1)[0])
+    if "walmartcash" in path_norm and _is_dedicated_cash_amount_key(leaf_key):
         parsed = _float_or_none(value)
         if parsed is not None:
             return parsed
@@ -235,21 +241,32 @@ def _amount_from_leaf(path: str, value: Any, *, text: str) -> float | None:
 
 
 def _money_near_walmart_cash(text: str) -> float | None:
-    raw = str(text or "")
+    raw = " ".join(str(text or "").split())
     lowered = raw.lower()
     normalized = _norm(lowered)
 
     if "walmart cash" not in lowered and "walmartcash" not in normalized:
         return None
 
-    matches = list(re.finditer(r"\$\s*(\d+(?:\.\d{1,2})?)", raw))
-    if not matches:
-        return None
+    patterns = (
+        r"(?:get|earn|receive|claim)\s+\$\s*(\d+(?:\.\d{1,2})?)\s+(?:in\s+)?walmart\s+cash",
+        r"\$\s*(\d+(?:\.\d{1,2})?)\s+walmart\s+cash",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, lowered)
+        if match:
+            return _float_or_none(match.group(1))
+    return None
 
-    cash_positions = [idx for idx in (lowered.find("walmart cash"), normalized.find("walmartcash")) if idx >= 0]
-    cash_index = min(cash_positions or [0])
-    best = min(matches, key=lambda m: abs(m.start() - cash_index))
-    return _float_or_none(best.group(1))
+
+def _is_dedicated_cash_amount_key(key_norm: str) -> bool:
+    if not key_norm:
+        return False
+    if "walmartcash" in key_norm:
+        return any(marker in key_norm for marker in WALMART_CASH_AMOUNT_KEY_MARKERS)
+    return key_norm in WALMART_CASH_AMOUNT_KEY_MARKERS or any(
+        key_norm.endswith(marker) for marker in WALMART_CASH_AMOUNT_KEY_MARKERS
+    )
 
 
 def _amount_is_sane(amount: float | None, *, current_price: float | None) -> bool:

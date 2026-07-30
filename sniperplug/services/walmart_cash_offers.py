@@ -11,6 +11,8 @@ from sniperplug.services.safe_links import LinkChoice
 
 
 DEFAULT_CASH_QUERIES = (
+    "manufacturer offers",
+    "get walmart cash",
     "walmart cash offers",
     "walmart cash eligible",
     "personal care walmart cash",

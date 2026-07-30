@@ -127,50 +127,6 @@ jobs:
                   assert block.index("await conn.commit()") < block.index("except Exception as exc:")
                   assert "return cached" in block
           ''').lstrip())
-
-          Path('.github/workflows/one_shot_active_cache_isolation.yml').unlink(missing_ok=True)
-          Path('.github/workflows/one_shot_active_cache_isolation_v2.yml').unlink(missing_ok=True)
-
-          Path('.github/workflows/python-check.yml').write_text(dedent('''
-              name: Python Check
-
-              on:
-                push:
-                  branches: ["main", "master"]
-                pull_request:
-
-              jobs:
-                test:
-                  runs-on: ubuntu-latest
-                  timeout-minutes: 20
-
-                  steps:
-                    - name: Checkout
-                      uses: actions/checkout@v4
-
-                    - name: Set up Python
-                      uses: actions/setup-python@v5
-                      with:
-                        python-version: "3.12"
-                        cache: "pip"
-
-                    - name: Install dependencies
-                      run: |
-                        python -m pip install --upgrade pip
-                        pip install -r requirements.txt
-                        python -m pip install pytest
-
-                    - name: Compile Python files
-                      run: python -m compileall -q sniperplug scripts tests
-
-                    - name: Run import smoke check
-                      run: python scripts/smoke_imports.py
-
-                    - name: Run full test suite
-                      env:
-                        PYTHONHASHSEED: "0"
-                      run: python -m pytest -q
-          ''').lstrip())
           PY
 
       - name: Validate repaired source
@@ -178,11 +134,11 @@ jobs:
           python -m py_compile sniperplug/services/public_deal_posts.py tests/test_active_cache_write_isolation_static.py
           python -m pytest -q tests/test_active_cache_write_isolation_static.py
 
-      - name: Commit clean production repair
+      - name: Commit production repair only
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add sniperplug/services/public_deal_posts.py tests/test_active_cache_write_isolation_static.py
           git commit -m "Isolate active cache writes per posted card"
           git push origin HEAD:audit/full-discord-deal-bot-recovery
 

@@ -16,6 +16,9 @@ Do not start unrelated SniperPlug Site, Whop importer, Dank Shield, or cosmetic 
 - The process-global provider registry retained stale providers and rejected clean re-registration.
 - Scan lock normalization allowed whitespace variants of the same query to run separately.
 - Startup self-heal marked itself complete before success and would not retry after a transient failure.
+- The retained manual review dropdown bypassed the Manage Server permission check enforced by the newer Post buttons.
+- Active-deal cache validation currently hardcodes a 50% threshold even when a verified public post uses a lower configured threshold; this can allow lower-threshold verified deals to miss active-cache suppression.
+- Native autoscan only captures private review leads when no verified public card exists, so useful review leads can be discarded on mixed-result passes.
 - Turso/libsql lacks a multi-write transaction abstraction for atomic workflows.
 - CI compiled Python but did not run pytest.
 - Broad exception handling and unpinned dependencies require review.
@@ -31,10 +34,12 @@ Do not start unrelated SniperPlug Site, Whop importer, Dank Shield, or cosmetic 
 - Added normalized provider lookups and controlled replacement support.
 - Hardened duplicate scan locks with whitespace/case normalization and stale-lock recovery.
 - Changed setup self-heal to retry transient failures and mark completion only after success.
+- Enforced Manage Server permission through one fail-closed guard for both modern buttons and the retained compatibility dropdown used to publish private review leads.
+- Added regression coverage for the manual review permission boundary.
 - Opened draft PR #125 for the active recovery branch.
 
 ## Validation
-- Regression coverage exists for Walmart runtime wiring, private-only autoscan review behavior, provider registry lifecycle, and scan-lock normalization/stale recovery.
+- Regression coverage exists for Walmart runtime wiring, private-only autoscan review behavior, provider registry lifecycle, scan-lock normalization/stale recovery, setup retries, and manual review posting permissions.
 - GitHub Actions is configured to run the full suite on pull requests; current branch checks are pending workflow pickup.
 - Full regression status is not yet green and the task is not complete.
 
@@ -60,6 +65,7 @@ Do not start unrelated SniperPlug Site, Whop importer, Dank Shield, or cosmetic 
 - 2026-07-30: Removed automatic public posting of uncertain autoscan review/scout leads.
 - 2026-07-30: Made the full pytest suite mandatory in CI.
 - 2026-07-30: Repaired provider registry lifecycle, duplicate scan normalization, stale lock recovery, and setup self-heal retries.
+- 2026-07-30: Closed the compatibility-dropdown permission bypass in manual private-review posting.
 
 ## Blockers
 - GitHub Actions had not attached workflow runs to the newest commits at the time of this update.

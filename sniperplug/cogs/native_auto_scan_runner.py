@@ -172,9 +172,6 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         else:
             self._review_cards_by_guild.pop(int(guild.guild_id), None)
 
-        if not force:
-            await legacy.record_auto_scan_run(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)
-
         if not shown_cards:
             public_result = legacy.PublicPostResult()
             report = legacy.AutoScanReport(
@@ -206,6 +203,8 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 warnings=tuple(warnings),
             )
             await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
+            if not force:
+                await legacy.record_auto_scan_run(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)
             legacy.log.info("Auto-scan completed with private review fallback %s", report.log_fields())
             return report
 
@@ -254,6 +253,8 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             warnings=tuple(warnings),
         )
         await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
+        if not force:
+            await legacy.record_auto_scan_run(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)
         legacy.log.info(
             "Auto-scan completed %s reason=%s",
             report.log_fields(),

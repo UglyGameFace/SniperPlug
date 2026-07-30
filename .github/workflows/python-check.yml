@@ -26,9 +26,7 @@ jobs:
           cache: "pip"
 
       - name: Apply Walmart Cash hardening
-        run: |
-          python tools/apply_walmart_cash_hardening.py
-          python tools/finalize_walmart_cash_hardening.py
+        run: python tools/apply_walmart_cash_hardening.py
 
       - name: Install dependencies
         run: |

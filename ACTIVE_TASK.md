@@ -9,26 +9,32 @@ Trace and repair the production execution path from process startup through Disc
 Do not start unrelated SniperPlug Site, Whop importer, Dank Shield, or cosmetic work until this task satisfies its Definition of Done. New findings remain part of this audit unless explicitly forced to another task by the owner.
 
 ## Findings
-- Startup loaded Walmart credentials into `Settings` but discarded them by registering `WalmartProvider(configured=False)`.
+- Startup loaded Walmart credentials into `Settings` but discarded them by registering an unconfigured provider.
 - The registered native autoscan inherits shared scheduling and helper behavior from the legacy runner.
 - Native autoscan publicly posted uncertain review/scout cards despite staff-facing text saying those cards remain private.
 - Tests explicitly required the conflicting public scout fallback.
+- The process-global provider registry retained stale providers and rejected clean re-registration.
+- Scan lock normalization allowed whitespace variants of the same query to run separately.
+- Startup self-heal marked itself complete before success and would not retry after a transient failure.
 - Turso/libsql lacks a multi-write transaction abstraction for atomic workflows.
 - CI compiled Python but did not run pytest.
-- Startup maintenance and self-heal retry behavior require repair.
 - Broad exception handling and unpinned dependencies require review.
 
 ## Changes
-- Wired the loaded Walmart consumer ID, key version, private key, publisher ID, and enabled flag into the actual registered runtime provider.
+- Wired loaded Walmart credentials and enabled state into the actual registered runtime provider.
 - Added Walmart runtime configuration regression tests.
 - Changed the registered native autoscan to verified-only public posting.
 - Kept uncertain review/scout cards private and available through the staff review UI.
 - Updated conflicting scout fallback tests to enforce the private-only contract.
 - Updated the main Python CI workflow to compile, smoke-import, and run the complete pytest suite.
+- Made provider startup restart-safe by clearing stale process-global providers before fresh wiring.
+- Added normalized provider lookups and controlled replacement support.
+- Hardened duplicate scan locks with whitespace/case normalization and stale-lock recovery.
+- Changed setup self-heal to retry transient failures and mark completion only after success.
 - Opened draft PR #125 for the active recovery branch.
 
 ## Validation
-- Static regression coverage added for Walmart runtime wiring and private-only autoscan review behavior.
+- Regression coverage exists for Walmart runtime wiring, private-only autoscan review behavior, provider registry lifecycle, and scan-lock normalization/stale recovery.
 - GitHub Actions is configured to run the full suite on pull requests; current branch checks are pending workflow pickup.
 - Full regression status is not yet green and the task is not complete.
 
@@ -53,6 +59,7 @@ Do not start unrelated SniperPlug Site, Whop importer, Dank Shield, or cosmetic 
 - 2026-07-30: Repaired Walmart runtime provider configuration.
 - 2026-07-30: Removed automatic public posting of uncertain autoscan review/scout leads.
 - 2026-07-30: Made the full pytest suite mandatory in CI.
+- 2026-07-30: Repaired provider registry lifecycle, duplicate scan normalization, stale lock recovery, and setup self-heal retries.
 
 ## Blockers
 - GitHub Actions had not attached workflow runs to the newest commits at the time of this update.

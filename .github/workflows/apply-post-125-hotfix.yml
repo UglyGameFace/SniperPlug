@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - hotfix/post-125-review-findings
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write

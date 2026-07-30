@@ -9,6 +9,7 @@ from discord.ext import commands
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
+from sniperplug.services.embed_delivery import send_summary_and_embeds
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
 from sniperplug.services.safe_links import product_link_choices
@@ -193,8 +194,10 @@ class HomeDepotSearchCog(commands.Cog):
                 await interaction.followup.send(embed=summary, ephemeral=True)
                 return
 
-            await interaction.followup.send(
-                embeds=[summary] + batch.embeds[:5],
+            await send_summary_and_embeds(
+                interaction,
+                summary=summary,
+                embeds=batch.embeds[:5],
                 view=HomeDepotResultView(batch.candidates[:5]),
                 ephemeral=True,
             )

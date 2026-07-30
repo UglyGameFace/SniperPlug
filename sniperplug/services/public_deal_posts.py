@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -18,6 +20,7 @@ PUBLIC_SCOUT_ALERT_KEY = "public_scout_alert:v1"
 PUBLIC_CHANNEL_NAME_FALLBACKS = ("walmart-deals", "deals", "deal-alerts", "sniperplug-deals")
 RESERVATION_STALE_MINUTES = 20
 _MISSING_ROWCOUNT = object()
+log = logging.getLogger("sniperplug")
 
 
 @dataclass(frozen=True)
@@ -533,9 +536,11 @@ async def cache_active_deal_cards(
                     await rollback()
                 except Exception:
                     pass
-            print(
-                f"active deal cache skipped one malformed card for guild={guild_id} "
-                f"retailer={retailer}: {clean_error_text(exc)}"
+            log.exception(
+                "active deal cache skipped one malformed card for guild=%s retailer=%s: %s",
+                guild_id,
+                retailer,
+                clean_error_text(exc),
             )
     return cached
 

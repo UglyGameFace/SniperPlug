@@ -1,0 +1,47 @@
+name: One-shot preset threshold parity
+
+on:
+  push:
+    branches:
+      - audit/full-discord-deal-bot-recovery
+    paths:
+      - .github/workflows/one_shot_preset_threshold_parity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit/full-discord-deal-bot-recovery
+          fetch-depth: 0
+      - name: Patch preset threshold parity
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('sniperplug/cogs/deal_scanner.py')
+          text = path.read_text()
+
+          old = '''            public_cards = select_public_deal_candidates(shown_cards, source_label=f"hunt:{self.preset.key}", min_discount=self.preset.min_discount, limit=5)\n            public_result = await maybe_post_public_deal_cards(\n                bot=interaction.client,\n                guild_id=interaction.guild_id,\n                cards=public_cards,\n                source_label=f"hunt:{self.preset.key}",\n                fallback_retailer="walmart",\n                min_public_discount=self.preset.min_discount,\n            )\n'''
+          new = '''            public_cards = select_public_deal_candidates(shown_cards, source_label=f"hunt:{self.preset.key}", min_discount=shown_discount, limit=5)\n            public_result = await maybe_post_public_deal_cards(\n                bot=interaction.client,\n                guild_id=interaction.guild_id,\n                cards=public_cards,\n                source_label=f"hunt:{self.preset.key}",\n                fallback_retailer="walmart",\n                min_public_discount=shown_discount,\n            )\n'''
+          if old not in text:
+              raise SystemExit('preset threshold anchor not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+
+          test = Path('tests/test_preset_hunt_threshold_parity_static.py')
+          test.write_text('''from pathlib import Path\n\n\ndef test_preset_hunt_posts_against_displayed_threshold():\n    source = Path("sniperplug/cogs/deal_scanner.py").read_text()\n    start = source.index("class HuntPresetButton")\n    end = source.index("class WalmartCashOffersButton", start)\n    block = source[start:end]\n    assert "min_discount=shown_discount" in block\n    assert "min_public_discount=shown_discount" in block\n    assert "min_discount=self.preset.min_discount" not in block\n    assert "min_public_discount=self.preset.min_discount" not in block\n''')
+
+          Path('.github/workflows/one_shot_preset_threshold_parity.yml').unlink()
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sniperplug/cogs/deal_scanner.py tests/test_preset_hunt_threshold_parity_static.py .github/workflows/one_shot_preset_threshold_parity.yml
+          git commit -m "Use displayed threshold for preset public posting"
+          git push origin HEAD:audit/full-discord-deal-bot-recovery

@@ -78,6 +78,10 @@ class SniperPlugBot(commands.Bot):
         log.info("Persistent deal feedback views registered: %s", feedback_views)
         log.info("Persistent public panel views registered: %s", public_panel_views)
 
+        # The registry is process-global. Clear stale provider objects before every
+        # fresh bot setup so reconnects, test lifecycles, and controlled reloads do
+        # not crash or retain a provider wired to an old database/configuration.
+        provider_registry.clear()
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
         walmart_provider = WalmartProvider(walmart_affiliate_config(self.settings))
         provider_registry.register(CachedWalmartProvider(self.db, walmart_provider))

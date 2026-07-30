@@ -203,25 +203,24 @@ async def maybe_post_public_deal_cards(
             )
             continue
 
-        try:
-            await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
-        except Exception as exc:
-            notes.append(f"public post state write failed for {retailer}: {clean_error_text(exc)}")
-
-        try:
-            await db.record_alert_dedupe(
-                guild_id=guild_id,
-                retailer=retailer,
-                product_key=product_key,
-                alert_key=alert_key,
-                current_price=current_price,
-                channel_id=getattr(channel, "id", config["channel_id"]),
-                message_id=getattr(message, "id", None),
-                threshold_price=current_price,
-                expires_at=alert_expires_at(hours=SCOUT_ALERT_DEDUPE_HOURS if allow_review_scout else None),
+        finalized, finalize_notes = await finalize_successful_public_post(
+            db,
+            guild_id=guild_id,
+            retailer=retailer,
+            deal_key=deal_key,
+            product_key=product_key,
+            alert_key=alert_key,
+            current_price=current_price,
+            channel_id=getattr(channel, "id", config["channel_id"]),
+            message_id=getattr(message, "id", None),
+            allow_review_scout=allow_review_scout,
+        )
+        notes.extend(finalize_notes)
+        if not finalized:
+            notes.append(
+                f"CRITICAL: public post for {retailer} was sent but no durable duplicate guard could be confirmed; "
+                "the reservation was intentionally retained for stale-time protection"
             )
-        except Exception as exc:
-            notes.append(f"alert dedupe write failed for {retailer}: {clean_error_text(exc)}")
         if not allow_review_scout:
             cache_after_posting.append(card)
         posted += 1
@@ -615,6 +614,54 @@ async def reserve_public_deal_post(
     return bool(await check.fetchone())
 
 
+async def finalize_successful_public_post(
+    db,
+    *,
+    guild_id: int,
+    retailer: str,
+    deal_key: str,
+    product_key: str,
+    alert_key: str,
+    current_price: float | None,
+    channel_id: int | str | None,
+    message_id: int | str | None,
+    allow_review_scout: bool,
+) -> tuple[bool, list[str]]:
+    notes: list[str] = []
+    posted_state_saved = False
+    dedupe_saved = False
+
+    for attempt in range(1, 3):
+        try:
+            await mark_public_deal_posted(db, guild_id=guild_id, deal_key=deal_key)
+            posted_state_saved = True
+            break
+        except Exception as exc:
+            if attempt == 2:
+                notes.append(f"public post state write failed for {retailer} after retry: {clean_error_text(exc)}")
+
+    for attempt in range(1, 3):
+        try:
+            await db.record_alert_dedupe(
+                guild_id=guild_id,
+                retailer=retailer,
+                product_key=product_key,
+                alert_key=alert_key,
+                current_price=current_price,
+                channel_id=channel_id,
+                message_id=message_id,
+                threshold_price=current_price,
+                expires_at=alert_expires_at(hours=SCOUT_ALERT_DEDUPE_HOURS if allow_review_scout else None),
+            )
+            dedupe_saved = True
+            break
+        except Exception as exc:
+            if attempt == 2:
+                notes.append(f"alert dedupe write failed for {retailer} after retry: {clean_error_text(exc)}")
+
+    return posted_state_saved or dedupe_saved, notes
+
+
 async def mark_public_deal_posted(db, *, guild_id: int, deal_key: str) -> None:
     conn = db.require_conn()
     now = datetime.now(timezone.utc).isoformat()
@@ -623,6 +670,14 @@ async def mark_public_deal_posted(db, *, guild_id: int, deal_key: str) -> None:
         (now, guild_id, deal_key),
     )
     await conn.commit()
+    cursor = await conn.execute(
+        "SELECT status FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ? LIMIT 1",
+        (guild_id, deal_key),
+    )
+    row = await cursor.fetchone()
+    status = row["status"] if row is not None else None
+    if status != "posted":
+        raise RuntimeError("public post reservation could not be confirmed as posted")
 
 
 async def release_public_deal_reservation(db, *, guild_id: int, deal_key: str) -> None:

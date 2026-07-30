@@ -3,6 +3,15 @@ from __future__ import annotations
 import importlib
 import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+
+# Running ``python scripts/smoke_imports.py`` sets sys.path[0] to the scripts
+# directory, not the repository root. Add the root explicitly so CI exercises
+# the package exactly as checked out instead of failing before the first import.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 
 CRITICAL_MODULES = (
@@ -10,6 +19,7 @@ CRITICAL_MODULES = (
     "sniperplug.cogs.active_deals",
     "sniperplug.cogs.auto_discovery",
     "sniperplug.cogs.auto_scan_runner",
+    "sniperplug.cogs.native_auto_scan_runner",
     "sniperplug.cogs.clearance_bank",
     "sniperplug.cogs.deal_feedback_admin",
     "sniperplug.cogs.home_depot_local",
@@ -90,7 +100,10 @@ def main() -> int:
             print(f" - {failure.module}: {failure.reason}")
         return 1
 
-    print(f"✅ SniperPlug import smoke check passed: {len(CRITICAL_MODULES)} modules, {sum(len(v) for v in CRITICAL_SYMBOLS.values())} symbols")
+    print(
+        f"✅ SniperPlug import smoke check passed: {len(CRITICAL_MODULES)} modules, "
+        f"{sum(len(v) for v in CRITICAL_SYMBOLS.values())} symbols"
+    )
     return 0
 
 

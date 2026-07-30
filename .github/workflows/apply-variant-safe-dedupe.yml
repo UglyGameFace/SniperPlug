@@ -1,0 +1,56 @@
+name: Apply variant-safe public dedupe
+
+on:
+  push:
+    branches:
+      - fix/variant-safe-public-dedupe
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/variant-safe-public-dedupe
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install tests
+        run: python -m pip install pytest
+      - name: Apply source changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          helper = Path('sniperplug/services/variant_identity.py')
+          helper.write_text('''from __future__ import annotations\n\nimport hashlib\nimport json\nfrom typing import Any\n\n\n_VARIANT_ATTRIBUTE_KEYS = (\n    "optionId",\n    "offerId",\n    "sellerId",\n    "seller",\n    "fulfillment",\n    "condition",\n    "platform",\n    "size",\n    "color",\n    "packSize",\n    "unitSize",\n    "model",\n    "modelNumber",\n)\n\n\ndef derived_variant_identity(\n    *,\n    variant_label: Any = None,\n    variant_attributes: dict[str, Any] | None = None,\n    pack_size: Any = None,\n    color: Any = None,\n    platform: Any = None,\n    model: Any = None,\n    seller_name: Any = None,\n    fulfillment_type: Any = None,\n    condition: Any = None,\n) -> str | None:\n    attrs = variant_attributes or {}\n    payload = {\n        "variant_label": _clean(variant_label),\n        "pack_size": _clean(pack_size),\n        "color": _clean(color),\n        "platform": _clean(platform),\n        "model": _clean(model),\n        "seller_name": _clean(seller_name),\n        "fulfillment_type": _clean(fulfillment_type),\n        "condition": _clean(condition),\n        "attributes": {key: _clean(attrs.get(key)) for key in _VARIANT_ATTRIBUTE_KEYS if _clean(attrs.get(key))},\n    }\n    payload = {key: value for key, value in payload.items() if value}\n    if not payload:\n        return None\n    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)\n    return "variant:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20]\n\n\ndef _clean(value: Any) -> str | None:\n    text = " ".join(str(value or "").strip().lower().split())\n    return text or None\n''')
+
+          renderer = Path('sniperplug/services/walmart_card_renderer.py')
+          text = renderer.read_text()
+          import_marker = 'from sniperplug.services.safe_links import product_link_choices\n'
+          if 'from sniperplug.services.variant_identity import derived_variant_identity\n' not in text:
+              text = text.replace(import_marker, import_marker + 'from sniperplug.services.variant_identity import derived_variant_identity\n', 1)
+          old = '''        card.current_price = deal.current_price\n        card.selected_offer_id = deal.selected_offer_id\n        card.sku = deal.sku\n        card.upc = deal.upc\n'''
+          new = '''        card.current_price = deal.current_price\n        card.selected_offer_id = deal.selected_offer_id or derived_variant_identity(\n            variant_label=deal.variant_label,\n            variant_attributes=deal.variant_attributes,\n            pack_size=deal.pack_size,\n            color=deal.color,\n            platform=deal.platform,\n            model=deal.model,\n            seller_name=deal.seller_name,\n            fulfillment_type=deal.fulfillment_type,\n            condition=deal.condition,\n        )\n        card.sku = deal.sku\n        card.upc = deal.upc\n        card.variant_label = deal.variant_label\n        card.variant_attributes = dict(deal.variant_attributes or {})\n        card.pack_size = deal.pack_size\n        card.color = deal.color\n        card.platform = deal.platform\n        card.model = deal.model\n        card.seller_name = deal.seller_name\n        card.fulfillment_type = deal.fulfillment_type\n        card.condition = deal.condition\n'''
+          if old not in text:
+              raise SystemExit('walmart renderer identity block not found')
+          renderer.write_text(text.replace(old, new, 1))
+
+          test = Path('tests/test_variant_safe_public_dedupe.py')
+          test.write_text('''from sniperplug.services.variant_identity import derived_variant_identity\n\n\ndef test_variant_identity_is_stable_and_order_independent():\n    first = derived_variant_identity(\n        variant_label="Xbox Series X",\n        variant_attributes={"color": "Black", "sellerId": "seller-1"},\n        seller_name="Acme",\n        fulfillment_type="shipping",\n    )\n    second = derived_variant_identity(\n        variant_label=" xbox  series x ",\n        variant_attributes={"sellerId": "SELLER-1", "color": "BLACK"},\n        seller_name="ACME",\n        fulfillment_type="SHIPPING",\n    )\n    assert first == second\n    assert first and first.startswith("variant:")\n\n\ndef test_platform_and_seller_variants_do_not_collapse():\n    xbox = derived_variant_identity(platform="Xbox", seller_name="Seller A")\n    playstation = derived_variant_identity(platform="PlayStation", seller_name="Seller A")\n    other_seller = derived_variant_identity(platform="Xbox", seller_name="Seller B")\n    assert len({xbox, playstation, other_seller}) == 3\n\n\ndef test_no_variant_evidence_returns_none():\n    assert derived_variant_identity() is None\n\n\ndef test_walmart_renderer_carries_variant_identity_to_public_card():\n    source = open("sniperplug/services/walmart_card_renderer.py", encoding="utf-8").read()\n    assert "deal.selected_offer_id or derived_variant_identity(" in source\n    assert "card.variant_attributes = dict(deal.variant_attributes or {})" in source\n    assert "card.seller_name = deal.seller_name" in source\n    assert "card.fulfillment_type = deal.fulfillment_type" in source\n''')
+          PY
+      - name: Validate focused fix
+        run: |
+          python -m py_compile sniperplug/services/variant_identity.py sniperplug/services/walmart_card_renderer.py tests/test_variant_safe_public_dedupe.py
+          python -m pytest -q tests/test_variant_safe_public_dedupe.py
+      - name: Commit source changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add sniperplug/services/variant_identity.py sniperplug/services/walmart_card_renderer.py tests/test_variant_safe_public_dedupe.py
+          git commit -m "Make public deal dedupe variant-safe"
+          git push origin HEAD:fix/variant-safe-public-dedupe

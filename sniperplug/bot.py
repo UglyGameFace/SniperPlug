@@ -10,7 +10,7 @@ from discord.ext import commands
 from sniperplug.config import Settings
 from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
-from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog
+from sniperplug.cogs.native_auto_scan_runner_v2 import AutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog

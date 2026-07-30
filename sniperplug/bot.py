@@ -29,7 +29,7 @@ from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
-from sniperplug.providers.walmart import WalmartProvider
+from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
 from sniperplug.services.deal_feedback import register_persistent_feedback_views
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
@@ -79,9 +79,16 @@ class SniperPlugBot(commands.Bot):
         log.info("Persistent public panel views registered: %s", public_panel_views)
 
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
-        provider_registry.register(CachedWalmartProvider(self.db, WalmartProvider(configured=False)))
+        walmart_provider = WalmartProvider(walmart_affiliate_config(self.settings))
+        provider_registry.register(CachedWalmartProvider(self.db, walmart_provider))
         provider_registry.register(HomeDepotProvider())
         provider_registry.register(SerpApiHomeDepotProvider())
+        log.info(
+            "Walmart provider registered: enabled=%s configured=%s publisher_id=%s",
+            walmart_provider.config.enabled,
+            walmart_provider.config.configured,
+            bool(walmart_provider.config.publisher_id),
+        )
 
         await self.add_cog(SniperPlugCog(self))
         await self.add_cog(WorkflowCog(self))
@@ -134,6 +141,17 @@ class SniperPlugBot(commands.Bot):
                 log.info("Setup self-heal complete: %s", repair_summary)
             except Exception:
                 log.exception("Setup self-heal failed")
+
+
+def walmart_affiliate_config(settings: Settings) -> WalmartAffiliateConfig:
+    """Build the Walmart runtime config from the already-validated Settings object."""
+    return WalmartAffiliateConfig(
+        consumer_id=settings.walmart_consumer_id,
+        key_version=settings.walmart_key_version or "1",
+        private_key_b64=settings.walmart_private_key_b64,
+        publisher_id=settings.walmart_publisher_id,
+        enabled=settings.walmart_provider_enabled,
+    )
 
 
 def env_enabled(name: str, *, default: bool = False) -> bool:

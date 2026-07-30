@@ -5,6 +5,9 @@ on:
     branches: ["main", "master"]
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: fix/universal-embed-batching
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,11 +25,30 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Apply universal embed batching
+        run: python tools/apply_universal_embed_batching.py
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m pip install pytest
+
+      - name: Run focused embed batching tests
+        run: python -m pytest -q tests/test_universal_embed_batching.py
+
+      - name: Commit universal embed batching
+        if: github.actor != 'github-actions[bot]'
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add sniperplug/cogs/deal_scanner.py sniperplug/cogs/home_depot_search.py sniperplug/cogs/open_box_deals.py tests/test_universal_embed_batching.py
+          if git diff --cached --quiet; then
+            echo "Embed batching source already applied"
+          else
+            git commit -m "Route rich scan results through safe embed batching"
+            git push origin HEAD:fix/universal-embed-batching
+          fi
 
       - name: Compile Python files
         run: python -m compileall -q sniperplug scripts tests

@@ -24,7 +24,7 @@ def patch_deal_scanner() -> None:
     replacements = (
         (
             "        await safe_send_interaction(interaction, embeds=[summary] + [card.embed for card in shown_cards], ephemeral=True)\n",
-            "        await send_summary_and_card_batches(interaction, summary=summary, cards=shown_cards, ephemeral=True)\n",
+            "        await send_summary_and_card_batches(interaction, summary=summary, cards=list(shown_cards), ephemeral=True)\n",
             "Walmart Cash delivery",
         ),
         (
@@ -32,7 +32,7 @@ def patch_deal_scanner() -> None:
             "            await send_summary_and_card_batches(\n"
             "                interaction,\n"
             "                summary=summary,\n"
-            "                cards=shown_cards,\n"
+            "                cards=list(shown_cards),\n"
             "                view_factory=lambda _batch: DealSearchControlView(query, page, max(0, shown_discount), max_results, sort_value, order_value, alerts_only, simple_mode, shown_cards, result.has_next_page),\n"
             "                ephemeral=True,\n"
             "            )\n",
@@ -43,7 +43,7 @@ def patch_deal_scanner() -> None:
             "            await send_summary_and_card_batches(\n"
             "                interaction,\n"
             "                summary=summary,\n"
-            "                cards=shown_cards,\n"
+            "                cards=list(shown_cards),\n"
             "                view_factory=lambda _batch: PresetResultView(shown_cards),\n"
             "                ephemeral=True,\n"
             "            )\n",
@@ -54,7 +54,7 @@ def patch_deal_scanner() -> None:
             "                await send_summary_and_card_batches(\n"
             "                    interaction,\n"
             "                    summary=summary,\n"
-            "                    cards=shown_cards,\n"
+            "                    cards=list(shown_cards),\n"
             "                    view_factory=lambda _batch: self._copy_for(page, shown_discount, shown_cards, result.has_next_page),\n"
             "                    ephemeral=True,\n"
             "                )\n",
@@ -65,7 +65,7 @@ def patch_deal_scanner() -> None:
             "                    await send_summary_and_card_batches(\n"
             "                        interaction,\n"
             "                        summary=summary,\n"
-            "                        cards=shown_cards,\n"
+            "                        cards=list(shown_cards),\n"
             "                        view_factory=lambda _batch: self._copy_for(page, min_discount, shown_cards, has_next_page),\n"
             "                        ephemeral=True,\n"
             "                    )\n",
@@ -76,7 +76,7 @@ def patch_deal_scanner() -> None:
             "                await send_summary_and_card_batches(\n"
             "                    interaction,\n"
             "                    summary=summary,\n"
-            "                    cards=shown_cards,\n"
+            "                    cards=list(shown_cards),\n"
             "                    view_factory=lambda _batch: self._copy_for(self.page, shown_discount, shown_cards, has_next_page),\n"
             "                    ephemeral=True,\n"
             "                )\n",
@@ -85,6 +85,7 @@ def patch_deal_scanner() -> None:
     )
     for old, new, label in replacements:
         text = replace_once(text, old, new, label)
+    text = text.replace("cards=shown_cards,", "cards=list(shown_cards),")
     path.write_text(text)
 
 

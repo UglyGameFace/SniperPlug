@@ -484,47 +484,59 @@ async def cache_active_deal_cards(
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
         if not retailer:
             continue
-        if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
-            continue
-        url = getattr(card, "url", "") or ""
-        key = active_cache_key(
-            retailer=retailer,
-            url=url,
-            selected_offer_id=getattr(card, "selected_offer_id", None),
-            sku=getattr(card, "sku", None),
-            upc=getattr(card, "upc", None),
-        )
-        await conn.execute(
-            """
-            INSERT INTO guild_active_deal_cache (
-                guild_id, active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-            ON CONFLICT(guild_id, active_key) DO UPDATE SET
-                title = excluded.title,
-                url = excluded.url,
-                current_price = excluded.current_price,
-                discount = excluded.discount,
-                score = excluded.score,
-                source_label = excluded.source_label,
-                status = 'active',
-                last_seen_at = excluded.last_seen_at
-            """,
-            (
-                guild_id,
-                key,
-                retailer,
-                getattr(card, "label", None) or "deal",
-                url,
-                getattr(card, "current_price", None),
-                getattr(card, "discount", None),
-                getattr(card, "score", None),
-                source_label,
-                now,
-                now,
-            ),
-        )
-        cached += 1
-    await conn.commit()
+        try:
+            if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
+                continue
+            url = getattr(card, "url", "") or ""
+            key = active_cache_key(
+                retailer=retailer,
+                url=url,
+                selected_offer_id=getattr(card, "selected_offer_id", None),
+                sku=getattr(card, "sku", None),
+                upc=getattr(card, "upc", None),
+            )
+            await conn.execute(
+                """
+                INSERT INTO guild_active_deal_cache (
+                    guild_id, active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                ON CONFLICT(guild_id, active_key) DO UPDATE SET
+                    title = excluded.title,
+                    url = excluded.url,
+                    current_price = excluded.current_price,
+                    discount = excluded.discount,
+                    score = excluded.score,
+                    source_label = excluded.source_label,
+                    status = 'active',
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    guild_id,
+                    key,
+                    retailer,
+                    getattr(card, "label", None) or "deal",
+                    url,
+                    getattr(card, "current_price", None),
+                    getattr(card, "discount", None),
+                    getattr(card, "score", None),
+                    source_label,
+                    now,
+                    now,
+                ),
+            )
+            await conn.commit()
+            cached += 1
+        except Exception as exc:
+            rollback = getattr(conn, "rollback", None)
+            if callable(rollback):
+                try:
+                    await rollback()
+                except Exception:
+                    pass
+            print(
+                f"active deal cache skipped one malformed card for guild={guild_id} "
+                f"retailer={retailer}: {clean_error_text(exc)}"
+            )
     return cached
 
 

@@ -168,14 +168,20 @@ class CachedWalmartProvider(DealProvider):
                 errors.append(f"walmart scan-run finish failed: {clean_warning_text(exc)}")
 
         if errors:
-            warnings = tuple(dict.fromkeys((*result.warnings, *(f"Walmart persistence warning: {item}" for item in errors))))
+            unique_errors = tuple(dict.fromkeys(errors))
+            sample = "; ".join(unique_errors[:2])
+            summary = f"Walmart persistence degraded: {len(unique_errors)} write error(s)"
+            if sample:
+                summary += f" (sample: {sample})"
+            warnings = tuple(dict.fromkeys((*result.warnings, clean_warning_text(summary))))
             result = _copy_result(
                 result,
                 warnings=warnings,
                 metadata={
                     **result.metadata,
                     "persistence_degraded": True,
-                    "persistence_errors": tuple(errors[:12]),
+                    "persistence_error_count": len(unique_errors),
+                    "persistence_errors": unique_errors[:12],
                 },
             )
         return result

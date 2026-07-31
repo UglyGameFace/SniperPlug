@@ -136,8 +136,6 @@ def scout_rank(card: Any, *, min_discount: int = 50) -> int:
     text = _text(card).lower()
     score = max(_base_score(card), 0)
 
-    # This is only a private-review ranking. A 25%+ lead may be worth checking,
-    # but it still cannot bypass the server's verified public threshold.
     if _discount(card) >= 25 and not has_weak_reference_warning(card):
         score += 50
     if "walmart cash" in text or "cashrewards" in text or "cash rewards" in text:
@@ -155,23 +153,19 @@ def scout_rank(card: Any, *, min_discount: int = 50) -> int:
     if "stock: **available" in text or "available online" in text:
         score += 5
 
-    # A blocked reference can never be hidden by presentation scoring.
     if has_weak_reference_warning(card):
         score -= 60
     if not has_hard_value_signal(card, min_discount=min_discount):
         score -= 25
 
     price = _price(card)
-    if price <= 0:
-        score -= 50
-    elif price < 3:
+    if 0 < price < 3:
         score -= 15
 
     return max(0, min(150, int(score)))
 
 
 def is_high_confidence_public_scout(card: Any, *, min_discount: int = 50, min_rank: int = 95) -> bool:
-    # Public Scout Lane is intentionally disabled. Review leads are not deals.
     return False
 
 
@@ -239,5 +233,4 @@ def polish_public_scout_card(card: Any, *, rank: int, min_discount: int, positio
 
 
 def select_best_public_scout_cards(cards: list[Any], *, limit: int = 3, min_discount: int = 50, min_rank: int = 95) -> list[Any]:
-    # Kept for compatibility. Public scout posting remains disabled.
     return []

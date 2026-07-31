@@ -59,7 +59,7 @@ class ActiveDealsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="active_deals", description="Page through SniperPlug's recent active deal cache.")
+    @app_commands.command(name="active_deals", description="Page through deals SniperPlug observed recently.")
     @app_commands.describe(
         retailer="Optional store filter.",
         limit="Rows per page. Max 15.",
@@ -90,13 +90,12 @@ class ActiveDealsCog(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which active deal cache to read.", ephemeral=True)
+            await interaction.followup.send("Use this in a server so I know which recent deal cache to read.", ephemeral=True)
             return
         key = normalize_retailer_key(retailer) if retailer else None
         if key and key not in SUPPORTED_RETAILERS:
             await interaction.followup.send(f"Unknown retailer `{retailer}`. Supported: {format_retailers(tuple(sorted(SUPPORTED_RETAILERS)))}", ephemeral=True)
             return
-        await mark_stale_deals(self.bot.db, interaction.guild_id, stale_after_hours=DEFAULT_STALE_AFTER_HOURS)
         sort_key = normalize_sort(sort.value if sort else None)
         page_data = await list_active_deals(
             self.bot.db,
@@ -112,8 +111,8 @@ class ActiveDealsCog(commands.Cog):
         view = ActiveDealsPageView(page_data) if page_data.total_pages > 1 else None
         await interaction.followup.send(embed=build_active_deals_embed(interaction.guild_id, page_data), view=view, ephemeral=True)
 
-    @app_commands.command(name="active_deals_cleanup", description="Mark old cached deals stale.")
-    @app_commands.describe(stale_after_hours="Mark deals stale if not seen again after this many hours.")
+    @app_commands.command(name="active_deals_cleanup", description="Mark deals stale when SniperPlug has not observed them again.")
+    @app_commands.describe(stale_after_hours="Mark deals stale if not observed again after this many hours.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def active_deals_cleanup(self, interaction: discord.Interaction, stale_after_hours: app_commands.Range[int, 1, 168] = DEFAULT_STALE_AFTER_HOURS) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -121,7 +120,11 @@ class ActiveDealsCog(commands.Cog):
             await interaction.followup.send("Use this in a server so I know which cache to clean.", ephemeral=True)
             return
         updated = await mark_stale_deals(self.bot.db, interaction.guild_id, stale_after_hours=int(stale_after_hours))
-        await interaction.followup.send(f"Marked **{updated}** cached deal(s) stale if SniperPlug has not seen them again in **{stale_after_hours}h**.", ephemeral=True)
+        await interaction.followup.send(
+            f"Marked **{updated}** cached deal(s) stale because SniperPlug had not observed them again in **{stale_after_hours}h**. "
+            "Stale means the observation aged out; it does not prove the retailer listing is dead.",
+            ephemeral=True,
+        )
 
 
 class ActiveDealsPageView(discord.ui.View):
@@ -145,7 +148,7 @@ class ActiveDealsPageView(discord.ui.View):
 
     async def show_page(self, interaction: discord.Interaction, page: int) -> None:
         if interaction.guild_id is None:
-            await interaction.response.send_message("Use this in a server so I know which active deal cache to read.", ephemeral=True)
+            await interaction.response.send_message("Use this in a server so I know which recent deal cache to read.", ephemeral=True)
             return
         await interaction.response.defer()
         db = getattr(interaction.client, "db", None)
@@ -178,7 +181,7 @@ async def list_active_deals(
     sort: str = "recent",
     public_quality_only: bool = True,
 ) -> ActiveDealPage:
-    await ensure_public_post_tables(db)
+    await mark_stale_deals(db, guild_id, stale_after_hours=DEFAULT_STALE_AFTER_HOURS)
     conn = db.require_conn()
     safe_limit = max(1, min(int(limit), ACTIVE_DEALS_MAX_PAGE_SIZE))
     safe_sort = normalize_sort(sort)
@@ -239,7 +242,7 @@ async def list_active_deals(
 
 
 async def active_deal_counts(db, guild_id: int) -> dict[str, int]:
-    await ensure_public_post_tables(db)
+    await mark_stale_deals(db, guild_id, stale_after_hours=DEFAULT_STALE_AFTER_HOURS)
     conn = db.require_conn()
     cursor = await conn.execute("SELECT retailer, COUNT(*) AS count FROM guild_active_deal_cache WHERE guild_id = ? AND status = 'active' GROUP BY retailer ORDER BY retailer", (guild_id,))
     rows = await cursor.fetchall()
@@ -265,17 +268,23 @@ def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discor
         filters.append(f"{page_data.min_discount}%+ markdown")
     filter_text = " • ".join(filters) if filters else "none"
     embed = discord.Embed(
-        title="🟢 Public Deal Cache",
+        title="🟢 Recently Observed Deals",
         description=(
             f"Server: `{guild_id}`\n"
-            f"Page: **{page_data.clamped_page}/{page_data.total_pages}** • Total matching active cached rows: **{page_data.total}**\n"
+            f"Page: **{page_data.clamped_page}/{page_data.total_pages}** • Matching recent observations: **{page_data.total}**\n"
             f"Filters: {filter_text} • Sort: `{page_data.sort}`\n\n"
-            "Default view hides 0% watchlist/review/scout junk. It should show only public-quality rows, verified markdown rows, or Walmart Cash value rows. Use `min_discount:0` only for raw cache debugging."
+            f"Rows remain here only while SniperPlug has observed them within the last **{DEFAULT_STALE_AFTER_HOURS} hours**. "
+            "This cache is not a live retailer guarantee—open the listing and verify the current price, seller, variant, and stock before buying.\n\n"
+            "Default view hides 0% watchlist/review/scout junk. Use `min_discount:0` only for raw cache debugging."
         ),
         color=discord.Color.green() if page_data.rows else discord.Color.dark_gold(),
     )
     if not page_data.rows:
-        embed.add_field(name="No active cached rows matched", value="Try lowering filters, changing page to 1, or running `/storage_health` to inspect cache counts.", inline=False)
+        embed.add_field(
+            name="No recent observations matched",
+            value="Try lowering filters, changing page to 1, or run a fresh `/deals`, `/hunt`, or `/discover` scan.",
+            inline=False,
+        )
         return embed
     start_index = (page_data.clamped_page - 1) * page_data.page_size + 1
     for offset, row in enumerate(page_data.rows):
@@ -283,18 +292,41 @@ def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discor
         discount_text = f"{float(discount):.0f}%" if discount is not None else "n/a"
         score = row.get("score") if row.get("score") is not None else "n/a"
         url = str(row.get("url") or "")
-        open_text = f"[Open deal]({url})" if url.startswith("http") else "No link saved"
+        open_text = f"[Open and verify deal]({url})" if url.startswith("http") else "No link saved"
+        last_seen = row.get("last_seen_at")
         embed.add_field(
             name=f"#{start_index + offset} • {row.get('retailer', 'retailer')} • {trim(str(row.get('title') or 'deal'), 72)}",
             value=(
-                f"Price: **{money(row.get('current_price'))}** • Discount: **{discount_text}** • Score: `{score}`\n"
-                f"Source: `{trim(str(row.get('source_label') or 'unknown'), 42)}` • Last seen: `{row.get('last_seen_at') or 'unknown'}`\n"
+                f"Observed price: **{money(row.get('current_price'))}** • Discount: **{discount_text}** • Score: `{score}`\n"
+                f"Source: `{trim(str(row.get('source_label') or 'unknown'), 42)}` • Observed: **{observation_age(last_seen)}**\n"
                 f"{open_text}"
             ),
             inline=False,
         )
-    embed.set_footer(text="Default view hides 0% junk. Use min_discount:0 only for raw cache debugging.")
+    embed.set_footer(text="Recently observed does not mean currently in stock or unchanged. Verify the retailer page before acting.")
     return embed
+
+
+def observation_age(value: Any, *, now: datetime | None = None) -> str:
+    if not value:
+        return "unknown time ago"
+    try:
+        observed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return "unknown time ago"
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    seconds = max(0, int((current - observed.astimezone(timezone.utc)).total_seconds()))
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
 
 
 def normalize_sort(value: str | None) -> str:

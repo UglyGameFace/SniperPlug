@@ -124,15 +124,46 @@ class WorkflowCog(commands.Cog):
     @app_commands.command(name="sniperplug_workflow", description="Show the simple SniperPlug workflow from setup to posting.")
     async def sniperplug_workflow(self, interaction: discord.Interaction) -> None:
         embed = discord.Embed(
-            title="SniperPlug Workflow",
-            description="Use this order so the bot feels simple instead of scattered.",
+            title="SniperPlug • Start Here",
+            description=(
+                "You only need **three main search paths**. Pick the one that matches what you are trying to do; "
+                "the other commands are specialist or owner tools."
+            ),
             color=discord.Color.orange(),
         )
-        embed.add_field(name="1. Setup once", value="Run `/setup_sniperplug_here` inside the deal channel. It sets the public alert route, retailers, and Walmart background auto-scan together.", inline=False)
-        embed.add_field(name="2. Manual testing", value="Use `/deals` for one item, `/hunt` for category buttons, or `/discover` for broad manual discovery. Manual scans do not depend on auto-scan being enabled.", inline=False)
-        embed.add_field(name="3. Background scanning", value="Use `/retailer_autoscan` when you want to change scheduled/background pulls. Paid-credit providers stay protected; Walmart can run unlimited through official-provider bypass.", inline=False)
-        embed.add_field(name="4. Troubleshooting", value="Use `/autoscan_health`, `/sniperplug_dashboard`, `/active_deals`, and `/sniperplug_commands` to see what is configured, cached, and available.", inline=False)
-        embed.set_footer(text="Public posting requires public alerts ON, an alert channel, allowed retailers, and alertable proof.")
+        embed.add_field(
+            name="🔎 I know the product",
+            value="Use **`/deals`** and type the product words. Example: `turtle wax`, `gaming headset`, or `lego`.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🎯 I want category buttons",
+            value="Use **`/hunt`** when you want SniperPlug to search preset categories and resale/value lanes for you.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📰 Scan broadly right now",
+            value="Use **`/discover`** for a wider newspaper-style manual discovery run across deal categories.",
+            inline=False,
+        )
+        embed.add_field(
+            name="Special searches",
+            value=(
+                "Use **`/walmart_cash`** only for proven Walmart Cash offers. "
+                "Use the **Home Depot commands** for private shopper leads and exact-store verification."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Owner setup and troubleshooting",
+            value=(
+                "Run **`/setup_sniperplug_here`** once in the posting channel. "
+                "Use **`/sniperplug_dashboard`** for the normal status view and **`/sniperplug_doctor`** after deploys. "
+                "Advanced raw controls stay in `/sniperplug_commands audience:owner`."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Manual searches work even when scheduled auto-scan is off. Start with /deals, /hunt, or /discover.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
+# Temporary guarded applicator; removed before PR #154 merges.
 NATIVE = Path("sniperplug/cogs/native_auto_scan_runner.py")
 BOT = Path("sniperplug/bot.py")
 TEST = Path("tests/test_native_autoscan_selection_static.py")

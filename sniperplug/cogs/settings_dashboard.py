@@ -360,28 +360,66 @@ def check_env(name: str, *, required: bool, label: str) -> tuple[str, str, str]:
     return status, label, detail
 
 
+PRIMARY_COMMANDS = {"/deals", "/hunt", "/discover"}
+SPECIALIST_COMMANDS = {
+    "/walmart_cash",
+    "/home_depot_search",
+    "/home_depot_penny_hunt",
+    "/hd_stock",
+    "/hd_penny_zip",
+    "/local_check",
+    "/seed_clearance",
+    "/clearance_bank",
+}
+ADVANCED_COMMANDS = {
+    "/walmart_scan",
+    "/active_deals_cleanup",
+    "/public_alerts_status",
+    "/setup_sniperplug_here_status",
+    "/retailer_autoscan",
+    "/retailer_autoscan_status",
+    "/sniperplug_health",
+}
+
+
+def command_guide_section(entry: CommandCatalogEntry) -> str:
+    if entry.name in PRIMARY_COMMANDS:
+        return "Start here"
+    if entry.name in SPECIALIST_COMMANDS:
+        return "Special searches"
+    if entry.name in ADVANCED_COMMANDS:
+        return "Advanced / diagnostic"
+    if entry.audience == "Owner":
+        return "Owner setup and health"
+    return "Helpful shortcuts"
+
+
 def build_command_guide_embed(entries: tuple[CommandCatalogEntry, ...], audience: str | None = None) -> discord.Embed:
     title = "SniperPlug Command Guide"
-    description = "Simple names, clear purpose. Manual scans are different from scheduled auto-scan. Public posting is different from auto-scan."
+    description = (
+        "Start with **`/deals`**, **`/hunt`**, or **`/discover`**. "
+        "Specialist and diagnostic commands are grouped separately so you do not have to understand the whole bot first."
+    )
     if audience:
         description += f"\nFiltered to: **{audience.title()}**"
     embed = discord.Embed(title=title, description=description, color=discord.Color.orange())
 
-    grouped: dict[str, list[CommandCatalogEntry]] = {name: [] for name in COMMAND_AUDIENCE_ORDER}
+    section_order = ("Start here", "Special searches", "Owner setup and health", "Helpful shortcuts", "Advanced / diagnostic")
+    grouped: dict[str, list[CommandCatalogEntry]] = {name: [] for name in section_order}
     for entry in entries:
-        grouped.setdefault(entry.audience, []).append(entry)
+        grouped[command_guide_section(entry)].append(entry)
 
-    for group_name in COMMAND_AUDIENCE_ORDER:
-        group_entries = grouped.get(group_name) or []
-        if not group_entries:
+    for section in section_order:
+        section_entries = grouped.get(section) or []
+        if not section_entries:
             continue
         lines: list[str] = []
-        for entry in group_entries:
+        for entry in section_entries:
             credit = f" Credit/API: {entry.credit_risk}." if entry.credit_risk and entry.credit_risk != "none" else ""
             lines.append(f"**{entry.name}** — {entry.purpose}\nUse when: {entry.when_to_use}{credit}")
-        embed.add_field(name=group_name, value=truncate("\n\n".join(lines), 1024), inline=False)
+        embed.add_field(name=section, value=truncate("\n\n".join(lines), 1024), inline=False)
 
-    embed.set_footer(text="Owner tip: use /sniperplug_dashboard when something feels wrong.")
+    embed.set_footer(text="Not sure? Run /sniperplug_workflow. Owners: use /sniperplug_dashboard when something feels wrong.")
     return embed
 
 

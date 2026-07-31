@@ -22,8 +22,8 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
         name="/sniperplug_workflow",
         audience="Everyone",
-        purpose="Show the simple SniperPlug workflow from setup to posting.",
-        when_to_use="Use when anyone is confused about what to run next.",
+        purpose="Show the three primary search paths and separate normal commands from specialist/owner tools.",
+        when_to_use="Use this first when anyone is unsure whether to run `/deals`, `/hunt`, or `/discover`.",
     ),
     CommandCatalogEntry(
         name="/deals",
@@ -69,8 +69,8 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
         name="/walmart_scan",
         audience="Staff",
-        purpose="Advanced Walmart scan with page, sort, discount, and alert-only controls.",
-        when_to_use="Use for deeper staff testing when `/deals` is too simple.",
+        purpose="Advanced Walmart diagnostic scan with page, sort, discount, and alert-only controls.",
+        when_to_use="Power-user tool. Normal users should start with `/deals`; use this only when exact scan controls are required.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
@@ -176,8 +176,8 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
         name="/sniperplug_commands",
         audience="Owner",
-        purpose="Show the command guide.",
-        when_to_use="Use when anyone is confused about which SniperPlug command does what.",
+        purpose="Show the full command reference grouped by primary, specialist, owner, and advanced paths.",
+        when_to_use="Use after `/sniperplug_workflow` when you need a specialist or diagnostic command.",
     ),
     CommandCatalogEntry(
         name="/deal_threshold",

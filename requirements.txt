@@ -1,4 +1,5 @@
 discord.py
+aiohttp>=3.9,<4
 aiosqlite
 # libsql is needed for Turso/Discloud production, but Termux reports aarch64 and
 # cannot build libsql's Rust wheel target cleanly. Keep local mobile tests usable

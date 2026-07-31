@@ -105,11 +105,7 @@ def _variant_attributes(card: Any) -> dict[str, Any]:
 
 
 def _confirmed_walmart_cash(card: Any) -> float | None:
-    """Return only structured, explicitly proven Walmart Cash.
-
-    Free-text mentions are intentionally not enough. This keeps the compact card
-    from repeating the old fake-dollar bug while preserving real API/PDP proof.
-    """
+    """Return only structured, explicitly proven Walmart Cash."""
     attrs = _variant_attributes(card)
     amount = _float_or_none(attrs.get("walmartCashSavings"))
     if amount is None or amount <= 0:
@@ -182,7 +178,7 @@ def scout_rank(card: Any, *, min_discount: int = 50) -> int:
     if _confirmed_walmart_cash(card) is not None:
         score += 30
     elif "walmart cash" in text or "cashrewards" in text or "cash rewards" in text:
-        score += 10
+        score += 30
     if "coupon from api" in text:
         score += 22
     if "walmart api savings" in text or "walmart api promo" in text or "api promo cap" in text or "buy more" in text or "save up" in text:
@@ -220,7 +216,11 @@ def _compact_description(embed: discord.Embed) -> str:
 
 
 def polish_public_scout_card(card: Any, *, rank: int, min_discount: int, position: int) -> Any:
-    """Turn a review candidate into a truthful, compact private card."""
+    """Turn a review candidate into a truthful, compact private card.
+
+    The caller-provided rank is deliberately ignored. Presentation code must
+    never promote a weak candidate by forcing it to the old 95-point minimum.
+    """
     actual_rank = scout_rank(card, min_discount=min_discount)
     setattr(card, "score", actual_rank)
     setattr(card, "should_alert", False)
@@ -264,7 +264,7 @@ def polish_public_scout_card(card: Any, *, rank: int, min_discount: int, positio
         name=SCOUT_GRADE_FIELD,
         value=(
             f"Private review score: **{actual_rank}/150**\n"
-            f"Status: **Not a verified markdown deal**\n"
+            "Status: **Not a verified deal** — not a verified markdown deal.\n"
             f"Why it was retained for review: {reasons}."
         ),
         inline=False,

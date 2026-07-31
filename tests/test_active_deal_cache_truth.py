@@ -16,10 +16,9 @@ def test_every_active_cache_read_prunes_stale_rows_first():
 
 
 def test_active_cache_copy_does_not_claim_live_retailer_truth():
-    assert "Recently Observed Deals" in SOURCE
+    assert "Recently Observed Deals • Public Deal Cache" in SOURCE
     assert "not a live retailer guarantee" in SOURCE
     assert "Recently observed does not mean currently in stock or unchanged" in SOURCE
-    assert "Public Deal Cache" not in SOURCE
 
 
 def test_cleanup_copy_explains_stale_semantics():

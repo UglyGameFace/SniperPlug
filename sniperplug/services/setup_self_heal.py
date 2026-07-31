@@ -31,6 +31,15 @@ REQUIRED_CHANNEL_PERMS = {
     "read_message_history": "Read Message History",
 }
 
+# Ordered from strongest/most intentional to broader fallback. Discovery only
+# adopts a channel when the best matching tier has exactly one sendable result.
+AUTO_DISCOVERY_CHANNEL_NAMES = (
+    ("walmart-deals", "walmart_deals", "walmartdeals"),
+    ("sniperplug-deals", "sniperplug_deals", "sniperplug"),
+    ("deal-alerts", "deal_alerts", "deals-alerts"),
+    ("deals",),
+)
+
 
 @dataclass
 class SetupRepairResult:
@@ -135,8 +144,28 @@ async def repair_public_alert_setup(
     channel_candidates = await saved_channel_candidates(db, config, target_channel, guild_id=guild_id)
     channel, missing, source = first_sendable_channel(guild, channel_candidates)
 
+    discovery_matches: list[discord.TextChannel] = []
     if channel is None:
-        reason = "no saved sendable public deal channel was found."
+        channel, discovery_matches = discover_unambiguous_deal_channel(guild)
+        if channel is not None:
+            source = "unambiguous server channel discovery"
+            missing = []
+
+    if channel is None:
+        if len(discovery_matches) > 1:
+            mentions = ", ".join(item.mention for item in discovery_matches[:8])
+            return SetupRepairResult(
+                guild_id=guild_id,
+                human_action_required=True,
+                reason="multiple possible deal channels were found, so SniperPlug refused to guess.",
+                notes=[
+                    f"Possible channels: {mentions}",
+                    "Run `/autoscan_now force:true` once inside the exact channel you want; that safely saves it without redoing every setting.",
+                ],
+                config=config,
+            )
+
+        reason = "no saved or unambiguous sendable public deal channel was found."
         if missing:
             reason = f"saved channel exists, but bot is missing: {', '.join(missing)}."
         return SetupRepairResult(
@@ -145,7 +174,7 @@ async def repair_public_alert_setup(
             reason=reason,
             notes=[
                 "This is a real first-install/permission issue, not an update issue.",
-                "Run setup only once inside the channel SniperPlug should post in, or fix the channel permissions.",
+                "Run `/autoscan_now force:true` once inside the channel SniperPlug should post in, or fix the channel permissions.",
             ],
             config=config,
         )
@@ -180,7 +209,7 @@ async def repair_public_alert_setup(
         if not walmart.get("enabled") or int(walmart.get("interval_hours", 6)) != 0 or int(walmart.get("daily_limit", 25)) != 0:
             await set_retailer_auto_scan(db, guild_id, "walmart", True, interval_hours=0, daily_limit=0)
             changed = True
-            notes.append("Walmart background auto-scan restored with official-provider unlimited gates")
+            notes.append("Walmart background auto-scan restored; runtime six-hour safety floor still applies")
     except Exception as exc:
         notes.append(f"auto-scan repair skipped safely: {exc}")
 
@@ -230,6 +259,43 @@ async def saved_channel_candidates(db: Any, config: dict, target_channel: discor
         seen.add(int(channel_id))
         unique.append((int(channel_id), source))
     return unique
+
+
+def normalize_channel_name(value: str) -> str:
+    return str(value or "").strip().lower().replace(" ", "-")
+
+
+def discover_unambiguous_deal_channel(
+    guild: discord.Guild,
+) -> tuple[discord.TextChannel | None, list[discord.TextChannel]]:
+    """Find one clearly intended, sendable deal channel without guessing.
+
+    Matching is tiered. A single `walmart-deals` wins even if a generic `deals`
+    channel also exists. Multiple sendable matches inside the strongest tier are
+    returned as ambiguous so an owner can choose explicitly.
+    """
+
+    member = getattr(guild, "me", None)
+    text_channels = [
+        channel
+        for channel in list(getattr(guild, "text_channels", []) or [])
+        if isinstance(channel, discord.TextChannel)
+    ]
+
+    for aliases in AUTO_DISCOVERY_CHANNEL_NAMES:
+        alias_set = {normalize_channel_name(alias) for alias in aliases}
+        matches = [
+            channel
+            for channel in text_channels
+            if normalize_channel_name(channel.name) in alias_set
+            and not missing_channel_permissions(channel, member)
+        ]
+        if len(matches) == 1:
+            return matches[0], matches
+        if len(matches) > 1:
+            return None, matches
+
+    return None, []
 
 
 def first_sendable_channel(guild: discord.Guild, candidates: list[tuple[int, str]]) -> tuple[discord.TextChannel | None, list[str], str]:

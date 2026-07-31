@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest
       - name: Apply guarded fix
         run: python tools/apply_broad_scheduled_autoscan_fix.py
       - name: Validate syntax

@@ -79,13 +79,13 @@ def test_batch_never_exceeds_concurrency_limit():
 
 
 def test_timeout_is_isolated_and_does_not_cancel_other_rows():
-    provider = TrackingProvider(delay=0.05)
+    provider = TrackingProvider(delay=1.05)
     results = asyncio.run(
         recheck_walmart_batch(
             provider,
             [row(200001), row(200002), row(200003)],
             concurrency=2,
-            timeout_seconds=0,
+            timeout_seconds=1,
         )
     )
     assert len(results) == 3

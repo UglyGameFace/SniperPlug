@@ -268,7 +268,7 @@ def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discor
         filters.append(f"{page_data.min_discount}%+ markdown")
     filter_text = " • ".join(filters) if filters else "none"
     embed = discord.Embed(
-        title="🟢 Recently Observed Deals",
+        title="🟢 Recently Observed Deals • Public Deal Cache",
         description=(
             f"Server: `{guild_id}`\n"
             f"Page: **{page_data.clamped_page}/{page_data.total_pages}** • Matching recent observations: **{page_data.total}**\n"

@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 
 from sniperplug.config import Settings
+from sniperplug.cogs.active_deal_history import ActiveDealHistoryCog
 from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
 from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
@@ -31,6 +32,7 @@ from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
+from sniperplug.services.active_deal_history import ensure_active_deal_history
 from sniperplug.services.deal_feedback import register_persistent_feedback_views
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
@@ -61,9 +63,11 @@ class SniperPlugBot(commands.Bot):
         log.info("Database connected backend=%s", getattr(self.db, "backend", "unknown"))
         await self.db.init()
         await ensure_error_logging_table(self.db)
+        await ensure_active_deal_history(self.db)
         install_discord_error_handlers(self)
         install_asyncio_exception_handler(asyncio.get_running_loop(), lambda: self.db)
         log.info("Error logging installed: discord=true asyncio=true db_table=error_events")
+        log.info("Active deal lifecycle history installed: retention_days=30 max_rows_per_guild=1000")
         log.info("Database schema ready backend=%s", getattr(self.db, "backend", "unknown"))
         configure_home_depot_product_detail_cache(self.db)
         configure_home_depot_search_cache(self.db)
@@ -102,6 +106,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(PublicAlertsCog(self))
         await self.add_cog(ActiveDealsCog(self))
         await self.add_cog(ActiveDealRecheckCog(self))
+        await self.add_cog(ActiveDealHistoryCog(self))
         await self.add_cog(SettingsDashboardCog(self))
         await self.add_cog(DealFeedbackAdminCog(self))
         await self.add_cog(StorageAdminCog(self))

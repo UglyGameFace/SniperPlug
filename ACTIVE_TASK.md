@@ -1,37 +1,38 @@
 # Active Task
 
 ## Status
-In progress — restore useful scheduled Walmart autoscan coverage without loosening verified-deal safety.
+Validation in progress — scheduled Walmart coverage is repaired without loosening verified-deal safety.
 
 ## Scope
 Trace and repair the live resilient autoscan path responsible for configured servers receiving no public posts. Keep one active runtime, four scheduled routes, eight manual routes, one provider scan at a time, and verified-only public posting.
 
 ## Findings
-- The runtime loads `ResilientAutoScanRunnerCog`, which inherits the native runner.
-- Scheduled scans explicitly cap work at four routes.
-- The native selector spent all four scheduled routes inside one rotated category, then recorded an empty pass and waited behind the six-hour safety floor.
-- The native fallback still referenced deleted `AUTO_SCAN_FAST_QUERY_COUNT`.
-- `bot.py` retained an unused direct native runner import even though only the resilient runner is registered.
+- The bot registers `ResilientAutoScanRunnerCog`, which inherits the native Walmart runner.
+- Scheduled scans were capped at four routes but spent all four inside one rotated category.
+- An empty narrow-category pass then waited behind the six-hour safety floor, sharply reducing the chance of discovering a verified deal.
+- The native fallback referenced removed `AUTO_SCAN_FAST_QUERY_COUNT`, which could raise `AttributeError` on the scheduled/default path.
+- `bot.py` retained an unused direct native-runner import even though only the resilient runner was registered.
+- Four tests preserved those redundant and obsolete implementation details instead of validating the real inheritance/registration path.
 
 ## Changes
-- Scheduled four-route scans now use the existing broad public-safe builder, selecting one route across multiple major categories.
-- Manual eight-route scans continue using the same broad builder.
-- Replaced the deleted fast-policy fallback with `AUTO_SCAN_SCHEDULED_QUERY_COUNT`.
-- Removed the unused direct native runner import from `bot.py`.
-- Added cross-runner static regressions for broad scheduled coverage and one runtime import/registration.
+- Scheduled four-route scans now use the existing broad public-safe builder across major Walmart categories.
+- Manual eight-route scans use the same broad builder with the larger bounded route count.
+- Replaced the removed fast-policy fallback with `AUTO_SCAN_SCHEDULED_QUERY_COUNT`.
+- Removed the unused direct native-runner import from `bot.py`.
+- Replaced stale marker tests with execution-path assertions: one resilient registration, native inheritance, broad selection, and verified-only public posting.
 
-## Validation required
-- Compile changed runtime and tests.
-- Run targeted native/resilient autoscan tests.
-- Run import smoke validation.
-- Run complete pytest regression suite.
-- Inspect final diff for temporary files, stale policy names, duplicate runner wiring, and conflicts.
+## Validation
+- Guarded source replacements passed exact-match checks.
+- Changed runtime and tests compile successfully.
+- Focused native/resilient autoscan tests passed.
+- Import smoke passed for 28 critical modules and 12 required symbols.
+- Complete pytest regression suite is running on the cleaned final branch head.
 
 ## Cleanup status
-Pending. Temporary applicator/workflow must be removed before merge.
+Complete. The temporary applicator is deleted and the temporary workflow is absent from the branch. No monkey patch, startup guard, duplicate runner registration, or temporary runtime code remains.
 
 ## Blockers
 None.
 
 ## Backlog
-- Improve scheduled zero-post diagnostics surfaced to server owners after this execution-path repair is validated.
+- Improve scheduled zero-post diagnostics surfaced to server owners after this execution-path repair is merged and deployed.

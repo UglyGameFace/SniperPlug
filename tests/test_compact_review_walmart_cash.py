@@ -39,7 +39,8 @@ def test_compact_card_preserves_confirmed_walmart_cash_amount():
     assert "$15.00 Walmart Cash" in fields[WALMART_CASH_FIELD]
     assert "Effective after reward: **$5.00**" in fields[WALMART_CASH_FIELD]
     assert card.should_alert is False
-    assert "Not a verified markdown deal" in fields["🧭 Review status"]
+    assert "Not a verified deal" in fields["🧭 Review status"]
+    assert "not a verified markdown deal" in fields["🧭 Review status"]
 
 
 def test_unconfirmed_cash_wording_never_displays_an_amount():

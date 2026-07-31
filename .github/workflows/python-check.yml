@@ -5,9 +5,6 @@ on:
     branches: ["main", "master"]
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,8 +13,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: fix/autoscan-guild-isolation
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,32 +20,11 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Apply autoscan guild isolation
-        run: |
-          python tools/apply_autoscan_guild_isolation.py
-          python tools/fix_autoscan_resilience_log_compat.py
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m pip install pytest
-
-      - name: Run focused autoscan isolation tests
-        run: python -m pytest -q tests/test_autoscan_guild_isolation.py tests/test_turso_stream_resilience_static.py
-
-      - name: Commit autoscan guild isolation
-        if: github.actor != 'github-actions[bot]'
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add sniperplug/cogs/auto_scan_runner.py tests/test_autoscan_guild_isolation.py
-          if git diff --cached --quiet; then
-            echo "Autoscan isolation already applied"
-          else
-            git commit -m "Preserve autoscan resilience compatibility"
-            git push origin HEAD:fix/autoscan-guild-isolation
-          fi
 
       - name: Compile Python files
         run: python -m compileall -q sniperplug scripts tests

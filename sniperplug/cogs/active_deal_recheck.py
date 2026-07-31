@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from collections import Counter
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,6 +10,12 @@ from discord.ext import commands
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.public_deal_posts import ensure_public_post_tables
 from sniperplug.services.walmart_deal_recheck import persist_walmart_recheck, recheck_walmart_observation
+
+
+BATCH_RECHECK_MAX_ITEMS = 10
+BATCH_RECHECK_CONCURRENCY = 2
+BATCH_RECHECK_TIMEOUT_SECONDS = 25
+_NON_PERSISTED_STATUSES = {"error", "identity_missing", "provider_unsupported"}
 
 
 class ActiveDealRecheckCog(commands.Cog):
@@ -44,10 +53,45 @@ class ActiveDealRecheckCog(commands.Cog):
             return
 
         result = await recheck_walmart_observation(provider, row)
-        if result.status not in {"error", "identity_missing", "provider_unsupported"}:
+        if result.status not in _NON_PERSISTED_STATUSES:
             await persist_walmart_recheck(self.bot.db, interaction.guild_id, str(row["active_key"]), result)
 
         await interaction.followup.send(embed=build_recheck_embed(row, result), ephemeral=True)
+
+    @app_commands.command(name="active_deals_recheck", description="Safely recheck several recent Walmart observations with bounded API concurrency.")
+    @app_commands.describe(limit="How many recent Walmart observations to recheck. Maximum 10.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def active_deals_recheck(
+        self,
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, BATCH_RECHECK_MAX_ITEMS] = 5,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send("Use this in a server so I know which deal cache to recheck.", ephemeral=True)
+            return
+
+        provider = provider_registry.get("walmart")
+        if provider is None:
+            await interaction.followup.send("The Walmart provider is not registered in this bot process.", ephemeral=True)
+            return
+
+        rows = await list_recent_walmart_observations(self.bot.db, interaction.guild_id, int(limit))
+        if not rows:
+            await interaction.followup.send("There are no recent Walmart observations to recheck. Run `/deals`, `/hunt`, or `/discover` first.", ephemeral=True)
+            return
+
+        results = await recheck_walmart_batch(
+            provider,
+            rows,
+            concurrency=BATCH_RECHECK_CONCURRENCY,
+            timeout_seconds=BATCH_RECHECK_TIMEOUT_SECONDS,
+        )
+        for row, result in results:
+            if result.status not in _NON_PERSISTED_STATUSES and result.status != "timeout":
+                await persist_walmart_recheck(self.bot.db, interaction.guild_id, str(row["active_key"]), result)
+
+        await interaction.followup.send(embed=build_batch_recheck_embed(results), ephemeral=True)
 
 
 async def find_cached_walmart_observation(db, guild_id: int, search: str) -> tuple[dict | None, int]:
@@ -70,6 +114,46 @@ async def find_cached_walmart_observation(db, guild_id: int, search: str) -> tup
     return (rows[0] if len(rows) == 1 else None, len(rows))
 
 
+async def list_recent_walmart_observations(db, guild_id: int, limit: int) -> list[dict]:
+    await ensure_public_post_tables(db)
+    conn = db.require_conn()
+    safe_limit = max(1, min(int(limit), BATCH_RECHECK_MAX_ITEMS))
+    cursor = await conn.execute(
+        """
+        SELECT active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+        FROM guild_active_deal_cache
+        WHERE guild_id = ? AND retailer = 'walmart' AND status = 'active'
+        ORDER BY last_seen_at DESC
+        LIMIT ?
+        """,
+        (guild_id, safe_limit),
+    )
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+async def recheck_walmart_batch(provider, rows: list[dict], *, concurrency: int, timeout_seconds: int):
+    semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+
+    async def run_one(row: dict):
+        async with semaphore:
+            try:
+                result = await asyncio.wait_for(
+                    recheck_walmart_observation(provider, row),
+                    timeout=max(1, int(timeout_seconds)),
+                )
+            except asyncio.TimeoutError:
+                from sniperplug.services.walmart_deal_recheck import WalmartRecheckResult
+
+                result = WalmartRecheckResult(
+                    status="timeout",
+                    old_price=_float_or_none(row.get("current_price")),
+                    message=f"Walmart detail recheck exceeded {timeout_seconds}s. The cached row was left unchanged.",
+                )
+            return row, result
+
+    return list(await asyncio.gather(*(run_one(row) for row in rows)))
+
+
 def build_recheck_embed(row: dict, result) -> discord.Embed:
     colors = {
         "unchanged": discord.Color.green(),
@@ -85,6 +169,7 @@ def build_recheck_embed(row: dict, result) -> discord.Embed:
         "identity_missing": "Missing item identity",
         "provider_unsupported": "Provider unsupported",
         "error": "Recheck error",
+        "timeout": "Recheck timeout",
     }
     embed = discord.Embed(
         title=f"Walmart Recheck • {labels.get(result.status, result.status)}",
@@ -107,6 +192,30 @@ def build_recheck_embed(row: dict, result) -> discord.Embed:
     return embed
 
 
+def build_batch_recheck_embed(results) -> discord.Embed:
+    counts = Counter(result.status for _, result in results)
+    embed = discord.Embed(
+        title="Walmart Batch Recheck",
+        description=(
+            f"Rechecked **{len(results)}** recent observations with at most **{BATCH_RECHECK_CONCURRENCY}** provider calls running together. "
+            "Errors and timeouts leave cached rows unchanged."
+        ),
+        color=discord.Color.orange() if counts.get("price_changed") else discord.Color.green(),
+    )
+    summary_order = ("unchanged", "price_changed", "unavailable", "identity_mismatch", "identity_missing", "error", "timeout")
+    summary = " • ".join(f"{status.replace('_', ' ').title()}: **{counts[status]}**" for status in summary_order if counts.get(status))
+    embed.add_field(name="Results", value=summary or "No results", inline=False)
+    for row, result in results[:BATCH_RECHECK_MAX_ITEMS]:
+        price_text = money(result.current_price) if result.current_price is not None else money(result.old_price)
+        embed.add_field(
+            name=str(row.get("title") or "Unknown Walmart item")[:80],
+            value=f"**{result.status.replace('_', ' ').title()}** • {price_text}\n{result.message[:700]}",
+            inline=False,
+        )
+    embed.set_footer(text="Batch rechecks are owner-triggered, limited to 10 items, and never use SerpApi.")
+    return embed
+
+
 def money(value) -> str:
     if value is None:
         return "N/A"
@@ -114,3 +223,10 @@ def money(value) -> str:
         return f"${float(value):,.2f}"
     except (TypeError, ValueError):
         return "N/A"
+
+
+def _float_or_none(value):
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None

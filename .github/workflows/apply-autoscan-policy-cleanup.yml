@@ -4,13 +4,16 @@ on:
   push:
     branches:
       - chore/autoscan-policy-cleanup-final
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'chore/autoscan-policy-cleanup-final' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

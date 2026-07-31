@@ -122,14 +122,21 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
         name="/active_deals",
         audience="Owner",
-        purpose="Show cached active deals SniperPlug has recently seen.",
-        when_to_use="Use when a scan cached deals but did not publicly post, or when checking what is still active.",
+        purpose="Show recently observed public-quality deal rows from the server cache.",
+        when_to_use="Use when a scan cached deals but did not publicly post, or when reviewing recent observations before rechecking one.",
+    ),
+    CommandCatalogEntry(
+        name="/active_deal_recheck",
+        audience="Owner",
+        purpose="Recheck one exact cached Walmart item through the official detail endpoint.",
+        when_to_use="Use after `/active_deals` when you want fresh price, seller, variant, and availability proof for one cached Walmart observation.",
+        credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
         name="/active_deals_cleanup",
         audience="Owner",
-        purpose="Mark old cached active deals stale.",
-        when_to_use="Use when active cache has old deals that have not been seen again recently.",
+        purpose="Mark old cached observations stale.",
+        when_to_use="Use when cached observations have not been seen again recently. Stale does not automatically mean the retailer listing is dead.",
     ),
     CommandCatalogEntry(
         name="/public_alerts_status",

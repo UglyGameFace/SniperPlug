@@ -25,6 +25,7 @@ CRITICAL_MODULES = (
     "sniperplug.cogs.home_depot_local",
     "sniperplug.cogs.home_depot_search",
     "sniperplug.cogs.local_inventory",
+    "sniperplug.cogs.movie_tickets",
     "sniperplug.cogs.public_alerts",
     "sniperplug.cogs.settings_dashboard",
     "sniperplug.cogs.sniperplug",
@@ -37,6 +38,7 @@ CRITICAL_MODULES = (
     "sniperplug.services.deal_search_modes",
     "sniperplug.services.fresh_deal_filter",
     "sniperplug.services.manual_review_share",
+    "sniperplug.services.movie_ticket_drops",
     "sniperplug.services.public_alert_config",
     "sniperplug.services.public_deal_posts",
     "sniperplug.services.public_posting",
@@ -63,6 +65,11 @@ CRITICAL_SYMBOLS = {
         "auto_scan_allowed",
         "record_auto_scan_run",
         "list_retailer_auto_scan_settings",
+    ),
+    "sniperplug.services.movie_ticket_drops": (
+        "AtomPromotionsClient",
+        "MovieTicketStore",
+        "parse_atom_promotions_html",
     ),
     "sniperplug.services.storage_maintenance": (
         "run_storage_maintenance",

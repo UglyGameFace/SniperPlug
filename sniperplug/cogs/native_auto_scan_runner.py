@@ -112,7 +112,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             "Anything uncertain remains private for staff review."
         )
         if preset.key == NATIVE_BROAD_PRESET_KEY:
-            warnings.append("Manual broad sweep spans the major public-safe categories instead of staying inside one category.")
+            warnings.append("Broad sweep spans the major public-safe categories instead of staying inside one category.")
         if report_label:
             warnings.append(f"{report_label}: scanned **{len(preset.queries)}** public-safe route(s) in **{preset.label}**.")
 
@@ -307,24 +307,10 @@ def select_native_autoscan_preset(
         int(
             query_count_override
             if query_count_override is not None
-            else NATIVE_MANUAL_QUERY_COUNT if force else legacy.AUTO_SCAN_FAST_QUERY_COUNT
+            else NATIVE_MANUAL_QUERY_COUNT if force else legacy.AUTO_SCAN_SCHEDULED_QUERY_COUNT
         ),
     )
-    if force:
-        return build_native_broad_preset(presets, guild_id=guild_id, query_count=query_count)
-
-    bucket = int(time.time() // (legacy.AUTO_SCAN_INTERVAL_MINUTES * 60))
-    key = NATIVE_CATEGORY_ROTATION[(bucket + int(guild_id)) % len(NATIVE_CATEGORY_ROTATION)]
-    base = presets.get(key) or presets.get("deal_week") or presets.get("all") or next(iter(presets.values()))
-    queries = legacy.rotated_query_slice(tuple(base.queries), guild_id=guild_id, query_count=query_count)
-    return HuntPreset(
-        base.key,
-        base.label,
-        base.emoji,
-        f"{base.description} Native autoscan uses public-safe routes and verified-only public posting.",
-        queries,
-        base.min_discount,
-    )
+    return build_native_broad_preset(presets, guild_id=guild_id, query_count=query_count)
 
 
 def build_native_broad_preset(presets: dict[str, HuntPreset], *, guild_id: int, query_count: int) -> HuntPreset:
@@ -358,7 +344,7 @@ def build_native_broad_preset(presets: dict[str, HuntPreset], *, guild_id: int, 
         NATIVE_BROAD_PRESET_KEY,
         "Broad Public-Safe Sweep",
         "🌐",
-        "Manual broad sweep across the major public-safe Walmart categories, with private promo routes removed before scanning.",
+        "Broad sweep across the major public-safe Walmart categories, with private promo routes removed before scanning.",
         tuple(selected[: max(1, int(query_count))]),
         base.min_discount,
     )

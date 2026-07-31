@@ -25,8 +25,8 @@ def test_manual_autoscan_sends_repeated_truthful_progress():
     assert "Elapsed: **{elapsed}s**" in RUNNER
 
 
-def test_bot_registers_resilient_runner_while_preserving_native_marker():
-    assert "from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog" in BOT
+def test_bot_registers_only_the_resilient_autoscan_runtime():
+    assert "from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog\n" not in BOT
     assert "from sniperplug.cogs.resilient_auto_scan_runner import AutoScanRunnerCog as ResilientAutoScanRunnerCog" in BOT
-    assert "await self.add_cog(ResilientAutoScanRunnerCog(self))" in BOT
+    assert BOT.count("await self.add_cog(ResilientAutoScanRunnerCog(self))") == 1
     assert "await self.add_cog(AutoScanRunnerCog(self))" not in BOT

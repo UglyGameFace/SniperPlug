@@ -21,6 +21,25 @@ WEAK_REFERENCE_TERMS = (
     "not deal proof",
 )
 
+PRIVATE_VALUE_TERMS = (
+    "walmart cash",
+    "cashrewards",
+    "cash rewards",
+    "coupon from api",
+    "walmart api savings",
+    "walmart api promo",
+    "api promo cap",
+    "buy more",
+    "save up",
+    "rough spread",
+    "flip/value lead",
+    "profit",
+    "margin",
+    "verified markdown",
+    "trusted markdown",
+    "you save",
+)
+
 
 def _text(card: Any) -> str:
     chunks: list[str] = []
@@ -85,21 +104,9 @@ def has_weak_reference_warning(card: Any) -> bool:
 
 def has_hard_value_signal(card: Any, *, min_discount: int = 50) -> bool:
     text = _text(card).lower()
-    discount = _discount(card)
-    if has_weak_reference_warning(card):
-        return False
-    if discount >= max(25, int(min_discount) - 10):
+    if _discount(card) >= 25 and not has_weak_reference_warning(card):
         return True
-    return any(
-        term in text
-        for term in (
-            "coupon from api",
-            "walmart api savings",
-            "verified markdown",
-            "trusted markdown",
-            "you save",
-        )
-    )
+    return any(term in text for term in PRIVATE_VALUE_TERMS)
 
 
 def scout_reasons(card: Any, *, min_discount: int = 50) -> list[str]:
@@ -107,12 +114,16 @@ def scout_reasons(card: Any, *, min_discount: int = 50) -> list[str]:
     reasons: list[str] = []
     if has_weak_reference_warning(card):
         reasons.append("reference price was not trusted")
-    if _discount(card) >= max(25, int(min_discount) - 10) and not has_weak_reference_warning(card):
-        reasons.append(f"{_discount(card):.0f}% structured markdown signal")
+    if _discount(card) >= 25 and not has_weak_reference_warning(card):
+        reasons.append(f"{_discount(card):.0f}% review markdown signal")
+    if "walmart cash" in text or "cashrewards" in text or "cash rewards" in text:
+        reasons.append("Walmart Cash signal")
     if "coupon from api" in text:
         reasons.append("API coupon signal")
-    if "walmart api savings" in text:
-        reasons.append("Walmart API savings signal")
+    if "walmart api savings" in text or "walmart api promo" in text or "buy more" in text or "save up" in text:
+        reasons.append("Walmart API promo signal")
+    if "rough spread" in text or "flip/value lead" in text or "profit" in text or "margin" in text:
+        reasons.append("comparison/value signal")
     if "stock: **available" in text or "available online" in text:
         reasons.append("available now")
     if not reasons:
@@ -121,14 +132,21 @@ def scout_reasons(card: Any, *, min_discount: int = 50) -> list[str]:
 
 
 def scout_rank(card: Any, *, min_discount: int = 50) -> int:
+    """Rank private review usefulness, never public deal confidence."""
     text = _text(card).lower()
     score = max(_base_score(card), 0)
 
-    if _discount(card) >= max(25, int(min_discount) - 10) and not has_weak_reference_warning(card):
-        score += 35
+    # This is only a private-review ranking. A 25%+ lead may be worth checking,
+    # but it still cannot bypass the server's verified public threshold.
+    if _discount(card) >= 25 and not has_weak_reference_warning(card):
+        score += 50
+    if "walmart cash" in text or "cashrewards" in text or "cash rewards" in text:
+        score += 30
     if "coupon from api" in text:
         score += 22
-    if "walmart api savings" in text or "walmart api promo" in text:
+    if "walmart api savings" in text or "walmart api promo" in text or "api promo cap" in text or "buy more" in text or "save up" in text:
+        score += 28
+    if "rough spread" in text or "flip/value lead" in text or "profit" in text or "margin" in text:
         score += 28
     if "you save" in text and not has_weak_reference_warning(card):
         score += 18
@@ -137,6 +155,7 @@ def scout_rank(card: Any, *, min_discount: int = 50) -> int:
     if "stock: **available" in text or "available online" in text:
         score += 5
 
+    # A blocked reference can never be hidden by presentation scoring.
     if has_weak_reference_warning(card):
         score -= 60
     if not has_hard_value_signal(card, min_discount=min_discount):
@@ -198,9 +217,9 @@ def polish_public_scout_card(card: Any, *, rank: int, min_discount: int, positio
     embed.add_field(
         name=SCOUT_GRADE_FIELD,
         value=(
-            f"Actual scout score: **{actual_rank}/150**\n"
+            f"Private review score: **{actual_rank}/150**\n"
             f"Status: **Not a verified deal**\n"
-            f"Why it was retained for private review: {reasons}."
+            f"Why it was retained for review: {reasons}."
         ),
         inline=False,
     )

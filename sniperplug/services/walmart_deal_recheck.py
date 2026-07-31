@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sniperplug.providers.base import ProviderScanRequest
+from sniperplug.services.walmart_recheck_guard import (
+    WALMART_RECHECK_PROVIDER_TIMEOUT_SECONDS,
+    guarded_walmart_recheck,
+)
 
 
 _WALMART_ITEM_PATTERNS = (
@@ -27,6 +31,7 @@ class WalmartRecheckResult:
     reference_price: float | None = None
     candidate: Any | None = None
     cache_state: str | None = None
+    reused: bool = False
 
     @property
     def cache_status(self) -> str:
@@ -48,6 +53,32 @@ def extract_walmart_item_id(url: str | None, active_key: str | None = None) -> s
 
 
 async def recheck_walmart_observation(provider: Any, row: dict[str, Any]) -> WalmartRecheckResult:
+    """Run one exact-item recheck through the shared anti-spam coordinator."""
+
+    item_id = extract_walmart_item_id(row.get("url"), row.get("active_key"))
+    if not item_id:
+        return await _perform_walmart_recheck(provider, row)
+
+    result = await guarded_walmart_recheck(
+        item_id,
+        lambda: _perform_walmart_recheck(provider, row),
+        timeout_seconds=WALMART_RECHECK_PROVIDER_TIMEOUT_SECONDS,
+    )
+    if result is not None:
+        return result
+    return WalmartRecheckResult(
+        status="timeout",
+        item_id=item_id,
+        old_price=_float_or_none(row.get("current_price")),
+        old_discount=_float_or_none(row.get("discount")),
+        message=(
+            f"Walmart detail recheck exceeded {WALMART_RECHECK_PROVIDER_TIMEOUT_SECONDS}s. "
+            "The cached row was left unchanged."
+        ),
+    )
+
+
+async def _perform_walmart_recheck(provider: Any, row: dict[str, Any]) -> WalmartRecheckResult:
     item_id = extract_walmart_item_id(row.get("url"), row.get("active_key"))
     old_price = _float_or_none(row.get("current_price"))
     old_discount = _float_or_none(row.get("discount"))

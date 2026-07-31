@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 
 from sniperplug.config import Settings
+from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
 from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
 from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog
@@ -100,6 +101,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(AutoDiscoveryCog(self))
         await self.add_cog(PublicAlertsCog(self))
         await self.add_cog(ActiveDealsCog(self))
+        await self.add_cog(ActiveDealRecheckCog(self))
         await self.add_cog(SettingsDashboardCog(self))
         await self.add_cog(DealFeedbackAdminCog(self))
         await self.add_cog(StorageAdminCog(self))

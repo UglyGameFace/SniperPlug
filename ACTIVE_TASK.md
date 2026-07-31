@@ -1,62 +1,41 @@
 # Active Task
 
 ## Status
-Complete — full Discord deal-bot recovery and repository-wide audit passed final validation.
+Complete — scheduled Walmart autoscan now spreads its bounded routes across major public-safe categories while preserving verified-only posting and one registered runtime.
 
 ## Scope
-The production path was traced and repaired from process startup through Discord command registration, provider discovery, searches, normalization, variant/offer verification, filtering, cache reuse, deduplication, channel routing, embeds/views, autoscan scheduling, manual scans, persistence, error handling, and deployment validation.
+Trace and repair the live resilient autoscan path responsible for configured servers receiving no public posts. Keep one active runtime, four scheduled routes, eight manual routes, one provider scan at a time, and verified-only public posting.
 
-## Non-negotiable implementation rules
-- No monkey patches.
-- No startup-installed guards or runtime method replacement.
-- Repair the authoritative production implementation and its real callers.
-- Remove all temporary one-shot workflow scaffolding before merge.
+## Findings
+- The runtime loads `ResilientAutoScanRunnerCog`, which inherits the native runner.
+- Scheduled scans explicitly cap work at four routes.
+- The native selector spent all four scheduled routes inside one rotated category, then recorded an empty pass and waited behind the six-hour safety floor.
+- The native fallback still referenced deleted `AUTO_SCAN_FAST_QUERY_COUNT`.
+- `bot.py` retained an unused direct native runner import even though only the resilient runner is registered.
+- The temporary write-enabled workflow outlived its guarded applicator and conflicted with the active branch history.
 
-## Resolved findings
-- Wired Walmart credentials and enabled state into the registered runtime provider.
-- Kept uncertain autoscan review/scout cards private while preserving them for staff review.
-- Cleared stale process-global providers before authoritative startup registration.
-- Normalized duplicate scan locks and added stale-lock recovery.
-- Closed the retained manual review dropdown permission bypass.
-- Preserved mixed-result private review leads instead of discarding them when public cards also exist.
-- Added durable reserved, sending, and posted public-delivery states.
-- Isolated active-cache writes per card so one malformed card cannot roll back earlier valid cards.
-- Removed setup self-heal from the bot startup lifecycle.
-- Upgraded CI from compile-only checks to compilation, import smoke validation, and the complete pytest suite.
+## Changes
+- Scheduled four-route scans now use the existing broad public-safe builder, selecting one route across multiple major categories.
+- Manual eight-route scans continue using the same broad builder.
+- Replaced the deleted fast-policy fallback with `AUTO_SCAN_SCHEDULED_QUERY_COUNT`.
+- Removed the unused direct native runner import from `bot.py`.
+- Added cross-runner static regressions for broad scheduled coverage and one runtime import/registration.
+- Rebuilt the work as clean PR #156 directly on current `main`.
+- Removed the temporary self-modifying autoscan workflow.
 
 ## Validation
-- Clean-head compilation passed.
-- Import smoke validation passed for 28 critical modules and 12 required symbols.
-- Full pytest suite passed after replacing the obsolete startup-self-heal expectation with a regression that forbids startup self-heal wiring.
-- Active-cache isolation regression passed.
-- Temporary repair workflows were deleted and normal test-only CI was restored.
+- Repository compilation passed.
+- Import smoke passed for 28 modules and 12 required symbols.
+- Full pytest regression suite passed: 664 tests.
+- Targeted native/resilient autoscan assertions passed inside the full suite.
+- PR #156 is mergeable against current `main`.
 
-## Architecture cleanup
-- `sniperplug.bot` registers only `native_auto_scan_runner.AutoScanRunnerCog`.
-- `auto_scan_runner.py` remains a shared base/helper module used by the native runner; it is not separately registered and does not create a second autoscan runtime.
-- No monkey patch or startup-installed repair guard is part of the recovered runtime.
-- One authoritative public-posting and active-cache implementation remains in `sniperplug/services/public_deal_posts.py`.
-
-## Definition of Done
-- Root causes documented against the real runtime and callers.
-- Startup, command, manual scan, autoscan, provider, normalization, dedupe, cache, routing, and posting paths repaired.
-- Variant, seller, fulfillment, offer, price, coupon, location, and stale-data safety preserved or improved.
-- Targeted tests and complete regression suite pass.
-- Compilation, import smoke validation, and CI configuration pass.
-- Temporary, conflicting, and duplicate runtime paths were removed or correctly identified as shared dependencies.
-- Final conflict inspection shows one registered autoscan runtime and one authoritative public-posting implementation.
-
-## Work log
-- 2026-07-30: Resumed the beginning-to-end SniperPlug Discord deal-bot recovery.
-- 2026-07-30: Repaired Walmart runtime configuration and provider lifecycle.
-- 2026-07-30: Enforced verified-only public autoscan posting and private review handling.
-- 2026-07-30: Hardened scan locks, routing, permissions, completion checkpoints, dedupe, and public-post durability.
-- 2026-07-30: Removed startup self-heal wiring per owner instruction.
-- 2026-07-30: Landed per-card active-cache commit/rollback isolation.
-- 2026-07-30: Removed temporary workflow scaffolding and passed final clean-head CI.
+## Cleanup status
+Complete. Temporary workflow scaffolding is removed, the deleted fast/deep policy name is absent from the native selector, and the runtime registration path is `bot.py` → resilient runner → native implementation with no duplicate cog registration.
 
 ## Blockers
 None.
 
 ## Backlog
-SniperPlug Site / Whop importer work can resume after PR #125 is merged.
+- Add a single `/movies` command group for official free-ticket drops, starting with Atom's first-party promotions hub and expanding to official Atom social/email/SMS/push, movie-studio, distributor, and partner sources. Include setup, latest, manual scan/test, deduplicated alerts, source labeling, restrictions, expiration, and public-vs-unique-code classification.
+- Improve scheduled zero-post diagnostics surfaced to server owners after this execution-path repair is validated.

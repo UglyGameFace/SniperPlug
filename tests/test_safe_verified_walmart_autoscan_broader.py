@@ -2,9 +2,10 @@ from pathlib import Path
 import re
 
 
-AUTO = Path("sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
-NATIVE = Path("sniperplug/cogs/native_auto_scan_runner.py").read_text(encoding="utf-8")
-RESILIENT = Path("sniperplug/cogs/resilient_auto_scan_runner.py").read_text(encoding="utf-8")
+ROOT = Path(__file__).resolve().parents[1]
+AUTO = (ROOT / "sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
+NATIVE = (ROOT / "sniperplug/cogs/native_auto_scan_runner.py").read_text(encoding="utf-8")
+RESILIENT = (ROOT / "sniperplug/cogs/resilient_auto_scan_runner.py").read_text(encoding="utf-8")
 
 
 def test_public_scout_lane_stays_private_in_autoscan():
@@ -13,11 +14,17 @@ def test_public_scout_lane_stays_private_in_autoscan():
     assert "Anything uncertain remains private for staff review" in NATIVE
 
 
-def test_manual_autoscan_force_uses_broad_public_safe_builder():
-    assert "if force:" in NATIVE
-    assert "build_native_broad_preset" in NATIVE
-    assert "NATIVE_BROAD_PRESET_KEY" in NATIVE
+def test_manual_and_scheduled_autoscan_use_broad_public_safe_builder():
+    start = NATIVE.index("def select_native_autoscan_preset")
+    end = NATIVE.index("def build_native_broad_preset", start)
+    selector = NATIVE[start:end]
+
+    assert "return build_native_broad_preset(presets, guild_id=guild_id, query_count=query_count)" in selector
+    assert "NATIVE_MANUAL_QUERY_COUNT if force else legacy.AUTO_SCAN_SCHEDULED_QUERY_COUNT" in selector
+    assert "legacy.AUTO_SCAN_FAST_QUERY_COUNT" not in selector
+    assert "if force:" not in selector
     assert "query_count_override=8" in RESILIENT
+    assert "query_count_override=SCHEDULED_QUERY_COUNT" in RESILIENT
 
 
 def test_verified_autoscan_uses_bounded_scheduled_and_manual_counts():

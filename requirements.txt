@@ -3,6 +3,8 @@ aiosqlite
 # libsql is needed for Turso/Discloud production, but Termux reports aarch64 and
 # cannot build libsql's Rust wheel target cleanly. Keep local mobile tests usable
 # while leaving x86_64 production installs unchanged.
+# Production is deliberately pinned to Python 3.11 in discloud.config because
+# VERSION=latest previously selected Python 3.14 and the native driver panicked.
 libsql; platform_machine != "aarch64"
 python-dotenv
 cryptography

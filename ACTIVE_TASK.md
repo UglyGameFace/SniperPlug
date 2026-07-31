@@ -1,41 +1,49 @@
 # Active Task
 
 ## Status
-Complete — scheduled Walmart autoscan now spreads its bounded routes across major public-safe categories while preserving verified-only posting and one registered runtime.
+In progress — add a reliable first-party free movie-ticket drop monitor under one `/movies` command group.
 
 ## Scope
-Trace and repair the live resilient autoscan path responsible for configured servers receiving no public posts. Keep one active runtime, four scheduled routes, eight manual routes, one provider scan at a time, and verified-only public posting.
+Add official Atom Promotions Hub monitoring without requiring an Atom API. Server owners choose the Discord destination through a channel selector. SniperPlug fetches the public first-party page, extracts reusable free-ticket codes and their terms, stores discoveries, suppresses duplicate delivery per guild, and posts only public reusable offers.
 
-## Findings
-- The runtime loads `ResilientAutoScanRunnerCog`, which inherits the native runner.
-- Scheduled scans explicitly cap work at four routes.
-- The native selector spent all four scheduled routes inside one rotated category, then recorded an empty pass and waited behind the six-hour safety floor.
-- The native fallback still referenced deleted `AUTO_SCAN_FAST_QUERY_COUNT`.
-- `bot.py` retained an unused direct native runner import even though only the resilient runner is registered.
-- The temporary write-enabled workflow outlived its guarded applicator and conflicted with the active branch history.
+## Execution path inspected
+- `sniperplug.bot.SniperPlugBot.setup_hook` is the single cog-registration path.
+- Existing polling cogs use `commands.GroupCog`, `tasks.loop`, permission checks, and per-feature stores.
+- `Database.require_conn()` provides the common SQLite/Turso connection contract.
+- Atom's official promotions page contains structured headings and bullet terms for film promotions, public codes, ticket limits, dates, and partner-only code instructions.
 
-## Changes
-- Scheduled four-route scans now use the existing broad public-safe builder, selecting one route across multiple major categories.
-- Manual eight-route scans continue using the same broad builder.
-- Replaced the deleted fast-policy fallback with `AUTO_SCAN_SCHEDULED_QUERY_COUNT`.
-- Removed the unused direct native runner import from `bot.py`.
-- Added cross-runner static regressions for broad scheduled coverage and one runtime import/registration.
-- Rebuilt the work as clean PR #156 directly on current `main`.
-- Removed the temporary self-modifying autoscan workflow.
+## Planned command surface
+- `/movies setup` — enable alerts and select a text channel.
+- `/movies status` — show destination, source health, last scan, and totals.
+- `/movies latest` — show currently detected official offers.
+- `/movies scan` — run an immediate official-source refresh.
+- `/movies test-alert` — verify channel permissions and delivery safely.
+- `/movies disable` — stop automatic delivery.
+- `/movies sources` — explain which official channels are automated versus informational.
 
-## Validation
-- Repository compilation passed.
-- Import smoke passed for 28 modules and 12 required symbols.
-- Full pytest regression suite passed: 664 tests.
-- Targeted native/resilient autoscan assertions passed inside the full suite.
-- PR #156 is mergeable against current `main`.
+## Safety and reliability requirements
+- No hardcoded guild or channel IDs.
+- Fetch only allowlisted HTTPS first-party Atom URLs.
+- Conditional requests, bounded timeouts, a descriptive user agent, and one global source fetch at a time.
+- Do not treat partner-issued, account-targeted, emailed, SMS, app-push, or unique codes as reusable public codes.
+- Do not auto-post sweepstakes, discounts, concessions, BOGO offers, or merely promotional copy as free-ticket drops.
+- Persist source state, discoveries, and per-guild delivery records across restarts.
+- Keep code extraction deterministic and covered by offline fixtures.
+
+## Validation required
+- Parser tests for current Atom film-promotion structure and targeted partner exclusions.
+- Store/deduplication tests for SQLite-compatible behavior.
+- Cog registration and command-surface regressions.
+- Compilation, import smoke, targeted tests, and complete pytest suite.
+- Cleanup and conflict inspection before merge.
 
 ## Cleanup status
-Complete. Temporary workflow scaffolding is removed, the deleted fast/deep policy name is absent from the native selector, and the runtime registration path is `bot.py` → resilient runner → native implementation with no duplicate cog registration.
+Pending.
 
 ## Blockers
 None.
 
 ## Backlog
-- Add a single `/movies` command group for official free-ticket drops, starting with Atom's first-party promotions hub and expanding to official Atom social/email/SMS/push, movie-studio, distributor, and partner sources. Include setup, latest, manual scan/test, deduplicated alerts, source labeling, restrictions, expiration, and public-vs-unique-code classification.
-- Improve scheduled zero-post diagnostics surfaced to server owners after this execution-path repair is validated.
+- Add authenticated/consented email, SMS, or mobile-push ingestion only when a safe source connection is available.
+- Add official studio/distributor adapters individually after validating stable first-party pages or feeds.
+- Improve scheduled Walmart zero-post diagnostics surfaced to server owners.

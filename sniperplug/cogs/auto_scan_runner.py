@@ -44,6 +44,8 @@ AUTO_SCAN_MANUAL_QUERY_COUNT = 32
 AUTO_SCAN_DEEP_EVERY_BUCKETS = 8
 AUTO_SCAN_PROGRESS_SECONDS = 45
 AUTO_SCAN_DEEP_FOLLOWUP_ENABLED = True
+AUTO_SCAN_GUILD_TIMEOUT_SECONDS = 180
+AUTO_SCAN_MAX_CONCURRENCY = 3
 _AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -370,17 +372,60 @@ class AutoScanRunnerCog(commands.Cog):
         if health_error:
             log.info("Auto-scan skipped: %s", health_error)
             return
-        for guild in guilds:
+
+        semaphore = asyncio.Semaphore(max(1, AUTO_SCAN_MAX_CONCURRENCY))
+        tasks_for_guilds = [
+            asyncio.create_task(self._run_scheduled_guild(guild, semaphore))
+            for guild in guilds
+        ]
+        results = await asyncio.gather(*tasks_for_guilds, return_exceptions=True)
+        for guild, result in zip(guilds, results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                log.error(
+                    "Auto-scan isolated guild task escaped its guard guild=%s error=%s",
+                    guild.guild_id,
+                    clean_log_text(result),
+                )
+
+    async def _run_scheduled_guild(
+        self,
+        guild: AutoScanGuild,
+        semaphore: asyncio.Semaphore,
+    ) -> None:
+        async with semaphore:
             lock = autoscan_lock(guild.guild_id)
             if lock.locked():
                 log.info("Auto-scan skipped guild=%s because another auto-scan is already running", guild.guild_id)
-                continue
+                return
             async with lock:
                 try:
-                    await self._run_guild_walmart_discovery(guild)
+                    await asyncio.wait_for(
+                        self._run_guild_walmart_discovery(guild),
+                        timeout=AUTO_SCAN_GUILD_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    reason = (
+                        f"Auto-scan timed out after {AUTO_SCAN_GUILD_TIMEOUT_SECONDS} seconds. "
+                        "This guild was isolated so other servers could continue scanning."
+                    )
+                    report = AutoScanReport(
+                        guild_id=guild.guild_id,
+                        allowed=False,
+                        reason=reason,
+                        settings={
+                            "timeout_seconds": AUTO_SCAN_GUILD_TIMEOUT_SECONDS,
+                            "isolated": True,
+                            "retailer": AUTO_SCAN_RETAILER,
+                        },
+                    )
+                    await persist_autoscan_report(self.bot.db, report, scan_key=AUTO_SCAN_SOURCE_LABEL)
+                    log.error("Auto-scan guild timed out and was isolated guild=%s timeout_s=%s", guild.guild_id, AUTO_SCAN_GUILD_TIMEOUT_SECONDS)
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
-                    log.exception("Auto-scan guild run failed but loop will continue guild=%s", guild.guild_id)
-                    continue
+                    log.exception("Auto-scan guild run failed but other guild tasks will continue guild=%s", guild.guild_id)
 
     @auto_scan_loop.before_loop
     async def before_auto_scan_loop(self) -> None:

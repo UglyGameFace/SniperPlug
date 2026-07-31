@@ -195,8 +195,8 @@ def test_autoscan_has_one_bounded_route_policy() -> None:
 
 
 def test_manual_and_scheduled_scans_are_single_pass() -> None:
-    assert SOURCE.count("report_label=\"Manual pass\"") == 1
-    assert "label=\"Manual scan result\"" in SOURCE
+    assert SOURCE.count('report_label="Manual pass"') == 1
+    assert 'label="Manual scan result"' in SOURCE
     assert "asyncio.wait_for(" not in SOURCE
 ''',
         encoding="utf-8",

@@ -36,7 +36,9 @@ from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
 from sniperplug.services.active_deal_history import ensure_active_deal_history
-from sniperplug.services.bounded_feedback_views import register_bounded_persistent_feedback_views
+from sniperplug.services.bounded_feedback_views import (
+    register_bounded_persistent_feedback_views as register_persistent_feedback_views,
+)
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
     ensure_error_logging_table,
@@ -90,7 +92,7 @@ class SniperPlugBot(commands.Bot):
         maintenance = await run_storage_maintenance(self.db)
         log.info("Storage maintenance completed: %s", maintenance.log_fields())
 
-        feedback_views = await register_bounded_persistent_feedback_views(self)
+        feedback_views = await register_persistent_feedback_views(self)
         public_panel_views = await register_persistent_public_panel_views(self)
         log.info("Persistent deal feedback views registered: %s (bounded cap=250)", feedback_views)
         log.info("Persistent public panel views registered: %s", public_panel_views)

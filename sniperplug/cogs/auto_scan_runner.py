@@ -38,18 +38,10 @@ AUTO_SCAN_REVIEW_FALLBACK_LIMIT = 3
 AUTO_SCAN_CATEGORY_ROTATION = ("deal_week", "deal_week", "all", "deal_week", "tech", "deal_week", "essentials", "deal_week", "auto_tools", "deal_week", "beauty", "home")
 AUTO_SCAN_PUBLIC_MODE = MODE_BEST
 AUTOSCAN_CONFIDENCE_FLOOR = DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR
-AUTO_SCAN_FAST_QUERY_COUNT = 8
-AUTO_SCAN_DEEP_QUERY_COUNT = 16
-AUTO_SCAN_MANUAL_QUERY_COUNT = 32
-AUTO_SCAN_DEEP_EVERY_BUCKETS = 8
+AUTO_SCAN_SCHEDULED_QUERY_COUNT = 4
+AUTO_SCAN_MANUAL_QUERY_COUNT = 8
 AUTO_SCAN_PROGRESS_SECONDS = 45
-AUTO_SCAN_DEEP_FOLLOWUP_ENABLED = True
-AUTO_SCAN_GUILD_TIMEOUT_SECONDS = 180
-AUTO_SCAN_MAX_CONCURRENCY = 3
-AUTO_SCAN_GUILD_TIMEOUT_SECONDS = 180
-AUTO_SCAN_MAX_CONCURRENCY = 3
-AUTO_SCAN_GUILD_TIMEOUT_SECONDS = 180
-AUTO_SCAN_MAX_CONCURRENCY = 3
+AUTO_SCAN_MAX_CONCURRENCY = 1
 _AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -232,25 +224,12 @@ class AutoScanRunnerCog(commands.Cog):
                     report = await self._run_guild_walmart_discovery(
                         AutoScanGuild(guild_id, config.get("channel_id")),
                         force=force,
-                        query_count_override=AUTO_SCAN_DEEP_QUERY_COUNT if force else None,
-                        report_label="Fast pass",
+                        query_count_override=AUTO_SCAN_MANUAL_QUERY_COUNT if force else None,
+                        report_label="Manual pass",
                     )
                 finally:
                     progress_task.cancel()
-                await self._send_autoscan_report(interaction, report, label="Fast pass result")
-
-                if force and AUTO_SCAN_DEEP_FOLLOWUP_ENABLED:
-                    await self._safe_autoscan_followup(
-                        interaction,
-                        "🔎 Fast pass finished. I’m continuing a deeper Walmart scan in the background and will send a second report if it finds anything different.",
-                    )
-                    deep_report = await self._run_guild_walmart_discovery(
-                        AutoScanGuild(guild_id, config.get("channel_id")),
-                        force=force,
-                        query_count_override=AUTO_SCAN_MANUAL_QUERY_COUNT,
-                        report_label="Deep follow-up",
-                    )
-                    await self._send_autoscan_report(interaction, deep_report, label="Deep follow-up result")
+                await self._send_autoscan_report(interaction, report, label="Manual scan result")
             except Exception as exc:
                 log.exception("Manual /autoscan_now failed guild=%s", guild_id)
                 await self._safe_autoscan_followup(
@@ -405,27 +384,7 @@ class AutoScanRunnerCog(commands.Cog):
                 return
             async with lock:
                 try:
-                    await asyncio.wait_for(
-                        self._run_guild_walmart_discovery(guild),
-                        timeout=AUTO_SCAN_GUILD_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    reason = (
-                        f"Auto-scan timed out after {AUTO_SCAN_GUILD_TIMEOUT_SECONDS} seconds. "
-                        "This guild was isolated so other servers could continue scanning."
-                    )
-                    report = AutoScanReport(
-                        guild_id=guild.guild_id,
-                        allowed=False,
-                        reason=reason,
-                        settings={
-                            "timeout_seconds": AUTO_SCAN_GUILD_TIMEOUT_SECONDS,
-                            "isolated": True,
-                            "retailer": AUTO_SCAN_RETAILER,
-                        },
-                    )
-                    await persist_autoscan_report(self.bot.db, report, scan_key=AUTO_SCAN_SOURCE_LABEL)
-                    log.error("Auto-scan guild timed out and was isolated guild=%s timeout_s=%s", guild.guild_id, AUTO_SCAN_GUILD_TIMEOUT_SECONDS)
+                    await self._run_guild_walmart_discovery(guild)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -629,8 +588,7 @@ def select_autoscan_preset(guild_id: int, *, force: bool = False, query_count_ov
     elif force:
         query_count = AUTO_SCAN_MANUAL_QUERY_COUNT
     else:
-        bucket = int(time.time() // (AUTO_SCAN_INTERVAL_MINUTES * 60))
-        query_count = AUTO_SCAN_DEEP_QUERY_COUNT if bucket % AUTO_SCAN_DEEP_EVERY_BUCKETS == 0 else AUTO_SCAN_FAST_QUERY_COUNT
+        query_count = AUTO_SCAN_SCHEDULED_QUERY_COUNT
 
     queries = rotated_query_slice(base.queries, guild_id=guild_id, query_count=query_count)
     return HuntPreset(

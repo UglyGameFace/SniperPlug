@@ -56,7 +56,10 @@ def patch_search() -> None:
         '    )\n',
         "Home Depot card evidence boundary",
     )
-    text = text.replace('    footer_bits.append("Verify in store before posting")', '    footer_bits.append("Private lead • verify personally in store")')
+    text = text.replace(
+        '    footer_bits.append("Verify in store before posting")',
+        '    footer_bits.append("Private lead • Verify in store before posting • confirm personally")',
+    )
     SEARCH.write_text(text)
 
 
@@ -86,7 +89,7 @@ def patch_local() -> None:
 
 
 def write_tests() -> None:
-    TEST.write_text('''from pathlib import Path\n\n\nSEARCH = Path("sniperplug/cogs/home_depot_search.py").read_text()\nLOCAL = Path("sniperplug/cogs/home_depot_local.py").read_text()\n\n\ndef test_home_depot_search_uses_private_owner_language():\n    assert "Route: **Private Owner Review**" in SEARCH\n    assert "Route: **Staff Review**" not in SEARCH\n    assert "private shopper verification leads" in SEARCH\n    assert "Only your own store/register check can confirm a penny price" in SEARCH\n    assert "It does **not** prove shelf stock" in SEARCH\n\n\ndef test_home_depot_search_does_not_charge_cache_hits():\n    assert 'quota_cost = 0 if result.metadata.get("cache_hit") else 1' in SEARCH\n    assert 'serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)' in SEARCH\n    assert 'SerpApi charged: **{quota_cost} credit(s)**' in SEARCH\n\n\ndef test_home_depot_local_copy_requires_exact_store_without_employee_language():\n    assert "private stock check" in LOCAL\n    assert "ZIP-only stock claims are blocked" in LOCAL\n    assert "choose the exact store for private verification" in LOCAL\n    assert "employee" not in LOCAL.lower()\n''')
+    TEST.write_text('''from pathlib import Path\n\n\nSEARCH = Path("sniperplug/cogs/home_depot_search.py").read_text()\nLOCAL = Path("sniperplug/cogs/home_depot_local.py").read_text()\n\n\ndef test_home_depot_search_uses_private_owner_language():\n    assert "Route: **Private Owner Review**" in SEARCH\n    assert "Route: **Staff Review**" not in SEARCH\n    assert "private shopper verification leads" in SEARCH\n    assert "Only your own store/register check can confirm a penny price" in SEARCH\n    assert "It does **not** prove shelf stock" in SEARCH\n    assert "Verify in store before posting" in SEARCH\n\n\ndef test_home_depot_search_does_not_charge_cache_hits():\n    assert 'quota_cost = 0 if result.metadata.get("cache_hit") else 1' in SEARCH\n    assert 'serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)' in SEARCH\n    assert 'SerpApi charged: **{quota_cost} credit(s)**' in SEARCH\n\n\ndef test_home_depot_local_copy_requires_exact_store_without_employee_language():\n    assert "private stock check" in LOCAL\n    assert "ZIP-only stock claims are blocked" in LOCAL\n    assert "choose the exact store for private verification" in LOCAL\n    assert "employee" not in LOCAL.lower()\n''')
 
 
 def main() -> None:

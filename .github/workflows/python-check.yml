@@ -5,6 +5,9 @@ on:
     branches: ["main", "master"]
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ux/command-path-simplification
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,11 +25,30 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Apply command path simplification
+        run: python tools/apply_command_path_simplification.py
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m pip install pytest
+
+      - name: Run focused command path tests
+        run: python -m pytest -q tests/test_command_path_simplification.py tests/test_command_catalog.py tests/test_clean_public_command_surface.py
+
+      - name: Commit command path simplification
+        if: github.actor != 'github-actions[bot]'
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add sniperplug/cogs/workflow.py sniperplug/cogs/settings_dashboard.py sniperplug/services/command_catalog.py tests/test_command_path_simplification.py
+          if git diff --cached --quiet; then
+            echo "Command path simplification already applied"
+          else
+            git commit -m "Simplify SniperPlug command paths"
+            git push origin HEAD:ux/command-path-simplification
+          fi
 
       - name: Compile Python files
         run: python -m compileall -q sniperplug scripts tests

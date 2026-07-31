@@ -9,14 +9,25 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.cogs.active_deal_recheck import (
+    BATCH_RECHECK_CONCURRENCY,
+    BATCH_RECHECK_MAX_ITEMS,
+    BATCH_RECHECK_TIMEOUT_SECONDS,
+    build_batch_recheck_embed,
+    build_recheck_embed,
+    recheck_walmart_batch,
+)
+from sniperplug.providers.registry import provider_registry
 from sniperplug.services.public_deal_posts import ensure_public_post_tables
 from sniperplug.services.public_posting import SUPPORTED_RETAILERS, format_retailers, normalize_retailer_key
+from sniperplug.services.walmart_deal_recheck import persist_walmart_recheck, recheck_walmart_observation
 
 
 DEFAULT_STALE_AFTER_HOURS = 24
 ACTIVE_DEALS_MAX_PAGE_SIZE = 15
 ACTIVE_DEALS_DEFAULT_PAGE_SIZE = 10
 ACTIVE_DEALS_DEFAULT_MIN_DISCOUNT = 1
+NON_PERSISTED_RECHECK_STATUSES = {"error", "identity_missing", "provider_unsupported", "timeout"}
 ACTIVE_DEAL_SORTS = {
     "recent": "last_seen_at DESC",
     "discount": "discount DESC, last_seen_at DESC",
@@ -53,6 +64,10 @@ class ActiveDealPage:
     @property
     def has_next(self) -> bool:
         return self.clamped_page < self.total_pages
+
+    @property
+    def walmart_rows(self) -> list[dict[str, Any]]:
+        return [row for row in self.rows if str(row.get("retailer") or "").lower() == "walmart"]
 
 
 class ActiveDealsCog(commands.Cog):
@@ -108,8 +123,11 @@ class ActiveDealsCog(commands.Cog):
             sort=sort_key,
             public_quality_only=min_discount is None,
         )
-        view = ActiveDealsPageView(page_data) if page_data.total_pages > 1 else None
-        await interaction.followup.send(embed=build_active_deals_embed(interaction.guild_id, page_data), view=view, ephemeral=True)
+        await interaction.followup.send(
+            embed=build_active_deals_embed(interaction.guild_id, page_data),
+            view=build_active_deals_view(page_data),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="active_deals_cleanup", description="Mark deals stale when SniperPlug has not observed them again.")
     @app_commands.describe(stale_after_hours="Mark deals stale if not observed again after this many hours.")
@@ -127,24 +145,111 @@ class ActiveDealsCog(commands.Cog):
         )
 
 
+class WalmartPageDealSelect(discord.ui.Select):
+    def __init__(self, rows: list[dict[str, Any]]):
+        self.rows = rows[:ACTIVE_DEALS_MAX_PAGE_SIZE]
+        options = [
+            discord.SelectOption(
+                label=trim(str(row.get("title") or "Walmart item"), 95),
+                description=trim(f"Observed {money(row.get('current_price'))} • exact cached row", 95),
+                value=str(index),
+            )
+            for index, row in enumerate(self.rows)
+        ]
+        super().__init__(
+            placeholder="Recheck one exact Walmart item on this page",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message("Use this inside the server that owns the cache.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        db = getattr(interaction.client, "db", None)
+        if db is None:
+            await interaction.followup.send("Database is unavailable right now.", ephemeral=True)
+            return
+        selected = self.rows[int(self.values[0])]
+        active_key = str(selected.get("active_key") or "")
+        rows = await load_active_walmart_rows_by_keys(db, interaction.guild_id, [active_key])
+        if not rows:
+            await interaction.followup.send(
+                "That cached Walmart row is no longer active. Refresh `/active_deals` before rechecking it.",
+                ephemeral=True,
+            )
+            return
+        provider = provider_registry.get("walmart")
+        if provider is None:
+            await interaction.followup.send("The Walmart provider is not registered in this bot process.", ephemeral=True)
+            return
+        row = rows[0]
+        result = await recheck_walmart_observation(provider, row)
+        if result.status not in NON_PERSISTED_RECHECK_STATUSES:
+            await persist_walmart_recheck(db, interaction.guild_id, str(row["active_key"]), result)
+        await interaction.followup.send(embed=build_recheck_embed(row, result), ephemeral=True)
+
+
 class ActiveDealsPageView(discord.ui.View):
     def __init__(self, page_data: ActiveDealPage):
         super().__init__(timeout=300)
         self.page_data = page_data
         self.previous_page.disabled = not page_data.has_previous
         self.next_page.disabled = not page_data.has_next
+        self.recheck_page.disabled = not bool(page_data.walmart_rows)
+        if page_data.walmart_rows:
+            self.add_item(WalmartPageDealSelect(page_data.walmart_rows))
 
-    @discord.ui.button(label="Previous", emoji="⬅️", style=discord.ButtonStyle.secondary)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if getattr(interaction.permissions, "manage_guild", False):
+            return True
+        await interaction.response.send_message("You need **Manage Server** to use these cache controls.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="Previous", emoji="⬅️", style=discord.ButtonStyle.secondary, row=0)
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.show_page(interaction, self.page_data.clamped_page - 1)
 
-    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, row=0)
     async def refresh_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.show_page(interaction, self.page_data.clamped_page)
 
-    @discord.ui.button(label="Next", emoji="➡️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Next", emoji="➡️", style=discord.ButtonStyle.primary, row=0)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.show_page(interaction, self.page_data.clamped_page + 1)
+
+    @discord.ui.button(label="Recheck Walmart on Page", emoji="🧾", style=discord.ButtonStyle.success, row=0)
+    async def recheck_page(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message("Use this inside the server that owns the cache.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        db = getattr(interaction.client, "db", None)
+        if db is None:
+            await interaction.followup.send("Database is unavailable right now.", ephemeral=True)
+            return
+        keys = [str(row.get("active_key") or "") for row in self.page_data.walmart_rows[:BATCH_RECHECK_MAX_ITEMS]]
+        rows = await load_active_walmart_rows_by_keys(db, interaction.guild_id, keys)
+        if not rows:
+            await interaction.followup.send("No Walmart rows on this page are still active. Refresh the page first.", ephemeral=True)
+            return
+        provider = provider_registry.get("walmart")
+        if provider is None:
+            await interaction.followup.send("The Walmart provider is not registered in this bot process.", ephemeral=True)
+            return
+        results = await recheck_walmart_batch(
+            provider,
+            rows,
+            concurrency=BATCH_RECHECK_CONCURRENCY,
+            timeout_seconds=BATCH_RECHECK_TIMEOUT_SECONDS,
+        )
+        for row, result in results:
+            if result.status not in NON_PERSISTED_RECHECK_STATUSES:
+                await persist_walmart_recheck(db, interaction.guild_id, str(row["active_key"]), result)
+        await interaction.followup.send(embed=build_batch_recheck_embed(results), ephemeral=True)
 
     async def show_page(self, interaction: discord.Interaction, page: int) -> None:
         if interaction.guild_id is None:
@@ -166,7 +271,35 @@ class ActiveDealsPageView(discord.ui.View):
             sort=self.page_data.sort,
             public_quality_only=self.page_data.public_quality_only,
         )
-        await interaction.edit_original_response(embed=build_active_deals_embed(interaction.guild_id, page_data), view=ActiveDealsPageView(page_data) if page_data.total_pages > 1 else None)
+        await interaction.edit_original_response(
+            embed=build_active_deals_embed(interaction.guild_id, page_data),
+            view=build_active_deals_view(page_data),
+        )
+
+
+def build_active_deals_view(page_data: ActiveDealPage) -> ActiveDealsPageView | None:
+    if not page_data.rows and page_data.total_pages <= 1:
+        return None
+    return ActiveDealsPageView(page_data)
+
+
+async def load_active_walmart_rows_by_keys(db, guild_id: int, active_keys: list[str]) -> list[dict[str, Any]]:
+    clean_keys = [key for key in dict.fromkeys(active_keys) if key][:BATCH_RECHECK_MAX_ITEMS]
+    if not clean_keys:
+        return []
+    await ensure_public_post_tables(db)
+    conn = db.require_conn()
+    placeholders = ",".join("?" for _ in clean_keys)
+    cursor = await conn.execute(
+        f"""
+        SELECT active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+        FROM guild_active_deal_cache
+        WHERE guild_id = ? AND retailer = 'walmart' AND status = 'active' AND active_key IN ({placeholders})
+        """,
+        tuple([guild_id, *clean_keys]),
+    )
+    found = {str(row["active_key"]): dict(row) for row in await cursor.fetchall()}
+    return [found[key] for key in clean_keys if key in found]
 
 
 async def list_active_deals(
@@ -220,7 +353,7 @@ async def list_active_deals(
     offset = (safe_page - 1) * safe_limit
     cursor = await conn.execute(
         f"""
-        SELECT retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
+        SELECT active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
         FROM guild_active_deal_cache
         WHERE {where}
         ORDER BY {ACTIVE_DEAL_SORTS[safe_sort]}
@@ -238,6 +371,7 @@ async def list_active_deals(
         query=clean_search or None,
         min_discount=min_discount,
         sort=safe_sort,
+        public_quality_only=public_quality_only,
     )
 
 
@@ -275,7 +409,7 @@ def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discor
             f"Filters: {filter_text} • Sort: `{page_data.sort}`\n\n"
             f"Rows remain here only while SniperPlug has observed them within the last **{DEFAULT_STALE_AFTER_HOURS} hours**. "
             "This cache is not a live retailer guarantee—open the listing and verify the current price, seller, variant, and stock before buying.\n\n"
-            "Default view hides 0% watchlist/review/scout junk. Use `min_discount:0` only for raw cache debugging."
+            "Walmart rows on this page can be rechecked directly with the controls below. Default view hides 0% watchlist/review/scout junk. Use `min_discount:0` only for raw cache debugging."
         ),
         color=discord.Color.green() if page_data.rows else discord.Color.dark_gold(),
     )

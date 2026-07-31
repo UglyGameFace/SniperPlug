@@ -60,7 +60,7 @@ async def recheck_walmart_observation(provider: Any, row: dict[str, Any]) -> Wal
         return await _perform_walmart_recheck(provider, row)
 
     result = await guarded_walmart_recheck(
-        item_id,
+        f"{id(provider)}:{item_id}",
         lambda: _perform_walmart_recheck(provider, row),
         timeout_seconds=WALMART_RECHECK_PROVIDER_TIMEOUT_SECONDS,
     )

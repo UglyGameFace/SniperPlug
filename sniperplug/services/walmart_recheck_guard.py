@@ -40,13 +40,14 @@ async def guarded_walmart_recheck(
     if item_key is None or item_key == "":
         return await operation()
 
-    cached = await _cached_result(item_key)
+    scoped_key = (asyncio.get_running_loop(), item_key)
+    cached = await _cached_result(scoped_key)
     if cached is not None:
         return _mark_reused(cached)
 
-    lock = await _item_lock(item_key)
+    lock = await _item_lock(scoped_key)
     async with lock:
-        cached = await _cached_result(item_key)
+        cached = await _cached_result(scoped_key)
         if cached is not None:
             return _mark_reused(cached)
 
@@ -56,7 +57,7 @@ async def guarded_walmart_recheck(
             result = None
 
         if result is not None:
-            await _remember_result(item_key, result)
+            await _remember_result(scoped_key, result)
         return result
 
 
@@ -80,6 +81,7 @@ async def _cached_result(item_key: Hashable) -> Any | None:
         ttl = WALMART_RECHECK_REUSE_SECONDS if status in _TRUSTWORTHY_STATUSES else WALMART_RECHECK_ERROR_REUSE_SECONDS
         if now - created_at > ttl:
             _recent_results.pop(item_key, None)
+            _item_locks.pop(item_key, None)
             return None
         _recent_results.move_to_end(item_key)
         return result

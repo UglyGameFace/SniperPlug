@@ -4,7 +4,7 @@ import asyncio
 import time
 from collections import OrderedDict
 from dataclasses import replace
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Hashable
 
 
 WALMART_RECHECK_REUSE_SECONDS = 60
@@ -24,30 +24,29 @@ _TRUSTWORTHY_STATUSES = {
     "identity_mismatch",
 }
 
-_item_locks: dict[str, asyncio.Lock] = {}
-_recent_results: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+_item_locks: dict[Hashable, asyncio.Lock] = {}
+_recent_results: OrderedDict[Hashable, tuple[float, Any]] = OrderedDict()
 _registry_lock = asyncio.Lock()
 
 
 async def guarded_walmart_recheck(
-    item_key: str,
+    item_key: Hashable,
     operation: Callable[[], Awaitable[Any]],
     *,
     timeout_seconds: int = WALMART_RECHECK_PROVIDER_TIMEOUT_SECONDS,
 ) -> Any:
     """Collapse duplicate item rechecks and briefly reuse their result."""
 
-    clean_key = str(item_key or "").strip()
-    if not clean_key:
+    if item_key is None or item_key == "":
         return await operation()
 
-    cached = await _cached_result(clean_key)
+    cached = await _cached_result(item_key)
     if cached is not None:
         return _mark_reused(cached)
 
-    lock = await _item_lock(clean_key)
+    lock = await _item_lock(item_key)
     async with lock:
-        cached = await _cached_result(clean_key)
+        cached = await _cached_result(item_key)
         if cached is not None:
             return _mark_reused(cached)
 
@@ -57,11 +56,11 @@ async def guarded_walmart_recheck(
             result = None
 
         if result is not None:
-            await _remember_result(clean_key, result)
+            await _remember_result(item_key, result)
         return result
 
 
-async def _item_lock(item_key: str) -> asyncio.Lock:
+async def _item_lock(item_key: Hashable) -> asyncio.Lock:
     async with _registry_lock:
         lock = _item_locks.get(item_key)
         if lock is None:
@@ -70,7 +69,7 @@ async def _item_lock(item_key: str) -> asyncio.Lock:
         return lock
 
 
-async def _cached_result(item_key: str) -> Any | None:
+async def _cached_result(item_key: Hashable) -> Any | None:
     now = time.monotonic()
     async with _registry_lock:
         cached = _recent_results.get(item_key)
@@ -86,12 +85,13 @@ async def _cached_result(item_key: str) -> Any | None:
         return result
 
 
-async def _remember_result(item_key: str, result: Any) -> None:
+async def _remember_result(item_key: Hashable, result: Any) -> None:
     async with _registry_lock:
         _recent_results[item_key] = (time.monotonic(), result)
         _recent_results.move_to_end(item_key)
         while len(_recent_results) > WALMART_RECHECK_CACHE_MAX_ITEMS:
-            _recent_results.popitem(last=False)
+            evicted_key, _ = _recent_results.popitem(last=False)
+            _item_locks.pop(evicted_key, None)
 
 
 async def clear_walmart_recheck_guard() -> None:

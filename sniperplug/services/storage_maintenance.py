@@ -8,6 +8,7 @@ from sniperplug.services.active_deal_history import prune_active_deal_history
 from sniperplug.services.autoscan_history import ensure_autoscan_history_table
 from sniperplug.services.deal_feedback import ensure_deal_feedback_tables
 from sniperplug.services.public_deal_posts import ensure_public_post_tables
+from sniperplug.services.walmart_recheck_audit import prune_walmart_recheck_audit
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class MaintenanceCleanupResult:
     old_autoscan_reports: int = 0
     old_public_post_reservations: int = 0
     old_active_deal_history: int = 0
+    old_walmart_recheck_audit: int = 0
 
     @property
     def total_changed(self) -> int:
@@ -28,6 +30,7 @@ class MaintenanceCleanupResult:
             + self.old_autoscan_reports
             + self.old_public_post_reservations
             + self.old_active_deal_history
+            + self.old_walmart_recheck_audit
         )
 
     def log_fields(self) -> dict[str, int]:
@@ -38,6 +41,7 @@ class MaintenanceCleanupResult:
             "old_autoscan_reports": self.old_autoscan_reports,
             "old_public_post_reservations": self.old_public_post_reservations,
             "old_active_deal_history": self.old_active_deal_history,
+            "old_walmart_recheck_audit": self.old_walmart_recheck_audit,
             "total_changed": self.total_changed,
         }
 
@@ -54,8 +58,8 @@ async def run_storage_maintenance(
 
     This intentionally keeps learning summaries and active vote ledgers. It only
     removes expired button targets, old raw click history, old scan reports,
-    stale active deal cache rows, abandoned public-post reservations, and old
-    bounded deal lifecycle history.
+    stale active deal cache rows, abandoned public-post reservations, bounded
+    deal lifecycle history, and bounded Walmart recheck audit rows.
     """
     await ensure_deal_feedback_tables(db)
     await ensure_public_post_tables(db)
@@ -95,6 +99,7 @@ async def run_storage_maintenance(
 
     await conn.commit()
     old_active_deal_history = await prune_active_deal_history(db)
+    old_walmart_recheck_audit = await prune_walmart_recheck_audit(db)
     return MaintenanceCleanupResult(
         expired_feedback_targets=expired_feedback_targets,
         old_feedback_events=old_feedback_events,
@@ -102,6 +107,7 @@ async def run_storage_maintenance(
         old_autoscan_reports=old_autoscan_reports,
         old_public_post_reservations=old_public_post_reservations,
         old_active_deal_history=old_active_deal_history,
+        old_walmart_recheck_audit=old_walmart_recheck_audit,
     )
 
 

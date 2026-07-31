@@ -4,6 +4,8 @@ from typing import Any
 
 import discord
 
+from sniperplug.services.walmart_cash import walmart_cash_amount_is_sane
+
 
 SCOUT_GRADE_FIELD = "🧭 Review status"
 BUY_CHECK_FIELD = "✅ Quick check"
@@ -108,17 +110,11 @@ def _confirmed_walmart_cash(card: Any) -> float | None:
     """Return only structured, explicitly proven Walmart Cash."""
     attrs = _variant_attributes(card)
     amount = _float_or_none(attrs.get("walmartCashSavings"))
-    if amount is None or amount <= 0:
-        return None
     proof = str(attrs.get("walmartCashApiProof") or attrs.get("cashAmountConfirmed") or "").strip().lower()
     if proof not in {"yes", "true", "1"}:
         return None
     price = _price(card)
-    if price > 0 and amount > max(price * 1.10, price + 5.0):
-        return None
-    if amount >= 10_000:
-        return None
-    return amount
+    return amount if walmart_cash_amount_is_sane(amount, current_price=price or None) else None
 
 
 def _dedupe_key(card: Any) -> str:

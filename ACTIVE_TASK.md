@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-In progress — restore useful scheduled Walmart autoscan coverage without loosening verified-deal safety.
+Complete — scheduled Walmart autoscan now spreads its bounded routes across major public-safe categories while preserving verified-only posting and one registered runtime.
 
 ## Scope
 Trace and repair the live resilient autoscan path responsible for configured servers receiving no public posts. Keep one active runtime, four scheduled routes, eight manual routes, one provider scan at a time, and verified-only public posting.
@@ -23,15 +23,15 @@ Trace and repair the live resilient autoscan path responsible for configured ser
 - Rebuilt the work as clean PR #156 directly on current `main`.
 - Removed the temporary self-modifying autoscan workflow.
 
-## Validation required
-- Compile changed runtime and tests.
-- Run targeted native/resilient autoscan tests.
-- Run import smoke validation.
-- Run complete pytest regression suite.
-- Inspect final diff for temporary files, stale policy names, duplicate runner wiring, and conflicts.
+## Validation
+- Repository compilation passed.
+- Import smoke passed for 28 modules and 12 required symbols.
+- Full pytest regression suite passed: 664 tests.
+- Targeted native/resilient autoscan assertions passed inside the full suite.
+- PR #156 is mergeable against current `main`.
 
 ## Cleanup status
-Temporary applicator/workflow scaffolding is removed. Final cleanup and conflict inspection remain pending until clean-head CI passes.
+Complete. Temporary workflow scaffolding is removed, the deleted fast/deep policy name is absent from the native selector, and the runtime registration path is `bot.py` → resilient runner → native implementation with no duplicate cog registration.
 
 ## Blockers
 None.

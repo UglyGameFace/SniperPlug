@@ -147,6 +147,7 @@ async def recheck_walmart_batch(provider, rows: list[dict], *, concurrency: int,
                 result = WalmartRecheckResult(
                     status="timeout",
                     old_price=_float_or_none(row.get("current_price")),
+                    old_discount=_float_or_none(row.get("discount")),
                     message=f"Walmart detail recheck exceeded {timeout_seconds}s. The cached row was left unchanged.",
                 )
             return row, result
@@ -157,12 +158,22 @@ async def recheck_walmart_batch(provider, rows: list[dict], *, concurrency: int,
 def build_recheck_embed(row: dict, result) -> discord.Embed:
     colors = {
         "unchanged": discord.Color.green(),
+        "deal_improved": discord.Color.green(),
+        "promotion_verified": discord.Color.green(),
         "price_changed": discord.Color.orange(),
+        "deal_weakened": discord.Color.orange(),
+        "discount_unproven": discord.Color.red(),
+        "discount_gone": discord.Color.red(),
         "unavailable": discord.Color.red(),
         "identity_mismatch": discord.Color.red(),
     }
     labels = {
         "unchanged": "Verified unchanged",
+        "deal_improved": "Deal improved",
+        "deal_weakened": "Deal weakened",
+        "promotion_verified": "Promotion still verified",
+        "discount_unproven": "Old discount no longer proven",
+        "discount_gone": "Discount gone",
         "price_changed": "Price changed",
         "unavailable": "Unavailable",
         "identity_mismatch": "Identity mismatch blocked",
@@ -180,6 +191,9 @@ def build_recheck_embed(row: dict, result) -> discord.Embed:
     embed.add_field(name="Walmart item ID", value=f"`{result.item_id}`" if result.item_id else "Not safely resolved", inline=True)
     embed.add_field(name="Cached price", value=money(result.old_price), inline=True)
     embed.add_field(name="Current price", value=money(result.current_price), inline=True)
+    embed.add_field(name="Cached markdown", value=percent(result.old_discount), inline=True)
+    embed.add_field(name="Verified markdown", value=percent(result.current_discount), inline=True)
+    embed.add_field(name="Reference price", value=money(result.reference_price), inline=True)
     candidate = result.candidate
     if candidate is not None:
         embed.add_field(name="Seller", value=str(getattr(candidate, "seller_name", None) or "Not returned")[:1024], inline=True)
@@ -188,7 +202,7 @@ def build_recheck_embed(row: dict, result) -> discord.Embed:
     url = str(row.get("url") or "")
     if url.startswith("http"):
         embed.add_field(name="Retailer page", value=f"[Open and verify in Walmart]({url})", inline=False)
-    embed.set_footer(text="This rechecks one exact cached Walmart item. It never substitutes a similar search result or another variant.")
+    embed.set_footer(text="Fresh markdown percentages require current Walmart reference-price proof. Missing proof clears the old claim instead of guessing.")
     return embed
 
 
@@ -198,18 +212,32 @@ def build_batch_recheck_embed(results) -> discord.Embed:
         title="Walmart Batch Recheck",
         description=(
             f"Rechecked **{len(results)}** recent observations with at most **{BATCH_RECHECK_CONCURRENCY}** provider calls running together. "
-            "Errors and timeouts leave cached rows unchanged."
+            "Errors and timeouts leave cached rows unchanged; stale discount claims are cleared."
         ),
-        color=discord.Color.orange() if counts.get("price_changed") else discord.Color.green(),
+        color=discord.Color.orange() if any(counts.get(key) for key in ("price_changed", "deal_weakened")) else discord.Color.green(),
     )
-    summary_order = ("unchanged", "price_changed", "unavailable", "identity_mismatch", "identity_missing", "error", "timeout")
+    summary_order = (
+        "deal_improved",
+        "unchanged",
+        "promotion_verified",
+        "price_changed",
+        "deal_weakened",
+        "discount_unproven",
+        "discount_gone",
+        "unavailable",
+        "identity_mismatch",
+        "identity_missing",
+        "error",
+        "timeout",
+    )
     summary = " • ".join(f"{status.replace('_', ' ').title()}: **{counts[status]}**" for status in summary_order if counts.get(status))
     embed.add_field(name="Results", value=summary or "No results", inline=False)
     for row, result in results[:BATCH_RECHECK_MAX_ITEMS]:
         price_text = money(result.current_price) if result.current_price is not None else money(result.old_price)
+        markdown_text = percent(result.current_discount)
         embed.add_field(
             name=str(row.get("title") or "Unknown Walmart item")[:80],
-            value=f"**{result.status.replace('_', ' ').title()}** • {price_text}\n{result.message[:700]}",
+            value=f"**{result.status.replace('_', ' ').title()}** • {price_text} • Markdown: {markdown_text}\n{result.message[:650]}",
             inline=False,
         )
     embed.set_footer(text="Batch rechecks are owner-triggered, limited to 10 items, and never use SerpApi.")
@@ -223,6 +251,15 @@ def money(value) -> str:
         return f"${float(value):,.2f}"
     except (TypeError, ValueError):
         return "N/A"
+
+
+def percent(value) -> str:
+    if value is None:
+        return "Not proven"
+    try:
+        return f"{float(value):.0f}%"
+    except (TypeError, ValueError):
+        return "Not proven"
 
 
 def _float_or_none(value):

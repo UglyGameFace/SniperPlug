@@ -89,14 +89,38 @@ async def prune_active_deal_history(
     await ensure_active_deal_history(db)
     conn = db.require_conn()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(retention_days)))).isoformat()
+    deleted = 0
+
     if guild_id is None:
         cursor = await conn.execute("DELETE FROM guild_active_deal_history WHERE occurred_at < ?", (cutoff,))
+        deleted += _row_count(cursor)
+        cursor = await conn.execute(
+            """
+            DELETE FROM guild_active_deal_history
+            WHERE id IN (
+                SELECT history.id
+                FROM guild_active_deal_history AS history
+                WHERE (
+                    SELECT COUNT(*)
+                    FROM guild_active_deal_history AS newer
+                    WHERE newer.guild_id = history.guild_id
+                      AND (
+                          newer.occurred_at > history.occurred_at
+                          OR (newer.occurred_at = history.occurred_at AND newer.id > history.id)
+                      )
+                ) >= ?
+            )
+            """,
+            (max(1, int(max_rows_per_guild)),),
+        )
+        deleted += _row_count(cursor)
     else:
         cursor = await conn.execute(
             "DELETE FROM guild_active_deal_history WHERE guild_id = ? AND occurred_at < ?",
             (guild_id, cutoff),
         )
-        await conn.execute(
+        deleted += _row_count(cursor)
+        cursor = await conn.execute(
             """
             DELETE FROM guild_active_deal_history
             WHERE guild_id = ? AND id NOT IN (
@@ -108,8 +132,10 @@ async def prune_active_deal_history(
             """,
             (guild_id, guild_id, max(1, int(max_rows_per_guild))),
         )
+        deleted += _row_count(cursor)
+
     await conn.commit()
-    return int(getattr(cursor, "rowcount", 0) or 0)
+    return deleted
 
 
 async def list_active_deal_history(
@@ -146,3 +172,10 @@ async def list_active_deal_history(
         tuple(params),
     )
     return [dict(row) for row in await cursor.fetchall()]
+
+
+def _row_count(cursor: Any) -> int:
+    try:
+        return max(0, int(getattr(cursor, "rowcount", 0) or 0))
+    except (TypeError, ValueError):
+        return 0

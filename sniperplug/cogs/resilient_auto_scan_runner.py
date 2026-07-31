@@ -10,6 +10,7 @@ from discord.ext import tasks
 
 from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog as NativeAutoScanRunnerCog
+from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
 
 
 MANUAL_PROGRESS_INTERVAL_SECONDS = 45
@@ -29,6 +30,8 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
     Manual scans remain responsive and keep completed work. Scheduled scans are
     intentionally much smaller, globally serialized, and protected by a six-hour
     safety floor even when a legacy row uses interval_hours=0 for "unlimited".
+    Every scheduler sweep reconciles all live guilds before selecting eligible
+    rows, so a missing public-alert row cannot silently exclude a connected server.
     """
 
     def __init__(self, bot):
@@ -43,7 +46,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         )
         legacy.log.info(
             "Autoscan hardening active python=%s platform=%s scheduled_routes=%s "
-            "scheduled_floor_hours=6 provider_concurrency=1",
+            "scheduled_floor_hours=6 provider_concurrency=1 live_guild_self_heal=true",
             platform.python_version(),
             sys.platform,
             SCHEDULED_QUERY_COUNT,
@@ -145,9 +148,35 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
     @tasks.loop(minutes=SCHEDULE_LOOP_MINUTES)
     async def auto_scan_loop(self) -> None:
         await self.bot.wait_until_ready()
+
+        try:
+            repair_summary = await repair_all_public_alert_setups(self.bot.db, self.bot)
+            legacy.log.info(
+                "Autoscan live-guild setup reconciliation complete ghost_rows_deleted=%s "
+                "repaired=%s healthy=%s needs_action=%s",
+                repair_summary.get("ghost_rows_deleted", 0),
+                repair_summary.get("repaired", 0),
+                repair_summary.get("healthy", 0),
+                repair_summary.get("needs_action", 0),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            legacy.log.exception("Autoscan live-guild setup reconciliation failed safely")
+
         guilds = await legacy.list_public_alert_guilds(self.bot.db, bot=self.bot)
         if not guilds:
+            legacy.log.warning(
+                "Autoscan found no eligible live guilds after reconciliation; run /autoscan_health "
+                "inside the intended deals channel only if startup reports needs_action"
+            )
             return
+
+        legacy.log.info(
+            "Autoscan eligible live guilds count=%s guild_ids=%s",
+            len(guilds),
+            [int(guild.guild_id) for guild in guilds],
+        )
 
         health_error = await legacy.provider_health_error_message()
         if health_error:
@@ -205,9 +234,6 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                         gid,
                     )
                 finally:
-                    # Legacy interval_hours=0 used to mean unlimited and caused a
-                    # 15-minute fire hose. The runtime safety floor always applies
-                    # to background work; manual commands remain immediately usable.
                     _NEXT_SCHEDULED_RUN_AT[gid] = time.monotonic() + SCHEDULED_MIN_INTERVAL_SECONDS
 
     @auto_scan_loop.before_loop

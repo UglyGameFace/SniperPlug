@@ -10,6 +10,7 @@ from discord.ext import commands
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.public_deal_posts import ensure_public_post_tables
 from sniperplug.services.walmart_deal_recheck import persist_walmart_recheck, recheck_walmart_observation
+from sniperplug.services.walmart_recheck_audit import record_walmart_recheck_attempt
 
 
 BATCH_RECHECK_MAX_ITEMS = 10
@@ -53,6 +54,13 @@ class ActiveDealRecheckCog(commands.Cog):
             return
 
         result = await recheck_walmart_observation(provider, row)
+        await record_recheck_attempt(
+            self.bot.db,
+            interaction,
+            row,
+            result,
+            trigger_source="slash_single",
+        )
         if result.status not in _NON_PERSISTED_STATUSES:
             await persist_walmart_recheck(self.bot.db, interaction.guild_id, str(row["active_key"]), result)
 
@@ -88,10 +96,32 @@ class ActiveDealRecheckCog(commands.Cog):
             timeout_seconds=BATCH_RECHECK_TIMEOUT_SECONDS,
         )
         for row, result in results:
+            await record_recheck_attempt(
+                self.bot.db,
+                interaction,
+                row,
+                result,
+                trigger_source="slash_batch",
+            )
             if result.status not in _NON_PERSISTED_STATUSES and result.status != "timeout":
                 await persist_walmart_recheck(self.bot.db, interaction.guild_id, str(row["active_key"]), result)
 
         await interaction.followup.send(embed=build_batch_recheck_embed(results), ephemeral=True)
+
+
+async def record_recheck_attempt(db, interaction: discord.Interaction, row: dict, result, *, trigger_source: str) -> None:
+    if interaction.guild_id is None:
+        return
+    user = getattr(interaction, "user", None)
+    await record_walmart_recheck_attempt(
+        db,
+        interaction.guild_id,
+        row,
+        result,
+        trigger_source=trigger_source,
+        actor_user_id=getattr(user, "id", None),
+        actor_name=str(user) if user is not None else None,
+    )
 
 
 async def find_cached_walmart_observation(db, guild_id: int, search: str) -> tuple[dict | None, int]:

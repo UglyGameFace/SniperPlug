@@ -8,22 +8,31 @@ from discord.ext import commands
 
 from sniperplug.services.active_deal_history import list_active_deal_history
 from sniperplug.services.public_posting import SUPPORTED_RETAILERS, normalize_retailer_key
+from sniperplug.services.walmart_recheck_audit import list_walmart_recheck_audit
 
 
 class ActiveDealHistoryCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="active_deal_history", description="Review recent cached deal price, discount, and lifecycle changes.")
+    @app_commands.command(name="active_deal_history", description="Review cached deal lifecycle changes or Walmart recheck attempts.")
     @app_commands.describe(
-        retailer="Optional store filter.",
-        search="Optional title, item key, or event search.",
+        view="Choose lifecycle changes or the Walmart recheck audit.",
+        retailer="Optional store filter for lifecycle history.",
+        search="Optional title, item key, status, event, or source search.",
         limit="How many history rows to show. Maximum 25.",
+    )
+    @app_commands.choices(
+        view=[
+            app_commands.Choice(name="Lifecycle changes", value="lifecycle"),
+            app_commands.Choice(name="Walmart recheck audit", value="rechecks"),
+        ]
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def active_deal_history(
         self,
         interaction: discord.Interaction,
+        view: app_commands.Choice[str] | None = None,
         retailer: str | None = None,
         search: str | None = None,
         limit: app_commands.Range[int, 1, 25] = 10,
@@ -31,6 +40,17 @@ class ActiveDealHistoryCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is None:
             await interaction.followup.send("Use this in a server so I know which deal history to read.", ephemeral=True)
+            return
+
+        view_key = view.value if view else "lifecycle"
+        if view_key == "rechecks":
+            rows = await list_walmart_recheck_audit(
+                self.bot.db,
+                interaction.guild_id,
+                search=search,
+                limit=int(limit),
+            )
+            await interaction.followup.send(embed=build_walmart_recheck_audit_embed(rows), ephemeral=True)
             return
 
         retailer_key = normalize_retailer_key(retailer) if retailer else None
@@ -85,7 +105,48 @@ def build_active_deal_history_embed(rows: list[dict[str, Any]]) -> discord.Embed
             inline=False,
         )
 
-    embed.set_footer(text="History is retained for 30 days and capped at 1,000 rows per server.")
+    embed.set_footer(text="Lifecycle history is retained for 30 days and capped at 1,000 rows per server.")
+    return embed
+
+
+def build_walmart_recheck_audit_embed(rows: list[dict[str, Any]]) -> discord.Embed:
+    embed = discord.Embed(
+        title="Walmart Recheck Audit",
+        description=(
+            "Every owner-triggered slash recheck attempt is recorded, including unchanged results, reused anti-spam results, "
+            "timeouts, errors, and identity blocks. Cache persistence remains separate."
+        ),
+        color=discord.Color.dark_teal(),
+    )
+    if not rows:
+        embed.add_field(
+            name="No recheck attempts recorded yet",
+            value="Run `/active_deal_recheck` or `/active_deals_recheck` to create the first audited attempt.",
+            inline=False,
+        )
+        return embed
+
+    for row in rows[:25]:
+        status = str(row.get("result_status") or "unknown").replace("_", " ").title()
+        source = str(row.get("trigger_source") or "unknown").replace("_", " ")
+        actor = str(row.get("actor_name") or row.get("actor_user_id") or "unknown")
+        reused = "yes" if int(row.get("reused") or 0) else "no"
+        value = (
+            f"Price: **{money(row.get('old_price'))} → {money(row.get('new_price'))}**\n"
+            f"Markdown: **{percent(row.get('old_discount'))} → {percent(row.get('new_discount'))}**"
+            f" • Reference: **{money(row.get('reference_price'))}**\n"
+            f"Source: `{source}` • Actor: `{trim(actor, 80)}` • Reused: **{reused}**\n"
+            f"Item ID: `{str(row.get('item_id') or 'unresolved')}` • Cache result: `{str(row.get('cache_status') or 'unchanged')}`\n"
+            f"Recorded: `{str(row.get('occurred_at') or 'unknown')}`\n"
+            f"{trim(str(row.get('message') or ''), 350)}"
+        )
+        embed.add_field(
+            name=f"{status} • {trim(str(row.get('title') or 'Unknown Walmart item'), 68)}",
+            value=value,
+            inline=False,
+        )
+
+    embed.set_footer(text="Recheck audit is retained for 30 days and capped at 2,000 rows per server.")
     return embed
 
 

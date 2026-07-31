@@ -133,6 +133,19 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
+        name="/active_deals_recheck",
+        audience="Owner",
+        purpose="Safely recheck several recent cached Walmart observations with bounded concurrency.",
+        when_to_use="Use when you need to refresh multiple active Walmart rows at once. Runs are capped, timeout-protected, and share the exact-item anti-spam guard.",
+        credit_risk="Walmart official API",
+    ),
+    CommandCatalogEntry(
+        name="/active_deal_history",
+        audience="Owner",
+        purpose="Review durable price, markdown, and active/stale lifecycle changes for cached deals.",
+        when_to_use="Use when you need to see what changed after a verified recheck or fresh scan without searching ephemeral responses or public channels.",
+    ),
+    CommandCatalogEntry(
         name="/active_deals_cleanup",
         audience="Owner",
         purpose="Mark old cached observations stale.",

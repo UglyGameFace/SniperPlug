@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-
-import pytest
 
 from sniperplug.services.walmart_deal_recheck import extract_walmart_item_id, recheck_walmart_observation
 
@@ -51,35 +50,31 @@ def test_extract_walmart_item_id_never_uses_title_guessing():
     assert extract_walmart_item_id("https://example.com/no-id", "walmart:headphones") is None
 
 
-@pytest.mark.asyncio
-async def test_recheck_reports_unchanged_exact_item():
+def test_recheck_reports_unchanged_exact_item():
     provider = FakeProvider(FakeCandidate(product_id="123456789", current_price=20.0))
-    result = await recheck_walmart_observation(provider, row())
+    result = asyncio.run(recheck_walmart_observation(provider, row()))
     assert provider.requested_item_id == "123456789"
     assert result.status == "unchanged"
     assert result.cache_status == "active"
 
 
-@pytest.mark.asyncio
-async def test_recheck_reports_price_change():
+def test_recheck_reports_price_change():
     provider = FakeProvider(FakeCandidate(product_id="123456789", current_price=15.0))
-    result = await recheck_walmart_observation(provider, row())
+    result = asyncio.run(recheck_walmart_observation(provider, row()))
     assert result.status == "price_changed"
     assert result.old_price == 20.0
     assert result.current_price == 15.0
 
 
-@pytest.mark.asyncio
-async def test_recheck_blocks_identity_mismatch():
+def test_recheck_blocks_identity_mismatch():
     provider = FakeProvider(FakeCandidate(product_id="999999999", current_price=15.0))
-    result = await recheck_walmart_observation(provider, row())
+    result = asyncio.run(recheck_walmart_observation(provider, row()))
     assert result.status == "identity_mismatch"
     assert result.cache_status == "stale"
     assert "refused to overwrite" in result.message
 
 
-@pytest.mark.asyncio
-async def test_recheck_marks_unavailable_exact_item_stale():
+def test_recheck_marks_unavailable_exact_item_stale():
     provider = FakeProvider(
         FakeCandidate(
             product_id="123456789",
@@ -88,6 +83,6 @@ async def test_recheck_marks_unavailable_exact_item_stale():
             can_add_to_cart=False,
         )
     )
-    result = await recheck_walmart_observation(provider, row())
+    result = asyncio.run(recheck_walmart_observation(provider, row()))
     assert result.status == "unavailable"
     assert result.cache_status == "stale"

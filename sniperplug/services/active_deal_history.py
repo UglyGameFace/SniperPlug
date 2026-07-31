@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sniperplug.services.public_deal_posts import ensure_public_post_tables
+
 
 ACTIVE_DEAL_HISTORY_RETENTION_DAYS = 30
 ACTIVE_DEAL_HISTORY_MAX_ROWS_PER_GUILD = 1000
 
 
 async def ensure_active_deal_history(db: Any) -> None:
+    await ensure_public_post_tables(db)
     conn = db.require_conn()
     await conn.execute(
         """
@@ -117,7 +120,6 @@ async def list_active_deal_history(
     search: str | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
-    await ensure_active_deal_history(db)
     await prune_active_deal_history(db, guild_id=guild_id)
     conn = db.require_conn()
     filters = ["guild_id = ?"]

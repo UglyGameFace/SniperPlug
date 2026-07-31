@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
+# One-time branch applicator. Removed before merge.
 TARGET = Path("sniperplug/cogs/auto_scan_runner.py")
 TEST = Path("tests/test_autoscan_policy_structure.py")
 

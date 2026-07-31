@@ -137,7 +137,8 @@ class HomeDepotSearchCog(commands.Cog):
                     },
                 )
             )
-            quota_after = serpapi_quota_guard.record(interaction.user.id, cost=1)
+            quota_cost = 0 if result.metadata.get("cache_hit") else 1
+            quota_after = serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)
 
             if result.warnings and not result.candidates:
                 await interaction.followup.send("\n".join(result.warnings), ephemeral=True)
@@ -148,7 +149,8 @@ class HomeDepotSearchCog(commands.Cog):
                 description=(
                     f"Searching: **{cleaned_query}**\n"
                     f"Store: `{cleaned_store_id or 'n/a'}` • ZIP: `{cleaned_zip_code or 'n/a'}` • Page: `{page}`\n"
-                    f"SerpApi used: **{quota_after.monthly_used}/{quota_after.monthly_limit} monthly safe budget** • "
+                    f"SerpApi charged: **{quota_cost} credit(s)** • "
+                    f"Usage: **{quota_after.monthly_used}/{quota_after.monthly_limit} monthly safe budget** • "
                     f"**{quota_after.daily_used}/{quota_after.daily_limit} today**\n"
                     f"Products returned: **{batch.returned_count}** • Cards shown: **{batch.shown_count}**"
                 ),
@@ -156,7 +158,10 @@ class HomeDepotSearchCog(commands.Cog):
             )
             if penny_mode:
                 summary.description += f" • Penny-filtered: **{batch.filtered_count}**"
-            summary.description += "\nThese are **verification candidates**, not confirmed in-store penny deals."
+            summary.description += (
+                "\nThese are **private shopper verification leads**, not confirmed in-store penny deals. "
+                "Only your own store/register check can confirm a penny price."
+            )
             if batch.used_raw_fallback:
                 summary.add_field(
                     name="Credit protected",
@@ -268,7 +273,7 @@ def build_home_depot_deal_card(
         name="📊 Sniper Read",
         value=(
             f"**{friendly_penny_level(penny_level)}** • `{penny_score}/100`\n"
-            "Route: **Staff Review**\n"
+            "Route: **Private Owner Review**\n"
             "Would alert: **No**"
         ),
         inline=True,
@@ -284,6 +289,15 @@ def build_home_depot_deal_card(
         embed.add_field(name="🚚 Fulfillment", value=fulfillment_block, inline=False)
 
     embed.add_field(name="🟢 Liveness", value=home_depot_liveness_block(candidate.current_price, penny_score, raw_fallback=raw_fallback), inline=False)
+    embed.add_field(
+        name="🏪 What this proves",
+        value=(
+            "This card proves only the online/search evidence shown above. "
+            "It does **not** prove shelf stock, the exact local store price, or a register penny. "
+            "Confirm those yourself in the selected Home Depot store before buying or sharing publicly."
+        ),
+        inline=False,
+    )
 
     proof_lines = home_depot_proof_lines(candidate, reasons)
     if proof_lines:
@@ -295,7 +309,7 @@ def build_home_depot_deal_card(
     if candidate.upc:
         footer_bits.append(f"UPC: {candidate.upc}")
     footer_bits.append("SerpApi candidate")
-    footer_bits.append("Verify in store before posting")
+    footer_bits.append("Private lead • Verify in store before posting • confirm personally")
     embed.set_footer(text=" • ".join(footer_bits))
     return embed
 

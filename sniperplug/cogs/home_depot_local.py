@@ -120,13 +120,13 @@ class HomeDepotLocalCog(commands.Cog):
                     description=(
                         f"SKU/search: `{cleaned_sku}`\n"
                         f"ZIP: `{cleaned_zip}`\n\n"
-                        "Choose the actual store below so SniperPlug can run a store-specific stock check.\n\n"
-                        "**Important:** ZIP-only Home Depot results are blocked because they can return the wrong store."
+                        "Choose the actual store below so SniperPlug can run a store-specific private stock check.\n\n"
+                        "**Important:** ZIP-only stock claims are blocked because they can resolve to the wrong store. The picker keeps the evidence tied to the store you actually choose."
                     ),
                     color=discord.Color.orange(),
                 )
                 embed.add_field(name="Nearby stores found", value="\n".join(f"• **{store.short_label}**" for store in stores[:8]), inline=False)
-                embed.set_footer(text="Pick a store first. SniperPlug will not use ZIP-only local stock proof.")
+                embed.set_footer(text="Private owner review • pick the exact store before trusting local stock evidence.")
                 await interaction.followup.send(embed=embed, view=HomeDepotStoreSelectView(interaction.user.id, cleaned_sku, cleaned_zip, stores), ephemeral=True)
                 return
 
@@ -137,7 +137,7 @@ class HomeDepotLocalCog(commands.Cog):
                     f"SKU/search: `{cleaned_sku}`\n"
                     f"ZIP: `{cleaned_zip}`\n\n"
                     "SniperPlug could not automatically find nearby Home Depot stores for this ZIP.\n\n"
-                    "**The ZIP-only scan was blocked on purpose** so it does not show wrong-location stock like Bangor again."
+                    "**The ZIP-only stock claim was blocked on purpose** so SniperPlug does not attach another store’s inventory to your location."
                 ),
                 color=discord.Color.dark_orange(),
             )
@@ -150,7 +150,7 @@ class HomeDepotLocalCog(commands.Cog):
                 ),
                 inline=False,
             )
-            embed.set_footer(text="No ZIP-only stock card was posted. Store-specific proof is required.")
+            embed.set_footer(text="No ZIP-only stock claim was shown • choose the exact store for private verification.")
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 

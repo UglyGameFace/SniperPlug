@@ -24,7 +24,7 @@ def test_review_card_is_compact_and_truthful() -> None:
     formatter = SCOUT.split("def polish_public_scout_card", 1)[1]
     assert "embed.clear_fields()" in formatter
     assert "Not a verified deal" in formatter
-    assert "Actual scout score" in formatter
+    assert "Private review score" in formatter
     assert "Walmart price" in formatter
     assert "Quick check" in SCOUT
     assert "High-confidence Scout" not in formatter

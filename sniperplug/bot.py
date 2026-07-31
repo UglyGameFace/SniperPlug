@@ -20,6 +20,7 @@ from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
+from sniperplug.cogs.movie_command_guide import MovieCommandGuideCog
 from sniperplug.cogs.movie_tickets import MovieTicketsCog
 from sniperplug.cogs.open_box_deals import OpenBoxDealsCog
 from sniperplug.cogs.public_alerts import PublicAlertsCog, register_persistent_public_panel_views
@@ -128,6 +129,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(StorageAdminCog(self))
         await self.add_cog(VerizonShineCog(self))
         await self.add_cog(MovieTicketsCog(self))
+        await self.add_cog(MovieCommandGuideCog(self))
         await self.add_cog(ResilientAutoScanRunnerCog(self))
         log.info("Runtime services ready: provider_count=%s", len(provider_registry.providers))
 

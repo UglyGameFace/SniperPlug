@@ -5,9 +5,6 @@ on:
     branches: ["main", "master"]
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,8 +13,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: fix/home-depot-owner-proof
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,30 +20,11 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Apply Home Depot owner-proof flow
-        run: python tools/apply_home_depot_owner_proof.py
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           python -m pip install pytest
-
-      - name: Run focused Home Depot owner-proof tests
-        run: python -m pytest -q tests/test_home_depot_owner_proof.py tests/test_home_depot_cards.py tests/test_local_inventory.py tests/test_safe_links.py tests/test_embed_product_links.py
-
-      - name: Commit Home Depot owner-proof flow
-        if: github.actor != 'github-actions[bot]'
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add sniperplug/cogs/home_depot_search.py sniperplug/cogs/home_depot_local.py tests/test_home_depot_owner_proof.py
-          if git diff --cached --quiet; then
-            echo "Home Depot owner-proof source already applied"
-          else
-            git commit -m "Make Home Depot proof owner-safe and cache-aware"
-            git push origin HEAD:fix/home-depot-owner-proof
-          fi
 
       - name: Compile Python files
         run: python -m compileall -q sniperplug scripts tests

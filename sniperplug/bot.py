@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
+import sys
 
 import discord
 from discord.ext import commands
@@ -34,7 +36,7 @@ from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
 from sniperplug.services.active_deal_history import ensure_active_deal_history
-from sniperplug.services.deal_feedback import register_persistent_feedback_views
+from sniperplug.services.bounded_feedback_views import register_bounded_persistent_feedback_views
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
     ensure_error_logging_table,
@@ -61,6 +63,14 @@ class SniperPlugBot(commands.Bot):
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
     async def setup_hook(self) -> None:
+        log.info(
+            "Runtime identity python=%s implementation=%s platform=%s executable=%s pid=%s",
+            platform.python_version(),
+            platform.python_implementation(),
+            sys.platform,
+            sys.executable,
+            os.getpid(),
+        )
         await self.db.connect()
         log.info("Database connected backend=%s", getattr(self.db, "backend", "unknown"))
         await self.db.init()
@@ -80,9 +90,9 @@ class SniperPlugBot(commands.Bot):
         maintenance = await run_storage_maintenance(self.db)
         log.info("Storage maintenance completed: %s", maintenance.log_fields())
 
-        feedback_views = await register_persistent_feedback_views(self)
+        feedback_views = await register_bounded_persistent_feedback_views(self)
         public_panel_views = await register_persistent_public_panel_views(self)
-        log.info("Persistent deal feedback views registered: %s", feedback_views)
+        log.info("Persistent deal feedback views registered: %s (bounded cap=250)", feedback_views)
         log.info("Persistent public panel views registered: %s", public_panel_views)
 
         provider_registry.clear()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -10,6 +11,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from sniperplug.services.movie_ticket_artwork import (
+    fetch_atom_movie_image,
+    normalize_public_code,
+)
 from sniperplug.services.movie_ticket_drops import (
     ATOM_PROMOTIONS_URL,
     ATOM_SOURCE_KEY,
@@ -27,6 +32,8 @@ log = logging.getLogger("sniperplug.movie_tickets")
 
 MOVIE_POLL_SECONDS = 60
 MAX_LATEST_EMBEDS = 8
+POSTER_CACHE_SECONDS = 6 * 60 * 60
+POSTER_FAILURE_RETRY_SECONDS = 15 * 60
 REQUIRED_CHANNEL_PERMS = {
     "view_channel": "View Channel",
     "send_messages": "Send Messages",
@@ -50,6 +57,8 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
         self.store = MovieTicketStore(bot.db)
         self._session: aiohttp.ClientSession | None = None
         self._source_lock = asyncio.Lock()
+        self._poster_fetch_semaphore = asyncio.Semaphore(4)
+        self._poster_cache: dict[str, tuple[float, str]] = {}
 
     async def cog_load(self) -> None:
         await self.store.ensure_schema()
@@ -158,9 +167,10 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
         content = f"Found **{len(drops)}** active official free-ticket drop(s). Claim quickly; Atom says offers can end when supplies run out."
         if refresh_error:
             content += f"\nLive refresh failed, so these are the last verified cached results: `{refresh_error}`"
+        embeds = await self._build_drop_embeds(drops)
         await interaction.followup.send(
             content=content,
-            embeds=[build_movie_drop_embed(drop) for drop in drops],
+            embeds=embeds,
             ephemeral=True,
         )
 
@@ -250,7 +260,7 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
             name="✅ Automated now",
             value=(
                 f"[Atom Promotions Hub]({ATOM_PROMOTIONS_URL}) — checked every {MOVIE_POLL_SECONDS} seconds with conditional requests. "
-                "Extracts public reusable free-ticket codes, quantities, dates, and restrictions."
+                "Extracts public reusable free-ticket codes, quantities, dates, restrictions, and official movie artwork."
             ),
             inline=False,
         )
@@ -326,6 +336,7 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
                 raise
 
     async def _deliver_drops(self, drops: list[MovieTicketDrop] | tuple[MovieTicketDrop, ...], *, target_guild_id: int | None) -> int:
+        poster_urls = await self._resolve_poster_urls(drops)
         if target_guild_id is None:
             configs = await self.store.list_enabled_configs()
         else:
@@ -356,7 +367,10 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
                     continue
                 try:
                     message = await channel.send(
-                        embed=build_movie_drop_embed(drop),
+                        embed=build_movie_drop_embed(
+                            drop,
+                            image_url=poster_urls.get(drop.drop_id, ""),
+                        ),
                         view=movie_drop_link_view(drop.offer_url),
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
@@ -380,6 +394,48 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
                         drop.drop_id,
                     )
         return delivered
+
+    async def _build_drop_embeds(self, drops: list[MovieTicketDrop]) -> list[discord.Embed]:
+        poster_urls = await self._resolve_poster_urls(drops)
+        return [
+            build_movie_drop_embed(drop, image_url=poster_urls.get(drop.drop_id, ""))
+            for drop in drops
+        ]
+
+    async def _resolve_poster_urls(
+        self,
+        drops: list[MovieTicketDrop] | tuple[MovieTicketDrop, ...],
+    ) -> dict[str, str]:
+        async def resolve(drop: MovieTicketDrop) -> tuple[str, str]:
+            return drop.drop_id, await self._resolve_poster_url(drop)
+
+        pairs = await asyncio.gather(*(resolve(drop) for drop in drops))
+        return {drop_id: image_url for drop_id, image_url in pairs if image_url}
+
+    async def _resolve_poster_url(self, drop: MovieTicketDrop) -> str:
+        movie_url = clean_text(drop.offer_url)
+        if not movie_url or movie_url == ATOM_PROMOTIONS_URL:
+            return ""
+
+        now = time.monotonic()
+        cached = self._poster_cache.get(movie_url)
+        if cached and cached[0] > now:
+            return cached[1]
+
+        try:
+            async with self._poster_fetch_semaphore:
+                image_url = await fetch_atom_movie_image(self._require_session(), movie_url)
+        except Exception:
+            log.exception(
+                "Official Atom movie artwork lookup failed safely drop=%s url=%s",
+                drop.drop_id,
+                movie_url,
+            )
+            image_url = ""
+
+        ttl = POSTER_CACHE_SECONDS if image_url else POSTER_FAILURE_RETRY_SECONDS
+        self._poster_cache[movie_url] = (now + ttl, image_url)
+        return image_url
 
     async def _configured_channel(self, config: MovieTicketConfig) -> discord.TextChannel | None:
         if not config.alert_channel_id:
@@ -418,7 +474,12 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
         return self._session
 
 
-def build_movie_drop_embed(drop: MovieTicketDrop, *, demo: bool = False) -> discord.Embed:
+def build_movie_drop_embed(
+    drop: MovieTicketDrop,
+    *,
+    demo: bool = False,
+    image_url: str = "",
+) -> discord.Embed:
     title = "🧪 MOVIE ALERT TEST" if demo else "🎟️ FREE ATOM TICKET DROP"
     color = discord.Color.blurple() if demo else discord.Color.green()
     embed = discord.Embed(
@@ -428,7 +489,12 @@ def build_movie_drop_embed(drop: MovieTicketDrop, *, demo: bool = False) -> disc
         color=color,
         timestamp=datetime.now(UTC),
     )
-    embed.add_field(name="Promo code", value=f"`{drop.code}`", inline=True)
+    promo_code = normalize_public_code(drop.code)
+    embed.add_field(
+        name="Promo code • tap and hold to copy",
+        value=promo_code or "Unavailable",
+        inline=True,
+    )
     embed.add_field(name="Classification", value="Public reusable code" if not demo else "Demo only", inline=True)
     embed.add_field(name="Validity", value=clean_text(drop.validity_text)[:1024] or "See official terms.", inline=False)
     restriction_text = "\n".join(f"• {clean_text(item)}" for item in drop.restrictions[:5])
@@ -439,6 +505,8 @@ def build_movie_drop_embed(drop: MovieTicketDrop, *, demo: bool = False) -> disc
         value="Open Atom, add the eligible ticket(s), and enter the code at checkout immediately. Supplies can run out before the listed end date.",
         inline=False,
     )
+    if image_url:
+        embed.set_image(url=image_url)
     embed.set_footer(text=f"Source: {drop.source_label} • SniperPlug verifies the source, not remaining redemption inventory")
     return embed
 

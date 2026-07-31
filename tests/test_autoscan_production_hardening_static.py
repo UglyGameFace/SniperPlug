@@ -6,11 +6,19 @@ RUNNER = (ROOT / "sniperplug/cogs/resilient_auto_scan_runner.py").read_text(enco
 BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 FEEDBACK = (ROOT / "sniperplug/services/bounded_feedback_views.py").read_text(encoding="utf-8")
 DISCLOUD = (ROOT / "discloud.config").read_text(encoding="utf-8")
+REQUIREMENTS = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
 
 def test_discloud_runtime_is_pinned() -> None:
     assert "VERSION=3.11" in DISCLOUD
-    assert "VERSION=latest" not in DISCLOUD
+    active_lines = [
+        line.strip()
+        for line in DISCLOUD.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert "VERSION=latest" not in active_lines
+    assert "Python 3.14" in DISCLOUD
+    assert "Python 3.11" in REQUIREMENTS
 
 
 def test_scheduled_scans_are_small_and_serialized() -> None:

@@ -48,6 +48,8 @@ AUTO_SCAN_GUILD_TIMEOUT_SECONDS = 180
 AUTO_SCAN_MAX_CONCURRENCY = 3
 AUTO_SCAN_GUILD_TIMEOUT_SECONDS = 180
 AUTO_SCAN_MAX_CONCURRENCY = 3
+AUTO_SCAN_GUILD_TIMEOUT_SECONDS = 180
+AUTO_SCAN_MAX_CONCURRENCY = 3
 _AUTOSCAN_LOCKS: dict[int, asyncio.Lock] = {}
 
 
@@ -427,7 +429,7 @@ class AutoScanRunnerCog(commands.Cog):
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    log.exception("Auto-scan guild run failed but other guild tasks will continue guild=%s", guild.guild_id)
+                    log.exception("Auto-scan guild run failed but loop will continue; other guild tasks are isolated guild=%s", guild.guild_id)
 
     @auto_scan_loop.before_loop
     async def before_auto_scan_loop(self) -> None:

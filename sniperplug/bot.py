@@ -12,7 +12,8 @@ from sniperplug.cogs.active_deal_history import ActiveDealHistoryCog
 from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
 from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
-from sniperplug.cogs.resilient_auto_scan_runner import AutoScanRunnerCog
+from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog
+from sniperplug.cogs.resilient_auto_scan_runner import AutoScanRunnerCog as ResilientAutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
@@ -114,7 +115,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(DealFeedbackAdminCog(self))
         await self.add_cog(StorageAdminCog(self))
         await self.add_cog(VerizonShineCog(self))
-        await self.add_cog(AutoScanRunnerCog(self))
+        await self.add_cog(ResilientAutoScanRunnerCog(self))
         log.info("Runtime services ready: provider_count=%s", len(provider_registry.providers))
 
         await self._sync_commands()

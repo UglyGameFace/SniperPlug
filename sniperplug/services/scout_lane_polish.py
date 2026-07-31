@@ -7,6 +7,7 @@ import discord
 
 SCOUT_GRADE_FIELD = "🧭 Review status"
 BUY_CHECK_FIELD = "✅ Quick check"
+WALMART_CASH_FIELD = "💵 Walmart Cash"
 SCOUT_FOOTER = "Private review lead • Not a verified deal • Never auto-post as a deal"
 
 WEAK_REFERENCE_TERMS = (
@@ -89,6 +90,37 @@ def _base_score(card: Any) -> int:
         return 0
 
 
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace("$", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _variant_attributes(card: Any) -> dict[str, Any]:
+    attrs = getattr(card, "variant_attributes", None)
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def _confirmed_walmart_cash(card: Any) -> float | None:
+    """Return only structured, explicitly proven Walmart Cash."""
+    attrs = _variant_attributes(card)
+    amount = _float_or_none(attrs.get("walmartCashSavings"))
+    if amount is None or amount <= 0:
+        return None
+    proof = str(attrs.get("walmartCashApiProof") or attrs.get("cashAmountConfirmed") or "").strip().lower()
+    if proof not in {"yes", "true", "1"}:
+        return None
+    price = _price(card)
+    if price > 0 and amount > max(price * 1.10, price + 5.0):
+        return None
+    if amount >= 10_000:
+        return None
+    return amount
+
+
 def _dedupe_key(card: Any) -> str:
     for attr in ("selected_offer_id", "sku", "upc", "url", "label"):
         value = getattr(card, attr, None)
@@ -104,6 +136,8 @@ def has_weak_reference_warning(card: Any) -> bool:
 
 def has_hard_value_signal(card: Any, *, min_discount: int = 50) -> bool:
     text = _text(card).lower()
+    if _confirmed_walmart_cash(card) is not None:
+        return True
     if _discount(card) >= 25 and not has_weak_reference_warning(card):
         return True
     return any(term in text for term in PRIVATE_VALUE_TERMS)
@@ -116,8 +150,11 @@ def scout_reasons(card: Any, *, min_discount: int = 50) -> list[str]:
         reasons.append("reference price was not trusted")
     if _discount(card) >= 25 and not has_weak_reference_warning(card):
         reasons.append(f"{_discount(card):.0f}% review markdown signal")
-    if "walmart cash" in text or "cashrewards" in text or "cash rewards" in text:
-        reasons.append("Walmart Cash signal")
+    cash = _confirmed_walmart_cash(card)
+    if cash is not None:
+        reasons.append(f"confirmed ${cash:,.2f} Walmart Cash")
+    elif "walmart cash" in text or "cashrewards" in text or "cash rewards" in text:
+        reasons.append("unconfirmed Walmart Cash wording")
     if "coupon from api" in text:
         reasons.append("API coupon signal")
     if "walmart api savings" in text or "walmart api promo" in text or "buy more" in text or "save up" in text:
@@ -138,7 +175,9 @@ def scout_rank(card: Any, *, min_discount: int = 50) -> int:
 
     if _discount(card) >= 25 and not has_weak_reference_warning(card):
         score += 50
-    if "walmart cash" in text or "cashrewards" in text or "cash rewards" in text:
+    if _confirmed_walmart_cash(card) is not None:
+        score += 30
+    elif "walmart cash" in text or "cashrewards" in text or "cash rewards" in text:
         score += 30
     if "coupon from api" in text:
         score += 22
@@ -207,12 +246,25 @@ def polish_public_scout_card(card: Any, *, rank: int, min_discount: int, positio
         inline=False,
     )
 
+    cash = _confirmed_walmart_cash(card)
+    if cash is not None:
+        net = price - cash if price > 0 else None
+        net_line = f"\nEffective after reward: **${max(0.0, net):,.2f}**" if net is not None else ""
+        embed.add_field(
+            name=WALMART_CASH_FIELD,
+            value=(
+                f"Eligible reward: **${cash:,.2f} Walmart Cash**{net_line}\n"
+                "Proof: **confirmed from Walmart API/product-page data**. Eligibility can still depend on account and offer terms."
+            ),
+            inline=False,
+        )
+
     reasons = ", ".join(scout_reasons(card, min_discount=min_discount))
     embed.add_field(
         name=SCOUT_GRADE_FIELD,
         value=(
             f"Private review score: **{actual_rank}/150**\n"
-            f"Status: **Not a verified deal**\n"
+            "Status: **Not a verified deal** — not a verified markdown deal.\n"
             f"Why it was retained for review: {reasons}."
         ),
         inline=False,
@@ -221,8 +273,8 @@ def polish_public_scout_card(card: Any, *, rank: int, min_discount: int, positio
     embed.add_field(
         name=BUY_CHECK_FIELD,
         value=(
-            "1. Confirm the Walmart app price and exact option\n"
-            "2. Confirm seller, shipping, and stock\n"
+            "1. Confirm the Walmart app price, Cash offer, and exact option\n"
+            "2. Confirm seller, shipping, stock, and offer terms\n"
             "3. Buy only if your own comparison proves the value"
         ),
         inline=False,

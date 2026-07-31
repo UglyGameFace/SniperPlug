@@ -79,14 +79,25 @@ def walmart_cash_amount(item: dict[str, Any], *, current_price: float | None) ->
     return best
 
 
-def walmart_cash_amount_is_sane(amount: float | None, *, current_price: float | None) -> bool:
-    """Validate Walmart Cash against the selected product's current API price."""
+def walmart_cash_amount_is_sane(
+    amount: float | None,
+    *,
+    current_price: float | None,
+    allow_missing_price: bool = False,
+    missing_price_cap: float = 200.0,
+) -> bool:
+    """Validate Walmart Cash against the selected product's current price.
+
+    Normal API and public-card callers must provide the exact current price.
+    Exact PDP proof may opt into a conservative missing-price cap when Walmart
+    exposes the reward but withholds the selected offer price.
+    """
     if amount is None or amount <= 0:
-        return False
-    if current_price is None or current_price <= 0:
         return False
     if amount >= 10_000:
         return False
+    if current_price is None or current_price <= 0:
+        return bool(allow_missing_price and amount <= max(0.0, float(missing_price_cap)))
 
     # Real Walmart Cash promos can sometimes cover the whole item value. Allow
     # full-price / tiny-over-price rewards, but block obvious campaign/ID junk.
@@ -104,6 +115,22 @@ def promotion_amount_is_sane(amount: float | None, *, current_price: float | Non
     return amount <= max(current_price * 1.50, current_price + 25.00)
 
 
+def parse_money_amount(value: Any) -> float | None:
+    """Parse one money-like value without interpreting IDs or arbitrary text."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        text = value.replace("$", "").replace(",", "").strip()
+        money_match = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not money_match:
+            return None
+        value = money_match.group(0)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _has_explicit_walmart_cash(text: str) -> bool:
     normalized = text.lower().replace("_", "").replace("-", "").replace(" ", "")
     return "walmartcash" in normalized
@@ -116,7 +143,7 @@ def _amount_from_explicit_walmart_cash_object(obj: dict[str, Any]) -> float | No
             continue
         if _blocked_amount_key(normalized_key):
             continue
-        parsed = _float_or_none(value)
+        parsed = parse_money_amount(value)
         if parsed is not None:
             return parsed
 
@@ -143,7 +170,7 @@ def _money_amount_from_explicit_walmart_cash_text(text: str) -> float | None:
     match = re.search(r"\$\s*(\d+(?:\.\d{1,2})?)", text)
     if not match:
         return None
-    return _float_or_none(match.group(1))
+    return parse_money_amount(match.group(1))
 
 
 def _walk_dict_objects(value: Any, prefix: str = ""):
@@ -164,18 +191,3 @@ def _object_text(path: str, obj: dict[str, Any]) -> str:
         if isinstance(value, (str, int, float)):
             parts.append(f"{key} {value}")
     return " ".join(str(part) for part in parts)
-
-
-def _float_or_none(value: Any) -> float | None:
-    if value is None or value == "":
-        return None
-    if isinstance(value, str):
-        text = value.replace("$", "").replace(",", "").strip()
-        money_match = re.search(r"-?\d+(?:\.\d+)?", text)
-        if not money_match:
-            return None
-        value = money_match.group(0)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None

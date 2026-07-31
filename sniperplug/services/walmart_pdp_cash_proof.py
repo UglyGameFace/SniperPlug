@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.services.walmart_cash import parse_money_amount, walmart_cash_amount_is_sane
 from sniperplug.services.walmart_cash_api_truth import WalmartCashApiTruth, extract_walmart_cash_api_truth
 
 
@@ -158,7 +159,12 @@ def _truth_from_pdp_text(snippet: str, *, path: str, current_price: float | None
         return None
 
     amount = _amount_near_walmart_cash(cleaned)
-    if not _amount_is_sane(amount, current_price=current_price):
+    if not walmart_cash_amount_is_sane(
+        amount,
+        current_price=current_price,
+        allow_missing_price=True,
+        missing_price_cap=200.0,
+    ):
         return None
 
     return WalmartCashApiTruth(
@@ -225,7 +231,6 @@ def _amount_near_walmart_cash(text: str) -> float | None:
     cash_match = re.search(r"walmart\s+cash|walmartcash", lowered)
     if not cash_match:
         return None
-    cash_index = cash_match.start()
 
     patterns = (
         r"(?:earn|get|receive|claim)\s+\$?\s*(\d+(?:\.\d{1,2})?)\s+(?:in\s+)?walmart\s+cash",
@@ -234,7 +239,7 @@ def _amount_near_walmart_cash(text: str) -> float | None:
     for pattern in patterns:
         match = re.search(pattern, lowered)
         if match:
-            return _float_or_none(match.group(1))
+            return parse_money_amount(match.group(1))
     return None
 
 
@@ -289,16 +294,6 @@ def _pdp_page_diagnostic(html: str) -> str:
     return "PDP diagnostics: " + "; ".join(flags)
 
 
-def _amount_is_sane(amount: float | None, *, current_price: float | None) -> bool:
-    if amount is None or amount <= 0:
-        return False
-    if amount >= 10_000:
-        return False
-    if current_price is None or current_price <= 0:
-        return amount <= 200
-    return amount <= max(float(current_price) * 1.10, float(current_price) + 5.00)
-
-
 def _choose_truth(current: WalmartCashApiTruth | None, new: WalmartCashApiTruth) -> WalmartCashApiTruth:
     if current is None:
         return new
@@ -307,13 +302,6 @@ def _choose_truth(current: WalmartCashApiTruth | None, new: WalmartCashApiTruth)
     if len(new.proof_path) < len(current.proof_path):
         return new
     return current
-
-
-def _float_or_none(value: Any) -> float | None:
-    try:
-        return float(str(value).replace("$", "").replace(",", "").strip())
-    except (TypeError, ValueError):
-        return None
 
 
 def _norm(value: Any) -> str:

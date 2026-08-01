@@ -8,7 +8,7 @@ from sniperplug.cogs.deal_scanner import HuntPreset
 
 SCHEDULED_COVERAGE_SLOT_SECONDS = 6 * 60 * 60
 MANUAL_COVERAGE_SLOT_SECONDS = 15 * 60
-SCHEDULED_ROUTE_COUNT_HINT = 5
+SCHEDULED_ROUTE_COUNT_HINT = 4
 
 # Broad sale terms are discovery only. Every result still has to pass the
 # official exact-item detail gate before it can become a card or price proof.
@@ -86,7 +86,7 @@ def build_complete_broad_preset(
     six-hour safety floor. A scheduled run therefore advanced 24 buckets at a
     time; for route lists sharing a divisor with 24, some entries could remain
     unreachable indefinitely. This planner advances exactly one coverage slot
-    per scheduled opportunity.
+    per scheduled opportunity while preserving the four-route production cap.
     """
 
     count = max(1, int(query_count))
@@ -116,16 +116,8 @@ def build_complete_broad_preset(
     # the demonstrated HART 20V orbital jigsaw without hard-coding one item ID.
     add(HART_CORE_CLEARANCE_ROUTE)
 
-    # Lane 3: complete Auto & Tools rotation. Consecutive scheduled slots move
-    # by one, so every route is reachable regardless of list length.
-    auto_tools = tuple(getattr(presets.get("auto_tools"), "queries", ()) or ())
-    if not auto_tools:
-        auto_tools = AUTO_TOOLS_FALLBACK
-    add(_rotating_value(auto_tools, slot=slot, salt=salt // 17))
-
-    # Lane 4: rotate the other major departments, then rotate within the chosen
-    # department. This preserves broad coverage while reserving two focused
-    # discovery lanes for known Walmart search blind spots.
+    # Lane 3: rotate the other major departments, then rotate within the chosen
+    # department. Consecutive scheduled slots move by one real six-hour step.
     department_key = _rotating_value(DEPARTMENT_ROTATION, slot=slot, salt=salt // 31)
     department = presets.get(str(department_key))
     department_queries = tuple(getattr(department, "queries", ()) or ())
@@ -133,18 +125,23 @@ def build_complete_broad_preset(
         department_slot = slot // max(1, len(DEPARTMENT_ROTATION))
         add(_rotating_value(department_queries, slot=department_slot, salt=salt // 47))
 
-    # Lane 5+ (and extra manual lanes): narrow brand/category probes. Starting
-    # at a deterministic offset and walking sequentially guarantees full probe
-    # coverage instead of repeatedly sampling the same subset.
-    probe_start = (slot + salt) % len(CATALOG_PROBE_ROUTES)
-    for offset in range(len(CATALOG_PROBE_ROUTES)):
-        add(CATALOG_PROBE_ROUTES[(probe_start + offset) % len(CATALOG_PROBE_ROUTES)])
-        if len(selected) >= count:
-            break
+    # Lane 4+ (and extra manual lanes): one complete tools + narrow catalog pool.
+    # Walking one position per real scheduled slot guarantees every tool and
+    # catalog probe is reachable without increasing the production route cap.
+    auto_tools = tuple(getattr(presets.get("auto_tools"), "queries", ()) or ())
+    if not auto_tools:
+        auto_tools = AUTO_TOOLS_FALLBACK
+    coverage_pool = _dedupe((*auto_tools, *CATALOG_PROBE_ROUTES))
+    if coverage_pool:
+        coverage_start = (slot + salt // 17) % len(coverage_pool)
+        for offset in range(len(coverage_pool)):
+            add(coverage_pool[(coverage_start + offset) % len(coverage_pool)])
+            if len(selected) >= count:
+                break
 
     # Defensive fallback when a future preset edit empties a department or
     # duplicates a probe. Keep the requested route count without private Cash or
-    # OnePay terms.
+    # OnePay terms. The supplied preset map is already public-route filtered.
     fallback = presets.get("deal_week") or presets.get("all")
     fallback_queries = tuple(getattr(fallback, "queries", ()) or ())
     if fallback_queries and len(selected) < count:
@@ -160,8 +157,8 @@ def build_complete_broad_preset(
         "Broad Public-Safe Sweep",
         "🌐",
         (
-            "Five-lane Walmart discovery with exact-detail verification: core sale surface, "
-            "HART brushless clearance, tools rotation, department rotation, and narrow catalog probes."
+            "Four-lane Walmart discovery with exact-detail verification: core sale surface, "
+            "HART brushless clearance, department rotation, and a complete tools/catalog probe pool."
         ),
         tuple(selected[:count]),
         int(getattr(base, "min_discount", 50) or 50),
@@ -172,3 +169,16 @@ def _rotating_value(values: tuple[str, ...], *, slot: int, salt: int) -> str:
     if not values:
         return ""
     return values[(int(slot) + int(salt)) % len(values)]
+
+
+def _dedupe(values: tuple[str, ...]) -> tuple[str, ...]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = " ".join(str(value or "").split())
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        output.append(text)
+    return tuple(output)

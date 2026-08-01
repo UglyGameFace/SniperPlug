@@ -19,7 +19,11 @@ log = logging.getLogger("sniperplug.movie_tickets.multi_source")
 SOURCE_BACKOFF_SECONDS = (120, 300, 900, 1800)
 
 
-class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
+class MovieTicketsCog(
+    MultiSourceMovieTicketsCog,
+    name="movies",
+    description="Find official free movie-ticket screenings, promotions, and codes.",
+):
     """Register the resilient multi-source implementation under `/movies`.
 
     Official sites occasionally time out. A single source failure must preserve

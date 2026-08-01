@@ -13,7 +13,6 @@ from sniperplug.providers.base import ProviderScanRequest
 from sniperplug.services.walmart_exact_price_enrichment import (
     _apply_exact_payload_offer_identity,
     _candidate_item_id,
-    _enrichment_priority,
     _merge_exact_candidate,
     _percent_off,
     _positive_number,
@@ -49,7 +48,7 @@ class VerificationQueueEnqueueResult:
     def summary_line(self) -> str:
         return (
             "Walmart exact-detail queue: "
-            f"discovered **{self.discovered}** • globally deduplicated **{self.queued_unique}** • "
+            f"discovered **{self.discovered}** • unique item IDs this pass **{self.queued_unique}** • "
             f"due/pending **{self.pending_total}**"
         )
 
@@ -135,6 +134,10 @@ async def ensure_walmart_exact_verification_queue(db: Any) -> None:
         f"ON {QUEUE_TABLE} (next_attempt_at, priority_score DESC)"
     )
     await conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{QUEUE_TABLE}_last_seen "
+        f"ON {QUEUE_TABLE} (last_seen_at)"
+    )
+    await conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{QUEUE_TABLE}_verified "
         f"ON {QUEUE_TABLE} (verified_at, exact_discount_bps DESC)"
     )
@@ -148,100 +151,17 @@ async def enqueue_walmart_exact_verification_candidates(
     min_discount: int,
     source_label: str,
 ) -> VerificationQueueEnqueueResult:
-    if db is None:
-        return VerificationQueueEnqueueResult()
+    """Compatibility entry point; production scans use the batched implementation."""
 
-    await ensure_walmart_exact_verification_queue(db)
-    conn = db.require_conn()
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
-    unique: dict[str, SourceCandidate] = {}
-    discovered = 0
+    from sniperplug.services.walmart_exact_verification_queue_bulk import (
+        enqueue_walmart_exact_verification_candidates_bulk,
+    )
 
-    for candidate in candidates:
-        discovered += 1
-        item_id = _candidate_item_id(candidate)
-        if not item_id:
-            continue
-        previous = unique.get(item_id)
-        if previous is None or _priority(candidate, min_discount=min_discount) > _priority(
-            previous, min_discount=min_discount
-        ):
-            unique[item_id] = candidate
-
-    for item_id, candidate in unique.items():
-        current = _positive_number(
-            getattr(candidate, "api_current_price", None)
-            or getattr(candidate, "current_price", None)
-        )
-        reference = _trusted_reference(candidate)
-        discount = _percent_off(current, reference) or 0.0
-        attrs = dict(getattr(candidate, "variant_attributes", None) or {})
-        route_hint = _compact_text(
-            attrs.get("finderSourceQuery")
-            or attrs.get("finderSourceQueries")
-            or "",
-            240,
-        )
-        priority_score = int(round(_priority(candidate, min_discount=min_discount) * 100))
-        await conn.execute(
-            f"""
-            INSERT INTO {QUEUE_TABLE} (
-                item_id, priority_score, apparent_current_cents,
-                apparent_reference_cents, apparent_discount_bps,
-                title, product_url, image_url, route_hint, source_label,
-                discovered_count, first_seen_at, last_seen_at, status,
-                attempt_count, next_attempt_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'pending', 0, ?)
-            ON CONFLICT(item_id) DO UPDATE SET
-                priority_score = CASE
-                    WHEN excluded.priority_score > priority_score
-                    THEN excluded.priority_score ELSE priority_score END,
-                apparent_current_cents = COALESCE(excluded.apparent_current_cents, apparent_current_cents),
-                apparent_reference_cents = COALESCE(excluded.apparent_reference_cents, apparent_reference_cents),
-                apparent_discount_bps = CASE
-                    WHEN excluded.apparent_discount_bps > apparent_discount_bps
-                    THEN excluded.apparent_discount_bps ELSE apparent_discount_bps END,
-                title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END,
-                product_url = CASE WHEN excluded.product_url <> '' THEN excluded.product_url ELSE product_url END,
-                image_url = CASE WHEN excluded.image_url <> '' THEN excluded.image_url ELSE image_url END,
-                route_hint = CASE WHEN excluded.route_hint <> '' THEN excluded.route_hint ELSE route_hint END,
-                source_label = excluded.source_label,
-                discovered_count = discovered_count + 1,
-                last_seen_at = excluded.last_seen_at,
-                next_attempt_at = CASE
-                    WHEN status IN ('pending', 'retry', 'failed')
-                    THEN MIN(next_attempt_at, excluded.next_attempt_at)
-                    ELSE next_attempt_at END
-            """,
-            (
-                item_id,
-                priority_score,
-                _price_to_cents(current),
-                _price_to_cents(reference),
-                int(round(discount * 100)),
-                _compact_text(getattr(candidate, "title", None), 300),
-                _compact_text(
-                    getattr(candidate, "direct_product_url", None)
-                    or getattr(candidate, "product_url", None),
-                    1000,
-                ),
-                _compact_text(getattr(candidate, "image_url", None), 1000),
-                route_hint,
-                _compact_text(source_label, 120),
-                now_iso,
-                now_iso,
-                now_iso,
-            ),
-        )
-
-    await conn.commit()
-    await maybe_prune_walmart_exact_verification_queue(conn, now=now)
-    pending_total = await _pending_total(conn, now_iso=now_iso)
-    return VerificationQueueEnqueueResult(
-        discovered=discovered,
-        queued_unique=len(unique),
-        pending_total=pending_total,
+    return await enqueue_walmart_exact_verification_candidates_bulk(
+        db,
+        candidates,
+        min_discount=min_discount,
+        source_label=source_label,
     )
 
 
@@ -261,7 +181,7 @@ async def record_inline_exact_verifications(
         item_id = _candidate_item_id(candidate)
         if not item_id:
             continue
-        await _ensure_candidate_row(conn, candidate, min_discount=min_discount, now=now)
+        await _ensure_candidate_row(conn, candidate, now=now)
         await _store_exact_candidate(
             conn,
             item_id=item_id,
@@ -286,15 +206,18 @@ async def load_recent_verified_queue_candidates(
         return []
     await ensure_walmart_exact_verification_queue(db)
     conn = db.require_conn()
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(minutes=max(1, int(max_age_minutes)))
+    now = datetime.now(timezone.utc)
+    verified_cutoff = (
+        now - timedelta(minutes=max(1, int(max_age_minutes)))
     ).isoformat()
+    discovery_cutoff = (now - timedelta(days=QUEUE_RETENTION_DAYS)).isoformat()
     cursor = await conn.execute(
         f"""
         SELECT item_id, verified_at, snapshot_json
         FROM {QUEUE_TABLE}
         WHERE verified_at IS NOT NULL
           AND verified_at >= ?
+          AND last_seen_at >= ?
           AND snapshot_json <> ''
           AND status IN (
               'verified_markdown',
@@ -309,16 +232,13 @@ async def load_recent_verified_queue_candidates(
             verified_at DESC
         LIMIT ?
         """,
-        (cutoff, max(1, int(limit))),
+        (verified_cutoff, discovery_cutoff, max(1, int(limit))),
     )
     rows = await cursor.fetchall()
     loaded: list[SourceCandidate] = []
     for row in rows:
         candidate = _candidate_from_snapshot(_row_get(row, "snapshot_json", index=2))
-        if candidate is None:
-            continue
-        verified = exact_detail_verified_candidates([candidate])
-        if not verified:
+        if candidate is None or not exact_detail_verified_candidates([candidate]):
             continue
         attrs = dict(candidate.variant_attributes or {})
         attrs["verificationQueueSource"] = "global_exact_detail_queue"
@@ -346,6 +266,7 @@ async def process_walmart_exact_verification_queue_batch(
     await ensure_global_offer_memory_table(db)
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
+    await maybe_prune_walmart_exact_verification_queue(conn, now=now)
     claims = await _claim_due_rows(conn, now=now, limit=max(1, int(limit)))
     if not claims:
         return VerificationQueueBatchResult(
@@ -399,13 +320,9 @@ async def process_walmart_exact_verification_queue_batch(
             lease_token=claim.lease_token,
         )
         counts["verified"] += 1
-        reference = _trusted_reference(candidate)
-        if reference is not None:
+        if _trusted_reference(candidate) is not None:
             counts["official_references"] += 1
-        classification = _classify_exact_candidate(
-            candidate,
-            min_discount=min_discount,
-        )
+        classification = _classify_exact_candidate(candidate, min_discount=min_discount)
         if classification == "verified_markdown":
             counts["markdowns"] += 1
         elif classification == "verified_no_reference":
@@ -427,10 +344,6 @@ async def process_walmart_exact_verification_queue_batch(
 
     await maybe_prune_global_offer_memory(conn, now=datetime.now(timezone.utc))
     await conn.commit()
-    await maybe_prune_walmart_exact_verification_queue(
-        conn,
-        now=datetime.now(timezone.utc),
-    )
     pending_total = await _pending_total(
         conn,
         now_iso=datetime.now(timezone.utc).isoformat(),
@@ -447,6 +360,8 @@ async def maybe_prune_walmart_exact_verification_queue(
     *,
     now: datetime | None = None,
 ) -> None:
+    """Expire rows by last discovery, not by the worker's own rechecks."""
+
     global _last_cleanup_monotonic
     monotonic_now = time.monotonic()
     if monotonic_now - _last_cleanup_monotonic < QUEUE_CLEANUP_INTERVAL_SECONDS:
@@ -455,12 +370,8 @@ async def maybe_prune_walmart_exact_verification_queue(
     now_dt = now or datetime.now(timezone.utc)
     cutoff = (now_dt - timedelta(days=QUEUE_RETENTION_DAYS)).isoformat()
     await conn.execute(
-        f"""
-        DELETE FROM {QUEUE_TABLE}
-        WHERE last_seen_at < ?
-          AND (verified_at IS NULL OR verified_at < ?)
-        """,
-        (cutoff, cutoff),
+        f"DELETE FROM {QUEUE_TABLE} WHERE last_seen_at < ?",
+        (cutoff,),
     )
     await conn.execute(
         f"""
@@ -488,6 +399,7 @@ async def _claim_due_rows(
     limit: int,
 ) -> list[_QueueClaim]:
     now_iso = now.isoformat()
+    discovery_cutoff = (now - timedelta(days=QUEUE_RETENTION_DAYS)).isoformat()
     cursor = await conn.execute(
         f"""
         SELECT
@@ -496,6 +408,7 @@ async def _claim_due_rows(
             route_hint, attempt_count
         FROM {QUEUE_TABLE}
         WHERE next_attempt_at <= ?
+          AND last_seen_at >= ?
           AND (lease_until IS NULL OR lease_until < ?)
         ORDER BY
             CASE status
@@ -508,7 +421,7 @@ async def _claim_due_rows(
             last_seen_at DESC
         LIMIT ?
         """,
-        (now_iso, now_iso, max(1, int(limit))),
+        (now_iso, discovery_cutoff, now_iso, max(1, int(limit))),
     )
     rows = await cursor.fetchall()
     claims: list[_QueueClaim] = []
@@ -524,9 +437,10 @@ async def _claim_due_rows(
             UPDATE {QUEUE_TABLE}
             SET lease_token = ?, lease_until = ?, status = 'verifying'
             WHERE item_id = ?
+              AND last_seen_at >= ?
               AND (lease_until IS NULL OR lease_until < ?)
             """,
-            (token, lease_until, item_id, now_iso),
+            (token, lease_until, item_id, discovery_cutoff, now_iso),
         )
         verify = await conn.execute(
             f"SELECT lease_token FROM {QUEUE_TABLE} WHERE item_id = ?",
@@ -585,7 +499,7 @@ async def _fetch_exact_candidate(
         )
     except asyncio.CancelledError:
         raise
-    except Exception as error:  # noqa: BLE001 - queue retries transient provider failures.
+    except Exception as error:  # noqa: BLE001 - queued provider failures remain retryable.
         return None, "retry", _compact_text(error, 500)
 
     if exact is None:
@@ -593,14 +507,12 @@ async def _fetch_exact_candidate(
     if _candidate_item_id(exact) != claim.item_id:
         return None, "identity_mismatch", "exact detail returned a different Walmart item ID"
 
-    _apply_exact_payload_offer_identity(
-        exact,
-        payload=payload,
-        item_id=claim.item_id,
-    )
+    _apply_exact_payload_offer_identity(exact, payload=payload, item_id=claim.item_id)
     merged = _merge_exact_candidate(seed, exact, item_id=claim.item_id)
     if exact_offer_identity(merged) is None:
-        return None, "incomplete_identity", "exact detail did not provide a complete seller/offer identity"
+        return None, "incomplete_identity", (
+            "exact detail did not provide a complete seller/offer identity"
+        )
     if _positive_number(
         getattr(merged, "api_current_price", None)
         or getattr(merged, "current_price", None)
@@ -613,7 +525,6 @@ async def _ensure_candidate_row(
     conn: Any,
     candidate: SourceCandidate,
     *,
-    min_discount: int,
     now: datetime,
 ) -> None:
     item_id = _candidate_item_id(candidate)
@@ -634,12 +545,11 @@ async def _ensure_candidate_row(
             title, product_url, image_url, route_hint, source_label,
             discovered_count, first_seen_at, last_seen_at,
             status, attempt_count, next_attempt_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'inline_exact', 1, ?, ?, 'pending', 0, ?)
+        ) VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, 'inline_exact', 1, ?, ?, 'pending', 0, ?)
         ON CONFLICT(item_id) DO NOTHING
         """,
         (
             item_id,
-            int(round(_priority(candidate, min_discount=min_discount) * 100)),
             _price_to_cents(current),
             _price_to_cents(reference),
             int(round(discount * 100)),
@@ -685,7 +595,7 @@ async def _store_exact_candidate(
     status = _classify_exact_candidate(candidate, min_discount=min_discount)
     next_attempt = (now + _recheck_delay(status)).isoformat()
     snapshot = _candidate_snapshot(candidate)
-    where_lease = " AND lease_token = ?" if lease_token else ""
+
     params: list[Any] = [
         status,
         now.isoformat(),
@@ -704,7 +614,12 @@ async def _store_exact_candidate(
         item_id,
     ]
     if lease_token:
+        where_guard = "lease_token = ?"
         params.append(lease_token)
+    else:
+        where_guard = "(lease_until IS NULL OR lease_until < ?)"
+        params.append(now.isoformat())
+
     await conn.execute(
         f"""
         UPDATE {QUEUE_TABLE}
@@ -726,7 +641,7 @@ async def _store_exact_candidate(
             last_error = '',
             lease_token = '',
             lease_until = NULL
-        WHERE item_id = ?{where_lease}
+        WHERE item_id = ? AND {where_guard}
         """,
         tuple(params),
     )
@@ -816,9 +731,7 @@ def _recheck_delay(status: str) -> timedelta:
 
 def _seed_candidate(claim: _QueueClaim) -> SourceCandidate:
     product_url = claim.product_url or f"https://www.walmart.com/ip/{claim.item_id}"
-    attrs: dict[str, str] = {
-        "verificationQueueSource": "global_exact_detail_queue",
-    }
+    attrs: dict[str, str] = {"verificationQueueSource": "global_exact_detail_queue"}
     if claim.route_hint:
         attrs["finderSourceQuery"] = claim.route_hint
     return SourceCandidate(
@@ -841,12 +754,11 @@ def _seed_candidate(claim: _QueueClaim) -> SourceCandidate:
 
 
 def _candidate_snapshot(candidate: SourceCandidate) -> str:
-    attrs = {}
-    for key, value in list(dict(candidate.variant_attributes or {}).items())[:60]:
-        clean_key = _compact_text(key, 100)
-        clean_value = _compact_text(value, 400)
-        if clean_key and clean_value:
-            attrs[clean_key] = clean_value
+    attrs = {
+        _compact_text(key, 100): _compact_text(value, 400)
+        for key, value in list(dict(candidate.variant_attributes or {}).items())[:60]
+        if _compact_text(key, 100) and _compact_text(value, 400)
+    }
     payload = {
         "source_key": "walmart_exact_detail_queue",
         "retailer": "Walmart",
@@ -946,32 +858,32 @@ def _candidate_from_snapshot(value: Any) -> SourceCandidate | None:
                 for item in list(payload.get("signals") or [])[:12]
                 if str(item or "").strip()
             ],
-            first_seen_at=str(payload.get("first_seen_at") or datetime.now(timezone.utc).isoformat()),
-            last_checked_at=str(payload.get("last_checked_at") or datetime.now(timezone.utc).isoformat()),
+            first_seen_at=str(
+                payload.get("first_seen_at") or datetime.now(timezone.utc).isoformat()
+            ),
+            last_checked_at=str(
+                payload.get("last_checked_at") or datetime.now(timezone.utc).isoformat()
+            ),
         )
     except (TypeError, ValueError):
         return None
 
 
 async def _pending_total(conn: Any, *, now_iso: str) -> int:
+    now = _parse_datetime(now_iso) or datetime.now(timezone.utc)
+    discovery_cutoff = (now - timedelta(days=QUEUE_RETENTION_DAYS)).isoformat()
     cursor = await conn.execute(
         f"""
         SELECT COUNT(*)
         FROM {QUEUE_TABLE}
         WHERE next_attempt_at <= ?
+          AND last_seen_at >= ?
           AND (lease_until IS NULL OR lease_until < ?)
         """,
-        (now_iso, now_iso),
+        (now_iso, discovery_cutoff, now_iso),
     )
     row = await cursor.fetchone()
     return int(_row_get(row, "COUNT(*)", index=0) or 0)
-
-
-def _priority(candidate: SourceCandidate, *, min_discount: int) -> float:
-    try:
-        return float(_enrichment_priority(candidate, min_discount=min_discount))
-    except Exception:
-        return 0.0
 
 
 def _price_to_cents(value: Any) -> int | None:
@@ -991,6 +903,17 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def _compact_text(value: Any, limit: int) -> str:

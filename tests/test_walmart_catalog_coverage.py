@@ -16,16 +16,16 @@ REPO = Path(__file__).resolve().parents[1]
 RESILIENT_RUNNER = (REPO / "sniperplug/cogs/resilient_auto_scan_runner.py").read_text()
 
 
-def test_scheduled_preset_has_five_unique_public_safe_lanes() -> None:
+def test_scheduled_preset_has_four_unique_public_safe_lanes() -> None:
     preset = build_complete_broad_preset(
         HUNT_PRESETS,
         guild_id=1514374173517152418,
-        query_count=5,
+        query_count=4,
         now=0,
     )
 
-    assert len(preset.queries) == 5
-    assert len({query.lower() for query in preset.queries}) == 5
+    assert len(preset.queries) == 4
+    assert len({query.lower() for query in preset.queries}) == 4
     assert HART_CORE_CLEARANCE_ROUTE in preset.queries
     assert not any(
         token in query.lower()
@@ -40,7 +40,7 @@ def test_hart_brushless_clearance_lane_is_guaranteed_every_scheduled_slot() -> N
         preset = build_complete_broad_preset(
             HUNT_PRESETS,
             guild_id=guild_id,
-            query_count=5,
+            query_count=4,
             now=slot * SCHEDULED_COVERAGE_SLOT_SECONDS,
         )
         assert HART_CORE_CLEARANCE_ROUTE in preset.queries
@@ -73,11 +73,12 @@ def test_consecutive_six_hour_slots_reach_every_auto_tools_route() -> None:
     }
 
     seen: set[str] = set()
-    for slot in range(len(auto_routes)):
+    full_pool_slots = len(auto_routes) + len(CATALOG_PROBE_ROUTES)
+    for slot in range(full_pool_slots):
         preset = build_complete_broad_preset(
             presets,
             guild_id=0,
-            query_count=5,
+            query_count=4,
             now=slot * SCHEDULED_COVERAGE_SLOT_SECONDS,
         )
         seen.update(query for query in preset.queries if query.startswith("tool-route-"))
@@ -99,7 +100,7 @@ def test_manual_pass_uses_extra_catalog_probes_without_duplicates() -> None:
     assert any(query in CATALOG_PROBE_ROUTES for query in preset.queries)
 
 
-def test_production_runner_installs_catalog_builder_and_uses_five_routes() -> None:
-    assert "SCHEDULED_QUERY_COUNT = 5" in RESILIENT_RUNNER
+def test_production_runner_installs_catalog_builder_and_keeps_four_routes() -> None:
+    assert "SCHEDULED_QUERY_COUNT = 4" in RESILIENT_RUNNER
     assert "native.build_native_broad_preset = build_complete_broad_preset" in RESILIENT_RUNNER
-    assert "catalog_coverage_lanes=5" in RESILIENT_RUNNER
+    assert "catalog_coverage_lanes=4" in RESILIENT_RUNNER

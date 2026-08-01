@@ -4,6 +4,7 @@ import time
 from collections.abc import Mapping
 
 from sniperplug.cogs.deal_scanner import HuntPreset
+from sniperplug.services.autoscan_route_policy import is_private_promo_route
 
 
 SCHEDULED_COVERAGE_SLOT_SECONDS = 6 * 60 * 60
@@ -104,7 +105,12 @@ def build_complete_broad_preset(
     def add(query: str | None) -> None:
         text = " ".join(str(query or "").split())
         key = text.lower()
-        if not text or key in seen or len(selected) >= count:
+        if (
+            not text
+            or key in seen
+            or len(selected) >= count
+            or is_private_promo_route(text)
+        ):
             return
         seen.add(key)
         selected.append(text)
@@ -140,8 +146,8 @@ def build_complete_broad_preset(
                 break
 
     # Defensive fallback when a future preset edit empties a department or
-    # duplicates a probe. Keep the requested route count without private Cash or
-    # OnePay terms. The supplied preset map is already public-route filtered.
+    # duplicates a probe. `add()` enforces the same private-promo exclusion for
+    # every lane, including this fallback, so no Cash/OnePay route can leak in.
     fallback = presets.get("deal_week") or presets.get("all")
     fallback_queries = tuple(getattr(fallback, "queries", ()) or ())
     if fallback_queries and len(selected) < count:
@@ -177,7 +183,7 @@ def _dedupe(values: tuple[str, ...]) -> tuple[str, ...]:
     for value in values:
         text = " ".join(str(value or "").split())
         key = text.lower()
-        if not text or key in seen:
+        if not text or key in seen or is_private_promo_route(text):
             continue
         seen.add(key)
         output.append(text)

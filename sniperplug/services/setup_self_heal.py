@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +16,8 @@ from sniperplug.services.public_posting import normalize_retailer_key
 from sniperplug.services.routing import DEFAULT_ROUTE
 
 
+log = logging.getLogger("sniperplug.setup_self_heal")
+
 CONFIG_TABLES = (
     "guild_public_alert_settings",
     "guild_retailer_auto_scan_settings",
@@ -23,6 +27,8 @@ CONFIG_TABLES = (
     "guild_active_deal_cache",
     "alert_dedupe",
 )
+GHOST_CLEANUP_ATTEMPTS = 3
+GHOST_CLEANUP_RETRY_DELAY_SECONDS = 0.25
 
 REQUIRED_CHANNEL_PERMS = {
     "view_channel": "View Channel",
@@ -63,7 +69,7 @@ class SetupRepairResult:
 
 
 async def repair_all_public_alert_setups(db: Any, bot: discord.Client) -> dict[str, int]:
-    deleted = await cleanup_ghost_setup_rows(db, bot)
+    cleanup = await cleanup_ghost_setup_rows_detailed(db, bot)
     repaired = 0
     ok = 0
     needs_action = 0
@@ -78,7 +84,9 @@ async def repair_all_public_alert_setups(db: Any, bot: discord.Client) -> dict[s
             ok += 1
 
     return {
-        "ghost_rows_deleted": deleted,
+        "ghost_rows_found": cleanup["found"],
+        "ghost_rows_deleted": cleanup["deleted"],
+        "ghost_rows_remaining": cleanup["remaining"],
         "repaired": repaired,
         "healthy": ok,
         "needs_action": needs_action,
@@ -86,44 +94,126 @@ async def repair_all_public_alert_setups(db: Any, bot: discord.Client) -> dict[s
 
 
 async def cleanup_ghost_setup_rows(db: Any, bot: discord.Client) -> int:
-    """Delete setup rows for guilds the bot is no longer connected to.
+    """Backward-compatible verified ghost cleanup count."""
 
-    Turso/libSQL may return mapping-style rows or positional tuple-style rows.
-    Cleanup must support both shapes; otherwise the scheduler can repeatedly
-    discover and delete the same ghost from one table while silently missing it
-    in another table.
+    cleanup = await cleanup_ghost_setup_rows_detailed(db, bot)
+    return cleanup["deleted"]
+
+
+async def cleanup_ghost_setup_rows_detailed(db: Any, bot: discord.Client) -> dict[str, int]:
+    """Delete and verify setup rows for guilds the bot no longer serves.
+
+    Turso/libSQL can briefly return a stale read immediately after a remote write.
+    A best-effort DELETE followed by no verification caused the same typo guild to
+    be announced as deleted every scheduler cycle. This routine deletes dependent
+    tables first, commits, verifies every table, and retries boundedly before it
+    reports success.
     """
 
     live_guild_ids = {int(guild.id) for guild in list(getattr(bot, "guilds", []) or [])}
     if not live_guild_ids:
-        return 0
+        return {"found": 0, "deleted": 0, "remaining": 0}
 
     conn = db.require_conn()
-    ghost_ids: set[int] = set()
+    ghost_ids = await _discover_ghost_ids(conn, live_guild_ids)
+    if not ghost_ids:
+        return {"found": 0, "deleted": 0, "remaining": 0}
 
+    remaining = set(ghost_ids)
+    failures: list[str] = []
+    for attempt in range(1, GHOST_CLEANUP_ATTEMPTS + 1):
+        failures.extend(await _delete_ghost_rows_once(conn, remaining))
+        await conn.commit()
+        remaining = await _remaining_ghost_ids(conn, remaining)
+        if not remaining:
+            break
+        if attempt < GHOST_CLEANUP_ATTEMPTS:
+            await asyncio.sleep(GHOST_CLEANUP_RETRY_DELAY_SECONDS * attempt)
+
+    deleted = len(ghost_ids - remaining)
+    if remaining:
+        log.error(
+            "Ghost guild cleanup remained incomplete after %s attempts remaining=%s failures=%s",
+            GHOST_CLEANUP_ATTEMPTS,
+            sorted(remaining),
+            failures[-8:],
+        )
+    elif failures:
+        log.warning(
+            "Ghost guild cleanup completed after recoverable table errors found=%s deleted=%s failures=%s",
+            len(ghost_ids),
+            deleted,
+            failures[-8:],
+        )
+
+    return {
+        "found": len(ghost_ids),
+        "deleted": deleted,
+        "remaining": len(remaining),
+    }
+
+
+async def _discover_ghost_ids(conn: Any, live_guild_ids: set[int]) -> set[int]:
+    ghost_ids: set[int] = set()
     for table in CONFIG_TABLES:
         try:
             cursor = await conn.execute(f"SELECT DISTINCT guild_id FROM {table}")
             rows = await cursor.fetchall()
-        except Exception:
+        except Exception as exc:
+            if not _missing_table_error(exc):
+                log.warning("Ghost guild discovery skipped table=%s error=%s", table, exc)
             continue
         for row in rows:
             guild_id = _guild_id_from_row(row)
-            if guild_id is None:
-                continue
-            if guild_id not in live_guild_ids:
+            if guild_id is not None and guild_id not in live_guild_ids:
                 ghost_ids.add(guild_id)
+    return ghost_ids
 
-    for guild_id in ghost_ids:
-        for table in CONFIG_TABLES:
+
+async def _delete_ghost_rows_once(conn: Any, ghost_ids: set[int]) -> list[str]:
+    failures: list[str] = []
+    # Delete cache/history/dependent rows first and the canonical setup row last.
+    for guild_id in sorted(ghost_ids):
+        for table in reversed(CONFIG_TABLES):
             try:
                 await conn.execute(f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,))
-            except Exception:
-                pass
+            except Exception as exc:
+                if _missing_table_error(exc):
+                    continue
+                failures.append(f"{table}:{guild_id}:{type(exc).__name__}:{exc}")
+    return failures
 
-    if ghost_ids:
-        await conn.commit()
-    return len(ghost_ids)
+
+async def _remaining_ghost_ids(conn: Any, ghost_ids: set[int]) -> set[int]:
+    remaining: set[int] = set()
+    for guild_id in sorted(ghost_ids):
+        for table in CONFIG_TABLES:
+            try:
+                cursor = await conn.execute(
+                    f"SELECT 1 AS present FROM {table} WHERE guild_id = ? LIMIT 1",
+                    (guild_id,),
+                )
+                row = await cursor.fetchone()
+            except Exception as exc:
+                if _missing_table_error(exc):
+                    continue
+                log.warning(
+                    "Ghost guild verification failed table=%s guild=%s error=%s",
+                    table,
+                    guild_id,
+                    exc,
+                )
+                remaining.add(guild_id)
+                break
+            if row:
+                remaining.add(guild_id)
+                break
+    return remaining
+
+
+def _missing_table_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "no such table" in text or "does not exist" in text or "unknown table" in text
 
 
 def _guild_id_from_row(row: Any) -> int | None:

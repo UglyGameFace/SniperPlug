@@ -7,30 +7,30 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_native_autoscan_uses_public_safe_presets() -> None:
+def test_native_autoscan_uses_catalog_wide_rotation() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "public_autoscan_hunt_presets" in source
+    assert "rotating_catalog_slice" in source
+    assert "CatalogCoverageSlice" in source
     assert "select_native_autoscan_preset" in source
     assert "legacy.select_autoscan_preset" not in source
-    assert "PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE" in source
+    assert 'NATIVE_BROAD_PRESET_KEY = "catalog_wide_rotating"' in source
 
 
-def test_native_autoscan_category_rotation_is_explicit() -> None:
+def test_native_autoscan_reports_truthful_bounded_catalog_coverage() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "NATIVE_CATEGORY_ROTATION" in source
-    assert '"open_box"' in source
-    assert '"deal_week"' in source
-    assert '"tech"' in source
-    assert '"auto_tools"' in source
+    assert "Catalog-Wide Rotating Sweep" in source
+    assert "rotating catalog route(s)" in source
+    assert "coverage.summary_line()" in source
+    assert "global exact-detail queue" in read("sniperplug/services/walmart_catalog_coverage.py")
 
 
-def test_native_manual_autoscan_is_broad_public_safe_sweep() -> None:
+def test_native_manual_autoscan_includes_walmart_cash_discovery() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "NATIVE_BROAD_PRESET_KEY" in source
-    assert "build_native_broad_preset" in source
-    assert "Broad Public-Safe Sweep" in source
-    assert "Broad sweep spans" in source
-    assert "broad_public_safe" in source
+    coverage = read("sniperplug/services/walmart_catalog_coverage.py")
+    assert "Walmart Cash routes are included for discovery" in source
+    assert "DEFAULT_CASH_QUERIES" in coverage
+    assert "Walmart Cash" in source
+    assert "Cash never substitutes for trusted markdown proof" in source
 
 
 def test_native_autoscan_uses_verified_only_public_threshold() -> None:
@@ -43,12 +43,30 @@ def test_native_autoscan_uses_verified_only_public_threshold() -> None:
     assert "allow_review_scout=True" not in source
 
 
-def test_scheduled_native_autoscan_spreads_bounded_routes_across_categories() -> None:
+def test_scheduled_and_manual_native_autoscan_remain_bounded() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
     assert "legacy.AUTO_SCAN_SCHEDULED_QUERY_COUNT" in source
+    assert "NATIVE_MANUAL_QUERY_COUNT = 8" in source
     assert "legacy.AUTO_SCAN_FAST_QUERY_COUNT" not in source
-    assert source.count("return build_native_broad_preset(presets, guild_id=guild_id, query_count=query_count)") == 1
-    assert "bucket = int(time.time()" not in source
+    assert "resolve_native_query_count" in source
+    assert "rotating_catalog_slice(guild_id=guild_id, query_count=query_count)" in source
+
+
+def test_exact_cards_are_refreshed_between_repeated_public_gates() -> None:
+    source = read("sniperplug/cogs/native_auto_scan_runner.py")
+    assert source.count("normalize_exact_verified_walmart_cards(") >= 3
+    proof_index = source.index("proof_ready_cards = legacy.select_public_deal_candidates")
+    freshness_refresh = source.index(
+        "normalize_exact_verified_walmart_cards(\n            public_candidates",
+        proof_index,
+    )
+    fresh_index = source.index("fresh_selection = await legacy.select_fresh_deal_cards", freshness_refresh)
+    final_refresh = source.index(
+        "normalize_exact_verified_walmart_cards(\n            shown_cards",
+        fresh_index,
+    )
+    final_post = source.index("public_result = await legacy.maybe_post_public_deal_cards", final_refresh)
+    assert proof_index < freshness_refresh < fresh_index < final_refresh < final_post
 
 
 def test_only_resilient_autoscan_runner_is_imported_by_runtime() -> None:

@@ -7,7 +7,7 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_manual_review_share_uses_paginated_post_buttons() -> None:
+def test_manual_review_share_component_remains_available_for_explicit_workflows() -> None:
     source = read("sniperplug/services/manual_review_share.py")
     assert "class ManualShareButton" in source
     assert "class ManualReviewPageButton" in source
@@ -22,22 +22,26 @@ def test_manual_review_share_uses_paginated_post_buttons() -> None:
     assert "Manage Server" in source
 
 
-def test_autoscan_private_review_panel_is_wired() -> None:
+def test_autoscan_does_not_send_private_review_cards() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "Private autoscan review leads" in source
-    assert "ManualReviewShareView(cards" in source
-    assert "view.page_embeds()" in source
-    assert "self._review_cards_by_guild" in source
-    assert "legacy.prepare_review_watchlist_cards(result" in source
+    assert "Private autoscan review leads" not in source
+    assert "ManualReviewShareView" not in source
+    assert "_review_cards_by_guild" not in source
+    assert "prepare_review_watchlist_cards" not in source
+    assert "_send_private_review_cards" not in source
+    assert "unverified cards shown: **0**" in source.lower()
+    assert "Anything uncertain is suppressed and never shown as a deal." in source
 
 
-def test_autoscan_private_review_cards_are_bounded_and_paginated() -> None:
+def test_autoscan_manual_output_is_exact_verified_only() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
     assert "NATIVE_MANUAL_QUERY_COUNT = 8" in source
     assert "NATIVE_BROAD_PRESET_KEY" in source
-    assert "NATIVE_REVIEW_CARD_LIMIT = 12" in source
-    assert "NATIVE_REVIEW_PAGE_SIZE = 3" in source
     assert "NATIVE_MANUAL_TIMEOUT_SECONDS = 90" in source
+    assert 'public_mode="Exact-Verified Deals Only"' in source
+    assert "Why no verified deal was shown" in source
+    assert "Search hints and review-only candidates are never displayed as deals." in source
+    assert "used_repeat_fallback=False" in source
 
 
 def test_autoscan_load_limits_are_bounded() -> None:

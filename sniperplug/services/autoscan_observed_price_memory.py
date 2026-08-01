@@ -25,6 +25,11 @@ from sniperplug.services.walmart_exact_price_enrichment import (
     enrich_walmart_exact_prices,
     exact_detail_verified_candidates,
 )
+from sniperplug.services.walmart_exact_verification_queue import (
+    enqueue_walmart_exact_verification_candidates,
+    load_recent_verified_queue_candidates,
+    record_inline_exact_verifications,
+)
 from sniperplug.services.walmart_observed_price_memory import (
     ObservedPriceMemorySelection,
     select_observed_price_drop_cards,
@@ -44,6 +49,7 @@ AUTOSCAN_OBSERVED_MEMORY_MAX_WRITES = 300
 AUTOSCAN_EXACT_DETAIL_LIMIT = 24
 AUTOSCAN_EXACT_DETAIL_CONCURRENCY = 4
 AUTOSCAN_EXACT_DETAIL_TIMEOUT_SECONDS = 8.0
+AUTOSCAN_QUEUE_SURFACE_LIMIT = 12
 
 
 @dataclass(frozen=True)
@@ -102,8 +108,10 @@ async def collect_verified_discount_cards_with_observed_memory(
 ) -> hunt.VerifiedHuntResult:
     """Discover broadly, then surface only official exact-detail Walmart rows.
 
-    Search responses are candidate discovery only. Every card shown to users is
-    rebuilt from Walmart's exact item-detail response before card construction.
+    Search responses are candidate discovery only. Every candidate is placed in
+    one globally deduplicated exact-detail queue. The first 24 are verified in
+    the foreground; overflow candidates are verified by the background worker
+    and can re-enter later scans through a fresh compact exact-detail snapshot.
     """
 
     preset = preset or hunt.ALL_VERIFIED_PRESET
@@ -208,6 +216,22 @@ async def collect_verified_discount_cards_with_observed_memory(
         )
 
     deduped_candidates = deal_scanner.dedupe_candidates(all_candidates)
+    queue_enqueue = None
+    if db is not None:
+        try:
+            queue_enqueue = await enqueue_walmart_exact_verification_candidates(
+                db,
+                deduped_candidates,
+                min_discount=starting_discount,
+                source_label=f"{requested_by}:{preset.key}",
+            )
+            warnings.append(queue_enqueue.summary_line())
+        except Exception as error:  # noqa: BLE001 - scan must survive queue storage trouble.
+            warnings.append(
+                "Walmart exact-detail queue write failed safely; foreground verification continued: "
+                f"{type(error).__name__}"
+            )
+
     exact_prices = await enrich_walmart_exact_prices(
         deduped_candidates,
         provider=provider_registry.get("walmart"),
@@ -217,16 +241,44 @@ async def collect_verified_discount_cards_with_observed_memory(
         min_discount=starting_discount,
     )
     deduped_candidates = exact_prices.candidates
-    exact_candidates = exact_detail_verified_candidates(deduped_candidates)
-    hidden_search_only = max(0, len(deduped_candidates) - len(exact_candidates))
+    foreground_exact_candidates = exact_detail_verified_candidates(deduped_candidates)
+
+    queued_exact_candidates = []
+    if db is not None:
+        try:
+            inline_recorded = await record_inline_exact_verifications(
+                db,
+                foreground_exact_candidates,
+                min_discount=starting_discount,
+            )
+            queued_exact_candidates = await load_recent_verified_queue_candidates(
+                db,
+                limit=AUTOSCAN_QUEUE_SURFACE_LIMIT,
+            )
+            if inline_recorded or queued_exact_candidates:
+                warnings.append(
+                    "Global exact-detail queue results: "
+                    f"foreground saved **{inline_recorded}** • fresh background verified added **{len(queued_exact_candidates)}**."
+                )
+        except Exception as error:  # noqa: BLE001 - exact foreground cards remain usable.
+            warnings.append(
+                "Walmart exact-detail queue readback failed safely; foreground exact cards remained available: "
+                f"{type(error).__name__}"
+            )
+
+    exact_candidates = deal_scanner.dedupe_candidates(
+        [*foreground_exact_candidates, *queued_exact_candidates]
+    )
+    hidden_search_only = max(0, len(deduped_candidates) - len(foreground_exact_candidates))
     if hidden_search_only:
         warnings.append(
             "Official Walmart detail gate: "
-            f"**{hidden_search_only}** search-only candidate(s) were kept out of cards."
+            f"**{hidden_search_only}** search-only candidate(s) were kept out of cards and retained in the global exact-detail queue."
         )
     if (
         exact_prices.attempted
         or exact_prices.identity_mismatches
+        or exact_prices.offer_identity_blocked
         or exact_prices.failed
         or exact_prices.proofs_blocked
     ):
@@ -307,7 +359,7 @@ async def collect_verified_discount_cards_with_observed_memory(
         category_key=preset.key,
         route_stats=merged_route_stats,
         scout_lead_count=len(scout_cards),
-        memory_recheck_count=len(memory_seeds),
+        memory_recheck_count=len(memory_seeds) + len(queued_exact_candidates),
     )
 
 

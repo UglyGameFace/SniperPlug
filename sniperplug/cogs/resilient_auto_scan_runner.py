@@ -21,7 +21,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
 
 MANUAL_PROGRESS_INTERVAL_SECONDS = 45
 SCHEDULE_LOOP_MINUTES = 30
-SCHEDULED_QUERY_COUNT = 5
+SCHEDULED_QUERY_COUNT = 4
 SCHEDULED_MIN_INTERVAL_SECONDS = 6 * 60 * 60
 EVENT_LOOP_WATCHDOG_INTERVAL_SECONDS = 5
 EVENT_LOOP_LAG_WARNING_SECONDS = 2.0
@@ -46,7 +46,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
     while any foreground autoscan is active and shares the same provider lock.
 
     The production runner also replaces the legacy 15-minute route math with a
-    five-lane catalog coverage planner. Scheduled opportunities advance one real
+    four-lane catalog coverage planner. Scheduled opportunities advance one real
     six-hour coverage slot at a time, so route-list lengths can no longer make
     some Walmart searches permanently unreachable.
     """
@@ -71,7 +71,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         legacy.log.info(
             "Autoscan hardening active python=%s platform=%s scheduled_routes=%s "
             "scheduled_floor_hours=6 provider_concurrency=1 live_guild_self_heal=true "
-            "catalog_coverage_lanes=5 hart_clearance_lane=true "
+            "catalog_coverage_lanes=4 hart_clearance_lane=true "
             "exact_queue_batch=%s exact_queue_interval_s=%s",
             platform.python_version(),
             sys.platform,

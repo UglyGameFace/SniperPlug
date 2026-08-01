@@ -8,6 +8,12 @@ TOMBSTONE_TABLE = "guild_setup_ghost_tombstones"
 
 
 async def ensure_ghost_tombstone_table(conn: Any) -> None:
+    """Create and durably commit the tombstone table.
+
+    Tombstone helpers own their transaction boundaries so callers never depend
+    on an unrelated later config write to make quarantine state persistent.
+    """
+
     await conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TOMBSTONE_TABLE} (
@@ -18,6 +24,7 @@ async def ensure_ghost_tombstone_table(conn: Any) -> None:
         )
         """
     )
+    await conn.commit()
 
 
 async def load_ghost_tombstones(conn: Any) -> set[int]:
@@ -40,6 +47,8 @@ async def mark_ghost_tombstones(
     *,
     reason: str = "not_in_live_guild_cache",
 ) -> int:
+    """Upsert tombstones and commit them before returning."""
+
     ids = sorted({int(guild_id) for guild_id in guild_ids})
     if not ids:
         return 0
@@ -57,10 +66,13 @@ async def mark_ghost_tombstones(
             """,
             (guild_id, str(reason or "ghost")[:120], now, now),
         )
+    await conn.commit()
     return len(ids)
 
 
 async def clear_live_ghost_tombstones(conn: Any, live_guild_ids: Iterable[int]) -> int:
+    """Release tombstones for rejoined guilds and commit before returning."""
+
     ids = sorted({int(guild_id) for guild_id in live_guild_ids})
     if not ids:
         return 0
@@ -74,6 +86,7 @@ async def clear_live_ghost_tombstones(conn: Any, live_guild_ids: Iterable[int]) 
         rowcount = getattr(cursor, "rowcount", None)
         if isinstance(rowcount, int) and rowcount > 0:
             changed += rowcount
+    await conn.commit()
     return changed
 
 

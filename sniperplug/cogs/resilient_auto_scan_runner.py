@@ -30,6 +30,7 @@ WALMART_QUEUE_BATCH_SIZE = 6
 WALMART_QUEUE_CONCURRENCY = 2
 
 _WALMART_SCHEDULE_LOCK = asyncio.Lock()
+_WALMART_PROVIDER_OPERATION_LOCK = asyncio.Lock()
 _NEXT_SCHEDULED_RUN_AT: dict[int, float] = {}
 
 
@@ -40,7 +41,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
     intentionally much smaller, globally serialized, and protected by a six-hour
     safety floor even when a legacy row uses interval_hours=0 for "unlimited".
     Search overflow is handled by one global exact-detail worker that pauses
-    while any foreground autoscan is active.
+    while any foreground autoscan is active and shares the same provider lock.
     """
 
     def __init__(self, bot):
@@ -120,12 +121,13 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
 
                 progress_task = asyncio.create_task(self._autoscan_progress_notice(interaction, started))
                 try:
-                    report = await self._run_guild_walmart_discovery(
-                        legacy.AutoScanGuild(guild_id, config.get("channel_id")),
-                        force=force,
-                        query_count_override=8,
-                        report_label="Manual broad pass" if force else "Manual pass",
-                    )
+                    async with _WALMART_PROVIDER_OPERATION_LOCK:
+                        report = await self._run_guild_walmart_discovery(
+                            legacy.AutoScanGuild(guild_id, config.get("channel_id")),
+                            force=force,
+                            query_count_override=8,
+                            report_label="Manual broad pass" if force else "Manual pass",
+                        )
                 finally:
                     progress_task.cancel()
                     try:
@@ -231,11 +233,12 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
             async with guild_lock:
                 started = time.monotonic()
                 try:
-                    report = await self._run_guild_walmart_discovery(
-                        guild,
-                        query_count_override=SCHEDULED_QUERY_COUNT,
-                        report_label="Scheduled bounded pass",
-                    )
+                    async with _WALMART_PROVIDER_OPERATION_LOCK:
+                        report = await self._run_guild_walmart_discovery(
+                            guild,
+                            query_count_override=SCHEDULED_QUERY_COUNT,
+                            report_label="Scheduled bounded pass",
+                        )
                     self._log_all_report_warnings(report, source="scheduled")
                     elapsed = max(0.0, time.monotonic() - started)
                     legacy.log.info(
@@ -283,13 +286,14 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                     continue
 
                 try:
-                    result = await process_walmart_exact_verification_queue_batch(
-                        self.bot.db,
-                        provider=provider_registry.get("walmart"),
-                        limit=WALMART_QUEUE_BATCH_SIZE,
-                        concurrency=WALMART_QUEUE_CONCURRENCY,
-                        min_discount=50,
-                    )
+                    async with _WALMART_PROVIDER_OPERATION_LOCK:
+                        result = await process_walmart_exact_verification_queue_batch(
+                            self.bot.db,
+                            provider=provider_registry.get("walmart"),
+                            limit=WALMART_QUEUE_BATCH_SIZE,
+                            concurrency=WALMART_QUEUE_CONCURRENCY,
+                            min_discount=50,
+                        )
                     if result.claimed:
                         legacy.log.info(result.summary_line())
                 except asyncio.CancelledError:

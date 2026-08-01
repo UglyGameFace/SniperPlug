@@ -3,6 +3,9 @@ from __future__ import annotations
 from functools import wraps
 from typing import Any
 
+from sniperplug.services.walmart_metadata_snapshot_guard import (
+    install_bounded_walmart_metadata_snapshot,
+)
 from sniperplug.services.walmart_product_metadata import extract_walmart_product_metadata
 
 
@@ -35,6 +38,8 @@ def install_walmart_product_metadata(provider: Any) -> Any:
 
     if str(getattr(provider, "provider_key", "") or "").strip().lower() != "walmart":
         return provider
+
+    install_bounded_walmart_metadata_snapshot()
 
     target = getattr(provider, "inner", provider)
     if not bool(getattr(target, _PATCH_FLAG, False)):

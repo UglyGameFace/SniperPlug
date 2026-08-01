@@ -4,13 +4,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 COG = (ROOT / "sniperplug/cogs/movie_tickets.py").read_text(encoding="utf-8")
+REGISTERED = (ROOT / "sniperplug/cogs/registered_multi_source_movies.py").read_text(encoding="utf-8")
 SERVICE = (ROOT / "sniperplug/services/movie_ticket_drops.py").read_text(encoding="utf-8")
 
 
 def test_runtime_registers_exactly_one_movies_cog() -> None:
-    assert "from sniperplug.cogs.movie_tickets import MovieTicketsCog" in BOT
+    assert "from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog" in BOT
     assert BOT.count("await self.add_cog(MovieTicketsCog(self))") == 1
     assert "class MovieTicketsCog(commands.GroupCog, name=\"movies\")" in COG
+    assert 'class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies")' in REGISTERED
 
 
 def test_movies_command_group_has_complete_server_owner_surface() -> None:

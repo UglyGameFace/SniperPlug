@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import discord
@@ -16,12 +17,12 @@ def enrich_review_card(card: Any) -> Any:
         return card
 
     attrs = _attrs(card)
-    tags = _discovery_tags(card, attrs)
+    tags = _discovery_tags(card, attrs, embed)
     if tags and not _has_field(embed, DISCOVERY_TAG_FIELD):
         embed.add_field(name=DISCOVERY_TAG_FIELD, value=" • ".join(f"`{tag}`" for tag in tags), inline=False)
 
     if not _has_field(embed, PRICE_HISTORY_FIELD):
-        embed.add_field(name=PRICE_HISTORY_FIELD, value=_price_history_text(card, attrs), inline=False)
+        embed.add_field(name=PRICE_HISTORY_FIELD, value=_price_history_text(card, attrs, embed), inline=False)
     return card
 
 
@@ -34,18 +35,30 @@ def _attrs(card: Any) -> dict[str, Any]:
     return attrs if isinstance(attrs, dict) else {}
 
 
-def _discovery_tags(card: Any, attrs: dict[str, Any]) -> list[str]:
+def _embed_text(embed: discord.Embed) -> str:
+    parts = [str(embed.title or ""), str(embed.description or "")]
+    for field in embed.fields:
+        parts.extend((str(field.name or ""), str(field.value or "")))
+    return " ".join(parts)
+
+
+def _discovery_tags(card: Any, attrs: dict[str, Any], embed: discord.Embed) -> list[str]:
     text = " ".join(
-        str(value or "")
-        for value in (
-            attrs.get("finderSourceQuery"),
-            attrs.get("finderSourceQueries"),
-            attrs.get("dealLane"),
-            attrs.get("deal_lane"),
-            attrs.get("condition"),
-            getattr(card, "deal_lane", None),
-            getattr(card, "label", None),
-        )
+        [
+            _embed_text(embed),
+            *(
+                str(value or "")
+                for value in (
+                    attrs.get("finderSourceQuery"),
+                    attrs.get("finderSourceQueries"),
+                    attrs.get("dealLane"),
+                    attrs.get("deal_lane"),
+                    attrs.get("condition"),
+                    getattr(card, "deal_lane", None),
+                    getattr(card, "label", None),
+                )
+            ),
+        ]
     ).lower()
     tags: list[str] = []
     checks = (
@@ -71,19 +84,21 @@ def _discovery_tags(card: Any, attrs: dict[str, Any]) -> list[str]:
     return tags or ["Private Review"]
 
 
-def _price_history_text(card: Any, attrs: dict[str, Any]) -> str:
+def _price_history_text(card: Any, attrs: dict[str, Any], embed: discord.Embed) -> str:
     current = _number(getattr(card, "api_current_price", None) or getattr(card, "current_price", None))
     walmart_previous = _first_number(
         getattr(card, "api_reference_price", None),
         getattr(card, "typical_price", None),
         attrs.get("apiReferencePrice"),
         attrs.get("trustedReferencePrice"),
+        _extract_money(_embed_text(embed), r"(?:trusted was/typical|walmart was/reference)"),
     )
     observed_previous = _first_number(
         attrs.get("priceMemoryPreviousPrice"),
         attrs.get("observedPreviousPrice"),
         attrs.get("previousObservedPrice"),
         attrs.get("priceMemoryReferencePrice"),
+        _extract_money(_embed_text(embed), r"(?:previously observed by sniperplug|observed previous price)"),
     )
     lines: list[str] = []
     if walmart_previous and current and walmart_previous > current:
@@ -97,6 +112,11 @@ def _price_history_text(card: Any, attrs: dict[str, Any]) -> str:
     if current:
         lines.append(f"**Current price:** ${current:,.2f}")
     return "\n".join(lines)
+
+
+def _extract_money(text: str, label_pattern: str) -> float | None:
+    match = re.search(label_pattern + r"[^$]{0,40}\$([0-9][0-9,]*(?:\.[0-9]{1,2})?)", text, flags=re.IGNORECASE)
+    return _number(match.group(1)) if match else None
 
 
 def _has_field(embed: discord.Embed, name: str) -> bool:

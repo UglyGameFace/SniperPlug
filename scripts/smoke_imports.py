@@ -27,6 +27,8 @@ CRITICAL_MODULES = (
     "sniperplug.cogs.local_inventory",
     "sniperplug.cogs.movie_ticket_feedback",
     "sniperplug.cogs.movie_tickets",
+    "sniperplug.cogs.multi_source_movie_tickets",
+    "sniperplug.cogs.registered_multi_source_movies",
     "sniperplug.cogs.public_alerts",
     "sniperplug.cogs.settings_dashboard",
     "sniperplug.cogs.sniperplug",
@@ -37,8 +39,11 @@ CRITICAL_MODULES = (
     "sniperplug.services.deal_confidence",
     "sniperplug.services.deal_feedback",
     "sniperplug.services.deal_search_modes",
+    "sniperplug.services.fandango_movie_offers",
     "sniperplug.services.fresh_deal_filter",
+    "sniperplug.services.gofobo_screenings",
     "sniperplug.services.manual_review_share",
+    "sniperplug.services.movie_ticket_artwork",
     "sniperplug.services.movie_ticket_drops",
     "sniperplug.services.movie_ticket_feedback",
     "sniperplug.services.public_alert_config",
@@ -68,10 +73,21 @@ CRITICAL_SYMBOLS = {
         "record_auto_scan_run",
         "list_retailer_auto_scan_settings",
     ),
+    "sniperplug.cogs.registered_multi_source_movies": (
+        "MovieTicketsCog",
+    ),
     "sniperplug.services.movie_ticket_drops": (
         "AtomPromotionsClient",
         "MovieTicketStore",
         "parse_atom_promotions_html",
+    ),
+    "sniperplug.services.fandango_movie_offers": (
+        "FandangoOffersClient",
+        "parse_fandango_offers_html",
+    ),
+    "sniperplug.services.gofobo_screenings": (
+        "GofoboUpcomingClient",
+        "parse_gofobo_home_html",
     ),
     "sniperplug.services.movie_ticket_feedback": (
         "MovieTicketFeedbackStore",

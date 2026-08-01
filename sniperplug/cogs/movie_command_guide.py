@@ -8,7 +8,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from sniperplug.cogs.movie_tickets import MovieTicketsCog
+from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
+from sniperplug.services.fandango_movie_offers import FANDANGO_OFFERS_URL
+from sniperplug.services.gofobo_screenings import GOFOBO_HOME_URL
 from sniperplug.services.movie_ticket_drops import ATOM_PROMOTIONS_URL, clean_text
 
 
@@ -58,8 +60,6 @@ class MovieGuideSectionSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        # Acknowledge Discord before building/sending anything so a rendering or
-        # network problem can never turn into "the application didn't respond".
         await interaction.response.defer(ephemeral=True)
         try:
             section = self.values[0] if self.values else _selected_value(interaction)
@@ -83,10 +83,26 @@ class MovieGuidePanelView(discord.ui.View):
         self.add_item(MovieGuideSectionSelect(cog))
         self.add_item(
             discord.ui.Button(
-                label="Official Atom Promotions",
+                label="Atom",
                 style=discord.ButtonStyle.link,
                 url=ATOM_PROMOTIONS_URL,
-                emoji="🔗",
+                emoji="⚛️",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Fandango",
+                style=discord.ButtonStyle.link,
+                url=FANDANGO_OFFERS_URL,
+                emoji="🎟️",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Gofobo",
+                style=discord.ButtonStyle.link,
+                url=GOFOBO_HOME_URL,
+                emoji="🎬",
             )
         )
 
@@ -214,10 +230,7 @@ class MovieCommandGuideCog(commands.Cog):
 
             drops = await movie_cog.store.list_active_drops(limit=MAX_LATEST_EMBEDS)
             if not drops:
-                message = (
-                    "No public reusable free-ticket codes are currently cached from "
-                    "Atom's official promotions page."
-                )
+                message = "No official free-ticket offers or screening opportunities are currently cached."
                 if refresh_error:
                     message += f"\nLive refresh failed safely: `{refresh_error}`"
                 await interaction.followup.send(message, ephemeral=True)
@@ -225,12 +238,12 @@ class MovieCommandGuideCog(commands.Cog):
 
             embeds = await movie_cog._build_drop_embeds(drops)  # noqa: SLF001
             content = (
-                f"Found **{len(drops)}** active official free-ticket drop(s). "
-                "Claim quickly because promotional inventory can run out early."
+                f"Found **{len(drops)}** active official ticket offer(s) or screening lead(s). "
+                "Claim quickly because code, pass, and local inventory can run out early."
             )
             if refresh_error:
                 content += (
-                    "\nShowing the last verified cache because the live refresh failed: "
+                    "\nShowing the last verified cache because part of the live refresh failed: "
                     f"`{refresh_error}`"
                 )
             await interaction.followup.send(content=content, embeds=embeds, ephemeral=True)
@@ -254,18 +267,25 @@ class MovieCommandGuideCog(commands.Cog):
                 )
                 return
 
-            config = await movie_cog.store.get_config(int(interaction.guild_id))
-            state = await movie_cog.store.get_source_state()
+            guild_id = int(interaction.guild_id)
+            config = await movie_cog.store.get_config(guild_id)
             active = await movie_cog.store.list_active_drops(limit=100)
-            sent_count = await movie_cog.store.count_sent_for_guild(int(interaction.guild_id))
+            sent_count = await movie_cog.store.count_sent_for_guild(guild_id)
+            public_codes = sum(1 for drop in active if drop.classification == "public_reusable")
+            local_screenings = sum(1 for drop in active if drop.classification == "local_screening")
+            states = await movie_cog._connected_source_states()  # noqa: SLF001 - shared status bridge.
+            successful_times = [state.last_success_at for state in states.values() if state.last_success_at]
+            latest_success = max(successful_times) if successful_times else ""
+            source_lines = movie_cog._source_health_lines(states)  # noqa: SLF001
             await interaction.followup.send(
                 embed=build_movie_status_embed(
                     enabled=config.enabled,
                     alert_channel_id=config.alert_channel_id,
-                    active_count=len(active),
+                    active_count=public_codes,
+                    local_screening_count=local_screenings,
                     sent_count=sent_count,
-                    last_success_at=state.last_success_at,
-                    last_error=state.last_error,
+                    last_success_at=latest_success,
+                    source_health_lines=source_lines,
                 ),
                 ephemeral=True,
             )
@@ -274,13 +294,9 @@ class MovieCommandGuideCog(commands.Cog):
             await _send_component_error(interaction, error)
 
     def _movie_cog(self) -> MovieTicketsCog | None:
-        # GroupCog's ``name="movies"`` changes its registered cog key to
-        # ``movies``. Never look it up using the Python class name.
         direct = self.bot.get_cog(MovieTicketsCog.__cog_name__)
         if isinstance(direct, MovieTicketsCog):
             return direct
-
-        # Keep a type-based fallback in case the cog is ever renamed.
         return next(
             (cog for cog in self.bot.cogs.values() if isinstance(cog, MovieTicketsCog)),
             None,
@@ -291,7 +307,7 @@ def build_movie_guide_home_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🎬 SniperPlug Movie Ticket Guide",
         description=(
-            "Use this panel to learn every movie-ticket command and check official free-ticket drops.\n\n"
+            "Use this panel to learn every movie-ticket command and check official free-ticket offers and screenings.\n\n"
             "**Fastest route:** press **Check Latest Drops** below, or run `/movies latest`."
         ),
         color=GUIDE_COLOR,
@@ -299,9 +315,9 @@ def build_movie_guide_home_embed() -> discord.Embed:
     embed.add_field(
         name="👤 Everyone can use",
         value=(
-            "`/movies latest` — refresh and show active free-ticket codes.\n"
-            "`/movies status` — show alert status and source health for this server.\n"
-            "`/movies sources` — explain which official sources are connected.\n"
+            "`/movies latest` — refresh and show active ticket codes and screening leads.\n"
+            "`/movies status` — show alert status and each source's health.\n"
+            "`/movies sources` — explain Atom, Fandango, Gofobo, and unconnected private sources.\n"
             "`/movies-help` — reopen this guide privately."
         ),
         inline=False,
@@ -310,7 +326,7 @@ def build_movie_guide_home_embed() -> discord.Embed:
         name="🛠️ Server managers",
         value=(
             "`/movies setup alert_channel:#channel` — enable automatic alerts.\n"
-            "`/movies scan` — check the official source immediately.\n"
+            "`/movies scan` — check every connected official source immediately.\n"
             "`/movies test-alert` — verify that the configured channel works.\n"
             "`/movies disable` — stop automatic movie alerts.\n"
             "`/movies-panel target_channel:#channel` — post this permanent guide."
@@ -322,7 +338,7 @@ def build_movie_guide_home_embed() -> discord.Embed:
         value="Use the dropdown for step-by-step instructions, examples, and safety details.",
         inline=False,
     )
-    embed.set_footer(text="SniperPlug checks official public sources; codes can still expire or run out early.")
+    embed.set_footer(text="Official codes and screening passes can still expire, fill, or run out early.")
     return embed
 
 
@@ -339,7 +355,7 @@ def build_movie_guide_section_embed(section: str) -> discord.Embed:
 def _build_start_section() -> discord.Embed:
     embed = discord.Embed(
         title="🎬 Start Here",
-        description="You do not need an Atom API or an Atom login to use SniperPlug's public movie alerts.",
+        description="No Atom, Fandango, or Gofobo API key is needed to use SniperPlug's public movie alerts.",
         color=GUIDE_COLOR,
     )
     embed.add_field(
@@ -348,13 +364,16 @@ def _build_start_section() -> discord.Embed:
         inline=False,
     )
     embed.add_field(
-        name="2. Copy the code",
-        value="Tap and hold the plain promo code in the result. SniperPlug removes quote and Markdown wrappers.",
+        name="2. Read the classification",
+        value=(
+            "A result may be a reusable Atom code, a Fandango offer requiring a qualifying purchase, "
+            "or a Gofobo screening that depends on ZIP and pass availability."
+        ),
         inline=False,
     )
     embed.add_field(
         name="3. Claim immediately",
-        value="Open the official Atom offer, add the eligible ticket(s), and enter the code during checkout.",
+        value="Open the matching official-source button, follow its restrictions, and claim before inventory disappears.",
         inline=False,
     )
     embed.add_field(
@@ -369,17 +388,17 @@ def _build_user_section() -> discord.Embed:
     embed = discord.Embed(title="🎟️ Commands Anyone Can Use", color=GUIDE_COLOR)
     embed.add_field(
         name="`/movies latest`",
-        value="Refreshes Atom's official page and privately shows active codes, posters, and restrictions.",
+        value="Refreshes Atom, Fandango, and Gofobo, then privately shows verified cached results with artwork and restrictions.",
         inline=False,
     )
     embed.add_field(
         name="`/movies status`",
-        value="Shows this server's alert channel, source health, active-code count, and delivery total.",
+        value="Shows this server's alert channel, health for every connected source, code/screening counts, and delivery total.",
         inline=False,
     )
     embed.add_field(
         name="`/movies sources`",
-        value="Explains which official sources are automated and which are not connected yet.",
+        value="Explains which official sources are automated and which private/account sources are not connected yet.",
         inline=False,
     )
     embed.add_field(
@@ -394,12 +413,12 @@ def _build_admin_section() -> discord.Embed:
     embed = discord.Embed(title="⚙️ Server Setup Commands", color=GUIDE_COLOR)
     embed.add_field(
         name="`/movies setup alert_channel:#movie-tickets`",
-        value="Enables automatic alerts and saves the destination. Requires **Manage Server**.",
+        value="Enables automatic alerts from every connected official source. Requires **Manage Server**.",
         inline=False,
     )
     embed.add_field(
         name="`/movies scan`",
-        value="Checks the official source immediately and delivers newly discovered codes.",
+        value="Checks Atom, Fandango, and Gofobo immediately and delivers newly discovered results.",
         inline=False,
     )
     embed.add_field(
@@ -423,32 +442,33 @@ def _build_admin_section() -> discord.Embed:
 def _build_safety_section() -> discord.Embed:
     embed = discord.Embed(title="🛡️ Sources, Accuracy & Limits", color=GUIDE_COLOR)
     embed.add_field(
-        name="Automated source",
+        name="Automated official sources",
         value=(
-            f"[Official Atom Promotions Hub]({ATOM_PROMOTIONS_URL}) is checked every minute. "
-            "SniperPlug extracts public codes, terms, dates, and official movie artwork."
+            f"[Atom Promotions]({ATOM_PROMOTIONS_URL}) for public reusable codes.\n"
+            f"[Fandango Offers]({FANDANGO_OFFERS_URL}) for free-ticket promotions, with purchase requirements labeled.\n"
+            f"[Gofobo]({GOFOBO_HOME_URL}) for upcoming local screening announcements and public short-code links."
         ),
         inline=False,
     )
     embed.add_field(
-        name="Filtered out",
+        name="Filtered or labeled separately",
         value=(
-            "Private/account codes, sweepstakes, ordinary discounts, concessions, "
-            "and BOGO offers are not labeled as public free-ticket drops."
+            "Private/account codes, sweepstakes, ordinary discounts, paid memberships, concessions, "
+            "purchase-required offers, and ZIP-local screenings are never presented as the same thing."
         ),
         inline=False,
     )
     embed.add_field(
         name="What cannot be guaranteed",
         value=(
-            "A verified code may expire, hit its redemption limit, exclude a theater/date, "
-            "or run out before its listed end time."
+            "A verified code may expire or hit its limit. A Gofobo announcement may be unavailable near your ZIP, "
+            "fill before you claim, or issue a pass that still does not guarantee theater admission."
         ),
         inline=False,
     )
     embed.add_field(
         name="Best practice",
-        value="Claim immediately and read the restrictions shown in the alert before choosing seats.",
+        value="Claim immediately, read every restriction, and use Worked/Didn't work to help other members.",
         inline=False,
     )
     return embed
@@ -461,7 +481,9 @@ def build_movie_status_embed(
     active_count: int,
     sent_count: int,
     last_success_at: str,
-    last_error: str,
+    last_error: str = "",
+    local_screening_count: int = 0,
+    source_health_lines: list[str] | None = None,
 ) -> discord.Embed:
     embed = discord.Embed(title="📡 Movie Alert Setup Status", color=GUIDE_COLOR)
     embed.add_field(name="Automatic alerts", value="Enabled" if enabled else "Disabled", inline=True)
@@ -470,12 +492,16 @@ def build_movie_status_embed(
         value=f"<#{alert_channel_id}>" if alert_channel_id else "Not configured",
         inline=True,
     )
-    embed.add_field(name="Active public codes", value=str(active_count), inline=True)
+    embed.add_field(name="Reusable ticket codes", value=str(active_count), inline=True)
+    embed.add_field(name="Local screening leads", value=str(local_screening_count), inline=True)
     embed.add_field(name="Delivered to this server", value=str(sent_count), inline=True)
-    embed.add_field(name="Last successful check", value=_discord_time(last_success_at), inline=True)
-    health = "Healthy" if last_success_at and not last_error else "Waiting for first successful check"
-    if last_error:
-        health = f"Last error: `{clean_text(last_error)[:700]}`"
+    embed.add_field(name="Latest successful check", value=_discord_time(last_success_at), inline=True)
+    if source_health_lines:
+        health = "\n".join(source_health_lines)[:1024]
+    else:
+        health = "Healthy" if last_success_at and not last_error else "Waiting for first successful check"
+        if last_error:
+            health = f"Last error: `{clean_text(last_error)[:700]}`"
     embed.add_field(name="Official source health", value=health, inline=False)
     if not enabled:
         embed.add_field(

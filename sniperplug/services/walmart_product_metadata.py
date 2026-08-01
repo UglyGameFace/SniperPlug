@@ -16,6 +16,12 @@ class WalmartProductMetadata:
     signals: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class PayloadSnapshot:
+    containers: tuple[tuple[str, dict[str, Any]], ...]
+    leaves: tuple[tuple[str, Any], ...]
+
+
 _BADGE_LABELS: tuple[tuple[str, str], ...] = (
     ("clearance", "Clearance"),
     ("rollback", "Rollback"),
@@ -28,7 +34,6 @@ _BADGE_LABELS: tuple[tuple[str, str], ...] = (
     ("reduced price", "Reduced Price"),
     ("price drop", "Price Drop"),
 )
-
 _PRIVATE_PROMO_TOKENS = (
     "walmart cash",
     "cashback",
@@ -36,6 +41,38 @@ _PRIVATE_PROMO_TOKENS = (
     "onepay",
     "one pay",
     "coupon",
+)
+_BADGE_KEYS = (
+    "badges",
+    "badge",
+    "productBadges",
+    "merchandisingBadges",
+    "labels",
+    "tags",
+)
+_CONDITION_KEYS = (
+    "conditionOptions",
+    "conditionOffers",
+    "secondaryOffers",
+    "buyingOptions",
+    "variantOffers",
+    "offers",
+)
+_FULFILLMENT_KEYS = (
+    "fulfillmentOptions",
+    "fulfillmentMethods",
+    "fulfillmentSummary",
+    "shippingOption",
+    "pickupOption",
+    "deliveryOption",
+)
+_LOCATION_PATHS = (
+    "fulfillmentLocation",
+    "location",
+    "storeLocation",
+    "pickupStore",
+    "store",
+    "address",
 )
 
 
@@ -48,20 +85,21 @@ def extract_walmart_product_metadata(
 ) -> WalmartProductMetadata:
     """Extract compact factual listing metadata from a Walmart API item.
 
-    Nothing is inferred from the title, search query, or a screenshot. Values are
-    emitted only when the API payload contains them, except savings math, which
-    is derived only from an already trusted current/reference price pair.
+    The extractor never derives facts from the title, search query, or screenshot.
+    It uses direct known fields first. Exact-detail payloads are recursively
+    indexed once, and all fallback extractors reuse that one snapshot.
     """
 
     if not isinstance(item, dict):
         return WalmartProductMetadata(attributes={}, signals=())
 
+    snapshot = _snapshot_payload(item) if exact_detail else _shallow_snapshot(item)
     attrs: dict[str, str] = {
         "retailerMetadataSource": "exact_detail" if exact_detail else "search",
     }
     signals: list[str] = []
 
-    badges = _extract_badges(item)
+    badges = _extract_badges(item, snapshot)
     if badges:
         attrs["retailerTags"] = " | ".join(badges)
         signals.append("Walmart listing tags: " + ", ".join(badges))
@@ -113,15 +151,15 @@ def extract_walmart_product_metadata(
     if purchase_context:
         attrs["purchaseContext"] = purchase_context
 
-    return_policy = _extract_return_policy(item)
+    return_policy = _extract_return_policy(item, snapshot)
     if return_policy:
         attrs["returnPolicy"] = return_policy
 
-    location = _extract_location(item)
+    location = _extract_location(item, snapshot)
     if location:
         attrs["fulfillmentLocation"] = location
 
-    condition_options = _extract_condition_options(item)
+    condition_options = _extract_condition_options(item, snapshot)
     if condition_options:
         attrs["conditionOptionsJson"] = json.dumps(
             condition_options,
@@ -132,9 +170,8 @@ def extract_walmart_product_metadata(
             _condition_option_label(option) for option in condition_options
         )[:MAX_METADATA_TEXT]
 
-    fulfillment = _extract_fulfillment(item)
+    fulfillment = _extract_fulfillment(item, snapshot)
     for method, detail in fulfillment.items():
-        title = method.title()
         status = detail.get("status")
         text = detail.get("text")
         if status:
@@ -148,9 +185,8 @@ def extract_walmart_product_metadata(
     return WalmartProductMetadata(attributes=attrs, signals=tuple(_dedupe(signals)))
 
 
-def _extract_badges(item: dict[str, Any]) -> list[str]:
+def _extract_badges(item: dict[str, Any], snapshot: PayloadSnapshot) -> list[str]:
     badges: list[str] = []
-
     for key, label in (
         ("clearance", "Clearance"),
         ("rollBack", "Rollback"),
@@ -160,28 +196,48 @@ def _extract_badges(item: dict[str, Any]) -> list[str]:
         if item.get(key) is True:
             badges.append(label)
 
-    for path, value in _walk_payload(item):
+    direct_values = [item.get(key) for key in _BADGE_KEYS if item.get(key) is not None]
+    for value in direct_values:
+        badges.extend(_badge_labels_from_value(value))
+
+    if direct_values:
+        return _dedupe(badges)
+
+    for path, value in snapshot.leaves:
         normalized_path = _normalize_key(path)
         if not any(token in normalized_path for token in ("badge", "tag", "label", "flag")):
             continue
-        for text in _text_values(value):
-            lowered = text.lower()
-            if any(token in lowered for token in _PRIVATE_PROMO_TOKENS):
-                continue
-            for needle, label in _BADGE_LABELS:
-                if needle in lowered:
-                    badges.append(label)
+        badges.extend(_badge_labels_from_value(value))
     return _dedupe(badges)
 
 
-def _extract_condition_options(item: dict[str, Any]) -> list[dict[str, str]]:
+def _badge_labels_from_value(value: Any) -> list[str]:
+    labels: list[str] = []
+    for text in _text_values(value):
+        lowered = text.lower()
+        if any(token in lowered for token in _PRIVATE_PROMO_TOKENS):
+            continue
+        for needle, label in _BADGE_LABELS:
+            if needle in lowered:
+                labels.append(label)
+    return labels
+
+
+def _extract_condition_options(
+    item: dict[str, Any],
+    snapshot: PayloadSnapshot,
+) -> list[dict[str, str]]:
+    direct = _direct_dict_containers(item, _CONDITION_KEYS)
+    containers = direct or [
+        (path, value)
+        for path, value in snapshot.containers
+        if any(token in _normalize_key(path) for token in ("condition", "offer", "buybox", "variant"))
+    ]
+
     options: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
-
-    for path, value in _walk_containers(item):
+    for path, value in containers:
         normalized_path = _normalize_key(path)
-        if not isinstance(value, dict):
-            continue
         condition = _first_text(
             value.get("condition"),
             value.get("conditionType"),
@@ -192,7 +248,9 @@ def _extract_condition_options(item: dict[str, Any]) -> list[dict[str, str]]:
         )
         if not condition:
             continue
-        if not any(token in normalized_path for token in ("condition", "offer", "buybox", "variant")):
+        if not direct and not any(
+            token in normalized_path for token in ("condition", "offer", "buybox", "variant")
+        ):
             continue
 
         price = _first_number(
@@ -218,17 +276,23 @@ def _extract_condition_options(item: dict[str, Any]) -> list[dict[str, str]]:
         options.append(option)
         if len(options) >= MAX_CONDITION_OPTIONS:
             break
-
     return options
 
 
-def _extract_fulfillment(item: dict[str, Any]) -> dict[str, dict[str, str]]:
+def _extract_fulfillment(
+    item: dict[str, Any],
+    snapshot: PayloadSnapshot,
+) -> dict[str, dict[str, str]]:
+    direct = _direct_dict_containers(item, _FULFILLMENT_KEYS)
+    containers = direct or [
+        (path, value)
+        for path, value in snapshot.containers
+        if any(token in _normalize_key(path) for token in ("fulfillment", "shipping", "pickup", "delivery"))
+    ]
+
     output: dict[str, dict[str, str]] = {}
     methods = ("shipping", "pickup", "delivery")
-
-    for path, value in _walk_containers(item):
-        if not isinstance(value, dict):
-            continue
+    for path, value in containers:
         haystack = " ".join(
             str(part or "")
             for part in (
@@ -265,11 +329,10 @@ def _extract_fulfillment(item: dict[str, Any]) -> dict[str, dict[str, str]]:
             existing["status"] = status
         if text and "text" not in existing:
             existing["text"] = _clean_text(text)
-
     return output
 
 
-def _extract_return_policy(item: dict[str, Any]) -> str | None:
+def _extract_return_policy(item: dict[str, Any], snapshot: PayloadSnapshot) -> str | None:
     direct = _first_text_at_paths(
         item,
         (
@@ -277,6 +340,7 @@ def _extract_return_policy(item: dict[str, Any]) -> str | None:
             "returnPolicyText",
             "returnsText",
             "returnInfo.displayText",
+            "returnPolicy.returnWindow",
             "returnPolicy.displayText",
             "returnPolicy.text",
             "returnPolicy.description",
@@ -285,15 +349,10 @@ def _extract_return_policy(item: dict[str, Any]) -> str | None:
     if direct:
         return direct
 
-    for path, value in _walk_payload(item):
-        normalized = _normalize_key(path)
-        if "return" not in normalized:
-            continue
-        if isinstance(value, bool):
+    for path, value in snapshot.leaves:
+        if "return" not in _normalize_key(path) or isinstance(value, bool):
             continue
         text = _clean_text(value)
-        if not text:
-            continue
         if re.search(r"\b\d{1,3}\s*[- ]?day", text, flags=re.IGNORECASE):
             return text
         number = _positive_number(value)
@@ -302,21 +361,38 @@ def _extract_return_policy(item: dict[str, Any]) -> str | None:
     return None
 
 
-def _extract_location(item: dict[str, Any]) -> str | None:
-    for path, value in _walk_containers(item):
+def _extract_location(item: dict[str, Any], snapshot: PayloadSnapshot) -> str | None:
+    # Prefer explicit location objects and never accept a store/display label by
+    # itself. Geographic proof requires a postal code or a city/state pair.
+    direct: list[tuple[str, dict[str, Any]]] = []
+    for path in _LOCATION_PATHS:
+        value = _path(item, path)
+        if isinstance(value, dict):
+            direct.append((path, value))
+    for _, value in direct:
+        location = _location_from_dict(value)
+        if location:
+            return location
+
+    for path, value in snapshot.containers:
         normalized = _normalize_key(path)
-        if not isinstance(value, dict):
+        if not any(token in normalized for token in ("location", "store", "address")):
             continue
-        if not any(token in normalized for token in ("location", "store", "fulfillment", "address")):
-            continue
-        city = _first_text(value.get("city"), value.get("locality"))
-        state = _first_text(value.get("state"), value.get("stateCode"), value.get("region"))
-        postal = _first_text(value.get("postalCode"), value.get("zipCode"), value.get("zip"))
-        store = _first_text(value.get("storeName"), value.get("displayName"))
-        parts = [part for part in (store, city, state, postal) if part]
-        if parts:
-            return ", ".join(_dedupe(parts))[:MAX_METADATA_TEXT]
+        location = _location_from_dict(value)
+        if location:
+            return location
     return None
+
+
+def _location_from_dict(value: dict[str, Any]) -> str | None:
+    city = _first_text(value.get("city"), value.get("locality"))
+    state = _first_text(value.get("state"), value.get("stateCode"), value.get("region"))
+    postal = _first_text(value.get("postalCode"), value.get("zipCode"), value.get("zip"))
+    if not postal and not (city and state):
+        return None
+    store = _first_text(value.get("storeName"), value.get("displayName"))
+    parts = [part for part in (store, city, state, postal) if part]
+    return ", ".join(_dedupe(parts))[:MAX_METADATA_TEXT]
 
 
 def _availability_status(value: dict[str, Any]) -> str | None:
@@ -353,8 +429,7 @@ def _availability_status(value: dict[str, Any]) -> str | None:
 
 
 def _condition_option_label(option: dict[str, str]) -> str:
-    condition = option.get("condition") or "Unknown"
-    bits = [condition]
+    bits = [option.get("condition") or "Unknown"]
     if option.get("status"):
         bits.append(option["status"])
     if option.get("price"):
@@ -362,30 +437,55 @@ def _condition_option_label(option: dict[str, str]) -> str:
     return " — ".join(bits)
 
 
-def _walk_payload(value: Any, prefix: str = "") -> Iterable[tuple[str, Any]]:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            path = f"{prefix}.{key}" if prefix else str(key)
-            yield from _walk_payload(child, path)
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            path = f"{prefix}[{index}]"
-            yield from _walk_payload(child, path)
-        return
-    yield prefix, value
+def _snapshot_payload(value: Any) -> PayloadSnapshot:
+    containers: list[tuple[str, dict[str, Any]]] = []
+    leaves: list[tuple[str, Any]] = []
+
+    def walk(current: Any, prefix: str = "") -> None:
+        if isinstance(current, dict):
+            containers.append((prefix, current))
+            for key, child in current.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                walk(child, path)
+            return
+        if isinstance(current, list):
+            for index, child in enumerate(current):
+                path = f"{prefix}[{index}]"
+                walk(child, path)
+            return
+        leaves.append((prefix, current))
+
+    walk(value)
+    return PayloadSnapshot(tuple(containers), tuple(leaves))
 
 
-def _walk_containers(value: Any, prefix: str = "") -> Iterable[tuple[str, Any]]:
-    if isinstance(value, dict):
-        yield prefix, value
-        for key, child in value.items():
-            path = f"{prefix}.{key}" if prefix else str(key)
-            yield from _walk_containers(child, path)
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            path = f"{prefix}[{index}]"
-            yield from _walk_containers(child, path)
+def _shallow_snapshot(item: dict[str, Any]) -> PayloadSnapshot:
+    containers: list[tuple[str, dict[str, Any]]] = [("", item)]
+    leaves: list[tuple[str, Any]] = []
+    for key, value in item.items():
+        if isinstance(value, dict):
+            containers.append((str(key), value))
+        elif not isinstance(value, list):
+            leaves.append((str(key), value))
+    return PayloadSnapshot(tuple(containers), tuple(leaves))
+
+
+def _direct_dict_containers(
+    item: dict[str, Any],
+    keys: tuple[str, ...],
+) -> list[tuple[str, dict[str, Any]]]:
+    output: list[tuple[str, dict[str, Any]]] = []
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, dict):
+            output.append((key, value))
+        elif isinstance(value, list):
+            output.extend(
+                (f"{key}[{index}]", child)
+                for index, child in enumerate(value)
+                if isinstance(child, dict)
+            )
+    return output
 
 
 def _text_values(value: Any) -> list[str]:
@@ -395,7 +495,15 @@ def _text_values(value: Any) -> list[str]:
         return [str(value)]
     if isinstance(value, dict):
         output: list[str] = []
-        for key in ("text", "label", "name", "title", "displayName", "displayText", "value"):
+        for key in (
+            "text",
+            "label",
+            "name",
+            "title",
+            "displayName",
+            "displayText",
+            "value",
+        ):
             child = value.get(key)
             if isinstance(child, str):
                 output.append(child)
@@ -410,8 +518,7 @@ def _text_values(value: Any) -> list[str]:
 
 def _first_text_at_paths(item: dict[str, Any], paths: tuple[str, ...]) -> str | None:
     for path in paths:
-        value = _path(item, path)
-        text = _first_text(value)
+        text = _first_text(_path(item, path))
         if text:
             return _clean_text(text)
     return None
@@ -453,7 +560,16 @@ def _first_text(*values: Any) -> str | None:
         if value is None or isinstance(value, bool):
             continue
         if isinstance(value, dict):
-            for key in ("text", "label", "name", "title", "displayName", "displayText", "value"):
+            for key in (
+                "text",
+                "label",
+                "name",
+                "title",
+                "displayName",
+                "displayText",
+                "returnWindow",
+                "value",
+            ):
                 child = value.get(key)
                 if isinstance(child, str) and child.strip():
                     return _clean_text(child)
@@ -481,12 +597,12 @@ def _positive_number(value: Any, *, allow_zero: bool = False) -> float | None:
             if parsed is not None:
                 return parsed
         return None
+    match = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+    if not match:
+        return None
     try:
-        match = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
-        if not match:
-            return None
         parsed = float(match.group(0))
-    except (TypeError, ValueError):
+    except ValueError:
         return None
     if parsed > 0 or (allow_zero and parsed == 0):
         return parsed

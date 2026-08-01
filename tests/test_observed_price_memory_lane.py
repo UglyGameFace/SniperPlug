@@ -88,13 +88,13 @@ def test_legacy_or_partial_price_memory_markers_cannot_pass_public_gate():
         api_discount_percent=80,
         api_reference_path="sniperplug.global_exact_offer_memory.stable_price",
         direct_product_url="https://www.walmart.com/ip/789",
-        selected_offer_id="offer-789",
         variant_attributes={
             "priceMemoryIdentity": "walmart:789",
             "referencePriceTrusted": "yes",
             "trustedReferenceSource": "sniperplug.global_exact_offer_memory.stable_price",
         },
     )
+    card.selected_offer_id = "offer-789"
 
     assert not is_public_deal_candidate(card, source_label="autoscan:walmart", min_discount=50)
 

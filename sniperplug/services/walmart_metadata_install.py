@@ -10,6 +10,18 @@ _PATCH_FLAG = "_sniperplug_product_metadata_installed"
 _ORIGINAL_ATTR = "_sniperplug_product_metadata_original_builder"
 _REVIEW_PATCH_FLAG = "_sniperplug_walmart_metadata_bridge_installed"
 _RENDERER_PATCH_FLAG = "_sniperplug_walmart_metadata_lines_installed"
+_EXACT_DETAIL_MARKERS = {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "queue",
+    "queued",
+    "exact",
+    "detail",
+    "recheck",
+    "verification_queue",
+}
 
 
 def install_walmart_product_metadata(provider: Any) -> Any:
@@ -35,21 +47,13 @@ def install_walmart_product_metadata(provider: Any) -> Any:
                 if candidate is None or not isinstance(item, dict):
                     return candidate
 
-                metadata_map = getattr(request, "metadata", None)
-                request_metadata = metadata_map if isinstance(metadata_map, dict) else {}
-                exact_detail = str(
-                    request_metadata.get("exact_detail_price_check")
-                    or request_metadata.get("exact_detail")
-                    or ""
-                ).strip().lower() in {"1", "true", "yes", "on"}
-
                 metadata = extract_walmart_product_metadata(
                     item,
                     current_price=getattr(candidate, "api_current_price", None)
                     or getattr(candidate, "current_price", None),
                     reference_price=getattr(candidate, "api_reference_price", None)
                     or getattr(candidate, "typical_price", None),
-                    exact_detail=exact_detail,
+                    exact_detail=is_exact_detail_request(request),
                 )
 
                 attrs = dict(getattr(candidate, "variant_attributes", None) or {})
@@ -74,6 +78,29 @@ def install_walmart_product_metadata(provider: Any) -> Any:
     _install_review_card_bridge()
     _install_public_renderer_bridge()
     return provider
+
+
+def is_exact_detail_request(request: Any) -> bool:
+    """Recognize foreground, queued, recheck, and future exact-detail markers."""
+
+    source_key = str(getattr(request, "source_key", "") or "").strip().lower()
+    if source_key.startswith("walmart_exact_detail") or (
+        source_key.startswith("walmart") and "exact" in source_key and "detail" in source_key
+    ):
+        return True
+
+    metadata = getattr(request, "metadata", None)
+    values = metadata if isinstance(metadata, dict) else {}
+    for key in (
+        "exact_detail_price_check",
+        "exact_detail",
+        "exact_item_detail",
+        "detail_recheck",
+    ):
+        marker = str(values.get(key) or "").strip().lower().replace("-", "_")
+        if marker in _EXACT_DETAIL_MARKERS:
+            return True
+    return False
 
 
 def walmart_product_metadata_installed(provider: Any) -> bool:

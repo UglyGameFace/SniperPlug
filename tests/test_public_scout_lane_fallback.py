@@ -6,19 +6,20 @@ POSTS = Path("sniperplug/services/public_deal_posts.py").read_text(encoding="utf
 DB = Path("sniperplug/storage/db.py").read_text(encoding="utf-8")
 
 
-def test_scout_quality_helpers_remain_available_for_private_review():
+def test_scout_quality_helpers_remain_available_for_explicit_review_workflows():
     assert "PUBLIC_SCOUT_LANE_FIELD" in QUALITY
     assert "prepare_public_scout_candidate" in QUALITY
     assert "PUBLIC_SCOUT_VALUE_TERMS" in QUALITY
     assert "not Verified Markdown" in QUALITY
 
 
-def test_autoscan_does_not_publish_scout_fallback_when_verified_lane_empty():
+def test_autoscan_does_not_show_scout_fallback_when_verified_lane_empty():
     assert "NATIVE_PUBLIC_SCOUT_LIMIT" not in NATIVE
     assert "allow_review_scout=True" not in NATIVE
     assert "Public Scout Lane posted" not in NATIVE
-    assert "Verified API Threshold Only" in NATIVE
-    assert "Anything uncertain remains private for staff review" in NATIVE
+    assert "Exact-Verified Deals Only" in NATIVE
+    assert "Anything uncertain is suppressed and never shown as a deal" in NATIVE
+    assert "ManualReviewShareView" not in NATIVE
 
 
 def test_public_posts_retain_explicit_scout_guard_for_non_autoscan_callers():

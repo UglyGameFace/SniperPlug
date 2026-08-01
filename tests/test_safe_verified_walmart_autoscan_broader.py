@@ -8,10 +8,11 @@ NATIVE = (ROOT / "sniperplug/cogs/native_auto_scan_runner.py").read_text(encodin
 RESILIENT = (ROOT / "sniperplug/cogs/resilient_auto_scan_runner.py").read_text(encoding="utf-8")
 
 
-def test_public_scout_lane_stays_private_in_autoscan():
+def test_public_scout_lane_is_never_user_visible_in_autoscan():
     combined = AUTO + NATIVE + RESILIENT
     assert "allow_review_scout=True" not in combined
-    assert "Anything uncertain remains private for staff review" in NATIVE
+    assert "Anything uncertain is suppressed and never shown as a deal" in NATIVE
+    assert "ManualReviewShareView" not in NATIVE
 
 
 def test_manual_and_scheduled_autoscan_use_broad_public_safe_builder():

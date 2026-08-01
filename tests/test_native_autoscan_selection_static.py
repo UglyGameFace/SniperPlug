@@ -35,9 +35,10 @@ def test_native_manual_autoscan_is_broad_public_safe_sweep() -> None:
 
 def test_native_autoscan_uses_verified_only_public_threshold() -> None:
     source = read("sniperplug/cogs/native_auto_scan_runner.py")
-    assert "Verified-only public policy" in source
-    assert "Anything uncertain remains private for staff review" in source
+    assert "Verified-only result policy" in source
+    assert "Anything uncertain is suppressed and never shown as a deal" in source
     assert "min_public_discount=result.min_discount" in source
+    assert 'public_mode="Exact-Verified Deals Only"' in source
     assert "NATIVE_SCOUT_MIN_SCORE" not in source
     assert "allow_review_scout=True" not in source
 

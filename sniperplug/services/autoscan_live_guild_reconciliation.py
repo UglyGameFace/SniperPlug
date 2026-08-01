@@ -62,7 +62,10 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
         }
 
     conn = db.require_conn()
+    # Persist both the tombstone table creation and any releases for guilds the
+    # bot has genuinely rejoined before using the table as the source of truth.
     await clear_live_ghost_tombstones(conn, live_guild_ids)
+    await conn.commit()
     tombstoned = await load_ghost_tombstones(conn)
     visible_ghost_ids = await _discover_ghost_ids(conn, live_guild_ids)
     already_quarantined = visible_ghost_ids & tombstoned

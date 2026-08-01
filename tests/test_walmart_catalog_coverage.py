@@ -10,6 +10,7 @@ from sniperplug.cogs.resilient_auto_scan_runner import (
     _install_catalog_coverage_builder,
     _release_catalog_coverage_builder,
 )
+from sniperplug.services import walmart_catalog_coverage as coverage
 from sniperplug.services.verified_discount_hunt import HUNT_PRESETS
 from sniperplug.services.walmart_catalog_coverage import (
     CATALOG_PROBE_ROUTES,
@@ -111,7 +112,12 @@ def test_manual_pass_uses_extra_catalog_probes_without_duplicates() -> None:
     assert any(query in CATALOG_PROBE_ROUTES for query in preset.queries)
 
 
-def test_defensive_fallback_cannot_leak_private_promo_routes() -> None:
+def test_defensive_fallback_cannot_leak_private_promo_routes(monkeypatch) -> None:
+    # Empty the normal tools/probe pool so the test genuinely reaches the
+    # defensive deal-week fallback instead of filling every slot earlier.
+    monkeypatch.setattr(coverage, "AUTO_TOOLS_FALLBACK", ())
+    monkeypatch.setattr(coverage, "CATALOG_PROBE_ROUTES", ())
+
     presets = {
         "deal_week": HuntPreset(
             "deal_week",
@@ -139,7 +145,7 @@ def test_defensive_fallback_cannot_leak_private_promo_routes() -> None:
     preset = build_complete_broad_preset(
         presets,
         guild_id=0,
-        query_count=25,
+        query_count=8,
         now=0,
     )
 

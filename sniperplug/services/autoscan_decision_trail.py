@@ -135,5 +135,5 @@ def no_post_plain_english(
     if public_candidate_count <= 0:
         return "Verified cards existed, but none reached the final public-quality lane."
     if fresh_count <= 0:
-        return "Public-quality cards existed, but the detailed decision trail shows the exact duplicate, reservation, quality, or cache gate that blocked each one."
+        return "Public-quality cards existed, but fresh/duplicate/preflight gates blocked them; the detailed decision trail now shows the exact duplicate, reservation, quality, or cache reason for each one."
     return "Fresh public-quality cards reached the public guard, but final posting gates blocked them."

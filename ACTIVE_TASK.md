@@ -1,50 +1,35 @@
 # Active Task
 
 ## Status
-Complete — SniperPlug now has a unified `/movies` command group for official reusable free movie-ticket drops.
+In progress — make scheduled Walmart scans retain bounded observed-price history so verified price-drop deals can mature and post.
 
 ## Scope
-Add official Atom Promotions Hub monitoring without requiring an Atom API. Server owners choose the Discord destination through a channel selector. SniperPlug fetches the public first-party page, extracts reusable free-ticket codes and their terms, stores discoveries, suppresses duplicate delivery per guild, and posts only public reusable offers.
+Repair the authoritative autoscan collector only. Keep the strict verified public threshold, four scheduled routes, eight manual routes, bounded provider concurrency, and one scheduled guild scan at a time.
 
-## Execution path inspected
-- `sniperplug.bot.SniperPlugBot.setup_hook` remains the single cog-registration path.
-- `MovieTicketsCog` is registered once and owns the one automatic polling loop.
-- `MovieTicketStore` uses the existing SQLite/Turso connection contract.
-- `AtomPromotionsClient` is the one external fetch path and only accepts allowlisted HTTPS Atom hosts.
+## Root cause
+- The live autoscan path called `collect_verified_discount_cards(... use_price_memory=False)`.
+- Logs therefore reported `price_memory_summary: not used` after every scan.
+- Walmart frequently omits trustworthy reference prices, so strict verification rejected nearly every product.
+- Because scheduled scans discarded observations, SniperPlug could never build its own exact-item historical baseline and later prove a real price drop.
 
-## Implemented command surface
-- `/movies setup` — enable alerts and select a text channel.
-- `/movies status` — show destination, source health, last scan, and totals.
-- `/movies latest` — refresh and show currently detected official offers.
-- `/movies scan` — run an immediate official-source refresh and deliver new drops.
-- `/movies test-alert` — verify channel permissions and delivery safely.
-- `/movies disable` — stop automatic delivery.
-- `/movies sources` — explain which official channels are automated versus informational.
+## Changes
+- Delegate the authoritative autoscan collector to the existing bounded observed-memory service.
+- Preserve two pages per route, concurrency three inside the provider collector, a four-item memory recheck seed limit, and a 300-observation write cap per pass.
+- Keep all public-deal quality gates unchanged.
+- Add structural regressions forbidding `use_price_memory=False` on autoscan.
 
-## Safety and reliability
-- No hardcoded guild or channel IDs.
-- One global Atom source check every 60 seconds regardless of server count.
-- Conditional requests, bounded timeouts, response-size limits, a descriptive user agent, and a source lock.
-- Public reusable free-ticket codes are separated from partner-issued, account-targeted, emailed, SMS, app-push, or unique codes.
-- Sweepstakes, discounts, concessions, BOGO offers, and non-free promotional copy fail closed.
-- Source state, discoveries, active status, and per-guild delivery reservations persist across restarts.
-- Failed page validation preserves the last verified cache instead of deleting or guessing.
-
-## Validation
-- Repository compilation passed.
-- Import smoke passed: 30 critical modules and 15 required symbols.
-- Full pytest suite passed: 676 tests.
-- Current-style Atom fixture extracted `NIMRODSATOM` and `ATOMICECREAM` while excluding the Samsung-issued private code.
-- SQLite config, source-state, active-drop replacement, failed-delivery retry, sent-delivery dedupe, and deactivation regressions passed.
-- PR #157 is mergeable with current `main`.
+## Validation required
+- Compile changed runtime and tests.
+- Run targeted observed-memory and autoscan tests.
+- Run import smoke.
+- Run complete pytest suite.
+- Remove temporary applicator/workflow and inspect final diff before merge.
 
 ## Cleanup status
-Complete. The final diff contains the task record, explicit HTTP dependency, smoke wiring, one registered cog, one source/store service, and focused tests. No temporary workflow, duplicate runtime, or unrelated feature change remains.
+Pending.
 
 ## Blockers
 None.
 
 ## Backlog
-- Add authenticated/consented email, SMS, or mobile-push ingestion only when a safe source connection is available.
-- Add official studio/distributor adapters individually after validating stable first-party pages or feeds.
-- Improve scheduled Walmart zero-post diagnostics surfaced to server owners.
+- Surface observation baseline counts and time-to-maturity in `/autoscan_health` after this fix is deployed.

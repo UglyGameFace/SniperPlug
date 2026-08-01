@@ -13,6 +13,7 @@ from discord.ext import commands, tasks
 from sniperplug.cogs.deal_scanner import DealCard, HuntPreset, provider_health_error_message, safe_defer, safe_send_interaction
 from sniperplug.cogs.public_alerts import auto_scan_allowed, record_auto_scan_run
 from sniperplug.services.autoscan_history import save_autoscan_report
+from sniperplug.services.autoscan_observed_price_memory import run_autoscan_verified_category_with_observed_memory
 from sniperplug.services.autoscan_decision_trail import explain_autoscan_decision_trail, no_post_plain_english
 from sniperplug.services.deal_confidence import DEFAULT_AUTOSCAN_CONFIDENCE_FLOOR, select_confident_public_cards
 from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
@@ -612,12 +613,17 @@ def rotated_query_slice(queries: tuple[str, ...], *, guild_id: int, query_count:
 
 
 async def run_autoscan_verified_category(db, guild_id: int, *, preset: HuntPreset) -> VerifiedHuntResult:
-    return await collect_verified_discount_cards(
-        requested_by="autoscan",
+    """Run the bounded autoscan collector while retaining exact-item price observations.
+
+    Scheduled scans stay lightweight (two pages per route, bounded concurrency and
+    capped observation writes), but they must keep trustworthy historical prices.
+    Otherwise every scan starts from zero and observed-price-drop proof can never
+    mature into a verified public deal.
+    """
+    return await run_autoscan_verified_category_with_observed_memory(
+        db,
+        guild_id,
         preset=preset,
-        db=db,
-        guild_id=guild_id,
-        use_price_memory=False,
     )
 
 

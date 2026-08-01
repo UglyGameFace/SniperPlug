@@ -8,15 +8,32 @@ from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.providers.registry import provider_registry
-from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route
-from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
-from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT, get_starting_deal_percent, normalize_starting_deal_percent
-from sniperplug.services.low_price_scout import scout_low_price_leads
-from sniperplug.services.walmart_exact_price_enrichment import enrich_walmart_exact_prices
-from sniperplug.services.walmart_observed_price_memory import ObservedPriceMemorySelection, select_observed_price_drop_cards
-from sniperplug.services.walmart_price_memory import remembered_walmart_search_seeds
-from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
 from sniperplug.services import verified_discount_hunt as hunt
+from sniperplug.services.deal_finder_telemetry import (
+    SearchRouteStats,
+    merge_route_stats,
+    tag_candidates_with_route,
+)
+from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
+from sniperplug.services.deal_threshold_settings import (
+    DEFAULT_STARTING_DEAL_PERCENT,
+    get_starting_deal_percent,
+    normalize_starting_deal_percent,
+)
+from sniperplug.services.low_price_scout import scout_low_price_leads
+from sniperplug.services.walmart_exact_price_enrichment import (
+    enrich_walmart_exact_prices,
+    exact_detail_verified_candidates,
+)
+from sniperplug.services.walmart_observed_price_memory import (
+    ObservedPriceMemorySelection,
+    select_observed_price_drop_cards,
+)
+from sniperplug.services.walmart_price_memory import remembered_walmart_search_seeds
+from sniperplug.services.walmart_review_candidates import (
+    ReviewCandidateResult,
+    build_review_candidate_cards,
+)
 
 
 AUTOSCAN_SEARCH_CONCURRENCY = 3
@@ -49,9 +66,17 @@ class AutoscanPriceMemorySelection:
 def observed_drop_examples(cards: list[Any], *, limit: int = 3) -> str:
     examples: list[str] = []
     for card in cards[: max(1, int(limit))]:
-        label = compact_label(getattr(card, "label", None) or getattr(card, "title", None) or "observed drop")
-        discount = getattr(card, "api_discount_percent", None) or getattr(card, "discount", None)
-        current = getattr(card, "api_current_price", None) or getattr(card, "current_price", None)
+        label = compact_label(
+            getattr(card, "label", None)
+            or getattr(card, "title", None)
+            or "observed drop"
+        )
+        discount = getattr(card, "api_discount_percent", None) or getattr(
+            card, "discount", None
+        )
+        current = getattr(card, "api_current_price", None) or getattr(
+            card, "current_price", None
+        )
         bits = [label]
         if discount is not None:
             bits.append(f"{float(discount):.0f}% drop")
@@ -75,16 +100,17 @@ async def collect_verified_discount_cards_with_observed_memory(
     use_price_memory: bool = False,
     min_discount: int | None = None,
 ) -> hunt.VerifiedHuntResult:
-    """Autoscan collector with global exact-offer observed price memory.
+    """Discover broadly, then surface only official exact-detail Walmart rows.
 
-    Search responses discover candidates. Only exact-detail-confirmed item,
-    offer, seller, variant, condition, and fulfillment fingerprints may train
-    or create observed-price public proof.
+    Search responses are candidate discovery only. Every card shown to users is
+    rebuilt from Walmart's exact item-detail response before card construction.
     """
 
     preset = preset or hunt.ALL_VERIFIED_PRESET
     starting_discount = normalize_starting_deal_percent(
-        min_discount if min_discount is not None else await get_starting_deal_percent(
+        min_discount
+        if min_discount is not None
+        else await get_starting_deal_percent(
             db,
             guild_id,
             fallback=DEFAULT_STARTING_DEAL_PERCENT,
@@ -191,6 +217,13 @@ async def collect_verified_discount_cards_with_observed_memory(
         min_discount=starting_discount,
     )
     deduped_candidates = exact_prices.candidates
+    exact_candidates = exact_detail_verified_candidates(deduped_candidates)
+    hidden_search_only = max(0, len(deduped_candidates) - len(exact_candidates))
+    if hidden_search_only:
+        warnings.append(
+            "Official Walmart detail gate: "
+            f"**{hidden_search_only}** search-only candidate(s) were kept out of cards."
+        )
     if (
         exact_prices.attempted
         or exact_prices.identity_mismatches
@@ -202,10 +235,10 @@ async def collect_verified_discount_cards_with_observed_memory(
     merged_route_stats = merge_route_stats(route_stats)
     aggregate = ProviderScanResult(
         provider_key="walmart",
-        candidates=tuple(deduped_candidates),
+        candidates=tuple(exact_candidates),
         warnings=tuple(warnings),
         page=1,
-        page_size=len(all_candidates),
+        page_size=len(exact_candidates),
         start_index=1,
         has_next_page=True,
     )
@@ -217,11 +250,11 @@ async def collect_verified_discount_cards_with_observed_memory(
     verified_cards = rank_verified_cards(hunt.dedupe_cards(verified_cards))
 
     review_candidates = build_review_candidate_cards(
-        list(deduped_candidates),
+        exact_candidates,
         limit=hunt.REVIEW_LEAD_LIMIT,
     )
     scout_cards = scout_low_price_leads(
-        deduped_candidates,
+        exact_candidates,
         limit=hunt.REVIEW_LEAD_LIMIT,
         search_query="",
     )
@@ -247,14 +280,11 @@ async def collect_verified_discount_cards_with_observed_memory(
         observed_memory = await select_observed_price_drop_cards(
             db,
             guild_id=guild_id,
-            candidates=list(deduped_candidates),
+            candidates=exact_candidates,
             min_discount=starting_discount,
             limit=5,
             max_observations=AUTOSCAN_OBSERVED_MEMORY_MAX_WRITES,
         )
-        # Never let the older guild/SKU memory path mutate Walmart public proof.
-        # Verified API markdown cards keep their own exact reference, while only
-        # the global exact-offer service may add observed-price-drop cards.
         memory_cards = hunt.dedupe_cards([*verified_cards, *observed_memory.cards])
         cards = rank_verified_cards(memory_cards)
         price_memory = AutoscanPriceMemorySelection(

@@ -230,6 +230,7 @@ async def observe_exact_offer(
                 stable_last_confirmed_at, lowest_seen_cents,
                 first_seen_at, last_seen_at, last_status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, 0, NULL, NULL, ?, ?, ?, 'learning')
+            ON CONFLICT(identity_key) DO NOTHING
             """,
             (
                 identity.identity_key,
@@ -249,16 +250,31 @@ async def observe_exact_offer(
                 now_iso,
             ),
         )
-        return GlobalOfferObservation(
-            identity=identity,
-            status="learning",
-            previous_price=None,
-            current_price=current_price,
-            stable_reference_price=None,
-            lowest_seen_price=current_price,
-            candidate_seen_count=1,
-            reason="first exact-offer observation; waiting for a separated confirmation",
+        cursor = await conn.execute(
+            f"SELECT * FROM {GLOBAL_OFFER_MEMORY_TABLE} WHERE identity_key = ?",
+            (identity.identity_key,),
         )
+        row = await cursor.fetchone()
+        if row is None:
+            return GlobalOfferObservation(
+                identity=identity,
+                status="write_failed",
+                previous_price=None,
+                current_price=current_price,
+                stable_reference_price=None,
+                lowest_seen_price=None,
+                reason="global exact-offer row could not be inserted or read",
+            )
+        if not _row_identity_matches(row, identity):
+            return GlobalOfferObservation(
+                identity=identity,
+                status="identity_collision",
+                previous_price=None,
+                current_price=current_price,
+                stable_reference_price=None,
+                lowest_seen_price=None,
+                reason="concurrent stored fingerprint components did not match; row was not used",
+            )
 
     previous_price = _cents_to_price(_row_get(row, "current_price_cents"))
     stable_price = _valid_stable_reference(row, now_dt)

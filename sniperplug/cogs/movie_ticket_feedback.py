@@ -28,6 +28,7 @@ MOVIE_TICKET_ALERT_TITLES = frozenset(
     {
         "🎟️ FREE ATOM TICKET DROP",
         "🎟️ FREE FANDANGO TICKET OFFER",
+        "🎬 GOFOBO FREE SCREENING ALERT",
     }
 )
 
@@ -48,11 +49,13 @@ class MovieTicketFeedbackView(discord.ui.View):
         self.worked_button.label = f"Worked ({current.worked})"
         self.failed_button.label = f"Didn't work ({current.failed})"
         normalized_offer_url = offer_url or ATOM_PROMOTIONS_URL
-        offer_label = (
-            "Open official Fandango offer"
-            if "fandango" in normalized_offer_url.lower()
-            else "Open official Atom offer"
-        )
+        lowered_offer_url = normalized_offer_url.lower()
+        if "gofobo" in lowered_offer_url:
+            offer_label = "Open official Gofobo screening"
+        elif "fandango" in lowered_offer_url:
+            offer_label = "Open official Fandango offer"
+        else:
+            offer_label = "Open official Atom offer"
         self.add_item(
             discord.ui.Button(
                 label=offer_label,
@@ -285,7 +288,7 @@ def feedback_confirmation(feedback: MovieTicketFeedbackResult) -> str:
     return (
         f"{action}\n"
         f"Community results: **{counts.worked} worked** • **{counts.failed} didn't work**.\n"
-        "Reports help other users, but they do not automatically disable an official code because theater, account, date, and inventory restrictions can differ."
+        "Reports help other users, but they do not automatically disable an official code or screening because theater, account, ZIP, date, and inventory restrictions can differ."
     )
 
 

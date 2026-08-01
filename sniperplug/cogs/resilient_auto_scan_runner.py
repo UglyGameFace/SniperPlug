@@ -11,7 +11,11 @@ from discord.ext import tasks
 from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog as NativeAutoScanRunnerCog
 from sniperplug.providers.registry import provider_registry
-from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
+from sniperplug.services.autoscan_live_guild_reconciliation import (
+    is_live_bot_guild,
+    list_live_public_alert_guilds,
+    reconcile_live_public_alert_setups,
+)
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
 from sniperplug.services.walmart_exact_verification_queue import (
     process_walmart_exact_verification_queue_batch,
@@ -67,7 +71,8 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         legacy.log.info(
             "Autoscan hardening active python=%s platform=%s scheduled_routes=%s "
             "scheduled_floor_hours=6 provider_concurrency=1 live_guild_self_heal=true "
-            "exact_queue_batch=%s exact_queue_interval_s=%s metadata_snapshot_nodes=2500",
+            "ghost_tombstones=true exact_queue_batch=%s exact_queue_interval_s=%s "
+            "metadata_snapshot_nodes=2500",
             platform.python_version(),
             sys.platform,
             SCHEDULED_QUERY_COUNT,
@@ -94,10 +99,23 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         guild_id: int,
         force: bool,
     ) -> None:
+        if not is_live_bot_guild(self.bot, guild_id):
+            await self._safe_autoscan_followup(
+                interaction,
+                "This server is no longer in SniperPlug's live Discord guild cache, so the scan was stopped before any guild-scoped writes.",
+            )
+            return
+
         lock = legacy.autoscan_lock(guild_id)
         async with lock:
             started = time.monotonic()
             try:
+                if not is_live_bot_guild(self.bot, guild_id):
+                    await self._safe_autoscan_followup(
+                        interaction,
+                        "The server disconnected before the scan started, so no guild-scoped scan records were written.",
+                    )
+                    return
                 target_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
                 repair = await legacy.repair_public_alert_setup(
                     self.bot.db,
@@ -185,11 +203,14 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
 
         try:
             self._runtime_phase = "setup_reconciliation"
-            repair_summary = await repair_all_public_alert_setups(self.bot.db, self.bot)
+            repair_summary = await reconcile_live_public_alert_setups(self.bot.db, self.bot)
             legacy.log.info(
                 "Autoscan live-guild setup reconciliation complete ghost_rows_deleted=%s "
-                "repaired=%s healthy=%s needs_action=%s",
+                "ghost_rows_quarantined=%s stale_replica_rows_ignored=%s repaired=%s "
+                "healthy=%s needs_action=%s",
                 repair_summary.get("ghost_rows_deleted", 0),
+                repair_summary.get("ghost_rows_quarantined", 0),
+                repair_summary.get("ghost_rows_already_quarantined", 0),
                 repair_summary.get("repaired", 0),
                 repair_summary.get("healthy", 0),
                 repair_summary.get("needs_action", 0),
@@ -201,7 +222,22 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         finally:
             self._runtime_phase = "idle"
 
-        guilds = await legacy.list_public_alert_guilds(self.bot.db, bot=self.bot)
+        live_ids = {
+            int(guild.id) for guild in list(getattr(self.bot, "guilds", []) or [])
+        }
+        for cached_guild_id in tuple(_NEXT_SCHEDULED_RUN_AT):
+            if cached_guild_id not in live_ids:
+                _NEXT_SCHEDULED_RUN_AT.pop(cached_guild_id, None)
+
+        load_result = await list_live_public_alert_guilds(self.bot.db, self.bot)
+        guilds = list(load_result.guilds)
+        if load_result.stale_visible_ids:
+            legacy.log.debug(
+                "Ignored non-live public-alert rows without a second delete pass "
+                "guild_ids=%s tombstoned=%s",
+                list(load_result.stale_visible_ids),
+                list(load_result.tombstoned_visible_ids),
+            )
         if not guilds:
             legacy.log.warning(
                 "Autoscan found no eligible live guilds after reconciliation; run /autoscan_health "
@@ -227,6 +263,14 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
 
     async def _run_scheduled_guild(self, guild: legacy.AutoScanGuild, *_unused) -> None:
         gid = int(guild.guild_id)
+        if not is_live_bot_guild(self.bot, gid):
+            _NEXT_SCHEDULED_RUN_AT.pop(gid, None)
+            legacy.log.warning(
+                "Dropped stale scheduled autoscan before start guild=%s; no guild-scoped writes were allowed",
+                gid,
+            )
+            return
+
         now = time.monotonic()
         due_at = float(_NEXT_SCHEDULED_RUN_AT.get(gid, 0.0))
         if now < due_at:
@@ -244,6 +288,13 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
 
         async with _WALMART_SCHEDULE_LOCK:
             async with guild_lock:
+                if not is_live_bot_guild(self.bot, gid):
+                    _NEXT_SCHEDULED_RUN_AT.pop(gid, None)
+                    legacy.log.warning(
+                        "Dropped stale scheduled autoscan after lock wait guild=%s; no scan was started",
+                        gid,
+                    )
+                    return
                 started = time.monotonic()
                 try:
                     self._runtime_phase = f"scheduled_scan:guild={gid}"
@@ -274,7 +325,12 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                     )
                 finally:
                     self._runtime_phase = "idle"
-                    _NEXT_SCHEDULED_RUN_AT[gid] = time.monotonic() + SCHEDULED_MIN_INTERVAL_SECONDS
+                    if is_live_bot_guild(self.bot, gid):
+                        _NEXT_SCHEDULED_RUN_AT[gid] = (
+                            time.monotonic() + SCHEDULED_MIN_INTERVAL_SECONDS
+                        )
+                    else:
+                        _NEXT_SCHEDULED_RUN_AT.pop(gid, None)
 
     @auto_scan_loop.before_loop
     async def before_auto_scan_loop(self) -> None:

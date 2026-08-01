@@ -19,7 +19,14 @@ _ROUTE_ATTRIBUTE_KEYS = (
     "finderSourceSort",
     "finderSourceOrder",
 )
-_MARKDOWN_TERMS = ("clearance", "rollback", "special buy", "price drop", "reduced price", "deal")
+_MARKDOWN_TERMS = (
+    "clearance",
+    "rollback",
+    "special buy",
+    "price drop",
+    "reduced price",
+    "deal",
+)
 _VALUE_ATTRIBUTE_KEYS = (
     "referenceContextPrice",
     "apiSavingsAmount",
@@ -73,14 +80,11 @@ async def enrich_walmart_exact_prices(
     timeout_seconds: float = DEFAULT_EXACT_DETAIL_TIMEOUT_SECONDS,
     min_discount: int = 50,
 ) -> ExactPriceEnrichmentResult:
-    """Refresh exact Walmart item proof before cards are rendered.
+    """Replace search-level pricing with exact Walmart item-detail proof.
 
-    Search responses remain useful for discovery, but an unconfirmed search-level
-    reference price must never become public Walmart markdown proof. Candidates
-    that cannot be checked because of failure, identity mismatch, provider
-    availability, or the safety cap keep their current price and identity while
-    their search reference/discount proof is quarantined. Observed-price memory
-    can still establish a baseline and later prove a same-item price drop.
+    Search is discovery only. A numeric Walmart reference price is trusted only
+    when the exact detail response resolves to the requested item ID. A source
+    path string without a numeric reference is never sufficient proof.
     """
 
     original = list(candidates)
@@ -206,6 +210,30 @@ async def enrich_walmart_exact_prices(
     )
 
 
+def exact_detail_verified_candidates(
+    candidates: Iterable[SourceCandidate],
+) -> list[SourceCandidate]:
+    """Return only candidates that completed the official exact-detail lookup."""
+
+    verified: list[SourceCandidate] = []
+    for candidate in candidates:
+        attrs = dict(getattr(candidate, "variant_attributes", None) or {})
+        requested_id = _candidate_item_id(candidate)
+        exact_id = str(attrs.get("exactDetailItemId") or "").strip()
+        if (
+            str(attrs.get("exactDetailPriceProof") or "").strip().lower() == "yes"
+            and requested_id is not None
+            and exact_id == requested_id
+            and _positive_number(
+                getattr(candidate, "api_current_price", None)
+                or getattr(candidate, "current_price", None)
+            )
+            is not None
+        ):
+            verified.append(candidate)
+    return verified
+
+
 def _select_candidates(
     candidates: list[SourceCandidate],
     *,
@@ -240,7 +268,9 @@ def _enrichment_priority(candidate: SourceCandidate, *, min_discount: int) -> fl
         return 0.0
 
     attrs = dict(getattr(candidate, "variant_attributes", None) or {})
-    signals = " ".join(str(value or "") for value in getattr(candidate, "signals", ()) or ())
+    signals = " ".join(
+        str(value or "") for value in getattr(candidate, "signals", ()) or ()
+    )
     routes = " ".join(str(attrs.get(key) or "") for key in _ROUTE_ATTRIBUTE_KEYS)
     haystack = f"{signals} {routes}".lower()
 
@@ -286,16 +316,39 @@ def _merge_exact_candidate(
 
     merged_attrs["exactDetailPriceProof"] = "yes"
     merged_attrs["exactDetailItemId"] = item_id
+
+    exact_current = _positive_number(
+        getattr(exact, "api_current_price", None)
+        or getattr(exact, "current_price", None)
+    )
     if getattr(exact, "api_price_path", None):
         merged_attrs["exactDetailCurrentSource"] = str(exact.api_price_path)
-    if getattr(exact, "api_reference_path", None):
-        merged_attrs["exactDetailReferenceSource"] = str(exact.api_reference_path)
+
+    exact_reference = _trusted_reference(exact)
+    if exact_reference is not None:
+        reference_source = str(
+            getattr(exact, "api_reference_path", None)
+            or exact_attrs.get("trustedReferenceSource")
+            or exact_attrs.get("apiReferencePath")
+            or "walmart.exact_detail.reference_price"
+        ).strip()
+        exact.api_reference_price = exact_reference
+        exact.typical_price = exact_reference
+        exact.api_reference_path = reference_source
+        exact.api_discount_percent = _percent_off(exact_current, exact_reference)
+        merged_attrs["exactDetailReferenceSource"] = reference_source
         merged_attrs["exactDetailReferenceStatus"] = "trusted"
         merged_attrs["referencePriceTrusted"] = "yes"
+        merged_attrs["trustedReferencePrice"] = f"{exact_reference:.2f}"
+        merged_attrs["trustedReferenceSource"] = reference_source
         merged_attrs.pop("observedPriceFallback", None)
     else:
         for key in _PRICE_PROOF_ATTRIBUTE_KEYS:
             merged_attrs.pop(key, None)
+        exact.typical_price = None
+        exact.api_reference_price = None
+        exact.api_reference_path = None
+        exact.api_discount_percent = None
         merged_attrs["referencePriceTrusted"] = "no"
         merged_attrs["exactDetailReferenceStatus"] = "missing"
         merged_attrs["observedPriceFallback"] = "exact_item_baseline"
@@ -423,7 +476,7 @@ def _trusted_reference(candidate: Any) -> float | None:
 def _percent_off(current: float | None, reference: float | None) -> float | None:
     if current is None or reference is None or reference <= current or reference <= 0:
         return None
-    return (reference - current) / reference * 100.0
+    return round((reference - current) / reference * 100.0, 2)
 
 
 def _positive_number(value: Any) -> float | None:

@@ -91,7 +91,7 @@ def test_metadata_extractor_captures_all_returned_listing_facts() -> None:
     assert "Open Box — Out of stock" in attrs["conditionOptions"]
     assert attrs["shippingStatus"] == "Available"
     assert attrs["shippingText"] == "Free shipping, arrives Tue, Aug 4"
-    assert attrs["pickupStatus"] == "Check Nearby"
+    assert attrs["pickupStatus"] == "Check nearby"
     assert attrs["deliveryStatus"] == "Not Available"
     assert attrs["returnPolicy"] == "90-day returns"
     assert attrs["fulfillmentLocation"] == "Bridgeport, CT, 06610"

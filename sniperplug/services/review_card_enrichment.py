@@ -100,15 +100,27 @@ def _price_history_text(card: Any, attrs: dict[str, Any], embed: discord.Embed) 
         attrs.get("priceMemoryReferencePrice"),
         _extract_money(_embed_text(embed), r"(?:previously observed by sniperplug|observed previous price)"),
     )
+    exact_detail_verified = str(attrs.get("exactDetailPriceProof") or "").strip().lower() == "yes"
+
     lines: list[str] = []
     if walmart_previous and current and walmart_previous > current:
-        lines.append(f"**Walmart was/reference:** ${walmart_previous:,.2f}")
+        lines.append(f"**Walmart was price:** ${walmart_previous:,.2f}")
+        lines.append("This reference came from Walmart's exact item-detail response.")
     elif observed_previous and current and observed_previous > current:
+        lines.append("**Walmart was price:** Not returned")
         lines.append(f"**Previously observed by SniperPlug:** ${observed_previous:,.2f}")
-        lines.append("This is exact-item history collected by SniperPlug, not a marketplace comparison.")
+        lines.append("This is exact-offer price history collected by SniperPlug, not Walmart's official was price.")
     else:
-        lines.append("**Previous trustworthy price:** Not available yet")
-        lines.append("Walmart did not return a trusted was price, and SniperPlug has not yet observed a higher exact-item price.")
+        lines.append("**Walmart was price:** Not returned")
+        if exact_detail_verified:
+            lines.append("**SniperPlug observed history:** Learning — no trusted higher baseline yet")
+            lines.append(
+                "SniperPlug records the current exact item, offer, seller, variant, condition, and fulfillment price. "
+                "After repeated separated confirmations, a later lower price can be compared with that baseline."
+            )
+        else:
+            lines.append("**SniperPlug observed history:** Not recorded from this result")
+            lines.append("The exact item/offer proof was incomplete, so this result cannot train trusted price history.")
     if current:
         lines.append(f"**Current price:** ${current:,.2f}")
     return "\n".join(lines)

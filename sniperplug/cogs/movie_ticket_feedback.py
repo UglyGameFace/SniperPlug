@@ -24,6 +24,12 @@ MOVIE_WORKED_ID = "movies:ticket-feedback:worked"
 MOVIE_FAILED_ID = "movies:ticket-feedback:failed"
 RECONCILE_SECONDS = 15
 RECONCILE_LIMIT = 100
+MOVIE_TICKET_ALERT_TITLES = frozenset(
+    {
+        "🎟️ FREE ATOM TICKET DROP",
+        "🎟️ FREE FANDANGO TICKET OFFER",
+    }
+)
 
 
 class MovieTicketFeedbackView(discord.ui.View):
@@ -41,11 +47,17 @@ class MovieTicketFeedbackView(discord.ui.View):
         current = counts or MovieTicketFeedbackCounts()
         self.worked_button.label = f"Worked ({current.worked})"
         self.failed_button.label = f"Didn't work ({current.failed})"
+        normalized_offer_url = offer_url or ATOM_PROMOTIONS_URL
+        offer_label = (
+            "Open official Fandango offer"
+            if "fandango" in normalized_offer_url.lower()
+            else "Open official Atom offer"
+        )
         self.add_item(
             discord.ui.Button(
-                label="Open official Atom offer",
+                label=offer_label,
                 style=discord.ButtonStyle.link,
-                url=offer_url or ATOM_PROMOTIONS_URL,
+                url=normalized_offer_url,
                 emoji="🎟️",
                 row=1,
             )
@@ -118,7 +130,7 @@ class MovieTicketFeedbackCog(commands.Cog):
             return
         if not message.guild or not message.embeds:
             return
-        if message.embeds[0].title != "🎟️ FREE ATOM TICKET DROP":
+        if message.embeds[0].title not in MOVIE_TICKET_ALERT_TITLES:
             return
 
         task = asyncio.create_task(self._attach_new_message_after_delivery_commit(message))

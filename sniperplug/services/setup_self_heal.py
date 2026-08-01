@@ -86,6 +86,14 @@ async def repair_all_public_alert_setups(db: Any, bot: discord.Client) -> dict[s
 
 
 async def cleanup_ghost_setup_rows(db: Any, bot: discord.Client) -> int:
+    """Delete setup rows for guilds the bot is no longer connected to.
+
+    Turso/libSQL may return mapping-style rows or positional tuple-style rows.
+    Cleanup must support both shapes; otherwise the scheduler can repeatedly
+    discover and delete the same ghost from one table while silently missing it
+    in another table.
+    """
+
     live_guild_ids = {int(guild.id) for guild in list(getattr(bot, "guilds", []) or [])}
     if not live_guild_ids:
         return 0
@@ -100,9 +108,8 @@ async def cleanup_ghost_setup_rows(db: Any, bot: discord.Client) -> int:
         except Exception:
             continue
         for row in rows:
-            try:
-                guild_id = int(row["guild_id"])
-            except Exception:
+            guild_id = _guild_id_from_row(row)
+            if guild_id is None:
                 continue
             if guild_id not in live_guild_ids:
                 ghost_ids.add(guild_id)
@@ -117,6 +124,26 @@ async def cleanup_ghost_setup_rows(db: Any, bot: discord.Client) -> int:
     if ghost_ids:
         await conn.commit()
     return len(ghost_ids)
+
+
+def _guild_id_from_row(row: Any) -> int | None:
+    values: list[Any] = []
+    try:
+        values.append(row["guild_id"])
+    except Exception:
+        pass
+    try:
+        values.append(row[0])
+    except Exception:
+        pass
+    values.append(getattr(row, "guild_id", None))
+
+    for value in values:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 async def repair_public_alert_setup(

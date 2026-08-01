@@ -7,10 +7,12 @@ from typing import Any
 from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.providers.base import ProviderScanResult
+from sniperplug.providers.registry import provider_registry
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
 from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT, get_starting_deal_percent, normalize_starting_deal_percent
 from sniperplug.services.low_price_scout import scout_low_price_leads
+from sniperplug.services.walmart_exact_price_enrichment import enrich_walmart_exact_prices
 from sniperplug.services.walmart_observed_price_memory import ObservedPriceMemorySelection, select_observed_price_drop_cards
 from sniperplug.services.walmart_price_memory import PriceMemorySelection, remembered_walmart_search_seeds, select_price_intelligent_cards
 from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
@@ -22,6 +24,9 @@ AUTOSCAN_PAGES_PER_QUERY = 2
 AUTOSCAN_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = ((None, None),)
 AUTOSCAN_MEMORY_RECHECK_LIMIT = 4
 AUTOSCAN_OBSERVED_MEMORY_MAX_WRITES = 300
+AUTOSCAN_EXACT_DETAIL_LIMIT = 8
+AUTOSCAN_EXACT_DETAIL_CONCURRENCY = 4
+AUTOSCAN_EXACT_DETAIL_TIMEOUT_SECONDS = 8.0
 
 
 @dataclass(frozen=True)
@@ -140,6 +145,17 @@ async def collect_verified_discount_cards_with_observed_memory(
         route_stats.append(SearchRouteStats(query=query, pages_checked=1, returned_products=len(candidates), warnings=tuple(result.warnings)))
 
     deduped_candidates = deal_scanner.dedupe_candidates(all_candidates)
+    exact_prices = await enrich_walmart_exact_prices(
+        deduped_candidates,
+        provider=provider_registry.get("walmart"),
+        limit=AUTOSCAN_EXACT_DETAIL_LIMIT,
+        concurrency=AUTOSCAN_EXACT_DETAIL_CONCURRENCY,
+        timeout_seconds=AUTOSCAN_EXACT_DETAIL_TIMEOUT_SECONDS,
+    )
+    deduped_candidates = exact_prices.candidates
+    if exact_prices.attempted or exact_prices.identity_mismatches or exact_prices.failed:
+        warnings.append(exact_prices.summary_line())
+
     merged_route_stats = merge_route_stats(route_stats)
     aggregate = ProviderScanResult(
         provider_key="walmart",

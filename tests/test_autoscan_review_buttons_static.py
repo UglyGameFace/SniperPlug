@@ -14,7 +14,9 @@ def test_manual_review_share_uses_paginated_post_buttons() -> None:
     assert "DEFAULT_REVIEW_PAGE_SIZE = 3" in source
     assert "DEFAULT_REVIEW_MAX_CARDS = 12" in source
     assert "page_embeds" in source
-    assert "edit_message" in source
+    assert "await interaction.response.defer()" in source
+    assert "edit_original_response" in source
+    assert "interaction.followup.send" in source
     assert "discord.ButtonStyle.success" in source
     assert "share_review_card" in source
     assert "Manage Server" in source

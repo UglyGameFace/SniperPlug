@@ -9,9 +9,11 @@ import discord
 from discord.ext import tasks
 
 from sniperplug.cogs import auto_scan_runner as legacy
+from sniperplug.cogs import native_auto_scan_runner as native
 from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog as NativeAutoScanRunnerCog
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
+from sniperplug.services.walmart_catalog_coverage import build_complete_broad_preset
 from sniperplug.services.walmart_exact_verification_queue import (
     process_walmart_exact_verification_queue_batch,
 )
@@ -19,7 +21,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
 
 MANUAL_PROGRESS_INTERVAL_SECONDS = 45
 SCHEDULE_LOOP_MINUTES = 30
-SCHEDULED_QUERY_COUNT = 4
+SCHEDULED_QUERY_COUNT = 5
 SCHEDULED_MIN_INTERVAL_SECONDS = 6 * 60 * 60
 EVENT_LOOP_WATCHDOG_INTERVAL_SECONDS = 5
 EVENT_LOOP_LAG_WARNING_SECONDS = 2.0
@@ -38,16 +40,23 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
     """Load-bounded Walmart autoscan runner.
 
     Manual scans remain responsive and keep completed work. Scheduled scans are
-    intentionally much smaller, globally serialized, and protected by a six-hour
+    intentionally bounded, globally serialized, and protected by a six-hour
     safety floor even when a legacy row uses interval_hours=0 for "unlimited".
     Search overflow is handled by one global exact-detail worker that pauses
     while any foreground autoscan is active and shares the same provider lock.
+
+    The production runner also replaces the legacy 15-minute route math with a
+    five-lane catalog coverage planner. Scheduled opportunities advance one real
+    six-hour coverage slot at a time, so route-list lengths can no longer make
+    some Walmart searches permanently unreachable.
     """
 
     def __init__(self, bot):
         super().__init__(bot)
         self._event_loop_watchdog_task: asyncio.Task | None = None
         self._walmart_verification_queue_task: asyncio.Task | None = None
+        self._previous_native_broad_preset_builder = native.build_native_broad_preset
+        native.build_native_broad_preset = build_complete_broad_preset
 
     async def cog_load(self) -> None:
         self.auto_scan_loop.start()
@@ -62,6 +71,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         legacy.log.info(
             "Autoscan hardening active python=%s platform=%s scheduled_routes=%s "
             "scheduled_floor_hours=6 provider_concurrency=1 live_guild_self_heal=true "
+            "catalog_coverage_lanes=5 hart_clearance_lane=true "
             "exact_queue_batch=%s exact_queue_interval_s=%s",
             platform.python_version(),
             sys.platform,
@@ -81,6 +91,8 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         for task in tasks_to_cancel:
             if task is not None:
                 task.cancel()
+        if native.build_native_broad_preset is build_complete_broad_preset:
+            native.build_native_broad_preset = self._previous_native_broad_preset_builder
 
     async def _run_autoscan_now_background(
         self,

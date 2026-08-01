@@ -26,9 +26,11 @@ from sniperplug.services.walmart_exact_price_enrichment import (
     exact_detail_verified_candidates,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
-    enqueue_walmart_exact_verification_candidates,
     load_recent_verified_queue_candidates,
     record_inline_exact_verifications,
+)
+from sniperplug.services.walmart_exact_verification_queue_bulk import (
+    enqueue_walmart_exact_verification_candidates_bulk,
 )
 from sniperplug.services.walmart_observed_price_memory import (
     ObservedPriceMemorySelection,
@@ -229,7 +231,7 @@ async def collect_verified_discount_cards_with_observed_memory(
     deduped_candidates = deal_scanner.dedupe_candidates(all_candidates)
     if db is not None:
         try:
-            queue_enqueue = await enqueue_walmart_exact_verification_candidates(
+            queue_enqueue = await enqueue_walmart_exact_verification_candidates_bulk(
                 db,
                 deduped_candidates,
                 min_discount=starting_discount,

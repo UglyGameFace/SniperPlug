@@ -310,6 +310,34 @@ def test_selector_does_not_write_search_only_rows() -> None:
     run(scenario())
 
 
+def test_concurrent_first_observations_share_one_global_row() -> None:
+    async def scenario() -> None:
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        db = MemoryDB(conn)
+        await ensure_global_offer_memory_table(db)
+        item = candidate(price=100.0)
+        identity = exact_offer_identity(item)
+        assert identity is not None
+        now = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+
+        results = await asyncio.gather(
+            observe_exact_offer(conn, candidate=item, identity=identity, now=now),
+            observe_exact_offer(conn, candidate=candidate(price=100.0), identity=identity, now=now),
+        )
+        await conn.commit()
+
+        cursor = await conn.execute(
+            f"SELECT COUNT(*) AS count FROM {GLOBAL_OFFER_MEMORY_TABLE}"
+        )
+        row = await cursor.fetchone()
+        assert row["count"] == 1
+        assert all(result.status == "learning" for result in results)
+        await conn.close()
+
+    run(scenario())
+
+
 def test_autoscan_does_not_use_legacy_guild_price_memory_for_public_proof() -> None:
     source = open(
         "sniperplug/services/autoscan_observed_price_memory.py",

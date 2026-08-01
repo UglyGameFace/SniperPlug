@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from sniperplug.services.walmart_exact_verification_queue import QUEUE_RETENTION_DAYS
 
 
 QUEUE_TABLE = "walmart_exact_detail_queue"
@@ -18,6 +20,7 @@ class WalmartExactQueueHealth:
     verifying: int = 0
     pending: int = 0
     unavailable: int = 0
+    stale: int = 0
 
     def summary_line(self) -> str:
         return (
@@ -26,47 +29,66 @@ class WalmartExactQueueHealth:
             f"delayed retries **{self.delayed_retries}** • "
             f"identity blocked **{self.identity_blocked}** • "
             f"verified **{self.verified}** • verifying **{self.verifying}** • "
-            f"pending **{self.pending}** • unavailable **{self.unavailable}**"
+            f"pending **{self.pending}** • unavailable **{self.unavailable}** • "
+            f"stale/unclaimable **{self.stale}**"
         )
 
 
 async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
-    """Return full queue state instead of only rows currently due.
+    """Return queue state using the same retention window as the worker.
 
-    The worker's historic `due/pending` number intentionally counts only rows
-    eligible at that instant. This snapshot makes delayed retries and blocked
-    identities visible so `0 due` can no longer be mistaken for `0 unfinished`.
+    ``due_now`` and delayed retry counts intentionally mirror the worker's
+    claimability rules. Old rows outside the discovery-retention window are
+    reported separately as stale/unclaimable instead of inflating due work.
     """
 
     if db is None:
         return WalmartExactQueueHealth()
     conn = db.require_conn()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    discovery_cutoff = (now - timedelta(days=QUEUE_RETENTION_DAYS)).isoformat()
     try:
         cursor = await conn.execute(
             f"""
+            WITH queue_state AS (
+                SELECT *,
+                    CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END AS is_recent
+                FROM {QUEUE_TABLE}
+            )
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE
-                    WHEN next_attempt_at <= ?
+                    WHEN is_recent = 1
+                     AND next_attempt_at <= ?
                      AND (lease_until IS NULL OR lease_until < ?)
                     THEN 1 ELSE 0 END) AS due_now,
                 SUM(CASE
-                    WHEN status IN ('retry', 'failed', 'incomplete_identity', 'identity_mismatch')
+                    WHEN is_recent = 1
+                     AND status IN ('retry', 'failed', 'incomplete_identity', 'identity_mismatch')
                      AND next_attempt_at > ?
                     THEN 1 ELSE 0 END) AS delayed_retries,
                 SUM(CASE
-                    WHEN status IN ('incomplete_identity', 'identity_mismatch')
+                    WHEN is_recent = 1
+                     AND status IN ('incomplete_identity', 'identity_mismatch')
                     THEN 1 ELSE 0 END) AS identity_blocked,
                 SUM(CASE
-                    WHEN status LIKE 'verified_%'
+                    WHEN is_recent = 1
+                     AND status LIKE 'verified_%'
                     THEN 1 ELSE 0 END) AS verified,
-                SUM(CASE WHEN status = 'verifying' THEN 1 ELSE 0 END) AS verifying,
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN status = 'not_buyable' THEN 1 ELSE 0 END) AS unavailable
-            FROM {QUEUE_TABLE}
+                SUM(CASE
+                    WHEN is_recent = 1 AND status = 'verifying'
+                    THEN 1 ELSE 0 END) AS verifying,
+                SUM(CASE
+                    WHEN is_recent = 1 AND status = 'pending'
+                    THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE
+                    WHEN is_recent = 1 AND status = 'not_buyable'
+                    THEN 1 ELSE 0 END) AS unavailable,
+                SUM(CASE WHEN is_recent = 0 THEN 1 ELSE 0 END) AS stale
+            FROM queue_state
             """,
-            (now_iso, now_iso, now_iso),
+            (discovery_cutoff, now_iso, now_iso, now_iso),
         )
         row = await cursor.fetchone()
     except Exception:
@@ -81,6 +103,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
         verifying=_as_int(_row_get(row, "verifying", 5)),
         pending=_as_int(_row_get(row, "pending", 6)),
         unavailable=_as_int(_row_get(row, "unavailable", 7)),
+        stale=_as_int(_row_get(row, "stale", 8)),
     )
 
 

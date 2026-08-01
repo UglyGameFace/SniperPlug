@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import discord
 
 from sniperplug.cogs.deal_scanner import DealCard
+from sniperplug.services import fresh_deal_filter as fresh_filter
 from sniperplug.services.autoscan_decision_trail import explain_autoscan_decision_trail
 from sniperplug.services.fresh_deal_filter import select_fresh_deal_cards
 from sniperplug.services.walmart_exact_queue_health import (
@@ -51,7 +52,7 @@ class _Cursor:
 
 class _Connection:
     async def execute(self, _sql, _params=()):
-        return _Cursor((455, 0, 310, 290, 120, 0, 25, 10))
+        return _Cursor((455, 0, 310, 290, 120, 0, 25, 10, 5))
 
 
 class _Database:
@@ -66,11 +67,13 @@ def test_queue_health_distinguishes_due_zero_from_unfinished_rows() -> None:
     assert health.due_now == 0
     assert health.delayed_retries == 310
     assert health.identity_blocked == 290
+    assert health.stale == 5
     assert "due now **0**" in health.summary_line()
     assert "identity blocked **290**" in health.summary_line()
+    assert "stale/unclaimable **5**" in health.summary_line()
 
 
-def test_fresh_filter_annotates_exact_public_quality_failure() -> None:
+def test_fresh_filter_does_not_promote_score_only_card_without_exact_proof() -> None:
     card = DealCard(
         embed=discord.Embed(title="Missing exact price"),
         url="https://www.walmart.com/ip/123",
@@ -78,7 +81,6 @@ def test_fresh_filter_annotates_exact_public_quality_failure() -> None:
         score=100,
         discount=70,
     )
-    card.should_alert = False
 
     selection = asyncio.run(
         select_fresh_deal_cards(
@@ -91,7 +93,33 @@ def test_fresh_filter_annotates_exact_public_quality_failure() -> None:
     )
 
     assert selection.fresh == []
+    assert selection.not_alertable == 1
     assert "missing a numeric exact current price" in card.autoscan_preflight_reason
+
+
+def test_no_guild_preflight_labels_quality_card_outside_limit(monkeypatch) -> None:
+    first = SimpleNamespace()
+    second = SimpleNamespace()
+    monkeypatch.setattr(
+        fresh_filter,
+        "prepare_public_deal_candidate",
+        lambda card, **kwargs: True,
+    )
+
+    selection = asyncio.run(
+        select_fresh_deal_cards(
+            None,
+            guild_id=None,
+            cards=[first, second],
+            limit=1,
+            min_public_discount=50,
+            source_label="test",
+        )
+    )
+
+    assert selection.fresh == [first]
+    assert first.autoscan_preflight_reason == "passed public quality preflight"
+    assert second.autoscan_preflight_reason == "not selected: outside top 1 public-quality result(s)"
 
 
 def test_decision_trail_uses_concrete_preflight_reason() -> None:

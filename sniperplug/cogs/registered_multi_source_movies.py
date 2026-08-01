@@ -20,12 +20,11 @@ SOURCE_BACKOFF_SECONDS = (120, 300, 900, 1800)
 
 
 class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
-    """Register the resilient multi-source implementation under `/movies`.
+    """Official free movie-ticket screenings, promotions, and codes."""
 
-    Official sites occasionally time out. A single source failure must preserve
-    the last verified cache, let the healthy sources continue, and avoid dumping
-    the same aiohttp traceback every 60 seconds.
-    """
+    # This registered implementation owns the `/movies` group. Source failures
+    # preserve the last verified cache, let healthy sources continue, and avoid
+    # repeating the same aiohttp traceback every 60 seconds.
 
     def __init__(self, bot):
         super().__init__(bot)

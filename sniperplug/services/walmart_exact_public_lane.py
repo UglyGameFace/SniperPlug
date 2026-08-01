@@ -7,9 +7,15 @@ import discord
 from sniperplug.services import public_deal_quality as quality
 
 
+WALMART_CASH_FIELD = "💵 Walmart Cash"
+
 _STALE_REVIEW_MARKERS = (
+    "review/scout-only",
+    "review / scout only",
     "review-only",
     "review only",
+    "scout-only",
+    "scout only",
     "staff review",
     "scout lead",
     "public scout lane",
@@ -26,14 +32,12 @@ def normalize_exact_verified_walmart_cards(
     *,
     min_discount: int,
 ) -> int:
-    """Promote exact, independently proven Walmart markdowns into the public lane.
+    """Refresh exact Walmart cards before every public-quality boundary.
 
-    Walmart may return a cart promo, Walmart Cash, or OnePay metadata alongside
-    an ordinary exact markdown. Those auxiliary promos must not demote a real
-    current/was-price markdown into a private-only lane. This helper is
-    fail-closed: it requires exact-detail price proof, a trusted numeric
-    reference, matching Walmart item identity, a selected offer, and discount
-    math that independently meets the configured threshold.
+    This operation is intentionally idempotent. Public proof fields added by an
+    earlier gate must not poison a later gate merely because their explanation
+    mentions rejected scout/review signals. Exact Walmart Cash proof is also
+    rendered on the final card with its numeric amount.
     """
 
     normalized = 0
@@ -52,6 +56,8 @@ def normalize_exact_verified_walmart_card(
     *,
     min_discount: int,
 ) -> bool:
+    """Promote a fail-closed exact markdown while preserving auxiliary promos."""
+
     attrs = quality.variant_attrs(card)
     if not attrs:
         return False
@@ -145,8 +151,55 @@ def normalize_exact_verified_walmart_card(
         attrs["auxiliaryPromoPresent"] = "yes"
     card.variant_attributes = attrs
 
+    # A card passes several public gates. Remove stale review/scout wording and
+    # the earlier public-proof explanation before the next gate re-evaluates it.
     _remove_stale_review_markers(card)
+    _ensure_walmart_cash_field(card, attrs=attrs, current_price=current)
     return True
+
+
+def _ensure_walmart_cash_field(
+    card: Any,
+    *,
+    attrs: dict[str, Any],
+    current_price: float,
+) -> None:
+    """Show only strict API-proven Walmart Cash and always include its amount."""
+
+    if _normalized(attrs.get("walmartCashApiProof")) != "yes":
+        return
+
+    amount = quality.float_or_none(
+        attrs.get("walmartCashAmount")
+        or attrs.get("walmartCashSavings")
+        or attrs.get("walmartCashReward")
+    )
+    if amount is None or amount <= 0:
+        return
+    if amount > max(float(current_price) * 1.10, float(current_price) + 5.00):
+        return
+
+    embed = getattr(card, "embed", None)
+    if not isinstance(embed, discord.Embed):
+        return
+
+    proof_path = " ".join(str(attrs.get("walmartCashProofPath") or "").split())
+    proof_label = " ".join(str(attrs.get("walmartCashProofLabel") or "").split())
+    source = proof_label or proof_path or "Walmart API"
+    value = (
+        f"**Earn ${amount:,.2f} Walmart Cash**\n"
+        f"Verified from **{source}**. This reward is shown separately and is "
+        "not included in the markdown percentage."
+    )
+
+    for index, field in enumerate(embed.fields):
+        if str(field.name or "") == WALMART_CASH_FIELD:
+            embed.set_field_at(index, name=WALMART_CASH_FIELD, value=value, inline=False)
+            attrs["walmartCashDisplayed"] = "yes"
+            return
+
+    embed.add_field(name=WALMART_CASH_FIELD, value=value, inline=False)
+    attrs["walmartCashDisplayed"] = "yes"
 
 
 def _remove_stale_review_markers(card: Any) -> None:
@@ -157,6 +210,10 @@ def _remove_stale_review_markers(card: Any) -> None:
     embed = getattr(card, "embed", None)
     if not isinstance(embed, discord.Embed):
         return
+
+    title = str(embed.title or "")
+    if _contains_stale_marker(title):
+        embed.title = "Exact-verified Walmart deal"
 
     description = str(embed.description or "")
     if description:

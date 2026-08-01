@@ -10,7 +10,11 @@ from discord.ext import tasks
 
 from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog as NativeAutoScanRunnerCog
+from sniperplug.providers.registry import provider_registry
 from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
+from sniperplug.services.walmart_exact_verification_queue import (
+    process_walmart_exact_verification_queue_batch,
+)
 
 
 MANUAL_PROGRESS_INTERVAL_SECONDS = 45
@@ -19,6 +23,11 @@ SCHEDULED_QUERY_COUNT = 4
 SCHEDULED_MIN_INTERVAL_SECONDS = 6 * 60 * 60
 EVENT_LOOP_WATCHDOG_INTERVAL_SECONDS = 5
 EVENT_LOOP_LAG_WARNING_SECONDS = 2.0
+WALMART_QUEUE_INITIAL_DELAY_SECONDS = 20
+WALMART_QUEUE_INTERVAL_SECONDS = 60
+WALMART_QUEUE_BUSY_RETRY_SECONDS = 15
+WALMART_QUEUE_BATCH_SIZE = 6
+WALMART_QUEUE_CONCURRENCY = 2
 
 _WALMART_SCHEDULE_LOCK = asyncio.Lock()
 _NEXT_SCHEDULED_RUN_AT: dict[int, float] = {}
@@ -30,13 +39,14 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
     Manual scans remain responsive and keep completed work. Scheduled scans are
     intentionally much smaller, globally serialized, and protected by a six-hour
     safety floor even when a legacy row uses interval_hours=0 for "unlimited".
-    Every scheduler sweep reconciles all live guilds before selecting eligible
-    rows, so a missing public-alert row cannot silently exclude a connected server.
+    Search overflow is handled by one global exact-detail worker that pauses
+    while any foreground autoscan is active.
     """
 
     def __init__(self, bot):
         super().__init__(bot)
         self._event_loop_watchdog_task: asyncio.Task | None = None
+        self._walmart_verification_queue_task: asyncio.Task | None = None
 
     async def cog_load(self) -> None:
         self.auto_scan_loop.start()
@@ -44,20 +54,32 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
             self._event_loop_watchdog(),
             name="sniperplug-event-loop-watchdog",
         )
+        self._walmart_verification_queue_task = asyncio.create_task(
+            self._walmart_exact_verification_worker(),
+            name="sniperplug-walmart-exact-verification-queue",
+        )
         legacy.log.info(
             "Autoscan hardening active python=%s platform=%s scheduled_routes=%s "
-            "scheduled_floor_hours=6 provider_concurrency=1 live_guild_self_heal=true",
+            "scheduled_floor_hours=6 provider_concurrency=1 live_guild_self_heal=true "
+            "exact_queue_batch=%s exact_queue_interval_s=%s",
             platform.python_version(),
             sys.platform,
             SCHEDULED_QUERY_COUNT,
+            WALMART_QUEUE_BATCH_SIZE,
+            WALMART_QUEUE_INTERVAL_SECONDS,
         )
 
     async def cog_unload(self) -> None:
         self.auto_scan_loop.cancel()
-        task = self._event_loop_watchdog_task
+        tasks_to_cancel = (
+            self._event_loop_watchdog_task,
+            self._walmart_verification_queue_task,
+        )
         self._event_loop_watchdog_task = None
-        if task is not None:
-            task.cancel()
+        self._walmart_verification_queue_task = None
+        for task in tasks_to_cancel:
+            if task is not None:
+                task.cancel()
 
     async def _run_autoscan_now_background(
         self,
@@ -250,6 +272,41 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                 len(report.warnings),
                 legacy.clean_log_text(warning),
             )
+
+    async def _walmart_exact_verification_worker(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(WALMART_QUEUE_INITIAL_DELAY_SECONDS)
+        try:
+            while True:
+                if self._any_foreground_walmart_scan_busy():
+                    await asyncio.sleep(WALMART_QUEUE_BUSY_RETRY_SECONDS)
+                    continue
+
+                try:
+                    result = await process_walmart_exact_verification_queue_batch(
+                        self.bot.db,
+                        provider=provider_registry.get("walmart"),
+                        limit=WALMART_QUEUE_BATCH_SIZE,
+                        concurrency=WALMART_QUEUE_CONCURRENCY,
+                        min_discount=50,
+                    )
+                    if result.claimed:
+                        legacy.log.info(result.summary_line())
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    legacy.log.exception(
+                        "Walmart exact-detail queue batch failed safely; queued rows remain retryable"
+                    )
+
+                await asyncio.sleep(WALMART_QUEUE_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+    def _any_foreground_walmart_scan_busy(self) -> bool:
+        if _WALMART_SCHEDULE_LOCK.locked():
+            return True
+        return any(lock.locked() for lock in tuple(legacy._AUTOSCAN_LOCKS.values()))
 
     async def _event_loop_watchdog(self) -> None:
         expected = time.monotonic() + EVENT_LOOP_WATCHDOG_INTERVAL_SECONDS

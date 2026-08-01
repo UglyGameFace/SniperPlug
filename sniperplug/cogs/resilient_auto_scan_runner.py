@@ -35,6 +35,41 @@ _WALMART_SCHEDULE_LOCK = asyncio.Lock()
 _WALMART_PROVIDER_OPERATION_LOCK = asyncio.Lock()
 _NEXT_SCHEDULED_RUN_AT: dict[int, float] = {}
 
+_NATIVE_ORIGINAL_BUILDER_ATTR = "_sniperplug_original_broad_preset_builder"
+_NATIVE_PATCH_OWNERS_ATTR = "_sniperplug_catalog_patch_owners"
+
+
+def _install_catalog_coverage_builder() -> None:
+    """Install the catalog planner with overlap/reload-safe ownership.
+
+    State lives on the native module rather than this extension generation, so a
+    resilient module reload cannot forget the real original builder. Multiple
+    overlapping cog instances increment ownership and only the final unload
+    restores the original function.
+    """
+
+    if not hasattr(native, _NATIVE_ORIGINAL_BUILDER_ATTR):
+        setattr(
+            native,
+            _NATIVE_ORIGINAL_BUILDER_ATTR,
+            native.build_native_broad_preset,
+        )
+    owners = int(getattr(native, _NATIVE_PATCH_OWNERS_ATTR, 0) or 0) + 1
+    setattr(native, _NATIVE_PATCH_OWNERS_ATTR, owners)
+    native.build_native_broad_preset = build_complete_broad_preset
+
+
+def _release_catalog_coverage_builder() -> None:
+    owners = max(0, int(getattr(native, _NATIVE_PATCH_OWNERS_ATTR, 0) or 0) - 1)
+    setattr(native, _NATIVE_PATCH_OWNERS_ATTR, owners)
+    if owners:
+        # Another live cog owns the active patch. Do not replace its current
+        # function with a stale function object from an older module generation.
+        return
+    original = getattr(native, _NATIVE_ORIGINAL_BUILDER_ATTR, None)
+    if callable(original):
+        native.build_native_broad_preset = original
+
 
 class AutoScanRunnerCog(NativeAutoScanRunnerCog):
     """Load-bounded Walmart autoscan runner.
@@ -55,8 +90,9 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         super().__init__(bot)
         self._event_loop_watchdog_task: asyncio.Task | None = None
         self._walmart_verification_queue_task: asyncio.Task | None = None
-        self._previous_native_broad_preset_builder = native.build_native_broad_preset
-        native.build_native_broad_preset = build_complete_broad_preset
+        self._catalog_patch_installed = False
+        _install_catalog_coverage_builder()
+        self._catalog_patch_installed = True
 
     async def cog_load(self) -> None:
         self.auto_scan_loop.start()
@@ -91,8 +127,9 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         for task in tasks_to_cancel:
             if task is not None:
                 task.cancel()
-        if native.build_native_broad_preset is build_complete_broad_preset:
-            native.build_native_broad_preset = self._previous_native_broad_preset_builder
+        if self._catalog_patch_installed:
+            self._catalog_patch_installed = False
+            _release_catalog_coverage_builder()
 
     async def _run_autoscan_now_background(
         self,

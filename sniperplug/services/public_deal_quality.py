@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import Any
 
 import discord
@@ -20,6 +23,11 @@ LANE_ONEPAY = "onepay"
 LANE_CLEARANCE = "clearance"
 LANE_ROLLBACK = "rollback"
 LANE_PUBLIC_SCOUT = "public_scout"
+
+GLOBAL_EXACT_OFFER_REFERENCE_SOURCE = "sniperplug.global_exact_offer_memory.stable_price"
+GLOBAL_EXACT_OFFER_IDENTITY_PREFIX = "walmart-offer:v1:"
+GLOBAL_EXACT_OFFER_IDENTITY_VERSION = "v1"
+MIN_GLOBAL_EXACT_OFFER_CONFIRMATIONS = 2
 
 PUBLIC_PRICE_LANES = {
     LANE_VERIFIED_MARKDOWN,
@@ -234,6 +242,88 @@ def display_reference_without_proof(card: Any, *, source_label: str = "") -> boo
     return any(term in text for term in DISPLAY_REFERENCE_TERMS)
 
 
+def has_global_exact_offer_memory_proof(card: Any) -> bool:
+    """Require a complete, internally consistent exact-offer memory proof.
+
+    A legacy identity string or trusted marker alone is deliberately rejected.
+    The public gate recomputes the fingerprint from the stored proof components,
+    checks the exact-detail item against the Walmart URL, and binds the selected
+    offer and stable reference source before allowing an observed-price post.
+    """
+
+    attrs = variant_attrs(card)
+    identity = str(attrs.get("priceMemoryIdentity") or "").strip()
+    item_id = str(attrs.get("priceMemoryItemId") or "").strip()
+    offer_id = str(attrs.get("priceMemoryOfferId") or "").strip()
+    seller_key = str(attrs.get("priceMemorySellerKey") or "").strip()
+    variant_key = str(attrs.get("priceMemoryVariantKey") or "").strip()
+    condition_key = str(attrs.get("priceMemoryConditionKey") or "").strip()
+    fulfillment_key = str(attrs.get("priceMemoryFulfillmentKey") or "").strip()
+    exact_item_id = str(attrs.get("exactDetailItemId") or "").strip()
+    exact_detail_verified = str(attrs.get("exactDetailPriceProof") or "").strip().lower() == "yes"
+    trusted = str(attrs.get("referencePriceTrusted") or "").strip().lower() == "yes"
+    trusted_source = str(attrs.get("trustedReferenceSource") or "").strip()
+    api_source = str(attr_value(card, "api_reference_path", "apiReferencePath") or "").strip()
+
+    try:
+        confirmations = int(str(attrs.get("priceMemoryStableConfirmations") or "0").strip())
+    except (TypeError, ValueError):
+        confirmations = 0
+
+    if not identity.startswith(GLOBAL_EXACT_OFFER_IDENTITY_PREFIX):
+        return False
+    digest = identity[len(GLOBAL_EXACT_OFFER_IDENTITY_PREFIX) :]
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return False
+    if not item_id.isdigit() or exact_item_id != item_id or not exact_detail_verified:
+        return False
+    if not offer_id or not seller_key or not condition_key or not fulfillment_key:
+        return False
+    if not re.fullmatch(r"[0-9a-f]{64}", variant_key):
+        return False
+    if confirmations < MIN_GLOBAL_EXACT_OFFER_CONFIRMATIONS:
+        return False
+    if not trusted or trusted_source != GLOBAL_EXACT_OFFER_REFERENCE_SOURCE:
+        return False
+    if api_source != GLOBAL_EXACT_OFFER_REFERENCE_SOURCE:
+        return False
+
+    selected_offer = str(attr_value(card, "selected_offer_id") or "").strip()
+    if not selected_offer or selected_offer != offer_id:
+        return False
+
+    url_item_id = walmart_item_id_from_url(direct_product_url(card))
+    if url_item_id != item_id:
+        return False
+
+    trusted_reference = float_or_none(attrs.get("trustedReferencePrice"))
+    current = current_price(card)
+    reference = reference_price(card)
+    if current is None or reference is None or reference <= current:
+        return False
+    if trusted_reference is None or abs(trusted_reference - reference) > 0.001:
+        return False
+
+    payload = {
+        "version": GLOBAL_EXACT_OFFER_IDENTITY_VERSION,
+        "item_id": item_id,
+        "offer_id": offer_id,
+        "seller_key": seller_key,
+        "variant_key": variant_key,
+        "condition_key": condition_key,
+        "fulfillment_key": fulfillment_key,
+    }
+    expected_digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    return digest == expected_digest
+
+
+def walmart_item_id_from_url(url: Any) -> str:
+    match = re.search(r"/ip/(?:[^/?#]+/)?(\d+)", str(url or ""))
+    return match.group(1) if match else ""
+
+
 def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
     if is_review_or_watchlist(card, source_label=source_label):
         return False
@@ -252,12 +342,7 @@ def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", mi
     if discount < max(1, int(min_discount)):
         return False
     if lane == LANE_PRICE_MEMORY_DROP:
-        attrs = variant_attrs(card)
-        identity = attrs.get("priceMemoryIdentity") or attr_value(card, "selected_offer_id", "sku", "upc")
-        trusted = str(attrs.get("referencePriceTrusted") or "").strip().lower() == "yes"
-        current = current_price(card)
-        reference = reference_price(card)
-        return bool(identity) and trusted and current is not None and reference is not None and reference > current and discount >= max(1, int(min_discount))
+        return has_global_exact_offer_memory_proof(card)
     if lane in {LANE_OPEN_BOX_LIKE_NEW, LANE_RESTORED_REFURBISHED}:
         condition = normalized_condition(attr_value(card, "api_condition", "condition"))
         if not condition or not has_structured_reference_proof(card):

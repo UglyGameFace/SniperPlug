@@ -227,58 +227,13 @@ def decide(card: Any, *, row, current_price: float | None, current_coupon: float
 
 
 def attach_price_memory_public_proof(card: Any, decision: PriceMemoryDecision) -> None:
-    """Attach structured proof for real observed price drops only.
+    """Legacy guild/SKU memory is never allowed to mutate public price proof.
 
-    This is not public Scout Lane. It only promotes cards when SniperPlug has
-    previously observed the same Walmart item at a higher price and now sees a
-    lower/new-low current price.
+    This table remains available only for remembered hard-ID search seeds and a
+    private history badge. Global exact-offer memory is the sole observed-price
+    service permitted to create a public price-memory lane.
     """
-    if decision.status not in {"lower_price", "new_low"}:
-        return
-
-    current = float_or_none(decision.current_price)
-    references = [
-        float_or_none(decision.previous_price),
-        float_or_none(decision.lowest_seen_price),
-    ]
-    valid_refs = [value for value in references if value is not None and current is not None and value > current]
-    if current is None or current <= 0 or not valid_refs:
-        return
-
-    reference = max(valid_refs)
-    discount = round((reference - current) / reference * 100, 2)
-    identity = (
-        getattr(card, "selected_offer_id", None)
-        or getattr(card, "sku", None)
-        or getattr(card, "upc", None)
-        or canonical_url_key(getattr(card, "url", ""))
-    )
-
-    attrs = dict(getattr(card, "variant_attributes", {}) or {})
-    attrs.update(
-        {
-            "priceMemoryIdentity": str(identity),
-            "priceMemoryStatus": decision.status,
-            "priceMemoryPreviousPrice": f"{reference:.2f}",
-            "priceMemoryCurrentPrice": f"{current:.2f}",
-            "priceMemoryObservedDropPercent": f"{discount:.2f}",
-            "referencePriceTrusted": "yes",
-            "trustedReferencePrice": f"{reference:.2f}",
-            "trustedReferenceSource": "sniperplug.price_memory.observed_previous_price",
-        }
-    )
-
-    setattr(card, "variant_attributes", attrs)
-    setattr(card, "deal_lane", "price_memory_drop")
-    setattr(card, "api_current_price", current)
-    setattr(card, "api_reference_price", reference)
-    setattr(card, "api_discount_percent", discount)
-    setattr(card, "api_reference_path", "sniperplug.price_memory.observed_previous_price")
-    setattr(card, "current_price", current)
-    setattr(card, "typical_price", reference)
-    if not getattr(card, "direct_product_url", None):
-        setattr(card, "direct_product_url", getattr(card, "url", None))
-    setattr(card, "should_alert", True)
+    return
 
 
 def attach_memory_badge(card: Any, decision: PriceMemoryDecision) -> None:

@@ -17,13 +17,17 @@ def test_resilient_runtime_inherits_the_single_native_implementation() -> None:
     assert "native_auto_scan_runner_v2" not in bot_source + resilient_source
 
 
-def test_review_cards_are_collected_even_when_verified_cards_exist() -> None:
+def test_review_candidates_are_counted_but_not_rendered_as_cards() -> None:
     source = RUNNER.read_text(encoding="utf-8")
-    assert "prepare_review_watchlist_cards(result, limit=NATIVE_REVIEW_CARD_LIMIT)" in source
-    assert "if not shown_cards else []" not in source
+    assert 'review = getattr(result, "review_candidates", None)' in source
+    assert "suppressed_unverified_count" in source
+    assert "prepare_review_watchlist_cards" not in source
+    assert "ManualReviewShareView" not in source
 
 
-def test_successful_public_post_does_not_hide_private_review_cards() -> None:
+def test_successful_public_post_still_never_adds_private_review_cards() -> None:
     source = RUNNER.read_text(encoding="utf-8")
-    assert "if not report.allowed:" in source
-    assert "if not report.allowed or report.public_result.posted:" not in source
+    assert "maybe_post_public_deal_cards" in source
+    assert "_send_private_review_cards" not in source
+    assert "_review_cards_by_guild" not in source
+    assert "unverified cards shown: **0**" in source.lower()

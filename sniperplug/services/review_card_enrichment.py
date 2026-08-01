@@ -8,6 +8,7 @@ import discord
 
 DISCOVERY_TAG_FIELD = "🏷️ Item tags"
 PRICE_HISTORY_FIELD = "📉 Price history"
+GLOBAL_OBSERVED_REFERENCE_SOURCE = "sniperplug.global_exact_offer_memory.stable_price"
 
 
 def enrich_review_card(card: Any) -> Any:
@@ -106,8 +107,16 @@ def _price_history_text(card: Any, attrs: dict[str, Any], embed: discord.Embed) 
     exact_detail_verified = (
         str(attrs.get("exactDetailPriceProof") or "").strip().lower() == "yes"
     )
+    reference_source = str(
+        attrs.get("trustedReferenceSource")
+        or attrs.get("exactDetailReferenceSource")
+        or getattr(card, "api_reference_path", None)
+        or ""
+    ).strip()
+    is_observed_reference = reference_source == GLOBAL_OBSERVED_REFERENCE_SOURCE
     exact_reference_trusted = (
         exact_detail_verified
+        and not is_observed_reference
         and str(attrs.get("exactDetailReferenceStatus") or "").strip().lower()
         == "trusted"
         and str(attrs.get("referencePriceTrusted") or "").strip().lower() == "yes"
@@ -120,7 +129,10 @@ def _price_history_text(card: Any, attrs: dict[str, Any], embed: discord.Embed) 
             getattr(card, "typical_price", None),
             attrs.get("apiReferencePrice"),
             attrs.get("trustedReferencePrice"),
-            _extract_money(_embed_text(embed), r"(?:walmart was price|walmart was/reference)"),
+            _extract_money(
+                _embed_text(embed),
+                r"(?:walmart was price|walmart was/reference)",
+            ),
         )
 
     observed_previous = _first_number(
@@ -128,6 +140,9 @@ def _price_history_text(card: Any, attrs: dict[str, Any], embed: discord.Embed) 
         attrs.get("observedPreviousPrice"),
         attrs.get("previousObservedPrice"),
         attrs.get("priceMemoryReferencePrice"),
+        getattr(card, "api_reference_price", None) if is_observed_reference else None,
+        getattr(card, "typical_price", None) if is_observed_reference else None,
+        attrs.get("trustedReferencePrice") if is_observed_reference else None,
         _extract_money(
             _embed_text(embed),
             r"(?:previously observed by sniperplug|observed previous price)",
@@ -136,25 +151,22 @@ def _price_history_text(card: Any, attrs: dict[str, Any], embed: discord.Embed) 
 
     lines: list[str] = []
     if walmart_previous and current and walmart_previous > current:
-        source = str(
-            attrs.get("exactDetailReferenceSource")
-            or attrs.get("trustedReferenceSource")
-            or "official exact detail"
-        ).strip()
+        source = reference_source or "official exact detail"
         lines.append(f"**Walmart was price:** ${walmart_previous:,.2f}")
         lines.append(f"Official exact-item detail source: `{source}`")
     elif observed_previous and current and observed_previous > current:
         lines.append("**Walmart was price:** Not returned")
         lines.append(f"**Previously observed by SniperPlug:** ${observed_previous:,.2f}")
         lines.append(
-            "This is exact-offer history collected by SniperPlug, not Walmart's official was price."
+            "This is exact-offer history collected by SniperPlug, not Walmart's official original or was price."
         )
     else:
         lines.append("**Walmart was price:** Not returned")
         if exact_detail_verified:
             lines.append("**SniperPlug observed history:** Learning — no trusted higher baseline yet")
             lines.append(
-                "Walmart's exact detail confirmed the current offer, but did not provide a numeric was price."
+                "Walmart's exact detail confirmed the current offer, but did not provide a numeric was price. "
+                "The current deal price is never assumed to be the original price."
             )
         else:
             lines.append("**Exact Walmart detail:** Not verified; this result must not be surfaced")

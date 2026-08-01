@@ -28,8 +28,12 @@ def test_autoscan_now_error_decorator_has_own_line():
     assert "@autoscan_now.error\n    async def autoscan_now_error" in source
 
 
-def test_background_autoscan_does_not_full_recheck_memory_seeds_every_loop():
-    source = Path("sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
+def test_background_autoscan_uses_bounded_observed_memory_rechecks():
+    auto = Path("sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
+    memory = Path("sniperplug/services/autoscan_observed_price_memory.py").read_text(encoding="utf-8")
 
-    assert 'requested_by="autoscan"' in source
-    assert "use_price_memory=False" in source
+    assert "run_autoscan_verified_category_with_observed_memory" in auto
+    assert "use_price_memory=False" not in auto
+    assert "AUTOSCAN_MEMORY_RECHECK_LIMIT = 4" in memory
+    assert "remembered_walmart_search_seeds" in memory
+    assert "limit=AUTOSCAN_MEMORY_RECHECK_LIMIT" in memory

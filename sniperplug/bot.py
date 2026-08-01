@@ -5,8 +5,10 @@ import logging
 import os
 import platform
 import sys
+from typing import Any, Iterable
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from sniperplug.config import Settings
@@ -55,6 +57,8 @@ from sniperplug.storage.db import Database
 
 
 log = logging.getLogger("sniperplug")
+DISCORD_COMMAND_NAME_MAX_LENGTH = 32
+DISCORD_COMMAND_DESCRIPTION_MAX_LENGTH = 100
 
 
 class SniperPlugBot(commands.Bot):
@@ -140,27 +144,141 @@ class SniperPlugBot(commands.Bot):
     async def _sync_commands(self) -> None:
         if env_enabled("CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT"):
             self.tree.clear_commands(guild=None)
-            synced = await self.tree.sync()
-            log.warning("Cleared stale global slash commands. Synced %s global commands. Turn CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT off now.", len(synced))
+            synced = await self._sync_tree_safely(scope="global stale-command cleanup")
+            if synced is not None:
+                log.warning(
+                    "Cleared stale global slash commands. Synced %s global commands. "
+                    "Turn CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT off now.",
+                    len(synced),
+                )
             return
+
         if not self.settings.sync_commands_on_boot:
-            log.info("Skipped slash command sync on boot. Set SYNC_COMMANDS_ON_BOOT=true only when command definitions changed.")
+            log.info(
+                "Skipped slash command sync on boot. Set SYNC_COMMANDS_ON_BOOT=true only when command definitions changed."
+            )
             return
+
+        schema_issues = app_command_schema_issues(self.tree.get_commands())
+        if schema_issues:
+            log.critical(
+                "Slash command sync skipped safely; bot startup continues with Discord's last registered command set. "
+                "Invalid local command schema: %s",
+                " | ".join(schema_issues[:20]),
+            )
+            return
+
         if self.settings.sync_global_commands:
-            synced = await self.tree.sync()
-            log.info("Synced %s global slash commands", len(synced))
+            synced = await self._sync_tree_safely(scope="global commands")
+            if synced is not None:
+                log.info("Synced %s global slash commands", len(synced))
             return
+
         if self.settings.dev_guild_ids:
             for guild_id in self.settings.dev_guild_ids:
                 guild = discord.Object(id=guild_id)
                 self.tree.copy_global_to(guild=guild)
-                synced = await self.tree.sync(guild=guild)
-                log.info("Synced %s guild slash commands to %s", len(synced), guild_id)
+                guild_issues = app_command_schema_issues(self.tree.get_commands(guild=guild))
+                if guild_issues:
+                    log.critical(
+                        "Skipped slash command sync for guild=%s; bot startup continues. Invalid schema: %s",
+                        guild_id,
+                        " | ".join(guild_issues[:20]),
+                    )
+                    continue
+                synced = await self._sync_tree_safely(
+                    guild=guild,
+                    scope=f"guild {guild_id}",
+                )
+                if synced is not None:
+                    log.info("Synced %s guild slash commands to %s", len(synced), guild_id)
             return
+
         log.info("No DEV_GUILD_IDS configured and global sync is off; skipped slash command sync.")
+
+    async def _sync_tree_safely(
+        self,
+        *,
+        guild: discord.abc.Snowflake | None = None,
+        scope: str,
+    ) -> list[Any] | None:
+        try:
+            return await self.tree.sync(guild=guild)
+        except app_commands.CommandSyncFailure as error:
+            log.critical(
+                "Discord rejected slash command sync, but bot startup will continue. scope=%s error=%s",
+                scope,
+                compact_sync_error(error),
+            )
+        except discord.HTTPException as error:
+            log.error(
+                "Discord slash command sync failed temporarily, but bot startup will continue. scope=%s status=%s error=%s",
+                scope,
+                getattr(error, "status", "unknown"),
+                compact_sync_error(error),
+            )
+        return None
 
     async def on_ready(self) -> None:
         log.info("SniperPlug online as %s (%s)", self.user, self.user.id if self.user else "unknown")
+
+
+def app_command_schema_issues(root_commands: Iterable[Any]) -> tuple[str, ...]:
+    """Validate Discord command metadata before making a live sync request."""
+
+    issues: list[str] = []
+    seen: set[int] = set()
+
+    def visit(command: Any, parent_name: str = "") -> None:
+        object_id = id(command)
+        if object_id in seen:
+            return
+        seen.add(object_id)
+
+        raw_name = getattr(command, "name", "")
+        name = str(raw_name or "")
+        qualified_name = str(
+            getattr(command, "qualified_name", "")
+            or " ".join(part for part in (parent_name, name) if part)
+            or "<unnamed>"
+        )
+        if not 1 <= len(name) <= DISCORD_COMMAND_NAME_MAX_LENGTH:
+            issues.append(
+                f"command `{qualified_name}` name length {len(name)}; expected 1-{DISCORD_COMMAND_NAME_MAX_LENGTH}"
+            )
+
+        raw_description = getattr(command, "description", None)
+        if raw_description is not None:
+            description = str(raw_description or "")
+            if not 1 <= len(description) <= DISCORD_COMMAND_DESCRIPTION_MAX_LENGTH:
+                issues.append(
+                    f"command `{qualified_name}` description length {len(description)}; "
+                    f"expected 1-{DISCORD_COMMAND_DESCRIPTION_MAX_LENGTH}"
+                )
+
+        for parameter in tuple(getattr(command, "parameters", ()) or ()):
+            parameter_name = str(getattr(parameter, "name", "") or "<unnamed>")
+            parameter_description = getattr(parameter, "description", None)
+            if parameter_description is None:
+                continue
+            description = str(parameter_description or "")
+            if not 1 <= len(description) <= DISCORD_COMMAND_DESCRIPTION_MAX_LENGTH:
+                issues.append(
+                    f"option `{qualified_name} {parameter_name}` description length {len(description)}; "
+                    f"expected 1-{DISCORD_COMMAND_DESCRIPTION_MAX_LENGTH}"
+                )
+
+        for child in tuple(getattr(command, "commands", ()) or ()):
+            visit(child, qualified_name)
+
+    for root in tuple(root_commands or ()):
+        visit(root)
+    return tuple(issues)
+
+
+def compact_sync_error(error: BaseException, *, limit: int = 900) -> str:
+    text = " ".join(str(error or type(error).__name__).split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def walmart_affiliate_config(settings: Settings) -> WalmartAffiliateConfig:

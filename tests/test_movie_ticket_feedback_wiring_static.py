@@ -23,7 +23,11 @@ def test_feedback_controls_are_restart_safe_and_visible_on_new_and_old_alerts() 
     assert "async def on_message" in COG
     assert "@tasks.loop(seconds=RECONCILE_SECONDS)" in COG
     assert "list_recent_deliveries" in COG
-    assert 'message.embeds[0].title != "🎟️ FREE ATOM TICKET DROP"' in COG
+    assert "MOVIE_TICKET_ALERT_TITLES" in COG
+    assert '"🎟️ FREE ATOM TICKET DROP"' in COG
+    assert '"🎟️ FREE FANDANGO TICKET OFFER"' in COG
+    assert "message.embeds[0].title not in MOVIE_TICKET_ALERT_TITLES" in COG
+    assert "Open official Fandango offer" in COG
 
 
 def test_feedback_is_one_vote_per_user_and_cannot_auto_kill_codes() -> None:

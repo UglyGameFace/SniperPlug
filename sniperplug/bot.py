@@ -22,7 +22,7 @@ from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.movie_command_guide import MovieCommandGuideCog
 from sniperplug.cogs.movie_ticket_feedback import MovieTicketFeedbackCog
-from sniperplug.cogs.movie_tickets import MovieTicketsCog
+from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
 from sniperplug.cogs.open_box_deals import OpenBoxDealsCog
 from sniperplug.cogs.public_alerts import PublicAlertsCog, register_persistent_public_panel_views
 from sniperplug.cogs.settings_dashboard import SettingsDashboardCog

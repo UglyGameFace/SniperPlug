@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 import discord
 
-from sniperplug.services.manual_review_share import ManualReviewPageButton, ManualReviewShareView, ManualShareButton
+from sniperplug.services.manual_review_share import (
+    ManualReviewPageButton,
+    ManualReviewShareView,
+    ManualShareButton,
+)
 from sniperplug.services.review_card_enrichment import (
     DISCOVERY_TAG_FIELD,
     GLOBAL_OBSERVED_REFERENCE_SOURCE,
@@ -22,14 +26,18 @@ def _card(
     attrs: dict | None = None,
 ):
     embed = discord.Embed(title=title)
-    embed.add_field(name="🧾 API fields", value=f"• Finder query: **{finder_query}**", inline=False)
-    card = SimpleNamespace(
+    embed.add_field(
+        name="🧾 API fields",
+        value=f"• Finder query: **{finder_query}**",
+        inline=False,
+    )
+    return SimpleNamespace(
         embed=embed,
         current_price=current_price,
+        api_current_price=current_price,
         label=title,
         variant_attributes=dict(attrs or {}),
     )
-    return card
 
 
 def test_review_card_gets_clearance_tag_and_explicit_missing_history() -> None:
@@ -38,6 +46,7 @@ def test_review_card_gets_clearance_tag_and_explicit_missing_history() -> None:
             "exactDetailPriceProof": "yes",
             "exactDetailItemId": "123",
             "exactDetailReferenceStatus": "missing",
+            "referencePriceTrusted": "no",
         }
     )
     enrich_review_card(card)
@@ -56,6 +65,10 @@ def test_review_card_uses_trusted_walmart_was_price_when_present() -> None:
         attrs={
             "exactDetailPriceProof": "yes",
             "exactDetailReferenceStatus": "trusted",
+            "referencePriceTrusted": "yes",
+            "trustedReferencePrice": "25.00",
+            "trustedReferenceSource": "wasPrice",
+            "exactDetailReferenceSource": "wasPrice",
         },
     )
     card.api_reference_price = 25.0
@@ -64,7 +77,29 @@ def test_review_card_uses_trusted_walmart_was_price_when_present() -> None:
     fields = {field.name: field.value for field in card.embed.fields}
     assert "Walmart was price" in fields[PRICE_HISTORY_FIELD]
     assert "$25.00" in fields[PRICE_HISTORY_FIELD]
-    assert "exact item-detail response" in fields[PRICE_HISTORY_FIELD]
+    assert "Official exact-item detail source" in fields[PRICE_HISTORY_FIELD]
+    assert "`wasPrice`" in fields[PRICE_HISTORY_FIELD]
+
+
+def test_search_reference_is_not_labeled_as_official_walmart_was_price() -> None:
+    card = _card(
+        current_price=10.0,
+        attrs={
+            "exactDetailPriceProof": "no",
+            "exactDetailReferenceStatus": "skipped_capacity",
+            "referencePriceTrusted": "yes",
+            "trustedReferencePrice": "100.00",
+            "trustedReferenceSource": "search.wasPrice",
+        },
+    )
+    card.api_reference_price = 100.0
+    card.api_reference_path = "search.wasPrice"
+
+    enrich_review_card(card)
+
+    value = {field.name: field.value for field in card.embed.fields}[PRICE_HISTORY_FIELD]
+    assert "$100.00" not in value
+    assert "Exact Walmart detail:** Not verified" in value
 
 
 def test_observed_baseline_is_never_called_walmart_original_price() -> None:
@@ -73,6 +108,7 @@ def test_observed_baseline_is_never_called_walmart_original_price() -> None:
         attrs={
             "exactDetailPriceProof": "yes",
             "priceMemoryIdentity": "walmart-offer:v1:" + "a" * 64,
+            "trustedReferencePrice": "25.00",
             "trustedReferenceSource": GLOBAL_OBSERVED_REFERENCE_SOURCE,
         },
     )
@@ -87,9 +123,15 @@ def test_observed_baseline_is_never_called_walmart_original_price() -> None:
 
 
 def test_review_view_enriches_every_page_card() -> None:
-    view = ManualReviewShareView([_card(title=f"Item {index}") for index in range(4)], page_size=3)
+    view = ManualReviewShareView(
+        [_card(title=f"Item {index}") for index in range(4)],
+        page_size=3,
+    )
     assert len(view.page_embeds()) == 3
-    assert all(any(field.name == DISCOVERY_TAG_FIELD for field in embed.fields) for embed in view.page_embeds())
+    assert all(
+        any(field.name == DISCOVERY_TAG_FIELD for field in embed.fields)
+        for embed in view.page_embeds()
+    )
 
 
 class _FakeResponse:
@@ -124,7 +166,10 @@ class _FakeInteraction:
 
 
 def test_next_button_retains_parent_view_after_controls_are_rebuilt() -> None:
-    view = ManualReviewShareView([_card(title=f"Item {index}") for index in range(4)], page_size=3)
+    view = ManualReviewShareView(
+        [_card(title=f"Item {index}") for index in range(4)],
+        page_size=3,
+    )
     next_button = next(
         item
         for item in view.children

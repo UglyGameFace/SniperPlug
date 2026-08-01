@@ -29,21 +29,36 @@ def candidate(
     item_id: str,
     *,
     price: float = 20.0,
+    reference: float | None = None,
     attrs: dict[str, str] | None = None,
     signals: list[str] | None = None,
 ) -> SourceCandidate:
+    merged_attrs = dict(attrs or {})
+    if reference is not None:
+        merged_attrs.setdefault("referencePriceTrusted", "yes")
+        merged_attrs.setdefault("trustedReferencePrice", f"{reference:.2f}")
+        merged_attrs.setdefault("trustedReferenceSource", "search.wasPrice")
+    discount = (
+        round((reference - price) / reference * 100, 2)
+        if reference is not None and reference > price
+        else None
+    )
     return SourceCandidate(
         source_key="walmart",
         retailer="Walmart",
         title=f"Search item {item_id}",
         product_url=f"https://www.walmart.com/ip/{item_id}",
         current_price=price,
+        typical_price=reference,
         api_current_price=price,
+        api_reference_price=reference,
+        api_discount_percent=discount,
+        api_reference_path="search.wasPrice" if reference is not None else None,
         product_id=item_id,
         product_id_type="sku",
         sku=item_id,
         selected_offer_id=item_id,
-        variant_attributes=dict(attrs or {}),
+        variant_attributes=merged_attrs,
         signals=list(signals or []),
     )
 
@@ -76,6 +91,7 @@ def test_exact_detail_refreshes_same_item_current_and_was_price() -> None:
     assert provider.calls == ["123456"]
     assert result.enriched == 1
     assert result.references_found == 1
+    assert result.proofs_blocked == 0
     assert exact.current_price == 79.99
     assert exact.api_current_price == 79.99
     assert exact.typical_price == 149.99
@@ -85,13 +101,20 @@ def test_exact_detail_refreshes_same_item_current_and_was_price() -> None:
     assert exact.variant_attributes["exactDetailItemId"] == "123456"
     assert exact.variant_attributes["exactDetailReferenceSource"] == "wasPrice"
     assert exact.variant_attributes["exactDetailReferenceStatus"] == "trusted"
+    assert exact.variant_attributes["referencePriceTrusted"] == "yes"
     assert exact.variant_attributes["finderSourceQuery"] == "monitor clearance"
     assert exact.candidate_id == original.candidate_id
     assert "exact Walmart detail item verified: 123456" in exact.signals
 
 
-def test_exact_detail_identity_mismatch_never_overwrites_candidate() -> None:
-    original = candidate("222222", attrs={"rollback": "yes"}, signals=["rollback"])
+def test_exact_detail_identity_mismatch_blocks_search_reference_proof() -> None:
+    original = candidate(
+        "222222",
+        price=20.0,
+        reference=100.0,
+        attrs={"rollback": "yes"},
+        signals=["rollback"],
+    )
     provider = FakeDetailProvider(
         {
             "222222": {
@@ -107,21 +130,49 @@ def test_exact_detail_identity_mismatch_never_overwrites_candidate() -> None:
         enrich_walmart_exact_prices([original], provider=provider, limit=1)
     )
 
+    blocked = result.candidates[0]
     assert result.enriched == 0
     assert result.identity_mismatches == 1
-    assert result.candidates[0] is original
-    assert result.candidates[0].typical_price is None
+    assert result.proofs_blocked == 1
+    assert blocked is original
+    assert blocked.current_price == 20.0
+    assert blocked.typical_price is None
+    assert blocked.api_reference_price is None
+    assert blocked.api_reference_path is None
+    assert blocked.api_discount_percent is None
+    assert blocked.variant_attributes["referencePriceTrusted"] == "no"
+    assert blocked.variant_attributes["exactDetailPriceProof"] == "no"
+    assert blocked.variant_attributes["exactDetailReferenceStatus"] == "identity_mismatch"
+    assert blocked.variant_attributes["observedPriceFallback"] == "exact_item_baseline"
 
 
-def test_exact_detail_without_was_price_stays_honest() -> None:
+def test_exact_detail_failure_blocks_search_reference_but_keeps_current_price() -> None:
+    original = candidate("232323", price=18.0, reference=90.0)
+    provider = FakeDetailProvider({})
+
+    result = asyncio.run(
+        enrich_walmart_exact_prices([original], provider=provider, limit=1)
+    )
+
+    blocked = result.candidates[0]
+    assert provider.calls == ["232323"]
+    assert result.failed == 1
+    assert result.proofs_blocked == 1
+    assert blocked.current_price == 18.0
+    assert blocked.api_current_price == 18.0
+    assert blocked.typical_price is None
+    assert blocked.api_reference_price is None
+    assert blocked.api_discount_percent is None
+    assert blocked.variant_attributes["exactDetailReferenceStatus"] == "failed"
+    assert blocked.variant_attributes["referencePriceTrusted"] == "no"
+
+
+def test_exact_detail_without_was_price_stays_honest_and_marks_memory_fallback() -> None:
     original = candidate(
         "333333",
-        attrs={
-            "clearance": "yes",
-            "referencePriceTrusted": "yes",
-            "trustedReferencePrice": "99.00",
-            "trustedReferenceSource": "wasPrice",
-        },
+        price=20.0,
+        reference=99.0,
+        attrs={"clearance": "yes"},
         signals=["clearance"],
     )
     provider = FakeDetailProvider(
@@ -145,32 +196,38 @@ def test_exact_detail_without_was_price_stays_honest() -> None:
     assert exact.current_price == 14.0
     assert exact.typical_price is None
     assert exact.api_reference_price is None
+    assert exact.api_discount_percent is None
     assert exact.variant_attributes["exactDetailPriceProof"] == "yes"
     assert exact.variant_attributes["exactDetailReferenceStatus"] == "missing"
     assert exact.variant_attributes["referencePriceTrusted"] == "no"
+    assert exact.variant_attributes["observedPriceFallback"] == "exact_item_baseline"
     assert "exactDetailReferenceSource" not in exact.variant_attributes
     assert "trustedReferencePrice" not in exact.variant_attributes
     assert "trustedReferenceSource" not in exact.variant_attributes
 
 
-def test_bounded_enrichment_prioritizes_missing_clearance_was_price() -> None:
-    ordinary = candidate("444444")
-    clearance = candidate(
-        "555555",
+def test_bounded_enrichment_prioritizes_public_threshold_reference_proof() -> None:
+    missing_clearance = candidate(
+        "444444",
         attrs={"finderSourceQuery": "toy clearance", "clearance": "yes"},
         signals=["clearance"],
+    )
+    public_search_markdown = candidate(
+        "555555",
+        price=10.0,
+        reference=50.0,
     )
     provider = FakeDetailProvider(
         {
             "444444": {
                 "itemId": 444444,
-                "name": "Ordinary item",
-                "salePrice": 20.0,
-                "wasPrice": 25.0,
+                "name": "Clearance item",
+                "salePrice": 10.0,
+                "wasPrice": 20.0,
             },
             "555555": {
                 "itemId": 555555,
-                "name": "Clearance item",
+                "name": "Public candidate",
                 "salePrice": 10.0,
                 "wasPrice": 50.0,
             },
@@ -179,17 +236,78 @@ def test_bounded_enrichment_prioritizes_missing_clearance_was_price() -> None:
 
     result = asyncio.run(
         enrich_walmart_exact_prices(
-            [ordinary, clearance],
+            [missing_clearance, public_search_markdown],
             provider=provider,
             limit=1,
+            min_discount=50,
         )
     )
 
     assert provider.calls == ["555555"]
     assert result.attempted == 1
     assert result.skipped == 1
-    assert result.candidates[0] is ordinary
+    assert result.proofs_blocked == 0
+    assert result.candidates[0] is missing_clearance
     assert result.candidates[1].typical_price == 50.0
+    assert result.candidates[1].variant_attributes["exactDetailReferenceStatus"] == "trusted"
+
+
+def test_capacity_overflow_quarantines_unchecked_search_reference() -> None:
+    stronger = candidate("666666", price=10.0, reference=100.0)
+    overflow = candidate("777777", price=20.0, reference=100.0)
+    provider = FakeDetailProvider(
+        {
+            "666666": {
+                "itemId": 666666,
+                "name": "Stronger candidate",
+                "salePrice": 10.0,
+                "wasPrice": 100.0,
+            },
+            "777777": {
+                "itemId": 777777,
+                "name": "Overflow candidate",
+                "salePrice": 20.0,
+                "wasPrice": 100.0,
+            },
+        }
+    )
+
+    result = asyncio.run(
+        enrich_walmart_exact_prices(
+            [stronger, overflow],
+            provider=provider,
+            limit=1,
+            min_discount=50,
+        )
+    )
+
+    assert provider.calls == ["666666"]
+    assert result.proofs_blocked == 1
+    blocked = result.candidates[1]
+    assert blocked.current_price == 20.0
+    assert blocked.typical_price is None
+    assert blocked.api_reference_price is None
+    assert blocked.api_discount_percent is None
+    assert blocked.variant_attributes["exactDetailReferenceStatus"] == "skipped_capacity"
+    assert blocked.variant_attributes["referencePriceTrusted"] == "no"
+    assert blocked.variant_attributes["observedPriceFallback"] == "exact_item_baseline"
+
+
+def test_provider_unavailable_quarantines_all_search_references() -> None:
+    original = candidate("888888", price=15.0, reference=75.0)
+
+    result = asyncio.run(
+        enrich_walmart_exact_prices([original], provider=object(), limit=24)
+    )
+
+    blocked = result.candidates[0]
+    assert result.attempted == 0
+    assert result.skipped == 1
+    assert result.proofs_blocked == 1
+    assert blocked.current_price == 15.0
+    assert blocked.typical_price is None
+    assert blocked.api_reference_price is None
+    assert blocked.variant_attributes["exactDetailReferenceStatus"] == "provider_unavailable"
 
 
 def test_autoscan_enriches_before_cards_and_price_memory() -> None:
@@ -202,6 +320,7 @@ def test_autoscan_enriches_before_cards_and_price_memory() -> None:
     review_pos = source.index("review_candidates = build_review_candidate_cards")
     memory_pos = source.index("observed_memory = await select_observed_price_drop_cards")
 
-    assert "provider_registry.get(\"walmart\")" in source
-    assert "AUTOSCAN_EXACT_DETAIL_LIMIT = 8" in source
+    assert 'provider_registry.get("walmart")' in source
+    assert "AUTOSCAN_EXACT_DETAIL_LIMIT = 24" in source
+    assert "min_discount=starting_discount" in source
     assert enrich_pos < aggregate_pos < review_pos < memory_pos

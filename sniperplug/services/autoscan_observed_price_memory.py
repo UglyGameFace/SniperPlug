@@ -14,7 +14,7 @@ from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PE
 from sniperplug.services.low_price_scout import scout_low_price_leads
 from sniperplug.services.walmart_exact_price_enrichment import enrich_walmart_exact_prices
 from sniperplug.services.walmart_observed_price_memory import ObservedPriceMemorySelection, select_observed_price_drop_cards
-from sniperplug.services.walmart_price_memory import PriceMemorySelection, remembered_walmart_search_seeds, select_price_intelligent_cards
+from sniperplug.services.walmart_price_memory import remembered_walmart_search_seeds
 from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
 from sniperplug.services import verified_discount_hunt as hunt
 
@@ -31,27 +31,19 @@ AUTOSCAN_EXACT_DETAIL_TIMEOUT_SECONDS = 8.0
 
 @dataclass(frozen=True)
 class AutoscanPriceMemorySelection:
-    legacy: PriceMemorySelection | None
+    legacy: Any | None
     observed: ObservedPriceMemorySelection | None
     shown: list[Any]
     decisions: list[Any]
 
     def summary_line(self) -> str:
-        pieces: list[str] = []
-        if self.legacy is not None:
-            try:
-                pieces.append(f"legacy verified-card memory: {self.legacy.summary_line()}")
-            except Exception:
-                pieces.append("legacy verified-card memory used")
-        if self.observed is not None:
-            observed_summary = self.observed.summary_line()
-            examples = observed_drop_examples(self.observed.cards)
-            if examples:
-                observed_summary = f"{observed_summary} • examples: {examples}"
-            pieces.append(observed_summary)
-        if not pieces:
-            return "price memory enabled, no products checked"
-        return " • ".join(pieces)
+        if self.observed is None:
+            return "global exact-offer price memory enabled, no products checked"
+        observed_summary = self.observed.summary_line()
+        examples = observed_drop_examples(self.observed.cards)
+        if examples:
+            observed_summary = f"{observed_summary} • examples: {examples}"
+        return observed_summary
 
 
 def observed_drop_examples(cards: list[Any], *, limit: int = 3) -> str:
@@ -83,16 +75,20 @@ async def collect_verified_discount_cards_with_observed_memory(
     use_price_memory: bool = False,
     min_discount: int | None = None,
 ) -> hunt.VerifiedHuntResult:
-    """Autoscan collector with exact-item observed price memory enabled.
+    """Autoscan collector with global exact-offer observed price memory.
 
-    This is intentionally lighter than manual hunt/deals scans so scheduled
-    autoscan cannot starve Discord interaction acknowledgements. It uses fewer
-    pages, one sort pass, lower concurrency, and a small memory recheck lane.
+    Search responses discover candidates. Only exact-detail-confirmed item,
+    offer, seller, variant, condition, and fulfillment fingerprints may train
+    or create observed-price public proof.
     """
 
     preset = preset or hunt.ALL_VERIFIED_PRESET
     starting_discount = normalize_starting_deal_percent(
-        min_discount if min_discount is not None else await get_starting_deal_percent(db, guild_id, fallback=DEFAULT_STARTING_DEAL_PERCENT),
+        min_discount if min_discount is not None else await get_starting_deal_percent(
+            db,
+            guild_id,
+            fallback=DEFAULT_STARTING_DEAL_PERCENT,
+        ),
         fallback=DEFAULT_STARTING_DEAL_PERCENT,
     )
     warnings: list[str] = []
@@ -103,15 +99,31 @@ async def collect_verified_discount_cards_with_observed_memory(
     semaphore = asyncio.Semaphore(AUTOSCAN_SEARCH_CONCURRENCY)
     memory_seeds: tuple[str, ...] = ()
     if use_price_memory and db is not None and guild_id is not None:
-        memory_seeds = await remembered_walmart_search_seeds(db, guild_id=guild_id, limit=AUTOSCAN_MEMORY_RECHECK_LIMIT)
+        memory_seeds = await remembered_walmart_search_seeds(
+            db,
+            guild_id=guild_id,
+            limit=AUTOSCAN_MEMORY_RECHECK_LIMIT,
+        )
     preset_queries = tuple(hunt.dedupe_strings([*preset.queries, *memory_seeds]))
 
-    async def scan_one(query: str, page: int, sort_value: str | None, order_value: str | None) -> tuple[str, ProviderScanResult]:
+    async def scan_one(
+        query: str,
+        page: int,
+        sort_value: str | None,
+        order_value: str | None,
+    ) -> tuple[str, ProviderScanResult]:
         nonlocal searches_attempted
         async with semaphore:
             searches_attempted += 1
             await asyncio.sleep(0)
-            return query, await deal_scanner.run_walmart_scan(query, page, hunt.RESULTS_PER_PAGE, sort_value, order_value, requested_by)
+            return query, await deal_scanner.run_walmart_scan(
+                query,
+                page,
+                hunt.RESULTS_PER_PAGE,
+                sort_value,
+                order_value,
+                requested_by,
+            )
 
     tasks = [
         scan_one(query, page, sort_value, order_value)
@@ -124,10 +136,21 @@ async def collect_verified_discount_cards_with_observed_memory(
     for item in results:
         pages_checked += 1
         if isinstance(item, BaseException) or not isinstance(item, tuple) or len(item) != 2:
-            warning_text = str(item) or item.__class__.__name__ if isinstance(item, BaseException) else f"bad Walmart route result: {type(item).__name__}"
+            warning_text = (
+                str(item) or item.__class__.__name__
+                if isinstance(item, BaseException)
+                else f"bad Walmart route result: {type(item).__name__}"
+            )
             if warning_text not in warnings:
                 warnings.append(warning_text)
-            route_stats.append(SearchRouteStats(query="unknown", pages_checked=1, returned_products=0, warnings=(warning_text,)))
+            route_stats.append(
+                SearchRouteStats(
+                    query="unknown",
+                    pages_checked=1,
+                    returned_products=0,
+                    warnings=(warning_text,),
+                )
+            )
             continue
 
         query, result = item
@@ -135,14 +158,28 @@ async def collect_verified_discount_cards_with_observed_memory(
             warning_text = f"bad Walmart provider result for {query}: {type(result).__name__}"
             if warning_text not in warnings:
                 warnings.append(warning_text)
-            route_stats.append(SearchRouteStats(query=str(query or "unknown"), pages_checked=1, returned_products=0, warnings=(warning_text,)))
+            route_stats.append(
+                SearchRouteStats(
+                    query=str(query or "unknown"),
+                    pages_checked=1,
+                    returned_products=0,
+                    warnings=(warning_text,),
+                )
+            )
             continue
 
         candidates = list(result.candidates)
         tag_candidates_with_route(candidates, query=query)
         all_candidates.extend(candidates)
         warnings.extend(w for w in result.warnings if w not in warnings)
-        route_stats.append(SearchRouteStats(query=query, pages_checked=1, returned_products=len(candidates), warnings=tuple(result.warnings)))
+        route_stats.append(
+            SearchRouteStats(
+                query=query,
+                pages_checked=1,
+                returned_products=len(candidates),
+                warnings=tuple(result.warnings),
+            )
+        )
 
     deduped_candidates = deal_scanner.dedupe_candidates(all_candidates)
     exact_prices = await enrich_walmart_exact_prices(
@@ -154,7 +191,12 @@ async def collect_verified_discount_cards_with_observed_memory(
         min_discount=starting_discount,
     )
     deduped_candidates = exact_prices.candidates
-    if exact_prices.attempted or exact_prices.identity_mismatches or exact_prices.failed or exact_prices.proofs_blocked:
+    if (
+        exact_prices.attempted
+        or exact_prices.identity_mismatches
+        or exact_prices.failed
+        or exact_prices.proofs_blocked
+    ):
         warnings.append(exact_prices.summary_line())
 
     merged_route_stats = merge_route_stats(route_stats)
@@ -167,12 +209,27 @@ async def collect_verified_discount_cards_with_observed_memory(
         start_index=1,
         has_next_page=True,
     )
-    verified_cards = deal_scanner.build_walmart_cards(aggregate, min_discount=starting_discount, alerts_only=False)
+    verified_cards = deal_scanner.build_walmart_cards(
+        aggregate,
+        min_discount=starting_discount,
+        alerts_only=False,
+    )
     verified_cards = rank_verified_cards(hunt.dedupe_cards(verified_cards))
 
-    review_candidates = build_review_candidate_cards(list(deduped_candidates), limit=hunt.REVIEW_LEAD_LIMIT)
-    scout_cards = scout_low_price_leads(deduped_candidates, limit=hunt.REVIEW_LEAD_LIMIT, search_query="")
-    review_candidates = hunt.merge_review_and_scout_cards(review_candidates, scout_cards, limit=hunt.REVIEW_LEAD_LIMIT)
+    review_candidates = build_review_candidate_cards(
+        list(deduped_candidates),
+        limit=hunt.REVIEW_LEAD_LIMIT,
+    )
+    scout_cards = scout_low_price_leads(
+        deduped_candidates,
+        limit=hunt.REVIEW_LEAD_LIMIT,
+        search_query="",
+    )
+    review_candidates = hunt.merge_review_and_scout_cards(
+        review_candidates,
+        scout_cards,
+        limit=hunt.REVIEW_LEAD_LIMIT,
+    )
     review_candidates = ReviewCandidateResult(
         cards=rank_review_cards(review_candidates.cards),
         under_threshold_count=review_candidates.under_threshold_count,
@@ -184,7 +241,7 @@ async def collect_verified_discount_cards_with_observed_memory(
         exact_match_count=getattr(review_candidates, "exact_match_count", 0),
     )
 
-    price_memory: AutoscanPriceMemorySelection | PriceMemorySelection | None = None
+    price_memory: AutoscanPriceMemorySelection | None = None
     cards = verified_cards
     if use_price_memory and db is not None and guild_id is not None:
         observed_memory = await select_observed_price_drop_cards(
@@ -195,20 +252,16 @@ async def collect_verified_discount_cards_with_observed_memory(
             limit=5,
             max_observations=AUTOSCAN_OBSERVED_MEMORY_MAX_WRITES,
         )
-        legacy_memory = await select_price_intelligent_cards(
-            db,
-            guild_id=guild_id,
-            cards=verified_cards,
-            fallback_retailer="walmart",
-            limit=None,
-        )
-        memory_cards = hunt.dedupe_cards([*legacy_memory.shown, *observed_memory.cards])
+        # Never let the older guild/SKU memory path mutate Walmart public proof.
+        # Verified API markdown cards keep their own exact reference, while only
+        # the global exact-offer service may add observed-price-drop cards.
+        memory_cards = hunt.dedupe_cards([*verified_cards, *observed_memory.cards])
         cards = rank_verified_cards(memory_cards)
         price_memory = AutoscanPriceMemorySelection(
-            legacy=legacy_memory,
+            legacy=None,
             observed=observed_memory,
             shown=cards,
-            decisions=[*getattr(legacy_memory, "decisions", []), *getattr(observed_memory, "decisions", [])],
+            decisions=list(observed_memory.decisions),
         )
 
     return hunt.VerifiedHuntResult(
@@ -228,7 +281,12 @@ async def collect_verified_discount_cards_with_observed_memory(
     )
 
 
-async def run_autoscan_verified_category_with_observed_memory(db, guild_id: int, *, preset: HuntPreset) -> hunt.VerifiedHuntResult:
+async def run_autoscan_verified_category_with_observed_memory(
+    db,
+    guild_id: int,
+    *,
+    preset: HuntPreset,
+) -> hunt.VerifiedHuntResult:
     return await collect_verified_discount_cards_with_observed_memory(
         requested_by="autoscan",
         preset=preset,

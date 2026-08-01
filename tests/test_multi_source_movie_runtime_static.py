@@ -25,9 +25,12 @@ def test_existing_movies_command_surface_is_inherited() -> None:
     assert {"setup", "status", "latest", "scan", "test-alert", "disable", "sources"}.issubset(command_names)
 
 
-def test_multi_source_scan_runs_atom_and_fandango_without_duplicate_runtime() -> None:
-    assert "await super()._scan_official_source" in RUNTIME
-    assert "await self._scan_fandango_source" in RUNTIME
+def test_multi_source_scan_runs_each_source_without_duplicate_runtime() -> None:
+    assert "await super()._scan_official_source" not in RUNTIME
+    assert "self._scan_atom_source" in RUNTIME
+    assert "self._scan_fandango_source" in RUNTIME
+    assert "self._scan_gofobo_source" in RUNTIME
+    assert "AtomPromotionsClient" in RUNTIME
     assert "FandangoOffersClient" in RUNTIME
     assert "replace_active_drops(FANDANGO_SOURCE_KEY" in RUNTIME
     assert "reserve_delivery" in RUNTIME

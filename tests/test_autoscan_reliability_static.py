@@ -4,6 +4,7 @@ from pathlib import Path
 AUTO = Path("sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
 DB = Path("sniperplug/storage/db.py").read_text(encoding="utf-8")
 MEMORY = Path("sniperplug/services/walmart_price_memory.py").read_text(encoding="utf-8")
+GLOBAL_MEMORY = Path("sniperplug/services/walmart_global_offer_memory.py").read_text(encoding="utf-8")
 QUALITY = Path("sniperplug/services/public_deal_quality.py").read_text(encoding="utf-8")
 
 
@@ -38,23 +39,38 @@ def test_memory_recheck_uses_hard_ids_not_random_title_queries():
     assert "title seeds caused random junk routes" in body
 
 
-def test_price_memory_drop_attaches_structured_public_proof():
-    assert "def attach_price_memory_public_proof" in MEMORY
-    assert '"price_memory_drop"' in MEMORY
-    assert '"referencePriceTrusted": "yes"' in MEMORY
-    assert "api_reference_price" in MEMORY
-    assert "api_discount_percent" in MEMORY
-    assert "should_alert" in MEMORY
+def test_global_price_memory_uses_compact_exact_offer_proof():
+    assert 'GLOBAL_OFFER_MEMORY_TABLE = "walmart_offer_price_memory"' in GLOBAL_MEMORY
+    assert "exactDetailPriceProof" in GLOBAL_MEMORY
+    assert "item_id" in GLOBAL_MEMORY
+    assert "offer_id" in GLOBAL_MEMORY
+    assert "seller_key" in GLOBAL_MEMORY
+    assert "variant_key" in GLOBAL_MEMORY
+    assert "condition_key" in GLOBAL_MEMORY
+    assert "fulfillment_key" in GLOBAL_MEMORY
+    assert "current_price_cents" in GLOBAL_MEMORY
+    assert "stable_price_cents" in GLOBAL_MEMORY
+    assert "MIN_STABLE_CONFIRMATIONS = 2" in GLOBAL_MEMORY
+    assert "MIN_CONFIRMATION_GAP_SECONDS = 4 * 60 * 60" in GLOBAL_MEMORY
 
 
-def test_public_quality_allows_observed_price_memory_drop_with_real_reference():
-    start = QUALITY.index("if lane == LANE_PRICE_MEMORY_DROP")
-    body = QUALITY[start:start + 700]
+def test_public_quality_requires_recomputed_global_offer_fingerprint():
+    start = QUALITY.index("def has_global_exact_offer_memory_proof")
+    end = QUALITY.index("def walmart_item_id_from_url", start)
+    body = QUALITY[start:end]
 
     assert "priceMemoryIdentity" in body
-    assert "reference > current" in body
-    assert "discount >= max" in body
-    # The price-memory builder always stamps referencePriceTrusted == "yes" on real
-    # cards, so the public gate must require that trusted marker to keep malformed or
-    # untrusted-reference price-memory cards out of public posting.
+    assert "priceMemoryItemId" in body
+    assert "priceMemoryOfferId" in body
+    assert "priceMemorySellerKey" in body
+    assert "priceMemoryVariantKey" in body
+    assert "priceMemoryConditionKey" in body
+    assert "priceMemoryFulfillmentKey" in body
+    assert "priceMemoryStableConfirmations" in body
+    assert "exactDetailPriceProof" in body
+    assert "exactDetailItemId" in body
     assert "referencePriceTrusted" in body
+    assert "trustedReferenceSource" in body
+    assert "hashlib.sha256" in body
+    assert "selected_offer != offer_id" in body
+    assert "url_item_id != item_id" in body

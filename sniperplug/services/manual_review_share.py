@@ -113,21 +113,25 @@ class ManualReviewPageButton(discord.ui.Button):
         self.direction = direction
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if not isinstance(self.view, ManualReviewShareView):
+        view = self.view
+        if not isinstance(view, ManualReviewShareView):
             await interaction.response.send_message("This review menu is no longer active.", ephemeral=True)
             return
 
         await interaction.response.defer()
         try:
-            self.view.page = max(0, min(self.view.page_count - 1, self.view.page + self.direction))
-            self.view.refresh_items()
-            embeds = self.view.page_embeds()
+            # refresh_items() clears and recreates every component. That detaches
+            # this old button and sets self.view to None, so retain the parent view
+            # before rebuilding the controls and use the retained reference below.
+            view.page = max(0, min(view.page_count - 1, view.page + self.direction))
+            view.refresh_items()
+            embeds = view.page_embeds()
             if not embeds:
                 await interaction.followup.send("That review page contained malformed cards and could not be displayed. The error was logged.", ephemeral=True)
                 return
-            await interaction.edit_original_response(content=self.view.content(), embeds=embeds, view=self.view)
+            await interaction.edit_original_response(content=view.content(), embeds=embeds, view=view)
         except Exception as exc:
-            log.exception("Manual review pagination failed guild=%s page=%s direction=%s", interaction.guild_id, getattr(self.view, "page", None), self.direction)
+            log.exception("Manual review pagination failed guild=%s page=%s direction=%s", interaction.guild_id, getattr(view, "page", None), self.direction)
             await interaction.followup.send(f"I could not open that review page: `{clean_error_text(exc)}`", ephemeral=True)
 
 

@@ -97,6 +97,17 @@ def compact_label(value: Any, *, limit: int = 42) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def _walmart_item_id(candidate: Any) -> str:
+    for value in (
+        getattr(candidate, "product_id", None),
+        getattr(candidate, "sku", None),
+    ):
+        text = str(value or "").strip()
+        if text.isdigit():
+            return text
+    return ""
+
+
 async def collect_verified_discount_cards_with_observed_memory(
     *,
     requested_by: str,
@@ -216,7 +227,6 @@ async def collect_verified_discount_cards_with_observed_memory(
         )
 
     deduped_candidates = deal_scanner.dedupe_candidates(all_candidates)
-    queue_enqueue = None
     if db is not None:
         try:
             queue_enqueue = await enqueue_walmart_exact_verification_candidates(
@@ -242,6 +252,11 @@ async def collect_verified_discount_cards_with_observed_memory(
     )
     deduped_candidates = exact_prices.candidates
     foreground_exact_candidates = exact_detail_verified_candidates(deduped_candidates)
+    foreground_item_ids = {
+        item_id
+        for item_id in (_walmart_item_id(candidate) for candidate in foreground_exact_candidates)
+        if item_id
+    }
 
     queued_exact_candidates = []
     if db is not None:
@@ -251,14 +266,19 @@ async def collect_verified_discount_cards_with_observed_memory(
                 foreground_exact_candidates,
                 min_discount=starting_discount,
             )
-            queued_exact_candidates = await load_recent_verified_queue_candidates(
+            queue_snapshot_pool = await load_recent_verified_queue_candidates(
                 db,
-                limit=AUTOSCAN_QUEUE_SURFACE_LIMIT,
+                limit=AUTOSCAN_QUEUE_SURFACE_LIMIT + len(foreground_item_ids),
             )
+            queued_exact_candidates = [
+                candidate
+                for candidate in queue_snapshot_pool
+                if _walmart_item_id(candidate) not in foreground_item_ids
+            ][:AUTOSCAN_QUEUE_SURFACE_LIMIT]
             if inline_recorded or queued_exact_candidates:
                 warnings.append(
                     "Global exact-detail queue results: "
-                    f"foreground saved **{inline_recorded}** • fresh background verified added **{len(queued_exact_candidates)}**."
+                    f"foreground saved **{inline_recorded}** • true overflow verified added **{len(queued_exact_candidates)}**."
                 )
         except Exception as error:  # noqa: BLE001 - exact foreground cards remain usable.
             warnings.append(

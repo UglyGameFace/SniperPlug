@@ -7,6 +7,7 @@ import discord
 from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.services.autoscan_route_policy import PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE, public_autoscan_hunt_presets
+from sniperplug.services.walmart_exact_public_lane import normalize_exact_verified_walmart_cards
 
 
 NATIVE_MANUAL_QUERY_COUNT = 8
@@ -122,6 +123,16 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             legacy.AUTO_SCAN_PUBLIC_MODE,
             limit=max(len(unique_cards), legacy.AUTO_SCAN_PUBLIC_LIMIT),
         ).verified
+
+        normalized_exact_markdowns = normalize_exact_verified_walmart_cards(
+            unique_cards,
+            min_discount=result.min_discount,
+        )
+        if normalized_exact_markdowns:
+            warnings.append(
+                f"Recovered **{normalized_exact_markdowns}** exact Walmart markdown(s) that also carried auxiliary promo metadata; the promo no longer demotes the independently proven markdown."
+            )
+
         unique_cards = await legacy.apply_feedback_learning_to_cards(
             self.bot.db,
             guild_id=guild.guild_id,
@@ -129,16 +140,24 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             fallback_retailer=legacy.AUTO_SCAN_RETAILER,
         )
         feedback_summary = legacy.summarize_feedback_learning(unique_cards)
-        confidence_selection = legacy.select_confident_public_cards(unique_cards, floor=legacy.AUTOSCAN_CONFIDENCE_FLOOR)
-        public_candidates = list(confidence_selection.cards)
-        for card in legacy.select_public_deal_candidates(
+
+        proof_ready_cards = legacy.select_public_deal_candidates(
             unique_cards,
             source_label=f"{legacy.AUTO_SCAN_SOURCE_LABEL}:{preset.key}",
             min_discount=result.min_discount,
-            limit=legacy.AUTO_SCAN_PUBLIC_LIMIT,
-        ):
-            if card not in public_candidates:
-                public_candidates.append(card)
+            limit=max(len(unique_cards), legacy.AUTO_SCAN_PUBLIC_LIMIT),
+        )
+        quality_blocked_count = max(0, len(unique_cards) - len(proof_ready_cards))
+        if quality_blocked_count:
+            warnings.append(
+                f"Public-proof gate blocked **{quality_blocked_count}** exact card(s) before confidence ranking. Confidence-ready now means proof-ready too."
+            )
+
+        confidence_selection = legacy.select_confident_public_cards(
+            proof_ready_cards,
+            floor=legacy.AUTOSCAN_CONFIDENCE_FLOOR,
+        )
+        public_candidates = list(confidence_selection.cards)
 
         fresh_selection = await legacy.select_fresh_deal_cards(
             self.bot.db,
@@ -182,14 +201,14 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 price_memory_summary=diagnostics["price_memory_summary"],
                 products_checked=result.products_checked,
                 searches_checked=result.searches_attempted,
-                total_cards=len(unique_cards),
+                total_cards=len(proof_ready_cards),
                 verified_before_memory=result.total_verified_cards,
                 fresh_cards=0,
                 cards_attempted_for_public=0,
                 used_repeat_fallback=False,
                 repeat_summary=(
-                    f"{fresh_selection.summary_line()} • unverified candidates suppressed: "
-                    f"**{suppressed_unverified_count}** • unverified cards shown: **0**"
+                    f"{fresh_selection.summary_line()} • public-proof blocked: **{quality_blocked_count}** • "
+                    f"unverified candidates suppressed: **{suppressed_unverified_count}** • unverified cards shown: **0**"
                 ),
                 public_result=public_result,
                 warnings=tuple(warnings),
@@ -232,13 +251,14 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             price_memory_summary=diagnostics["price_memory_summary"],
             products_checked=result.products_checked,
             searches_checked=result.searches_attempted,
-            total_cards=len(unique_cards),
+            total_cards=len(proof_ready_cards),
             verified_before_memory=result.total_verified_cards,
             fresh_cards=len(fresh_selection.fresh),
             cards_attempted_for_public=len(shown_cards),
             used_repeat_fallback=False,
             repeat_summary=(
                 legacy.watchlist_repeat_summary(fresh_selection.summary_line(), [], public_result)
+                + f" • public-proof blocked: **{quality_blocked_count}**"
                 + f" • unverified candidates suppressed: **{suppressed_unverified_count}** • unverified cards shown: **0**"
             ),
             public_result=public_result,

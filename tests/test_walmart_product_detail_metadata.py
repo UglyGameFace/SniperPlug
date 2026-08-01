@@ -9,6 +9,7 @@ from sniperplug.services.review_card_enrichment import (
     LISTING_DETAILS_FIELD,
     enrich_review_card,
 )
+from sniperplug.services.walmart_metadata_install import is_exact_detail_request
 from sniperplug.services.walmart_product_metadata import extract_walmart_product_metadata
 from sniperplug.services import walmart_card_renderer
 from sniperplug.services import walmart_review_candidates
@@ -113,6 +114,64 @@ def test_metadata_extractor_does_not_invent_missing_page_facts() -> None:
     assert "deliveryStatus" not in attrs
     assert "returnPolicy" not in attrs
     assert "fulfillmentLocation" not in attrs
+
+
+def test_fulfillment_label_alone_is_not_rendered_as_geographic_location() -> None:
+    metadata = extract_walmart_product_metadata(
+        {
+            "itemId": "2",
+            "name": "No location product",
+            "fulfillmentOptions": [
+                {
+                    "type": "PICKUP",
+                    "displayName": "Pickup",
+                    "availabilityStatus": "CHECK_NEARBY",
+                }
+            ],
+        },
+        current_price=20.0,
+        exact_detail=True,
+    )
+
+    assert metadata.attributes["pickupStatus"] == "Check nearby"
+    assert "fulfillmentLocation" not in metadata.attributes
+
+
+def test_queue_marker_and_exact_source_key_are_exact_detail_requests() -> None:
+    queued = ProviderScanRequest(
+        source_key="walmart_verification_queue",
+        query="403861667",
+        max_results=1,
+        metadata={"exact_detail_price_check": "queue"},
+    )
+    exact_source = ProviderScanRequest(
+        source_key="walmart_exact_detail_recheck",
+        query="403861667",
+        max_results=1,
+        metadata={},
+    )
+
+    assert is_exact_detail_request(queued) is True
+    assert is_exact_detail_request(exact_source) is True
+
+
+def test_registered_queue_candidate_is_labeled_exact_detail() -> None:
+    provider = WalmartProvider(configured=False)
+    registry = ProviderRegistry()
+    registry.register(provider)
+
+    candidate = provider._candidate_from_item(
+        SCREENSHOT_LIKE_DETAIL,
+        request=ProviderScanRequest(
+            source_key="walmart_verification_queue",
+            query="403861667",
+            max_results=1,
+            metadata={"exact_detail_price_check": "queue"},
+        ),
+    )
+
+    assert candidate is not None
+    assert candidate.variant_attributes["retailerMetadataSource"] == "exact_detail"
 
 
 def test_registered_walmart_provider_enriches_exact_candidate_and_both_renderers() -> None:

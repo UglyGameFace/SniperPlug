@@ -14,9 +14,11 @@ def test_autoscan_route_policy_is_native_not_installed():
     assert "install_public_autoscan_route_policy" not in BOT
 
 
-def test_autoscan_collection_uses_observed_memory_from_all_candidates():
+def test_autoscan_collection_uses_observed_memory_from_exact_detail_candidates():
     assert "select_observed_price_drop_cards" in OBSERVED
-    assert "candidates=list(deduped_candidates)" in OBSERVED
+    assert "exact_candidates = exact_detail_verified_candidates" in OBSERVED
+    assert "candidates=exact_candidates" in OBSERVED
+    assert "candidates=list(deduped_candidates)" not in OBSERVED
     assert "use_price_memory=True" in OBSERVED
     assert "run_autoscan_verified_category_with_observed_memory" in OBSERVED
 

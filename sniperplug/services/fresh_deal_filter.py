@@ -77,11 +77,17 @@ async def select_fresh_deal_cards(
     if not cards:
         return FreshDealSelection(fresh=[])
     if guild_id is None:
-        selected = public_alertable_cards(cards, min_alert_score=min_alert_score)[:limit]
-        selected_ids = {id(card) for card in selected}
+        limit_value = max(1, int(limit))
+        quality_passed: list[Any] = []
+        quality_passed_ids: set[int] = set()
         for card in cards:
-            if id(card) in selected_ids:
-                _set_preflight_reason(card, "passed public quality preflight")
+            if prepare_public_deal_candidate(
+                card,
+                source_label=source_label,
+                min_discount=min_public_discount,
+            ):
+                quality_passed.append(card)
+                quality_passed_ids.add(id(card))
             else:
                 _set_preflight_reason(
                     card,
@@ -91,7 +97,21 @@ async def select_fresh_deal_cards(
                         min_discount=min_public_discount,
                     ),
                 )
-        return FreshDealSelection(fresh=selected)
+
+        selected = quality_passed[:limit_value]
+        selected_ids = {id(card) for card in selected}
+        for card in quality_passed:
+            if id(card) in selected_ids:
+                _set_preflight_reason(card, "passed public quality preflight")
+            elif id(card) in quality_passed_ids:
+                _set_preflight_reason(
+                    card,
+                    f"not selected: outside top {limit_value} public-quality result(s)",
+                )
+        return FreshDealSelection(
+            fresh=selected,
+            not_alertable=max(0, len(cards) - len(quality_passed)),
+        )
 
     await ensure_public_post_tables(db)
     conn = db.require_conn()

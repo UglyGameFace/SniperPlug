@@ -28,6 +28,15 @@ _VALUE_ATTRIBUTE_KEYS = (
     "couponSavings",
     "walmartCashSavings",
 )
+_PRICE_PROOF_ATTRIBUTE_KEYS = (
+    "referencePriceTrusted",
+    "trustedReferencePrice",
+    "trustedReferenceSource",
+    "referenceContextPrice",
+    "referenceContextSource",
+    "apiReferencePrice",
+    "apiReferencePath",
+)
 
 
 @dataclass(frozen=True)
@@ -206,6 +215,8 @@ def _merge_exact_candidate(
 ) -> SourceCandidate:
     original_attrs = dict(getattr(original, "variant_attributes", None) or {})
     exact_attrs = dict(getattr(exact, "variant_attributes", None) or {})
+    for key in _PRICE_PROOF_ATTRIBUTE_KEYS:
+        original_attrs.pop(key, None)
     merged_attrs = {**original_attrs, **exact_attrs}
     for key in _ROUTE_ATTRIBUTE_KEYS:
         if original_attrs.get(key) not in (None, ""):
@@ -217,6 +228,12 @@ def _merge_exact_candidate(
         merged_attrs["exactDetailCurrentSource"] = str(exact.api_price_path)
     if getattr(exact, "api_reference_path", None):
         merged_attrs["exactDetailReferenceSource"] = str(exact.api_reference_path)
+        merged_attrs["exactDetailReferenceStatus"] = "trusted"
+    else:
+        for key in _PRICE_PROOF_ATTRIBUTE_KEYS:
+            merged_attrs.pop(key, None)
+        merged_attrs["referencePriceTrusted"] = "no"
+        merged_attrs["exactDetailReferenceStatus"] = "missing"
 
     exact.variant_attributes = merged_attrs
     exact.candidate_id = original.candidate_id

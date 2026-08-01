@@ -24,7 +24,7 @@ AUTOSCAN_PAGES_PER_QUERY = 2
 AUTOSCAN_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = ((None, None),)
 AUTOSCAN_MEMORY_RECHECK_LIMIT = 4
 AUTOSCAN_OBSERVED_MEMORY_MAX_WRITES = 300
-AUTOSCAN_EXACT_DETAIL_LIMIT = 8
+AUTOSCAN_EXACT_DETAIL_LIMIT = 24
 AUTOSCAN_EXACT_DETAIL_CONCURRENCY = 4
 AUTOSCAN_EXACT_DETAIL_TIMEOUT_SECONDS = 8.0
 
@@ -151,9 +151,10 @@ async def collect_verified_discount_cards_with_observed_memory(
         limit=AUTOSCAN_EXACT_DETAIL_LIMIT,
         concurrency=AUTOSCAN_EXACT_DETAIL_CONCURRENCY,
         timeout_seconds=AUTOSCAN_EXACT_DETAIL_TIMEOUT_SECONDS,
+        min_discount=starting_discount,
     )
     deduped_candidates = exact_prices.candidates
-    if exact_prices.attempted or exact_prices.identity_mismatches or exact_prices.failed:
+    if exact_prices.attempted or exact_prices.identity_mismatches or exact_prices.failed or exact_prices.proofs_blocked:
         warnings.append(exact_prices.summary_line())
 
     merged_route_stats = merge_route_stats(route_stats)

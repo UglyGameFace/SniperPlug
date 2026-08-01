@@ -391,7 +391,6 @@ async def maybe_prune_global_offer_memory(conn: Any, *, now: datetime | None = N
     monotonic_now = time.monotonic()
     if monotonic_now - _last_cleanup_monotonic < CLEANUP_INTERVAL_SECONDS:
         return
-    _last_cleanup_monotonic = monotonic_now
 
     now_dt = now or datetime.now(timezone.utc)
     cutoff = (now_dt - timedelta(days=STALE_ROW_RETENTION_DAYS)).isoformat()
@@ -411,6 +410,9 @@ async def maybe_prune_global_offer_memory(conn: Any, *, now: datetime | None = N
         """,
         (MAX_GLOBAL_ROWS,),
     )
+    # Advance the throttle only after both retention statements succeed. A
+    # transient database failure must leave cleanup immediately retryable.
+    _last_cleanup_monotonic = monotonic_now
 
 
 def _valid_stable_reference(row: Any, now: datetime) -> float | None:

@@ -8,7 +8,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest
 
 
-DEFAULT_EXACT_DETAIL_LIMIT = 8
+DEFAULT_EXACT_DETAIL_LIMIT = 24
 DEFAULT_EXACT_DETAIL_CONCURRENCY = 4
 DEFAULT_EXACT_DETAIL_TIMEOUT_SECONDS = 8.0
 
@@ -36,6 +36,10 @@ _PRICE_PROOF_ATTRIBUTE_KEYS = (
     "referenceContextSource",
     "apiReferencePrice",
     "apiReferencePath",
+    "apiDiscountPercent",
+    "api_reference_price",
+    "api_reference_path",
+    "api_discount_percent",
 )
 
 
@@ -48,12 +52,14 @@ class ExactPriceEnrichmentResult:
     identity_mismatches: int = 0
     failed: int = 0
     skipped: int = 0
+    proofs_blocked: int = 0
 
     def summary_line(self) -> str:
         return (
             "Exact Walmart detail price checks: "
             f"attempted **{self.attempted}** • exact items refreshed **{self.enriched}** • "
             f"trusted was prices found **{self.references_found}** • "
+            f"unverified search references blocked **{self.proofs_blocked}** • "
             f"identity mismatches blocked **{self.identity_mismatches}** • failures **{self.failed}**"
         )
 
@@ -65,13 +71,16 @@ async def enrich_walmart_exact_prices(
     limit: int = DEFAULT_EXACT_DETAIL_LIMIT,
     concurrency: int = DEFAULT_EXACT_DETAIL_CONCURRENCY,
     timeout_seconds: float = DEFAULT_EXACT_DETAIL_TIMEOUT_SECONDS,
+    min_discount: int = 50,
 ) -> ExactPriceEnrichmentResult:
-    """Refresh a bounded set of exact Walmart items before cards are rendered.
+    """Refresh exact Walmart item proof before cards are rendered.
 
-    Search responses are useful for discovery, but Walmart's detail response is
-    the safer place to bind current price, was price, seller, condition, and the
-    selected item ID. Failed or mismatched detail lookups never overwrite the
-    original candidate.
+    Search responses remain useful for discovery, but an unconfirmed search-level
+    reference price must never become public Walmart markdown proof. Candidates
+    that cannot be checked because of failure, identity mismatch, provider
+    availability, or the safety cap keep their current price and identity while
+    their search reference/discount proof is quarantined. Observed-price memory
+    can still establish a baseline and later prove a same-item price drop.
     """
 
     original = list(candidates)
@@ -82,11 +91,44 @@ async def enrich_walmart_exact_prices(
     inner = getattr(provider, "inner", provider)
     candidate_builder = getattr(inner, "_candidate_from_item", None)
     if not callable(detail_fetcher) or not callable(candidate_builder):
-        return ExactPriceEnrichmentResult(candidates=original, skipped=len(original))
+        blocked = _block_reference_proofs(
+            original,
+            status="provider_unavailable",
+            reason="exact Walmart detail provider unavailable",
+        )
+        return ExactPriceEnrichmentResult(
+            candidates=original,
+            skipped=len(original),
+            proofs_blocked=blocked,
+        )
 
-    selected = _select_candidates(original, limit=max(0, int(limit)))
+    selected = _select_candidates(
+        original,
+        limit=max(0, int(limit)),
+        min_discount=max(1, int(min_discount)),
+    )
+    selected_indices = {index for index, _, _ in selected}
+
+    refreshed = list(original)
+    proofs_blocked = 0
+    for index, candidate in enumerate(refreshed):
+        if index in selected_indices:
+            continue
+        if _has_reference_proof(candidate):
+            proofs_blocked += int(
+                _block_unverified_reference(
+                    candidate,
+                    status="skipped_capacity",
+                    reason="exact Walmart detail safety cap reached",
+                )
+            )
+
     if not selected:
-        return ExactPriceEnrichmentResult(candidates=original, skipped=len(original))
+        return ExactPriceEnrichmentResult(
+            candidates=refreshed,
+            skipped=len(original),
+            proofs_blocked=proofs_blocked,
+        )
 
     semaphore = asyncio.Semaphore(max(1, int(concurrency)))
 
@@ -122,7 +164,6 @@ async def enrich_walmart_exact_prices(
         *(refresh(index, candidate, item_id) for index, candidate, item_id in selected)
     )
 
-    refreshed = list(original)
     enriched = 0
     references_found = 0
     identity_mismatches = 0
@@ -130,9 +171,23 @@ async def enrich_walmart_exact_prices(
     for index, exact, status in outcomes:
         if status == "identity_mismatch":
             identity_mismatches += 1
+            proofs_blocked += int(
+                _block_unverified_reference(
+                    refreshed[index],
+                    status="identity_mismatch",
+                    reason="exact Walmart detail returned a different item ID",
+                )
+            )
             continue
         if status != "enriched" or exact is None:
             failed += 1
+            proofs_blocked += int(
+                _block_unverified_reference(
+                    refreshed[index],
+                    status="failed",
+                    reason="exact Walmart detail lookup failed or timed out",
+                )
+            )
             continue
         refreshed[index] = exact
         enriched += 1
@@ -147,6 +202,7 @@ async def enrich_walmart_exact_prices(
         identity_mismatches=identity_mismatches,
         failed=failed,
         skipped=max(0, len(original) - len(selected)),
+        proofs_blocked=proofs_blocked,
     )
 
 
@@ -154,6 +210,7 @@ def _select_candidates(
     candidates: list[SourceCandidate],
     *,
     limit: int,
+    min_discount: int,
 ) -> list[tuple[int, SourceCandidate, str]]:
     if limit <= 0:
         return []
@@ -165,7 +222,7 @@ def _select_candidates(
         if not item_id or item_id in seen_ids:
             continue
         seen_ids.add(item_id)
-        score = _enrichment_priority(candidate)
+        score = _enrichment_priority(candidate, min_discount=min_discount)
         if score <= 0:
             continue
         scored.append((score, index, candidate, item_id))
@@ -174,7 +231,7 @@ def _select_candidates(
     return [(index, candidate, item_id) for _, index, candidate, item_id in scored[:limit]]
 
 
-def _enrichment_priority(candidate: SourceCandidate) -> float:
+def _enrichment_priority(candidate: SourceCandidate, *, min_discount: int) -> float:
     current = _positive_number(
         getattr(candidate, "api_current_price", None)
         or getattr(candidate, "current_price", None)
@@ -187,11 +244,16 @@ def _enrichment_priority(candidate: SourceCandidate) -> float:
     routes = " ".join(str(attrs.get(key) or "") for key in _ROUTE_ATTRIBUTE_KEYS)
     haystack = f"{signals} {routes}".lower()
 
+    reference = _trusted_reference(candidate)
     score = 5.0
-    if _trusted_reference(candidate) is None:
-        score += 70.0
+    if reference is not None:
+        discount = _percent_off(current, reference)
+        if discount is not None and discount >= max(1, int(min_discount)):
+            score += 300.0
+        else:
+            score += 180.0
     else:
-        score += 10.0
+        score += 70.0
 
     if any(term in haystack for term in _MARKDOWN_TERMS):
         score += 35.0
@@ -229,11 +291,14 @@ def _merge_exact_candidate(
     if getattr(exact, "api_reference_path", None):
         merged_attrs["exactDetailReferenceSource"] = str(exact.api_reference_path)
         merged_attrs["exactDetailReferenceStatus"] = "trusted"
+        merged_attrs["referencePriceTrusted"] = "yes"
+        merged_attrs.pop("observedPriceFallback", None)
     else:
         for key in _PRICE_PROOF_ATTRIBUTE_KEYS:
             merged_attrs.pop(key, None)
         merged_attrs["referencePriceTrusted"] = "no"
         merged_attrs["exactDetailReferenceStatus"] = "missing"
+        merged_attrs["observedPriceFallback"] = "exact_item_baseline"
 
     exact.variant_attributes = merged_attrs
     exact.candidate_id = original.candidate_id
@@ -258,6 +323,80 @@ def _merge_exact_candidate(
     return exact
 
 
+def _block_reference_proofs(
+    candidates: Iterable[SourceCandidate],
+    *,
+    status: str,
+    reason: str,
+) -> int:
+    blocked = 0
+    for candidate in candidates:
+        if _has_reference_proof(candidate):
+            blocked += int(
+                _block_unverified_reference(candidate, status=status, reason=reason)
+            )
+    return blocked
+
+
+def _block_unverified_reference(
+    candidate: SourceCandidate,
+    *,
+    status: str,
+    reason: str,
+) -> bool:
+    had_reference = _has_reference_proof(candidate)
+    attrs = dict(getattr(candidate, "variant_attributes", None) or {})
+    for key in _PRICE_PROOF_ATTRIBUTE_KEYS:
+        attrs.pop(key, None)
+
+    candidate.typical_price = None
+    candidate.api_reference_price = None
+    candidate.api_reference_path = None
+    candidate.api_discount_percent = None
+
+    attrs["referencePriceTrusted"] = "no"
+    attrs["exactDetailPriceProof"] = "no"
+    attrs["exactDetailReferenceStatus"] = status
+    item_id = _candidate_item_id(candidate)
+    if item_id:
+        attrs["exactDetailItemId"] = item_id
+        attrs["observedPriceFallback"] = "exact_item_baseline"
+    candidate.variant_attributes = attrs
+
+    signal = f"Walmart search reference blocked: {reason}"
+    signals = list(getattr(candidate, "signals", ()) or ())
+    if signal not in signals:
+        signals.append(signal)
+    candidate.signals = signals[:24]
+    return had_reference
+
+
+def _has_reference_proof(candidate: Any) -> bool:
+    if _trusted_reference(candidate) is not None:
+        return True
+    if _positive_number(getattr(candidate, "api_discount_percent", None)) is not None:
+        return True
+    if str(getattr(candidate, "api_reference_path", None) or "").strip():
+        return True
+
+    attrs = dict(getattr(candidate, "variant_attributes", None) or {})
+    if str(attrs.get("referencePriceTrusted") or "").strip().lower() == "yes":
+        return True
+    proof_value_keys = (
+        "trustedReferencePrice",
+        "trustedReferenceSource",
+        "referenceContextPrice",
+        "referenceContextSource",
+        "apiReferencePrice",
+        "apiReferencePath",
+        "apiDiscountPercent",
+        "api_reference_price",
+        "api_reference_path",
+        "api_discount_percent",
+    )
+    return any(str(attrs.get(key) or "").strip() for key in proof_value_keys)
+
+
 def _candidate_item_id(candidate: Any) -> str | None:
     for value in (
         getattr(candidate, "product_id", None),
@@ -279,6 +418,12 @@ def _trusted_reference(candidate: Any) -> float | None:
         if parsed is not None:
             return parsed
     return None
+
+
+def _percent_off(current: float | None, reference: float | None) -> float | None:
+    if current is None or reference is None or reference <= current or reference <= 0:
+        return None
+    return (reference - current) / reference * 100.0
 
 
 def _positive_number(value: Any) -> float | None:

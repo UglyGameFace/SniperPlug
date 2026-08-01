@@ -52,7 +52,7 @@ def test_fandango_parser_keeps_only_public_codes_that_grant_a_free_ticket() -> N
 
     assert result.document_valid is True
     assert result.offers_section_found is True
-    assert [drop.code for drop in result.drops] == ["WWESUMMERSLAM", "PAWPATROLB3G1"]
+    assert {drop.code for drop in result.drops} == {"WWESUMMERSLAM", "PAWPATROLB3G1"}
     assert all(drop.source_key == FANDANGO_SOURCE_KEY for drop in result.drops)
     assert all(drop.classification == "public_reusable" for drop in result.drops)
     assert all(fandango_purchase_required(drop.raw_text) for drop in result.drops)

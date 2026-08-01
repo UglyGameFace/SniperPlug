@@ -12,13 +12,15 @@ def test_legacy_autoscan_does_not_directly_post_scout_lane():
     assert "Auto-scan posted public Scout Lane lead" not in AUTO
 
 
-def test_native_autoscan_keeps_scout_fallback_private():
+def test_native_autoscan_hides_scout_and_review_fallback_cards():
     assert "allow_review_scout=True" not in NATIVE
     assert "NATIVE_PUBLIC_SCOUT_LIMIT" not in NATIVE
     assert "Verified API Threshold + Public Scout Fallback" not in NATIVE
-    assert "Verified API Threshold Only" in NATIVE
-    assert "private review cards ready" in NATIVE
-    assert "public review posts: **0**" in NATIVE
+    assert "Exact-Verified Deals Only" in NATIVE
+    assert "private review cards ready" not in NATIVE
+    assert "public review posts: **0**" not in NATIVE
+    assert "unverified cards shown: **0**" in NATIVE.lower()
+    assert "ManualReviewShareView" not in NATIVE
 
 
 def test_public_quality_has_conservative_scout_gate():
@@ -36,6 +38,6 @@ def test_review_cards_do_not_claim_exact_match_as_deal_proof():
     assert "card.manual_share_allowed = False" in REVIEW
 
 
-def test_scout_ranker_still_exists_for_private_reviews():
+def test_scout_ranker_still_exists_for_explicit_non_autoscan_reviews():
     assert "def scout_rank" in SCOUT
     assert "return False" in SCOUT

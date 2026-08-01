@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import discord
 
 from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.services.autoscan_route_policy import PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE, public_autoscan_hunt_presets
-from sniperplug.services.embed_delivery import sanitize_embed
-from sniperplug.services.manual_review_share import ManualReviewShareView
 
 
 NATIVE_MANUAL_QUERY_COUNT = 8
-NATIVE_REVIEW_CARD_LIMIT = 12
-NATIVE_REVIEW_PAGE_SIZE = 3
 NATIVE_MANUAL_TIMEOUT_SECONDS = 90
 NATIVE_BROAD_PRESET_KEY = "broad_public_safe"
 NATIVE_CATEGORY_ROTATION = (
@@ -30,16 +25,12 @@ NATIVE_CATEGORY_ROTATION = (
 
 
 class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
-    """Single-pass autoscan runner with verified-only public posting.
+    """Single-pass autoscan runner with verified-only user-visible results.
 
-    Verified public deals and private staff-review leads are independent outputs
-    from the same scan. A successful public post must never discard or hide
-    uncertain review cards.
+    Only candidates with exact Walmart price proof may appear as deals. Search
+    hints, incomplete identities, and review-only candidates remain internal
+    diagnostics and are never sent to the user as cards.
     """
-
-    def __init__(self, bot):
-        super().__init__(bot)
-        self._review_cards_by_guild: dict[int, tuple[legacy.DealCard, ...]] = {}
 
     async def _run_autoscan_now_background(self, interaction: discord.Interaction, guild_id: int, force: bool) -> None:
         lock = legacy.autoscan_lock(guild_id)
@@ -108,8 +99,8 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         warnings = legacy.clean_warning_list(result.warnings)
         warnings.append(PUBLIC_AUTOSCAN_ROUTE_POLICY_NOTE)
         warnings.append(
-            f"Verified-only public policy: auto-posting requires **{result.min_discount}%+** trusted Walmart markdown proof. "
-            "Anything uncertain remains private for staff review."
+            f"Verified-only result policy: a deal requires **{result.min_discount}%+** trusted Walmart markdown proof. "
+            "Anything uncertain is suppressed and never shown as a deal."
         )
         if preset.key == NATIVE_BROAD_PRESET_KEY:
             warnings.append("Broad sweep spans the major public-safe categories instead of staying inside one category.")
@@ -117,6 +108,13 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             warnings.append(f"{report_label}: scanned **{len(preset.queries)}** public-safe route(s) in **{preset.label}**.")
 
         diagnostics = legacy.autoscan_diagnostics(result)
+        review = getattr(result, "review_candidates", None)
+        suppressed_unverified_count = len(getattr(review, "cards", ()) or ())
+        if suppressed_unverified_count:
+            warnings.append(
+                f"Suppressed **{suppressed_unverified_count}** unverified candidate(s); none were displayed or posted."
+            )
+
         unique_cards = legacy.dedupe_cards(result.cards)
         unique_cards = legacy.rank_for_search_mode(
             unique_cards,
@@ -163,26 +161,17 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         )
 
         shown_cards = list(fresh_selection.fresh)
-        review_cards = legacy.prepare_review_watchlist_cards(result, limit=NATIVE_REVIEW_CARD_LIMIT)
-        if review_cards:
-            self._review_cards_by_guild[int(guild.guild_id)] = tuple(review_cards[:NATIVE_REVIEW_CARD_LIMIT])
-            warnings.append(
-                f"Captured **{len(review_cards[:NATIVE_REVIEW_CARD_LIMIT])}** private review lead(s) from this same pass; none were auto-posted."
-            )
-        else:
-            self._review_cards_by_guild.pop(int(guild.guild_id), None)
-
         if not shown_cards:
             public_result = legacy.PublicPostResult()
             report = legacy.AutoScanReport(
                 guild_id=guild.guild_id,
                 allowed=True,
-                reason="Auto-scan completed with no new/lower-price API-verified public deals that met the threshold.",
+                reason="Auto-scan completed with no new/lower-price exact-verified Walmart deals that met the threshold.",
                 settings=settings,
                 category_key=preset.key,
                 category_label=preset.label,
                 min_discount=result.min_discount,
-                public_mode="Verified API Threshold Only",
+                public_mode="Exact-Verified Deals Only",
                 confidence_floor=legacy.AUTOSCAN_CONFIDENCE_FLOOR,
                 confidence_summary=confidence_selection.summary_line(),
                 feedback_learning_summary=feedback_summary,
@@ -197,21 +186,24 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 verified_before_memory=result.total_verified_cards,
                 fresh_cards=0,
                 cards_attempted_for_public=0,
-                used_repeat_fallback=bool(review_cards),
-                repeat_summary=f"{fresh_selection.summary_line()} • private review cards ready: **{len(review_cards)}** • public review posts: **0**",
+                used_repeat_fallback=False,
+                repeat_summary=(
+                    f"{fresh_selection.summary_line()} • unverified candidates suppressed: "
+                    f"**{suppressed_unverified_count}** • unverified cards shown: **0**"
+                ),
                 public_result=public_result,
                 warnings=tuple(warnings),
             )
             await legacy.persist_autoscan_report(self.bot.db, report, scan_key=scan_key)
             if not force:
                 await legacy.record_auto_scan_run(self.bot.db, guild.guild_id, legacy.AUTO_SCAN_RETAILER, scan_key=scan_key)
-            legacy.log.info("Auto-scan completed with private review fallback %s", report.log_fields())
+            legacy.log.info("Auto-scan completed with verified-only output %s", report.log_fields())
             return report
 
         category_preferences = await legacy.get_category_preferences(self.bot.db, guild.guild_id)
         shown_cards, category_suppressed_cards, category_notes = legacy.apply_category_preferences(shown_cards, category_preferences)
         if category_suppressed_cards:
-            warnings.append(f"Category preferences suppressed **{len(category_suppressed_cards)}** normal lead(s).")
+            warnings.append(f"Category preferences suppressed **{len(category_suppressed_cards)}** normal deal(s).")
         warnings.extend(note for note in category_notes[:4] if note not in warnings)
 
         public_result = await legacy.maybe_post_public_deal_cards(
@@ -229,7 +221,7 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             category_key=preset.key,
             category_label=preset.label,
             min_discount=result.min_discount,
-            public_mode="Verified API Threshold Only",
+            public_mode="Exact-Verified Deals Only",
             confidence_floor=legacy.AUTOSCAN_CONFIDENCE_FLOOR,
             confidence_summary=confidence_selection.summary_line(),
             feedback_learning_summary=feedback_summary,
@@ -244,10 +236,10 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             verified_before_memory=result.total_verified_cards,
             fresh_cards=len(fresh_selection.fresh),
             cards_attempted_for_public=len(shown_cards),
-            used_repeat_fallback=bool(review_cards),
+            used_repeat_fallback=False,
             repeat_summary=(
                 legacy.watchlist_repeat_summary(fresh_selection.summary_line(), [], public_result)
-                + f" • private review cards ready: **{len(review_cards)}**"
+                + f" • unverified candidates suppressed: **{suppressed_unverified_count}** • unverified cards shown: **0**"
             ),
             public_result=public_result,
             warnings=tuple(warnings),
@@ -269,30 +261,45 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
         *,
         label: str = "Auto-scan test result",
     ) -> None:
-        await super()._send_autoscan_report(interaction, report, label=label)
-        if not report.allowed:
-            return
-        cards = list(self._review_cards_by_guild.pop(int(report.guild_id), ()))[:NATIVE_REVIEW_CARD_LIMIT]
-        if not cards:
-            if not report.public_result.posted:
-                await self._safe_autoscan_followup(interaction, "🟨 No reusable private review cards were produced from this pass.")
-            return
-        for index, card in enumerate(cards, start=1):
-            annotate_private_review_card(card, index=index)
-        await self._send_private_review_cards(interaction, cards)
-
-    async def _send_private_review_cards(self, interaction: discord.Interaction, cards: list[legacy.DealCard]) -> None:
-        view = ManualReviewShareView(cards, page_size=NATIVE_REVIEW_PAGE_SIZE, max_cards=NATIVE_REVIEW_CARD_LIMIT)
-        content = view.content(
-            prefix="🟨 **Private autoscan review leads**\nThese are from the same autoscan pass. They need staff verification before public posting."
+        summary = report.discord_summary()
+        summary = summary.replace(
+            "Setup note: green setup means SniperPlug can post; the finder still needs verified Walmart markdown proof before a deal is public-ready. Scout/review leads stay private.",
+            "Result policy: only exact-verified Walmart deals are shown. Unverified candidates are suppressed.",
         )
-        try:
-            await interaction.followup.send(content=content, embeds=view.page_embeds(), view=view, ephemeral=True)
-        except (discord.NotFound, discord.HTTPException) as exc:
-            if legacy.interaction_token_is_gone(exc):
-                if await self._send_autoscan_dm_fallback(interaction, content=content, embed=sanitize_embed(cards[0].embed)):
-                    return
-            legacy.log.exception("Failed to send autoscan private review leads")
+        summary = summary.replace("Private review fallback found: **yes**", "Unverified cards shown: **0**")
+        summary = summary.replace("Private review fallback found: **no**", "Unverified cards shown: **0**")
+
+        embed = discord.Embed(
+            title=f"🎯 {label}",
+            description=summary[:4000],
+            color=discord.Color.green() if report.public_result.posted else discord.Color.orange(),
+        )
+        if report.decision_trail_summary:
+            embed.add_field(
+                name="Verified-deal decision trail",
+                value=legacy.trim_discord_value(report.decision_trail_summary),
+                inline=False,
+            )
+        if report.route_summary:
+            embed.add_field(
+                name="Top search routes",
+                value=legacy.trim_discord_value(report.route_summary),
+                inline=False,
+            )
+        if report.warnings:
+            warning_text = chr(10).join(f"• {warning}" for warning in report.warnings[:5])
+            embed.add_field(name="Verification notes", value=warning_text, inline=False)
+        if not report.public_result.posted:
+            embed.add_field(
+                name="Why no verified deal was shown",
+                value=legacy.trim_discord_value(legacy.autoscan_blocker_summary(report)),
+                inline=False,
+            )
+        if report.public_result.errors:
+            error_text = chr(10).join(f"• {legacy.clean_log_text(error)}" for error in report.public_result.errors[:5])
+            embed.add_field(name="Errors", value=error_text, inline=False)
+        embed.set_footer(text="Exact-verified deals only. Search hints and review-only candidates are never displayed as deals.")
+        await self._safe_autoscan_followup(interaction, embed=embed)
 
 
 def select_native_autoscan_preset(
@@ -347,17 +354,4 @@ def build_native_broad_preset(presets: dict[str, HuntPreset], *, guild_id: int, 
         "Broad sweep across the major public-safe Walmart categories, with private promo routes removed before scanning.",
         tuple(selected[: max(1, int(query_count))]),
         base.min_discount,
-    )
-
-
-def annotate_private_review_card(card: legacy.DealCard, *, index: int) -> None:
-    embed = getattr(card, "embed", None)
-    if not isinstance(embed, discord.Embed):
-        return
-    if any(str(field.name or "") == "🟨 Private autoscan lead" for field in embed.fields):
-        return
-    embed.add_field(
-        name="🟨 Private autoscan lead",
-        value=f"Lead #{index}. Same-pass private review card. Use Post only after checking price, seller, exact variant, reviews, and comps.",
-        inline=False,
     )

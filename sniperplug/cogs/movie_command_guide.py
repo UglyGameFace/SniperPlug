@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.cogs.movie_tickets import MovieTicketsCog
 from sniperplug.services.movie_ticket_drops import ATOM_PROMOTIONS_URL, clean_text
 
 
@@ -22,46 +24,56 @@ MAX_LATEST_EMBEDS = 8
 class MovieGuideSectionSelect(discord.ui.Select):
     def __init__(self, cog: "MovieCommandGuideCog") -> None:
         self.cog = cog
-        options = [
-            discord.SelectOption(
-                label="Start Here",
-                value="start",
-                emoji="🎬",
-                description="The quickest way to start finding free tickets.",
-            ),
-            discord.SelectOption(
-                label="Find Free Tickets",
-                value="users",
-                emoji="🎟️",
-                description="Commands anyone can use to check drops and sources.",
-            ),
-            discord.SelectOption(
-                label="Server Setup",
-                value="admins",
-                emoji="⚙️",
-                description="Commands for server owners and managers.",
-            ),
-            discord.SelectOption(
-                label="Safety & Sources",
-                value="safety",
-                emoji="🛡️",
-                description="What SniperPlug verifies and what it cannot guarantee.",
-            ),
-        ]
         super().__init__(
             placeholder="Choose what you need help with…",
             min_values=1,
             max_values=1,
-            options=options,
             custom_id=GUIDE_SELECT_ID,
+            options=[
+                discord.SelectOption(
+                    label="Start Here",
+                    value="start",
+                    emoji="🎬",
+                    description="The quickest way to start finding free tickets.",
+                ),
+                discord.SelectOption(
+                    label="Find Free Tickets",
+                    value="users",
+                    emoji="🎟️",
+                    description="Commands anyone can use to check drops and sources.",
+                ),
+                discord.SelectOption(
+                    label="Server Setup",
+                    value="admins",
+                    emoji="⚙️",
+                    description="Commands for server owners and managers.",
+                ),
+                discord.SelectOption(
+                    label="Safety & Sources",
+                    value="safety",
+                    emoji="🛡️",
+                    description="What SniperPlug verifies and what it cannot guarantee.",
+                ),
+            ],
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        section = self.values[0] if self.values else "start"
-        await interaction.response.send_message(
-            embed=build_movie_guide_section_embed(section),
-            ephemeral=True,
-        )
+        # Acknowledge Discord before building/sending anything so a rendering or
+        # network problem can never turn into "the application didn't respond".
+        await interaction.response.defer(ephemeral=True)
+        try:
+            section = self.values[0] if self.values else _selected_value(interaction)
+            await interaction.followup.send(
+                embed=build_movie_guide_section_embed(section or "start"),
+                ephemeral=True,
+            )
+        except Exception as error:  # noqa: BLE001 - component must fail visibly.
+            log.exception(
+                "Movie guide section failed user=%s guild=%s",
+                interaction.user.id if interaction.user else None,
+                interaction.guild_id,
+            )
+            await _send_component_error(interaction, error)
 
 
 class MovieGuidePanelView(discord.ui.View):
@@ -95,6 +107,21 @@ class MovieGuidePanelView(discord.ui.View):
     )
     async def status_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.cog.send_status_from_panel(interaction)
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item[Any],
+    ) -> None:
+        log.error(
+            "Movie guide component failed item=%s user=%s guild=%s",
+            getattr(item, "custom_id", type(item).__name__),
+            interaction.user.id if interaction.user else None,
+            interaction.guild_id,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        await _send_component_error(interaction, error)
 
 
 class MovieCommandGuideCog(commands.Cog):
@@ -166,39 +193,50 @@ class MovieCommandGuideCog(commands.Cog):
 
     async def send_latest_from_panel(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        movie_cog = self._movie_cog()
-        if movie_cog is None:
-            await interaction.followup.send(
-                "The movie-ticket monitor is still starting. Try again in a moment or run `/movies latest`.",
-                ephemeral=True,
-            )
-            return
-
-        refresh_error = ""
         try:
-            await movie_cog._scan_official_source(  # noqa: SLF001 - intentional cross-cog UI bridge.
-                target_guild_id=int(interaction.guild_id) if interaction.guild_id else None,
+            movie_cog = self._movie_cog()
+            if movie_cog is None:
+                await interaction.followup.send(
+                    "The movie-ticket monitor is unavailable. Run `/movies latest`; "
+                    "if that command works, restart the bot on the newest build.",
+                    ephemeral=True,
+                )
+                return
+
+            refresh_error = ""
+            try:
+                await movie_cog._scan_official_source(  # noqa: SLF001 - intentional UI bridge.
+                    target_guild_id=int(interaction.guild_id) if interaction.guild_id else None,
+                )
+            except Exception as error:  # noqa: BLE001 - verified cache remains usable.
+                refresh_error = clean_text(str(error))[:500]
+                log.exception("Movie guide live-drop refresh failed guild=%s", interaction.guild_id)
+
+            drops = await movie_cog.store.list_active_drops(limit=MAX_LATEST_EMBEDS)
+            if not drops:
+                message = (
+                    "No public reusable free-ticket codes are currently cached from "
+                    "Atom's official promotions page."
+                )
+                if refresh_error:
+                    message += f"\nLive refresh failed safely: `{refresh_error}`"
+                await interaction.followup.send(message, ephemeral=True)
+                return
+
+            embeds = await movie_cog._build_drop_embeds(drops)  # noqa: SLF001
+            content = (
+                f"Found **{len(drops)}** active official free-ticket drop(s). "
+                "Claim quickly because promotional inventory can run out early."
             )
-        except Exception as exc:  # noqa: BLE001 - cached verified drops remain usable.
-            refresh_error = clean_text(str(exc))[:500]
-            log.exception("Movie guide live-drop refresh failed guild=%s", interaction.guild_id)
-
-        drops = await movie_cog.store.list_active_drops(limit=MAX_LATEST_EMBEDS)
-        if not drops:
-            message = "No public reusable free-ticket codes are currently cached from Atom's official promotions page."
             if refresh_error:
-                message += f"\nLive refresh failed safely: `{refresh_error}`"
-            await interaction.followup.send(message, ephemeral=True)
-            return
-
-        embeds = await movie_cog._build_drop_embeds(drops)  # noqa: SLF001 - shared verified embed builder.
-        content = (
-            f"Found **{len(drops)}** active official free-ticket drop(s). "
-            "Claim quickly because promotional inventory can run out early."
-        )
-        if refresh_error:
-            content += f"\nShowing the last verified cache because the live refresh failed: `{refresh_error}`"
-        await interaction.followup.send(content=content, embeds=embeds, ephemeral=True)
+                content += (
+                    "\nShowing the last verified cache because the live refresh failed: "
+                    f"`{refresh_error}`"
+                )
+            await interaction.followup.send(content=content, embeds=embeds, ephemeral=True)
+        except Exception as error:  # noqa: BLE001 - always return a visible component result.
+            log.exception("Movie guide latest button failed guild=%s", interaction.guild_id)
+            await _send_component_error(interaction, error)
 
     async def send_status_from_panel(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id:
@@ -206,32 +244,47 @@ class MovieCommandGuideCog(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-        movie_cog = self._movie_cog()
-        if movie_cog is None:
+        try:
+            movie_cog = self._movie_cog()
+            if movie_cog is None:
+                await interaction.followup.send(
+                    "The movie-ticket monitor is unavailable. Run `/movies status`; "
+                    "if that command works, restart the bot on the newest build.",
+                    ephemeral=True,
+                )
+                return
+
+            config = await movie_cog.store.get_config(int(interaction.guild_id))
+            state = await movie_cog.store.get_source_state()
+            active = await movie_cog.store.list_active_drops(limit=100)
+            sent_count = await movie_cog.store.count_sent_for_guild(int(interaction.guild_id))
             await interaction.followup.send(
-                "The movie-ticket monitor is still starting. Try again in a moment.",
+                embed=build_movie_status_embed(
+                    enabled=config.enabled,
+                    alert_channel_id=config.alert_channel_id,
+                    active_count=len(active),
+                    sent_count=sent_count,
+                    last_success_at=state.last_success_at,
+                    last_error=state.last_error,
+                ),
                 ephemeral=True,
             )
-            return
+        except Exception as error:  # noqa: BLE001
+            log.exception("Movie guide status button failed guild=%s", interaction.guild_id)
+            await _send_component_error(interaction, error)
 
-        config = await movie_cog.store.get_config(int(interaction.guild_id))
-        state = await movie_cog.store.get_source_state()
-        active = await movie_cog.store.list_active_drops(limit=100)
-        sent_count = await movie_cog.store.count_sent_for_guild(int(interaction.guild_id))
-        await interaction.followup.send(
-            embed=build_movie_status_embed(
-                enabled=config.enabled,
-                alert_channel_id=config.alert_channel_id,
-                active_count=len(active),
-                sent_count=sent_count,
-                last_success_at=state.last_success_at,
-                last_error=state.last_error,
-            ),
-            ephemeral=True,
+    def _movie_cog(self) -> MovieTicketsCog | None:
+        # GroupCog's ``name="movies"`` changes its registered cog key to
+        # ``movies``. Never look it up using the Python class name.
+        direct = self.bot.get_cog(MovieTicketsCog.__cog_name__)
+        if isinstance(direct, MovieTicketsCog):
+            return direct
+
+        # Keep a type-based fallback in case the cog is ever renamed.
+        return next(
+            (cog for cog in self.bot.cogs.values() if isinstance(cog, MovieTicketsCog)),
+            None,
         )
-
-    def _movie_cog(self) -> Any | None:
-        return self.bot.get_cog("MovieTicketsCog")
 
 
 def build_movie_guide_home_embed() -> discord.Embed:
@@ -316,22 +369,22 @@ def _build_user_section() -> discord.Embed:
     embed = discord.Embed(title="🎟️ Commands Anyone Can Use", color=GUIDE_COLOR)
     embed.add_field(
         name="`/movies latest`",
-        value="Checks Atom's official promotions page, then privately shows active verified codes with movie posters and restrictions.",
+        value="Refreshes Atom's official page and privately shows active codes, posters, and restrictions.",
         inline=False,
     )
     embed.add_field(
         name="`/movies status`",
-        value="Shows whether this server enabled alerts, the selected channel, source health, active-code count, and delivery total.",
+        value="Shows this server's alert channel, source health, active-code count, and delivery total.",
         inline=False,
     )
     embed.add_field(
         name="`/movies sources`",
-        value="Explains which official sources are automated and which sources still require a future safe connection.",
+        value="Explains which official sources are automated and which are not connected yet.",
         inline=False,
     )
     embed.add_field(
         name="`/movies-help`",
-        value="Opens this same interactive guide privately without posting anything to the channel.",
+        value="Opens this interactive guide privately without posting in the channel.",
         inline=False,
     )
     return embed
@@ -341,27 +394,27 @@ def _build_admin_section() -> discord.Embed:
     embed = discord.Embed(title="⚙️ Server Setup Commands", color=GUIDE_COLOR)
     embed.add_field(
         name="`/movies setup alert_channel:#movie-tickets`",
-        value="Enables automatic alerts and saves the selected destination. Requires **Manage Server**.",
+        value="Enables automatic alerts and saves the destination. Requires **Manage Server**.",
         inline=False,
     )
     embed.add_field(
         name="`/movies scan`",
-        value="Forces an immediate official-source refresh and delivers any newly discovered codes. Requires **Manage Server**.",
+        value="Checks the official source immediately and delivers newly discovered codes.",
         inline=False,
     )
     embed.add_field(
         name="`/movies test-alert`",
-        value="Posts a clearly labeled fake alert so you can verify channel permissions and appearance safely.",
+        value="Posts a clearly labeled fake alert to verify permissions and appearance safely.",
         inline=False,
     )
     embed.add_field(
         name="`/movies disable`",
-        value="Stops automatic delivery without deleting the server's saved configuration.",
+        value="Stops automatic delivery without deleting the saved channel configuration.",
         inline=False,
     )
     embed.add_field(
         name="`/movies-panel target_channel:#channel`",
-        value="Posts this restart-safe public guide. Omit `target_channel` to use the current text channel.",
+        value="Posts this permanent guide. Omit the channel option to use the current text channel.",
         inline=False,
     )
     return embed
@@ -373,23 +426,29 @@ def _build_safety_section() -> discord.Embed:
         name="Automated source",
         value=(
             f"[Official Atom Promotions Hub]({ATOM_PROMOTIONS_URL}) is checked every minute. "
-            "SniperPlug extracts public reusable free-ticket codes, terms, dates, and official movie artwork."
+            "SniperPlug extracts public codes, terms, dates, and official movie artwork."
         ),
         inline=False,
     )
     embed.add_field(
         name="Filtered out",
-        value="Private partner codes, account-specific codes, sweepstakes, normal discounts, concessions, and BOGO offers are not labeled as free public drops.",
+        value=(
+            "Private/account codes, sweepstakes, ordinary discounts, concessions, "
+            "and BOGO offers are not labeled as public free-ticket drops."
+        ),
         inline=False,
     )
     embed.add_field(
         name="What cannot be guaranteed",
-        value="A verified code may expire, reach its redemption limit, exclude a theater/date, or run out before the listed end time.",
+        value=(
+            "A verified code may expire, hit its redemption limit, exclude a theater/date, "
+            "or run out before its listed end time."
+        ),
         inline=False,
     )
     embed.add_field(
         name="Best practice",
-        value="Claim immediately and read the restrictions shown in the alert before selecting seats.",
+        value="Claim immediately and read the restrictions shown in the alert before choosing seats.",
         inline=False,
     )
     return embed
@@ -446,13 +505,38 @@ def missing_channel_permissions(
     return [label for attribute, label in required.items() if not getattr(permissions, attribute, False)]
 
 
+def _selected_value(interaction: discord.Interaction) -> str:
+    data = interaction.data if isinstance(interaction.data, dict) else {}
+    values = data.get("values")
+    if isinstance(values, list) and values:
+        return clean_text(values[0])
+    return "start"
+
+
+async def _send_component_error(interaction: discord.Interaction, error: Exception) -> None:
+    message = (
+        "That movie panel action hit an error, but it was acknowledged safely. "
+        "Try `/movies-help` or the matching `/movies` command while the error is logged."
+    )
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception:
+        log.exception(
+            "Could not send movie guide component failure response original=%s",
+            clean_text(str(error))[:300],
+        )
+
+
 def _discord_time(value: str) -> str:
     if not value:
         return "Never"
     try:
-        parsed = discord.utils.parse_time(value)
-    except (TypeError, ValueError):
-        parsed = None
-    if parsed is None:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
         return clean_text(value)[:100]
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
     return f"<t:{int(parsed.timestamp())}:R>"

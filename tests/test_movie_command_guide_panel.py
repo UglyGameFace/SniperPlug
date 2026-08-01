@@ -1,20 +1,55 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 from sniperplug.cogs.movie_command_guide import (
     GUIDE_LATEST_ID,
     GUIDE_SELECT_ID,
     GUIDE_STATUS_ID,
+    MovieCommandGuideCog,
     MovieGuidePanelView,
+    MovieGuideSectionSelect,
     build_movie_guide_home_embed,
     build_movie_guide_section_embed,
 )
+from sniperplug.cogs.movie_tickets import MovieTicketsCog
 
 
 ROOT = Path(__file__).resolve().parents[1]
 BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 COG = (ROOT / "sniperplug/cogs/movie_command_guide.py").read_text(encoding="utf-8")
+
+
+class _FakeBot:
+    def __init__(self) -> None:
+        self.db = object()
+        self.cogs: dict[str, Any] = {}
+        self.user = None
+
+    def get_cog(self, name: str) -> Any | None:
+        return self.cogs.get(name)
+
+
+class _FakeResponse:
+    def __init__(self) -> None:
+        self.deferred = False
+
+    async def defer(self, **_: Any) -> None:
+        self.deferred = True
+
+    def is_done(self) -> bool:
+        return self.deferred
+
+
+class _FakeFollowup:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    async def send(self, **kwargs: Any) -> None:
+        self.messages.append(kwargs)
 
 
 def test_runtime_registers_one_movie_command_guide_cog() -> None:
@@ -68,6 +103,46 @@ def test_panel_view_is_persistent_and_has_live_controls() -> None:
     assert "await self.cog.send_latest_from_panel(interaction)" in COG
     assert "await self.cog.send_status_from_panel(interaction)" in COG
     assert view is not None
+
+
+def test_movie_group_cog_is_resolved_by_registered_name_and_type() -> None:
+    bot = _FakeBot()
+    movie_cog = MovieTicketsCog(bot)  # type: ignore[arg-type]
+    bot.cogs[MovieTicketsCog.__cog_name__] = movie_cog
+    guide_cog = MovieCommandGuideCog(bot)  # type: ignore[arg-type]
+
+    assert MovieTicketsCog.__cog_name__ == "movies"
+    assert guide_cog._movie_cog() is movie_cog
+    assert "get_cog(MovieTicketsCog.__cog_name__)" in COG
+    assert 'get_cog("MovieTicketsCog")' not in COG
+
+
+def test_dropdown_acknowledges_before_sending_private_section() -> None:
+    bot = _FakeBot()
+    guide_cog = MovieCommandGuideCog(bot)  # type: ignore[arg-type]
+    select = MovieGuideSectionSelect(guide_cog)
+    response = _FakeResponse()
+    followup = _FakeFollowup()
+    interaction = SimpleNamespace(
+        response=response,
+        followup=followup,
+        data={"values": ["start"]},
+        user=SimpleNamespace(id=123),
+        guild_id=456,
+    )
+
+    asyncio.run(select.callback(interaction))  # type: ignore[arg-type]
+
+    assert response.deferred is True
+    assert len(followup.messages) == 1
+    assert followup.messages[0]["ephemeral"] is True
+    assert followup.messages[0]["embed"].title == "🎬 Start Here"
+
+
+def test_component_failures_have_a_visible_fallback() -> None:
+    assert "async def on_error(" in COG
+    assert "await _send_component_error(interaction, error)" in COG
+    assert "That movie panel action hit an error" in COG
 
 
 def test_public_panel_interactions_reply_privately() -> None:

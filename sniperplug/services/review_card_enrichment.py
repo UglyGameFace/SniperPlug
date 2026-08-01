@@ -7,12 +7,13 @@ import discord
 
 
 DISCOVERY_TAG_FIELD = "🏷️ Item tags"
+LISTING_DETAILS_FIELD = "🧾 Walmart listing details"
 PRICE_HISTORY_FIELD = "📉 Price history"
 GLOBAL_OBSERVED_REFERENCE_SOURCE = "sniperplug.global_exact_offer_memory.stable_price"
 
 
 def enrich_review_card(card: Any) -> Any:
-    """Add structured discovery tags and honest price-source context."""
+    """Add structured retailer tags, listing facts, and honest price context."""
     embed = getattr(card, "embed", None)
     if not isinstance(embed, discord.Embed):
         return card
@@ -23,6 +24,14 @@ def enrich_review_card(card: Any) -> Any:
         embed.add_field(
             name=DISCOVERY_TAG_FIELD,
             value=" • ".join(f"`{tag}`" for tag in tags),
+            inline=False,
+        )
+
+    listing_details = _listing_details_text(card, attrs)
+    if listing_details and not _has_field(embed, LISTING_DETAILS_FIELD):
+        embed.add_field(
+            name=LISTING_DETAILS_FIELD,
+            value=listing_details,
             inline=False,
         )
 
@@ -52,6 +61,11 @@ def _embed_text(embed: discord.Embed) -> str:
 
 
 def _discovery_tags(card: Any, attrs: dict[str, Any], embed: discord.Embed) -> list[str]:
+    explicit_tags = [
+        " ".join(tag.split())
+        for tag in str(attrs.get("retailerTags") or "").split("|")
+        if " ".join(tag.split())
+    ]
     text = " ".join(
         [
             _embed_text(embed),
@@ -69,11 +83,13 @@ def _discovery_tags(card: Any, attrs: dict[str, Any], embed: discord.Embed) -> l
             ),
         ]
     ).lower()
-    tags: list[str] = []
+    tags: list[str] = list(dict.fromkeys(explicit_tags))
     checks = (
         ("clearance", "Clearance"),
         ("rollback", "Rollback"),
         ("special buy", "Special Buy"),
+        ("overall pick", "Overall Pick"),
+        ("best seller", "Best Seller"),
         ("open box", "Open Box"),
         ("like new", "Like New"),
         ("restored", "Restored"),
@@ -97,6 +113,81 @@ def _discovery_tags(card: Any, attrs: dict[str, Any], embed: discord.Embed) -> l
     ):
         tags.append("Rollback")
     return tags or ["Private Review"]
+
+
+def _listing_details_text(card: Any, attrs: dict[str, Any]) -> str:
+    lines: list[str] = []
+
+    source = str(attrs.get("retailerMetadataSource") or "").strip().lower()
+    exact = str(attrs.get("exactDetailPriceProof") or "").strip().lower() == "yes"
+    if exact or source == "exact_detail":
+        lines.append("• Metadata source: **Exact Walmart item detail**")
+    elif source == "search":
+        lines.append("• Metadata source: **Walmart search response; exact detail pending**")
+
+    savings = _number(attrs.get("officialSavingsAmount"))
+    if savings is not None:
+        lines.append(f"• You save: **${savings:,.2f}** from trusted current/was prices")
+
+    seller = str(
+        getattr(card, "seller_name", None)
+        or attrs.get("seller")
+        or ""
+    ).strip()
+    condition = str(
+        getattr(card, "condition", None)
+        or attrs.get("condition")
+        or ""
+    ).strip()
+    offer_parts = [part for part in (seller, condition) if part]
+    if offer_parts:
+        labels = []
+        if seller:
+            labels.append(f"Seller: **{seller}**")
+        if condition:
+            labels.append(f"Condition: **{condition}**")
+        lines.append("• " + " • ".join(labels))
+
+    condition_options = str(attrs.get("conditionOptions") or "").strip()
+    if condition_options:
+        lines.append(f"• Condition choices: **{condition_options[:260]}**")
+
+    for label, method in (("Shipping", "shipping"), ("Pickup", "pickup"), ("Delivery", "delivery")):
+        method_text = _method_text(attrs, method)
+        if method_text:
+            lines.append(f"• {label}: **{method_text}**")
+
+    rating = str(attrs.get("rating") or "").strip()
+    reviews = str(attrs.get("reviews") or "").strip()
+    if rating or reviews:
+        value = f"{rating}/5" if rating else "Rating not returned"
+        if reviews:
+            value += f" from {reviews} review(s)"
+        lines.append(f"• Rating: **{value}**")
+
+    purchase_context = str(attrs.get("purchaseContext") or "").strip()
+    if purchase_context:
+        lines.append(f"• Price context: **{purchase_context[:180]}**")
+
+    return_policy = str(attrs.get("returnPolicy") or "").strip()
+    if return_policy:
+        lines.append(f"• Returns: **{return_policy[:180]}**")
+
+    location = str(attrs.get("fulfillmentLocation") or "").strip()
+    if location:
+        lines.append(f"• Location returned by API: **{location[:180]}**")
+
+    return "\n".join(lines[:10])[:1024]
+
+
+def _method_text(attrs: dict[str, Any], method: str) -> str | None:
+    status = str(attrs.get(f"{method}Status") or "").strip()
+    text = str(attrs.get(f"{method}Text") or "").strip()
+    parts: list[str] = []
+    for value in (status, text):
+        if value and value not in parts:
+            parts.append(value)
+    return " — ".join(parts) or None
 
 
 def _price_history_text(card: Any, attrs: dict[str, Any], embed: discord.Embed) -> str:

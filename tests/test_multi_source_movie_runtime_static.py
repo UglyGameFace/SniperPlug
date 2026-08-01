@@ -2,19 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sniperplug.cogs.multi_source_movie_tickets import MovieTicketsCog
+from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
 
 
 ROOT = Path(__file__).resolve().parents[1]
 BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 RUNTIME = (ROOT / "sniperplug/cogs/multi_source_movie_tickets.py").read_text(encoding="utf-8")
+REGISTERED = (ROOT / "sniperplug/cogs/registered_multi_source_movies.py").read_text(encoding="utf-8")
 FANDANGO = (ROOT / "sniperplug/services/fandango_movie_offers.py").read_text(encoding="utf-8")
 
 
 def test_bot_registers_exactly_one_multi_source_movies_runtime() -> None:
-    assert "from sniperplug.cogs.multi_source_movie_tickets import MovieTicketsCog" in BOT
+    assert "from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog" in BOT
     assert "from sniperplug.cogs.movie_tickets import MovieTicketsCog\n" not in BOT
     assert BOT.count("await self.add_cog(MovieTicketsCog(self))") == 1
+    assert 'name="movies"' in REGISTERED
     assert MovieTicketsCog.__cog_name__ == "movies"
 
 

@@ -4,14 +4,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = (ROOT / "sniperplug/cogs/resilient_auto_scan_runner.py").read_text(encoding="utf-8")
 REPAIR = (ROOT / "sniperplug/services/setup_self_heal.py").read_text(encoding="utf-8")
+RECONCILIATION = (
+    ROOT / "sniperplug/services/autoscan_live_guild_reconciliation.py"
+).read_text(encoding="utf-8")
 
 
 def test_scheduler_repairs_all_live_guilds_before_listing_eligible_rows() -> None:
-    repair_call = RUNNER.index("repair_all_public_alert_setups(self.bot.db, self.bot)")
-    list_call = RUNNER.index("legacy.list_public_alert_guilds(self.bot.db, bot=self.bot)")
+    repair_call = RUNNER.index("reconcile_live_public_alert_setups(self.bot.db, self.bot)")
+    list_call = RUNNER.index("list_live_public_alert_guilds(self.bot.db, self.bot)")
     assert repair_call < list_call
     assert "Autoscan eligible live guilds" in RUNNER
     assert "needs_action" in RUNNER
+    assert "repair_public_alert_setup" in RECONCILIATION
 
 
 def test_unambiguous_named_deal_channel_can_be_adopted() -> None:

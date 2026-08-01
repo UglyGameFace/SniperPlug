@@ -56,9 +56,10 @@ class _FakeBot:
 
 
 def test_registered_movies_group_description_is_discord_safe() -> None:
-    group = MovieTicketsCog.__cog_app_commands_group__
-    assert group.name == "movies"
-    assert 1 <= len(str(group.description)) <= 100
+    name = MovieTicketsCog.__cog_app_commands_group_name__
+    description = MovieTicketsCog.__cog_app_commands_group_description__
+    assert name == "movies"
+    assert 1 <= len(str(description)) <= 100
 
 
 def test_schema_preflight_detects_oversized_description() -> None:

@@ -215,6 +215,7 @@ async def collect_verified_discount_cards_with_observed_memory(
             )
             continue
 
+        query, result = item
         candidates = list(result.candidates)
         tag_candidates_with_route(candidates, query=query)
         all_candidates.extend(candidates)
@@ -229,6 +230,15 @@ async def collect_verified_discount_cards_with_observed_memory(
         )
 
     deduped_candidates = deal_scanner.dedupe_candidates(all_candidates)
+    search_item_ids = {
+        item_id
+        for item_id in (_walmart_item_id(candidate) for candidate in deduped_candidates)
+        if item_id
+    }
+    search_candidates_without_item_id = sum(
+        1 for candidate in deduped_candidates if not _walmart_item_id(candidate)
+    )
+
     if db is not None:
         try:
             queue_enqueue = await enqueue_walmart_exact_verification_candidates_bulk(
@@ -291,11 +301,19 @@ async def collect_verified_discount_cards_with_observed_memory(
     exact_candidates = deal_scanner.dedupe_candidates(
         [*foreground_exact_candidates, *queued_exact_candidates]
     )
-    hidden_search_only = max(0, len(deduped_candidates) - len(foreground_exact_candidates))
+    surfaced_current_search_ids = {
+        item_id
+        for item_id in (_walmart_item_id(candidate) for candidate in exact_candidates)
+        if item_id in search_item_ids
+    }
+    hidden_search_only = (
+        len(search_item_ids - surfaced_current_search_ids)
+        + search_candidates_without_item_id
+    )
     if hidden_search_only:
         warnings.append(
             "Official Walmart detail gate: "
-            f"**{hidden_search_only}** search-only candidate(s) were kept out of cards and retained in the global exact-detail queue."
+            f"**{hidden_search_only}** current-search candidate(s) were kept out of cards and retained in the global exact-detail queue when an item ID was available."
         )
     if (
         exact_prices.attempted
@@ -381,7 +399,7 @@ async def collect_verified_discount_cards_with_observed_memory(
         category_key=preset.key,
         route_stats=merged_route_stats,
         scout_lead_count=len(scout_cards),
-        memory_recheck_count=len(memory_seeds) + len(queued_exact_candidates),
+        memory_recheck_count=len(memory_seeds),
     )
 
 

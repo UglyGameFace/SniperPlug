@@ -15,7 +15,7 @@ from sniperplug.cogs.movie_command_guide import (
     build_movie_guide_home_embed,
     build_movie_guide_section_embed,
 )
-from sniperplug.cogs.movie_tickets import MovieTicketsCog
+from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +83,8 @@ def test_home_panel_explains_every_current_movie_command() -> None:
         "/movies-panel target_channel:#channel",
     ):
         assert command in rendered
+    for source_name in ("Atom", "Fandango", "Gofobo"):
+        assert source_name in rendered
 
 
 def test_every_guide_section_has_clear_instructional_content() -> None:
@@ -102,6 +104,9 @@ def test_panel_view_is_persistent_and_has_live_controls() -> None:
     assert "self.bot.add_view(MovieGuidePanelView(self))" in COG
     assert "await self.cog.send_latest_from_panel(interaction)" in COG
     assert "await self.cog.send_status_from_panel(interaction)" in COG
+    assert 'label="Atom"' in COG
+    assert 'label="Fandango"' in COG
+    assert 'label="Gofobo"' in COG
     assert view is not None
 
 

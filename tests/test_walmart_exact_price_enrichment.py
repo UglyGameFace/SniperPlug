@@ -84,6 +84,7 @@ def test_exact_detail_refreshes_same_item_current_and_was_price() -> None:
     assert exact.variant_attributes["exactDetailPriceProof"] == "yes"
     assert exact.variant_attributes["exactDetailItemId"] == "123456"
     assert exact.variant_attributes["exactDetailReferenceSource"] == "wasPrice"
+    assert exact.variant_attributes["exactDetailReferenceStatus"] == "trusted"
     assert exact.variant_attributes["finderSourceQuery"] == "monitor clearance"
     assert exact.candidate_id == original.candidate_id
     assert "exact Walmart detail item verified: 123456" in exact.signals
@@ -113,7 +114,16 @@ def test_exact_detail_identity_mismatch_never_overwrites_candidate() -> None:
 
 
 def test_exact_detail_without_was_price_stays_honest() -> None:
-    original = candidate("333333", attrs={"clearance": "yes"}, signals=["clearance"])
+    original = candidate(
+        "333333",
+        attrs={
+            "clearance": "yes",
+            "referencePriceTrusted": "yes",
+            "trustedReferencePrice": "99.00",
+            "trustedReferenceSource": "wasPrice",
+        },
+        signals=["clearance"],
+    )
     provider = FakeDetailProvider(
         {
             "333333": {
@@ -136,7 +146,11 @@ def test_exact_detail_without_was_price_stays_honest() -> None:
     assert exact.typical_price is None
     assert exact.api_reference_price is None
     assert exact.variant_attributes["exactDetailPriceProof"] == "yes"
+    assert exact.variant_attributes["exactDetailReferenceStatus"] == "missing"
+    assert exact.variant_attributes["referencePriceTrusted"] == "no"
     assert "exactDetailReferenceSource" not in exact.variant_attributes
+    assert "trustedReferencePrice" not in exact.variant_attributes
+    assert "trustedReferenceSource" not in exact.variant_attributes
 
 
 def test_bounded_enrichment_prioritizes_missing_clearance_was_price() -> None:
@@ -186,7 +200,7 @@ def test_autoscan_enriches_before_cards_and_price_memory() -> None:
     enrich_pos = source.index("exact_prices = await enrich_walmart_exact_prices")
     aggregate_pos = source.index("aggregate = ProviderScanResult")
     review_pos = source.index("review_candidates = build_review_candidate_cards")
-    memory_pos = source.index("select_observed_price_drop_cards")
+    memory_pos = source.index("observed_memory = await select_observed_price_drop_cards")
 
     assert "provider_registry.get(\"walmart\")" in source
     assert "AUTOSCAN_EXACT_DETAIL_LIMIT = 8" in source

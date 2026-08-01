@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
@@ -21,6 +22,7 @@ from sniperplug.services.public_deal_posts import (
     should_suppress_recent_alert,
 )
 from sniperplug.services.public_posting import normalize_retailer_key
+from sniperplug.services.review_card_enrichment import enrich_review_card
 
 
 DEFAULT_REVIEW_PAGE_SIZE = 3
@@ -28,6 +30,7 @@ DEFAULT_REVIEW_MAX_CARDS = 12
 MANUAL_REVIEW_SOURCE_LABEL = "staff_shared_review_scout"
 MANUAL_REVIEW_POST_PREFIX = "scout:staff_review"
 MANUAL_REVIEW_PERMISSION_ERROR = "You need **Manage Server** permission to manually post review leads."
+log = logging.getLogger("sniperplug.manual_review_share")
 
 
 class ManualReviewShareView(discord.ui.View):
@@ -47,7 +50,14 @@ class ManualReviewShareView(discord.ui.View):
         return self.cards[start : start + self.page_size]
 
     def page_embeds(self) -> list[discord.Embed]:
-        return [sanitize_embed(card.embed) for card in self.page_cards()]
+        embeds: list[discord.Embed] = []
+        for card in self.page_cards():
+            try:
+                enrich_review_card(card)
+                embeds.append(sanitize_embed(card.embed))
+            except Exception as exc:
+                log.exception("Skipped malformed private review card while rendering page=%s: %s", self.page, clean_error_text(exc))
+        return embeds
 
     def content(self, *, prefix: str | None = None) -> str:
         header = prefix or "🟨 **Private autoscan review leads**"
@@ -85,8 +95,14 @@ class ManualShareButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("I could not find that review card anymore.", ephemeral=True)
             return
-        _ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
-        await interaction.response.send_message(message, ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            _ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
+            await interaction.followup.send(message, ephemeral=True)
+        except Exception as exc:
+            log.exception("Manual review post button failed guild=%s index=%s", interaction.guild_id, self.index)
+            await interaction.followup.send(f"I could not post that review lead: `{clean_error_text(exc)}`", ephemeral=True)
 
 
 class ManualReviewPageButton(discord.ui.Button):
@@ -100,9 +116,19 @@ class ManualReviewPageButton(discord.ui.Button):
         if not isinstance(self.view, ManualReviewShareView):
             await interaction.response.send_message("This review menu is no longer active.", ephemeral=True)
             return
-        self.view.page = max(0, min(self.view.page_count - 1, self.view.page + self.direction))
-        self.view.refresh_items()
-        await interaction.response.edit_message(content=self.view.content(), embeds=self.view.page_embeds(), view=self.view)
+
+        await interaction.response.defer()
+        try:
+            self.view.page = max(0, min(self.view.page_count - 1, self.view.page + self.direction))
+            self.view.refresh_items()
+            embeds = self.view.page_embeds()
+            if not embeds:
+                await interaction.followup.send("That review page contained malformed cards and could not be displayed. The error was logged.", ephemeral=True)
+                return
+            await interaction.edit_original_response(content=self.view.content(), embeds=embeds, view=self.view)
+        except Exception as exc:
+            log.exception("Manual review pagination failed guild=%s page=%s direction=%s", interaction.guild_id, getattr(self.view, "page", None), self.direction)
+            await interaction.followup.send(f"I could not open that review page: `{clean_error_text(exc)}`", ephemeral=True)
 
 
 class ManualShareSelect(discord.ui.Select):
@@ -125,8 +151,13 @@ class ManualShareSelect(discord.ui.Select):
         except Exception:
             await interaction.response.send_message("I could not find that review card anymore.", ephemeral=True)
             return
-        _ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            _ok, message = await share_review_card(bot=interaction.client, guild_id=interaction.guild_id, card=card)
+            await interaction.followup.send(message, ephemeral=True)
+        except Exception as exc:
+            log.exception("Legacy manual review select failed guild=%s", interaction.guild_id)
+            await interaction.followup.send(f"I could not post that review lead: `{clean_error_text(exc)}`", ephemeral=True)
 
 
 def can_manually_post_review(interaction: discord.Interaction) -> bool:
@@ -204,6 +235,7 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
 
 
 def aligned_public_review_embed(card: Any) -> discord.Embed:
+    enrich_review_card(card)
     source = getattr(card, "embed", None)
     if isinstance(source, discord.Embed):
         embed = source.copy()

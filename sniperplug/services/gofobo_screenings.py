@@ -181,7 +181,7 @@ class _GofoboUpcomingParser(HTMLParser):
                 )
 
     def _add_candidate(self, *, title: str, href: str, image_url: str) -> None:
-        cleaned_title = clean_text(title)
+        cleaned_title = collapse_repeated_title(clean_text(title))
         normalized = normalize_text(cleaned_title)
         if not cleaned_title or normalized in _GENERIC_TITLES:
             return
@@ -198,6 +198,20 @@ class _GofoboUpcomingParser(HTMLParser):
             self.blocks.append(candidate)
 
 
+def collapse_repeated_title(value: str) -> str:
+    """Collapse card text such as ``MUTINY MUTINY`` to one movie title."""
+
+    cleaned = clean_text(value)
+    words = cleaned.split()
+    if len(words) >= 2 and len(words) % 2 == 0:
+        midpoint = len(words) // 2
+        if [part.casefold() for part in words[:midpoint]] == [
+            part.casefold() for part in words[midpoint:]
+        ]:
+            return " ".join(words[:midpoint])
+    return cleaned
+
+
 def parse_gofobo_home_html(html_text: str) -> GofoboParseResult:
     parser = _GofoboUpcomingParser()
     try:
@@ -211,7 +225,6 @@ def parse_gofobo_home_html(html_text: str) -> GofoboParseResult:
     document_valid = (
         parser.upcoming_section_found
         and "gofobo" in page_text
-        and "upcoming screenings & events" in page_text
         and "sweepstakes" in page_text
     )
     if not document_valid:

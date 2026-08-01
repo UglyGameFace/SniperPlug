@@ -12,6 +12,7 @@ from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog as NativeAutoScanRunnerCog
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.setup_self_heal import repair_all_public_alert_setups
+from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
 from sniperplug.services.walmart_exact_verification_queue import (
     process_walmart_exact_verification_queue_batch,
 )
@@ -28,6 +29,7 @@ WALMART_QUEUE_INTERVAL_SECONDS = 60
 WALMART_QUEUE_BUSY_RETRY_SECONDS = 15
 WALMART_QUEUE_BATCH_SIZE = 6
 WALMART_QUEUE_CONCURRENCY = 2
+WALMART_QUEUE_HEALTH_LOG_INTERVAL_SECONDS = 5 * 60
 
 _WALMART_SCHEDULE_LOCK = asyncio.Lock()
 _WALMART_PROVIDER_OPERATION_LOCK = asyncio.Lock()
@@ -48,6 +50,8 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         super().__init__(bot)
         self._event_loop_watchdog_task: asyncio.Task | None = None
         self._walmart_verification_queue_task: asyncio.Task | None = None
+        self._runtime_phase = "startup"
+        self._last_queue_health_log_monotonic = 0.0
 
     async def cog_load(self) -> None:
         self.auto_scan_loop.start()
@@ -59,10 +63,11 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
             self._walmart_exact_verification_worker(),
             name="sniperplug-walmart-exact-verification-queue",
         )
+        self._runtime_phase = "idle"
         legacy.log.info(
             "Autoscan hardening active python=%s platform=%s scheduled_routes=%s "
             "scheduled_floor_hours=6 provider_concurrency=1 live_guild_self_heal=true "
-            "exact_queue_batch=%s exact_queue_interval_s=%s",
+            "exact_queue_batch=%s exact_queue_interval_s=%s metadata_snapshot_nodes=2500",
             platform.python_version(),
             sys.platform,
             SCHEDULED_QUERY_COUNT,
@@ -78,6 +83,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         )
         self._event_loop_watchdog_task = None
         self._walmart_verification_queue_task = None
+        self._runtime_phase = "unloading"
         for task in tasks_to_cancel:
             if task is not None:
                 task.cancel()
@@ -121,6 +127,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
 
                 progress_task = asyncio.create_task(self._autoscan_progress_notice(interaction, started))
                 try:
+                    self._runtime_phase = f"manual_scan:guild={guild_id}"
                     async with _WALMART_PROVIDER_OPERATION_LOCK:
                         report = await self._run_guild_walmart_discovery(
                             legacy.AutoScanGuild(guild_id, config.get("channel_id")),
@@ -129,6 +136,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                             report_label="Manual broad pass" if force else "Manual pass",
                         )
                 finally:
+                    self._runtime_phase = "idle"
                     progress_task.cancel()
                     try:
                         await progress_task
@@ -145,6 +153,8 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                     interaction,
                     f"Auto-scan hit an error after starting: `{legacy.clean_log_text(exc)}`",
                 )
+            finally:
+                self._runtime_phase = "idle"
 
     async def _autoscan_progress_notice(
         self,
@@ -174,6 +184,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         await self.bot.wait_until_ready()
 
         try:
+            self._runtime_phase = "setup_reconciliation"
             repair_summary = await repair_all_public_alert_setups(self.bot.db, self.bot)
             legacy.log.info(
                 "Autoscan live-guild setup reconciliation complete ghost_rows_deleted=%s "
@@ -187,6 +198,8 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
             raise
         except Exception:
             legacy.log.exception("Autoscan live-guild setup reconciliation failed safely")
+        finally:
+            self._runtime_phase = "idle"
 
         guilds = await legacy.list_public_alert_guilds(self.bot.db, bot=self.bot)
         if not guilds:
@@ -233,6 +246,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
             async with guild_lock:
                 started = time.monotonic()
                 try:
+                    self._runtime_phase = f"scheduled_scan:guild={gid}"
                     async with _WALMART_PROVIDER_OPERATION_LOCK:
                         report = await self._run_guild_walmart_discovery(
                             guild,
@@ -259,6 +273,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                         gid,
                     )
                 finally:
+                    self._runtime_phase = "idle"
                     _NEXT_SCHEDULED_RUN_AT[gid] = time.monotonic() + SCHEDULED_MIN_INTERVAL_SECONDS
 
     @auto_scan_loop.before_loop
@@ -286,6 +301,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                     continue
 
                 try:
+                    self._runtime_phase = "exact_verification_queue"
                     async with _WALMART_PROVIDER_OPERATION_LOCK:
                         result = await process_walmart_exact_verification_queue_batch(
                             self.bot.db,
@@ -294,14 +310,23 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                             concurrency=WALMART_QUEUE_CONCURRENCY,
                             min_discount=50,
                         )
-                    if result.claimed:
-                        legacy.log.info(result.summary_line())
+                    now = time.monotonic()
+                    health_due = (
+                        now - self._last_queue_health_log_monotonic
+                        >= WALMART_QUEUE_HEALTH_LOG_INTERVAL_SECONDS
+                    )
+                    if result.claimed or health_due:
+                        health = await load_walmart_exact_queue_health(self.bot.db)
+                        legacy.log.info("%s • %s", result.summary_line(), health.summary_line())
+                        self._last_queue_health_log_monotonic = now
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     legacy.log.exception(
                         "Walmart exact-detail queue batch failed safely; queued rows remain retryable"
                     )
+                finally:
+                    self._runtime_phase = "idle"
 
                 await asyncio.sleep(WALMART_QUEUE_INTERVAL_SECONDS)
         except asyncio.CancelledError:
@@ -323,10 +348,11 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                 if lag >= EVENT_LOOP_LAG_WARNING_SECONDS:
                     legacy.log.warning(
                         "Event loop lag detected lag_s=%.2f threshold_s=%.2f "
-                        "autoscan_global_busy=%s",
+                        "autoscan_global_busy=%s phase=%s",
                         lag,
                         EVENT_LOOP_LAG_WARNING_SECONDS,
                         _WALMART_SCHEDULE_LOCK.locked(),
+                        self._runtime_phase,
                     )
         except asyncio.CancelledError:
             return

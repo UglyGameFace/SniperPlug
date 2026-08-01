@@ -15,6 +15,10 @@ from sniperplug.services.public_deal_posts import (
 )
 from sniperplug.services.public_posting import normalize_retailer_key
 from sniperplug.services.public_deal_quality import is_public_deal_candidate, prepare_public_deal_candidate
+from sniperplug.services.public_quality_diagnostics import public_quality_block_reason
+
+
+PREFLIGHT_REASON_ATTR = "autoscan_preflight_reason"
 
 
 @dataclass(frozen=True)
@@ -66,19 +70,28 @@ async def select_fresh_deal_cards(
 ) -> FreshDealSelection:
     """Return cards that the public post guard is likely to actually post.
 
-    Public posting is ultimately controlled by `maybe_post_public_deal_cards`.
-    This preflight mirrors its most important gates so auto-scan does not say
-    "Sent to public guard: 5" when all 5 are already known public duplicates.
-
-    `hide_active_cache_repeats` is optional because the active cache records
-    deals SniperPlug has *seen*, not necessarily deals it successfully posted.
-    Auto-scan should usually leave this false so correctly configured public
-    channels can still receive a deal that was seen while posting was broken.
+    Each processed card receives ``autoscan_preflight_reason``. Reports can then
+    identify the exact quality, duplicate, reservation, or active-cache gate
+    instead of collapsing every failure into one vague preflight message.
     """
     if not cards:
         return FreshDealSelection(fresh=[])
     if guild_id is None:
-        return FreshDealSelection(fresh=public_alertable_cards(cards, min_alert_score=min_alert_score)[:limit])
+        selected = public_alertable_cards(cards, min_alert_score=min_alert_score)[:limit]
+        selected_ids = {id(card) for card in selected}
+        for card in cards:
+            if id(card) in selected_ids:
+                _set_preflight_reason(card, "passed public quality preflight")
+            else:
+                _set_preflight_reason(
+                    card,
+                    public_quality_block_reason(
+                        card,
+                        source_label=source_label,
+                        min_discount=min_public_discount,
+                    ),
+                )
+        return FreshDealSelection(fresh=selected)
 
     await ensure_public_post_tables(db)
     conn = db.require_conn()
@@ -92,9 +105,18 @@ async def select_fresh_deal_cards(
     not_alertable = 0
 
     for card in cards:
+        _set_preflight_reason(card, "preflight not evaluated")
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
         if not prepare_public_deal_candidate(card, source_label=source_label, min_discount=min_public_discount):
             not_alertable += 1
+            _set_preflight_reason(
+                card,
+                public_quality_block_reason(
+                    card,
+                    source_label=source_label,
+                    min_discount=min_public_discount,
+                ),
+            )
             continue
 
         current_price = float_or_none(getattr(card, "current_price", None))
@@ -108,6 +130,10 @@ async def select_fresh_deal_cards(
         )
         if recent_alert and should_suppress_recent_alert(recent_alert, current_price):
             recent_public_duplicates += 1
+            _set_preflight_reason(
+                card,
+                "recent public alert already exists at the same or a better price",
+            )
             continue
 
         deal_key = card_deal_key(card, retailer=retailer)
@@ -118,6 +144,12 @@ async def select_fresh_deal_cards(
         row = await cursor.fetchone()
         if row and public_post_row_should_block(row):
             exact_public_post_duplicates += 1
+            status = str(row_value(row, "status") or "recorded")
+            if status == "reserved":
+                reason = "an active public-post reservation already owns this exact deal"
+            else:
+                reason = "this exact deal fingerprint was already posted"
+            _set_preflight_reason(card, reason)
             continue
         if row:
             stale_reserved_recovered += 1
@@ -136,19 +168,33 @@ async def select_fresh_deal_cards(
             )
             row = await cursor.fetchone()
             if row:
-                old_price = float_or_none(row["current_price"])
+                old_price = float_or_none(row_value(row, "current_price"))
                 new_price = current_price
                 if allow_lower_price_repeat and old_price is not None and new_price is not None and new_price < old_price:
                     lower_price_repeats += 1
                     fresh.append(card)
+                    _set_preflight_reason(
+                        card,
+                        f"lower-price repeat allowed: ${new_price:.2f} is below cached ${old_price:.2f}",
+                    )
                 elif old_price is None or new_price is None:
                     unknown_price_repeats += 1
+                    _set_preflight_reason(
+                        card,
+                        "active-cache repeat has an unknown old or current price",
+                    )
                 else:
                     repeated_same_or_higher_price += 1
+                    _set_preflight_reason(
+                        card,
+                        f"active-cache repeat is same/higher: ${new_price:.2f} vs cached ${old_price:.2f}",
+                    )
             else:
                 fresh.append(card)
+                _set_preflight_reason(card, "passed quality, duplicate, reservation, and freshness preflight")
         else:
             fresh.append(card)
+            _set_preflight_reason(card, "passed quality and public duplicate preflight")
 
         if len(fresh) >= limit:
             break
@@ -214,3 +260,10 @@ def float_or_none(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _set_preflight_reason(card: Any, reason: str) -> None:
+    try:
+        setattr(card, PREFLIGHT_REASON_ATTR, " ".join(str(reason or "").split())[:300])
+    except Exception:
+        pass

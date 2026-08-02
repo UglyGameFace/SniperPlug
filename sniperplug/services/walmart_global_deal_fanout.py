@@ -28,18 +28,20 @@ from sniperplug.services.public_deal_posts import (
     card_deal_key,
     maybe_post_public_deal_cards,
 )
-from sniperplug.services.public_deal_quality import prepare_public_deal_candidate
+from sniperplug.services.public_deal_quality import is_public_deal_candidate
 from sniperplug.services.walmart_exact_public_lane import (
     normalize_exact_verified_walmart_cards,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
-    load_recent_verified_queue_candidates,
+    QUEUE_TABLE,
+    _candidate_from_snapshot,
 )
 
 
 EVENT_TABLE = "walmart_global_exact_deal_events"
-FANOUT_LOOKBACK_MINUTES = 120
-FANOUT_CANDIDATE_LIMIT = 100
+STATE_TABLE = "walmart_global_exact_deal_fanout_state"
+STATE_KEY = "walmart"
+FANOUT_INGEST_LIMIT = 150
 FANOUT_EVENT_LIMIT = 20
 EVENT_RETENTION_DAYS = 30
 _FANOUT_LOCK = asyncio.Lock()
@@ -71,13 +73,22 @@ class GlobalDealFanoutResult:
         )
 
 
-async def ensure_global_deal_event_table(db: Any) -> None:
+@dataclass(frozen=True)
+class _IngestResult:
+    loaded: int = 0
+    exact_cards: int = 0
+    new_events: int = 0
+
+
+async def ensure_global_deal_event_tables(db: Any) -> None:
     conn = db.require_conn()
     await conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {EVENT_TABLE} (
             deal_key TEXT PRIMARY KEY,
+            snapshot_json TEXT NOT NULL,
             first_seen_at TEXT NOT NULL,
+            source_verified_at TEXT NOT NULL,
             last_attempt_at TEXT,
             processed_at TEXT,
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -88,6 +99,26 @@ async def ensure_global_deal_event_table(db: Any) -> None:
     await conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{EVENT_TABLE}_pending "
         f"ON {EVENT_TABLE} (processed_at, first_seen_at)"
+    )
+    await conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
+            state_key TEXT PRIMARY KEY,
+            last_verified_at TEXT NOT NULL DEFAULT '',
+            last_item_id TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    await conn.execute(
+        f"""
+        INSERT INTO {STATE_TABLE} (
+            state_key, last_verified_at, last_item_id, updated_at
+        ) VALUES (?, '', '', ?)
+        ON CONFLICT(state_key) DO NOTHING
+        """,
+        (STATE_KEY, now),
     )
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
@@ -107,78 +138,33 @@ async def fanout_recent_exact_walmart_deals(
     *,
     event_limit: int = FANOUT_EVENT_LIMIT,
 ) -> GlobalDealFanoutResult:
-    """Fan out newly exact-verified Walmart markdowns once.
+    """Ingest and fan out exact-verified Walmart markdown events.
 
-    Public delivery still goes through every guild's threshold, category,
-    channel, exact-proof, and duplicate gates. Personal DMs use their own
-    opt-in filters and durable per-user receipts. A failed event remains pending;
-    already successful guild/DM sends are protected by their normal dedupe rows
-    when the event is retried.
+    The verification watermark prevents high-ranked rows from starving later
+    rows. Every accepted event stores the exact candidate snapshot used to
+    create it, so a crash or destination outage can retry delivery even after
+    the live exact queue is updated or pruned.
     """
 
     db = getattr(bot, "db", None)
-    if db is None:
-        return GlobalDealFanoutResult()
-
-    if _FANOUT_LOCK.locked():
+    if db is None or _FANOUT_LOCK.locked():
         return GlobalDealFanoutResult()
 
     async with _FANOUT_LOCK:
-        await ensure_global_deal_event_table(db)
-        candidates = await load_recent_verified_queue_candidates(
+        await ensure_global_deal_event_tables(db)
+        ingested = await _ingest_verified_queue_events(
             db,
-            limit=FANOUT_CANDIDATE_LIMIT,
-            max_age_minutes=FANOUT_LOOKBACK_MINUTES,
+            limit=FANOUT_INGEST_LIMIT,
         )
-        if not candidates:
-            return GlobalDealFanoutResult()
-
-        aggregate = ProviderScanResult(
-            provider_key="walmart",
-            candidates=tuple(candidates),
-            page=1,
-            page_size=len(candidates),
-            start_index=1,
-            has_next_page=False,
+        pending_cards = await _load_pending_event_cards(
+            db,
+            limit=max(1, int(event_limit)),
         )
-        built_cards = deal_scanner.build_walmart_cards(
-            aggregate,
-            min_discount=1,
-            alerts_only=False,
-        )
-        normalize_exact_verified_walmart_cards(built_cards, min_discount=1)
-
-        # DMs are private, but they must still satisfy the same structured
-        # current/was/identity/buyability proof gate as public alerts. Search
-        # hints and review-only cards cannot enter either destination stream.
-        exact_cards: list[Any] = []
-        for card in built_cards:
-            prepared = prepare_public_deal_candidate(
-                card,
-                source_label="global_catalog_autoscan:exact_verified",
-                min_discount=1,
-            )
-            if prepared:
-                exact_cards.append(card)
-        cards = _dedupe_cards(exact_cards)
-
-        pending_cards: list[tuple[str, Any]] = []
-        new_events = 0
-        for card in cards:
-            retailer = str(getattr(card, "retailer", None) or "walmart")
-            deal_key = card_deal_key(card, retailer=retailer)
-            created = await _ensure_pending_event(db, deal_key)
-            new_events += int(created)
-            if await _event_is_pending(db, deal_key):
-                pending_cards.append((deal_key, card))
-            if len(pending_cards) >= max(1, int(event_limit)):
-                break
-
         if not pending_cards:
             return GlobalDealFanoutResult(
-                candidates_loaded=len(candidates),
-                exact_cards=len(cards),
-                new_events=new_events,
+                candidates_loaded=ingested.loaded,
+                exact_cards=ingested.exact_cards,
+                new_events=ingested.new_events,
             )
 
         load_result = await list_live_public_alert_guilds(db, bot)
@@ -222,9 +208,6 @@ async def fanout_recent_exact_walmart_deals(
                         or public_result.skipped_disabled
                         or public_result.skipped_wrong_retailer
                     )
-                    # Channel/database delivery failures must retry. Notes such
-                    # as a repaired channel or active-cache write after a sent
-                    # message must not leave an event pending forever.
                     if public_result.errors and not decided:
                         totals["public_errors"] += len(public_result.errors)
                         event_errors.extend(public_result.errors)
@@ -265,8 +248,7 @@ async def fanout_recent_exact_walmart_deals(
                     user = bot.get_user(preference.user_id)
                     if user is None:
                         user = await bot.fetch_user(preference.user_id)
-                    embed = _personal_dm_embed(card, decision.reason)
-                    await user.send(embed=embed)
+                    await user.send(embed=_personal_dm_embed(card, decision.reason))
                     await record_dm_receipt(
                         db,
                         user_id=preference.user_id,
@@ -307,9 +289,6 @@ async def fanout_recent_exact_walmart_deals(
                         deal_key,
                     )
 
-            # Public HTTP/database and transient DM errors remain retryable.
-            # Closed-DM failures are terminal for that subscriber because their
-            # preference was disabled and cannot block every other destination.
             if event_errors:
                 await _record_event_error(db, deal_key, event_errors)
             else:
@@ -317,44 +296,186 @@ async def fanout_recent_exact_walmart_deals(
                 totals["events_processed"] += 1
 
         return GlobalDealFanoutResult(
-            candidates_loaded=len(candidates),
-            exact_cards=len(cards),
-            new_events=new_events,
+            candidates_loaded=ingested.loaded,
+            exact_cards=ingested.exact_cards,
+            new_events=ingested.new_events,
             **totals,
         )
 
 
-async def _ensure_pending_event(db: Any, deal_key: str) -> bool:
+async def _ingest_verified_queue_events(db: Any, *, limit: int) -> _IngestResult:
+    conn = db.require_conn()
+    state_cursor = await conn.execute(
+        f"""
+        SELECT last_verified_at, last_item_id
+        FROM {STATE_TABLE}
+        WHERE state_key = ?
+        """,
+        (STATE_KEY,),
+    )
+    state = await state_cursor.fetchone()
+    last_verified_at = str(_row_get(state, "last_verified_at", 0) or "")
+    last_item_id = str(_row_get(state, "last_item_id", 1) or "")
+
+    cursor = await conn.execute(
+        f"""
+        SELECT item_id, verified_at, snapshot_json
+        FROM {QUEUE_TABLE}
+        WHERE verified_at IS NOT NULL
+          AND snapshot_json <> ''
+          AND status = 'verified_markdown'
+          AND (
+              verified_at > ?
+              OR (verified_at = ? AND item_id > ?)
+          )
+        ORDER BY verified_at ASC, item_id ASC
+        LIMIT ?
+        """,
+        (
+            last_verified_at,
+            last_verified_at,
+            last_item_id,
+            max(1, int(limit)),
+        ),
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        return _IngestResult()
+
+    loaded = 0
+    exact_cards = 0
+    new_events = 0
+    final_verified_at = last_verified_at
+    final_item_id = last_item_id
+
+    for row in rows:
+        item_id = str(_row_get(row, "item_id", 0) or "")
+        verified_at = str(_row_get(row, "verified_at", 1) or "")
+        snapshot_json = str(_row_get(row, "snapshot_json", 2) or "")
+        final_verified_at = verified_at
+        final_item_id = item_id
+        loaded += 1
+
+        candidate = _candidate_from_snapshot(snapshot_json)
+        card = _exact_card_for_candidate(candidate)
+        if card is None:
+            continue
+        exact_cards += 1
+        retailer = str(getattr(card, "retailer", None) or "walmart")
+        deal_key = card_deal_key(card, retailer=retailer)
+        if await _insert_event_if_new(
+            db,
+            deal_key=deal_key,
+            snapshot_json=snapshot_json,
+            verified_at=verified_at,
+        ):
+            new_events += 1
+
+    now = datetime.now(timezone.utc).isoformat()
+    await conn.execute(
+        f"""
+        UPDATE {STATE_TABLE}
+        SET last_verified_at = ?, last_item_id = ?, updated_at = ?
+        WHERE state_key = ?
+        """,
+        (final_verified_at, final_item_id, now, STATE_KEY),
+    )
+    await conn.commit()
+    return _IngestResult(
+        loaded=loaded,
+        exact_cards=exact_cards,
+        new_events=new_events,
+    )
+
+
+async def _insert_event_if_new(
+    db: Any,
+    *,
+    deal_key: str,
+    snapshot_json: str,
+    verified_at: str,
+) -> bool:
     conn = db.require_conn()
     cursor = await conn.execute(
         f"SELECT 1 FROM {EVENT_TABLE} WHERE deal_key = ? LIMIT 1",
         (deal_key,),
     )
-    existed = await cursor.fetchone() is not None
-    if existed:
+    if await cursor.fetchone() is not None:
         return False
     now = datetime.now(timezone.utc).isoformat()
     await conn.execute(
         f"""
         INSERT INTO {EVENT_TABLE} (
-            deal_key, first_seen_at, attempt_count, last_error
-        ) VALUES (?, ?, 0, '')
+            deal_key, snapshot_json, first_seen_at, source_verified_at,
+            attempt_count, last_error
+        ) VALUES (?, ?, ?, ?, 0, '')
         ON CONFLICT(deal_key) DO NOTHING
         """,
-        (deal_key, now),
+        (deal_key, snapshot_json, now, verified_at),
     )
     await conn.commit()
     return True
 
 
-async def _event_is_pending(db: Any, deal_key: str) -> bool:
+async def _load_pending_event_cards(
+    db: Any,
+    *,
+    limit: int,
+) -> list[tuple[str, Any]]:
     conn = db.require_conn()
     cursor = await conn.execute(
-        f"SELECT processed_at FROM {EVENT_TABLE} WHERE deal_key = ?",
-        (deal_key,),
+        f"""
+        SELECT deal_key, snapshot_json
+        FROM {EVENT_TABLE}
+        WHERE processed_at IS NULL
+        ORDER BY first_seen_at ASC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
     )
-    row = await cursor.fetchone()
-    return row is not None and not str(_row_get(row, "processed_at", 0) or "").strip()
+    rows = await cursor.fetchall()
+    pending: list[tuple[str, Any]] = []
+    for row in rows:
+        deal_key = str(_row_get(row, "deal_key", 0) or "")
+        candidate = _candidate_from_snapshot(
+            str(_row_get(row, "snapshot_json", 1) or "")
+        )
+        card = _exact_card_for_candidate(candidate)
+        if not deal_key or card is None:
+            if deal_key:
+                await _mark_event_processed(db, deal_key)
+            continue
+        pending.append((deal_key, card))
+    return pending
+
+
+def _exact_card_for_candidate(candidate: Any) -> Any | None:
+    if candidate is None:
+        return None
+    aggregate = ProviderScanResult(
+        provider_key="walmart",
+        candidates=(candidate,),
+        page=1,
+        page_size=1,
+        start_index=1,
+        has_next_page=False,
+    )
+    cards = deal_scanner.build_walmart_cards(
+        aggregate,
+        min_discount=1,
+        alerts_only=False,
+    )
+    normalize_exact_verified_walmart_cards(cards, min_discount=1)
+    for card in cards:
+        # Read-only proof validation here. Destination-specific public posting
+        # later mutates the card with the destination's real threshold field.
+        if is_public_deal_candidate(
+            card,
+            source_label="global_catalog_autoscan:exact_verified",
+            min_discount=1,
+        ):
+            return card
+    return None
 
 
 async def _mark_event_attempt(db: Any, deal_key: str) -> None:
@@ -395,19 +516,6 @@ async def _record_event_error(db: Any, deal_key: str, errors: list[str]) -> None
         (text, deal_key),
     )
     await conn.commit()
-
-
-def _dedupe_cards(cards: list[Any]) -> list[Any]:
-    seen: set[str] = set()
-    output: list[Any] = []
-    for card in cards:
-        retailer = str(getattr(card, "retailer", None) or "walmart")
-        key = card_deal_key(card, retailer=retailer)
-        if key in seen:
-            continue
-        seen.add(key)
-        output.append(card)
-    return output
 
 
 def _personal_dm_embed(card: Any, reason: str) -> discord.Embed:

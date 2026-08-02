@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from sniperplug.services.discord_snowflake import snowflake_text
+
 
 TOMBSTONE_TABLE = "guild_setup_ghost_tombstones"
 
@@ -41,14 +43,14 @@ async def load_ghost_tombstones(
     if ids:
         placeholders = ", ".join("?" for _ in ids)
         sql += f" WHERE CAST(guild_id AS TEXT) IN ({placeholders})"
-        params = tuple(str(guild_id) for guild_id in ids)
+        params = tuple(snowflake_text(guild_id) for guild_id in ids)
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
     output: set[int] = set()
     for row in rows:
         value = _row_value(row, "guild_id", 0)
         try:
-            output.add(int(value))
+            output.add(int(str(value)))
         except (TypeError, ValueError):
             continue
     return output
@@ -60,7 +62,7 @@ async def mark_ghost_tombstones(
     *,
     reason: str = "not_in_live_guild_cache",
 ) -> int:
-    """Upsert tombstones and commit them before returning."""
+    """Upsert tombstones with exact decimal text parameters and commit."""
 
     ids = sorted({int(guild_id) for guild_id in guild_ids})
     if not ids:
@@ -77,14 +79,19 @@ async def mark_ghost_tombstones(
                 reason = excluded.reason,
                 last_seen_at = excluded.last_seen_at
             """,
-            (guild_id, str(reason or "ghost")[:120], now, now),
+            (snowflake_text(guild_id), str(reason or "ghost")[:120], now, now),
         )
     await conn.commit()
     return len(ids)
 
 
 async def clear_live_ghost_tombstones(conn: Any, live_guild_ids: Iterable[int]) -> int:
-    """Release tombstones for rejoined guilds and commit before returning."""
+    """Release only exact rejoined-guild tombstones and commit.
+
+    Binding a live snowflake as a numeric transport value can round it to a
+    different guild ID and accidentally delete that ghost's quarantine row.
+    Decimal text plus CAST comparison prevents that recurrence permanently.
+    """
 
     ids = sorted({int(guild_id) for guild_id in live_guild_ids})
     if not ids:
@@ -93,8 +100,9 @@ async def clear_live_ghost_tombstones(conn: Any, live_guild_ids: Iterable[int]) 
     changed = 0
     for guild_id in ids:
         cursor = await conn.execute(
-            f"DELETE FROM {TOMBSTONE_TABLE} WHERE guild_id = ?",
-            (guild_id,),
+            f"DELETE FROM {TOMBSTONE_TABLE} "
+            "WHERE CAST(guild_id AS TEXT) = ?",
+            (snowflake_text(guild_id),),
         )
         rowcount = getattr(cursor, "rowcount", None)
         if isinstance(rowcount, int) and rowcount > 0:

@@ -33,7 +33,14 @@ class HPWatcherHealth:
         return self.status == "healthy" and not self.stale
 
     def summary_line(self) -> str:
-        state = "healthy" if self.ok else "degraded" if self.status == "degraded" else self.status
+        if self.status == "healthy" and self.stale:
+            state = "stale"
+        elif self.ok:
+            state = "healthy"
+        elif self.status == "degraded":
+            state = "degraded"
+        else:
+            state = self.status
         return (
             f"HP watcher **{state}** • catalog **{self.identified_products}/{self.products} identified** • "
             f"active markdowns **{self.active_markdowns}** • due pages/offers **{self.due_product_pages}/{self.due_offers}** • "
@@ -72,11 +79,12 @@ async def load_hp_watcher_health(db: Any) -> HPWatcherHealth:
         row = await cursor.fetchone()
         counts[key] = int(_row_get(row, "COUNT(*)", 0) or 0)
 
+    status = state.get("service_status", "not_started")
     last_successful = state.get("last_successful_cycle_at", "")
     parsed = _parse_datetime(last_successful)
     stale = parsed is None or parsed < now - timedelta(minutes=15)
     return HPWatcherHealth(
-        status=state.get("service_status", "not_started"),
+        status=status,
         last_successful_cycle_at=last_successful,
         products=counts["products"],
         identified_products=counts["identified_products"],
@@ -87,7 +95,7 @@ async def load_hp_watcher_health(db: Any) -> HPWatcherHealth:
         sitemap_failures=counts["sitemap_failures"],
         product_failures=counts["product_failures"],
         stale=stale,
-        last_error=state.get("last_cycle_error", ""),
+        last_error=(state.get("last_cycle_error", "") if status != "healthy" else ""),
     )
 
 

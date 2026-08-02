@@ -21,7 +21,11 @@ def test_autoscan_related_manual_commands_use_category_preferences():
 
 def test_public_posting_uses_filtered_cards_for_hunt_and_discover():
     assert "cards=posted_cards" in HUNT
-    assert "cards=shown_cards" in DISCOVER
+    assert "public_cards = shown_cards[:" in DISCOVER
+    assert "cards=public_cards" in DISCOVER
+    assert DISCOVER.index("apply_category_preferences(") < DISCOVER.index(
+        "public_cards = shown_cards[:"
+    )
     assert "Muted category settings hid" in HUNT
     assert "Muted category settings hid" in DISCOVER
 

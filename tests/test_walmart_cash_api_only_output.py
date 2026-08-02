@@ -49,6 +49,7 @@ def test_broad_cash_routes_are_product_departments_not_promo_phrases() -> None:
     assert all("walmart cash" not in query.lower() for query in DEFAULT_CASH_QUERIES)
     assert walmart_cash_search_terms("walmart cash") == DEFAULT_CASH_QUERIES
     assert walmart_cash_search_terms("tide walmart cash") == ("tide",)
+    assert walmart_cash_search_terms("tide walmart cash offers") == ("tide",)
 
 
 def test_exact_search_api_cash_proof_is_preserved() -> None:
@@ -71,7 +72,30 @@ def test_mismatched_product_url_cannot_preserve_search_cash_proof() -> None:
     assert sanitized.variant_attributes.get("cashAmountConfirmed") != "yes"
 
 
-def test_normal_cash_summary_is_compact_and_hides_raw_diagnostics() -> None:
+def test_deceptive_non_walmart_hosts_cannot_preserve_search_cash_proof() -> None:
+    for deceptive_url in (
+        "https://notwalmart.com/ip/123456789",
+        "https://walmart.com.evil.com/ip/123456789",
+    ):
+        candidate = exact_candidate()
+        candidate.direct_product_url = deceptive_url
+        candidate.product_url = deceptive_url
+
+        sanitized = _strip_search_level_cash_attrs(candidate)
+        assert "walmartCashApiProof" not in sanitized.variant_attributes
+        assert sanitized.variant_attributes.get("cashAmountConfirmed") != "yes"
+
+
+def test_real_walmart_subdomain_still_preserves_search_cash_proof() -> None:
+    candidate = exact_candidate()
+    candidate.direct_product_url = "https://www.walmart.com/ip/Exact-Cash-Test/123456789"
+    candidate.product_url = candidate.direct_product_url
+
+    sanitized = _strip_search_level_cash_attrs(candidate)
+    assert sanitized.variant_attributes["cashAmountConfirmed"] == "yes"
+
+
+def test_normal_cash_summary_is_compact_hides_raw_diagnostics_and_keeps_api_failure() -> None:
     embed = build_walmart_cash_summary_embed(
         "walmart cash",
         ("personal care", "beauty"),
@@ -80,6 +104,7 @@ def test_normal_cash_summary_is_compact_and_hides_raw_diagnostics() -> None:
         warnings=(
             "WALMART_PUBLISHER_ID is blank; using direct Walmart links.",
             "Exact Walmart PDP checked at https://www.walmart.com/ip/123; Robot or Human; html_chars=15190",
+            "Walmart API HTTP 500: temporary failure",
         ),
         detail_checked=24,
         detail_unavailable=False,
@@ -104,6 +129,8 @@ def test_normal_cash_summary_is_compact_and_hides_raw_diagnostics() -> None:
     assert len(rendered) < 1800
     assert "official walmart api only" in lowered
     assert "no api-proven walmart cash in this scan" in lowered
+    assert "official walmart api request failed (http 500)" in lowered
+    assert "temporary failure" not in lowered
     assert "robot or human" not in lowered
     assert "html_chars" not in lowered
     assert "https://www.walmart.com/ip/123" not in rendered

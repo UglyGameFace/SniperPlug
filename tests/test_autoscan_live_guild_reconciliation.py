@@ -42,6 +42,7 @@ class _Database:
 
 
 def test_live_loader_filters_stale_replica_rows_without_deleting(monkeypatch) -> None:
+    live._SESSION_GHOST_TOMBSTONES.clear()
     real_id = 1514374173517152418
     ghost_id = 1514374173517152512
     conn = _Connection(public_rows=[(real_id,), (ghost_id,)])
@@ -66,24 +67,26 @@ def test_live_loader_filters_stale_replica_rows_without_deleting(monkeypatch) ->
     assert conn.commits == 0
 
 
-def test_reconciliation_tombstones_ghost_once_then_ignores_stale_view(monkeypatch) -> None:
+def test_reconciliation_session_quarantine_survives_stale_tombstone_read(monkeypatch) -> None:
+    live._SESSION_GHOST_TOMBSTONES.clear()
     real_id = 1514374173517152418
     ghost_id = 1514374173517152512
     conn = _Connection()
     db = _Database(conn)
     bot = SimpleNamespace(guilds=[SimpleNamespace(id=real_id)])
-    tombstones: set[int] = set()
     delete_calls: list[set[int]] = []
+    mark_calls: list[set[int]] = []
 
-    async def fake_clear(_conn, live_ids):
-        tombstones.difference_update(set(live_ids))
+    async def fake_clear(_conn, _live_ids):
         return 0
 
     async def fake_load(_conn):
-        return set(tombstones)
+        # Simulate Turso continuing to return an empty tombstone read after the
+        # write was committed elsewhere.
+        return set()
 
     async def fake_discover(_conn, _live_ids):
-        # Simulate a remote replica continuing to expose the old row.
+        # Simulate a remote replica continuing to expose the old setup row.
         return {ghost_id}
 
     async def fake_delete(_conn, ids):
@@ -94,7 +97,7 @@ def test_reconciliation_tombstones_ghost_once_then_ignores_stale_view(monkeypatc
         return set()
 
     async def fake_mark(_conn, ids, *, reason):
-        tombstones.update(set(ids))
+        mark_calls.append(set(ids))
         return len(set(ids))
 
     async def fake_repair(_db, _bot, guild_id):
@@ -119,6 +122,8 @@ def test_reconciliation_tombstones_ghost_once_then_ignores_stale_view(monkeypatc
     assert second["ghost_rows_deleted"] == 0
     assert second["ghost_rows_already_quarantined"] == 1
     assert delete_calls == [{ghost_id}]
+    assert mark_calls == [{ghost_id}]
+    assert ghost_id in live._SESSION_GHOST_TOMBSTONES
 
 
 def test_is_live_bot_guild_fails_closed() -> None:

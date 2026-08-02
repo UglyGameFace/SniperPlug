@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
@@ -28,6 +28,7 @@ from sniperplug.services.public_deal_posts import (
     card_deal_key,
     maybe_post_public_deal_cards,
 )
+from sniperplug.services.public_deal_quality import prepare_public_deal_candidate
 from sniperplug.services.walmart_exact_public_lane import (
     normalize_exact_verified_walmart_cards,
 )
@@ -40,6 +41,7 @@ EVENT_TABLE = "walmart_global_exact_deal_events"
 FANOUT_LOOKBACK_MINUTES = 120
 FANOUT_CANDIDATE_LIMIT = 100
 FANOUT_EVENT_LIMIT = 20
+EVENT_RETENTION_DAYS = 30
 _FANOUT_LOCK = asyncio.Lock()
 log = logging.getLogger("sniperplug.autoscan.fanout")
 
@@ -87,6 +89,16 @@ async def ensure_global_deal_event_table(db: Any) -> None:
         f"CREATE INDEX IF NOT EXISTS idx_{EVENT_TABLE}_pending "
         f"ON {EVENT_TABLE} (processed_at, first_seen_at)"
     )
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
+    ).isoformat()
+    await conn.execute(
+        f"""
+        DELETE FROM {EVENT_TABLE}
+        WHERE processed_at IS NOT NULL AND first_seen_at < ?
+        """,
+        (cutoff,),
+    )
     await conn.commit()
 
 
@@ -129,13 +141,26 @@ async def fanout_recent_exact_walmart_deals(
             start_index=1,
             has_next_page=False,
         )
-        cards = deal_scanner.build_walmart_cards(
+        built_cards = deal_scanner.build_walmart_cards(
             aggregate,
             min_discount=1,
             alerts_only=False,
         )
-        normalize_exact_verified_walmart_cards(cards, min_discount=1)
-        cards = deal_scanner.dedupe_cards(cards) if hasattr(deal_scanner, "dedupe_cards") else cards
+        normalize_exact_verified_walmart_cards(built_cards, min_discount=1)
+
+        # DMs are private, but they must still satisfy the same structured
+        # current/was/identity/buyability proof gate as public alerts. Search
+        # hints and review-only cards cannot enter either destination stream.
+        exact_cards: list[Any] = []
+        for card in built_cards:
+            prepared = prepare_public_deal_candidate(
+                card,
+                source_label="global_catalog_autoscan:exact_verified",
+                min_discount=1,
+            )
+            if prepared:
+                exact_cards.append(card)
+        cards = _dedupe_cards(exact_cards)
 
         pending_cards: list[tuple[str, Any]] = []
         new_events = 0
@@ -190,9 +215,26 @@ async def fanout_recent_exact_walmart_deals(
                         min_public_discount=int(threshold),
                     )
                     totals["public_posts"] += int(public_result.posted)
-                    if public_result.errors:
+                    decided = bool(
+                        public_result.posted
+                        or public_result.skipped_duplicate
+                        or public_result.skipped_not_alertable
+                        or public_result.skipped_disabled
+                        or public_result.skipped_wrong_retailer
+                    )
+                    # Channel/database delivery failures must retry. Notes such
+                    # as a repaired channel or active-cache write after a sent
+                    # message must not leave an event pending forever.
+                    if public_result.errors and not decided:
                         totals["public_errors"] += len(public_result.errors)
                         event_errors.extend(public_result.errors)
+                    elif public_result.errors:
+                        log.info(
+                            "Global Walmart fanout destination completed with note guild=%s deal=%s notes=%s",
+                            guild_id,
+                            deal_key,
+                            list(public_result.errors),
+                        )
                 except Exception as error:  # noqa: BLE001 - one guild cannot block global fanout.
                     totals["public_errors"] += 1
                     event_errors.append(
@@ -265,8 +307,9 @@ async def fanout_recent_exact_walmart_deals(
                         deal_key,
                     )
 
-            # Public HTTP/database errors are retried. Closed-DM failures are
-            # terminal for that subscriber because their preference is disabled.
+            # Public HTTP/database and transient DM errors remain retryable.
+            # Closed-DM failures are terminal for that subscriber because their
+            # preference was disabled and cannot block every other destination.
             if event_errors:
                 await _record_event_error(db, deal_key, event_errors)
             else:
@@ -352,6 +395,19 @@ async def _record_event_error(db: Any, deal_key: str, errors: list[str]) -> None
         (text, deal_key),
     )
     await conn.commit()
+
+
+def _dedupe_cards(cards: list[Any]) -> list[Any]:
+    seen: set[str] = set()
+    output: list[Any] = []
+    for card in cards:
+        retailer = str(getattr(card, "retailer", None) or "walmart")
+        key = card_deal_key(card, retailer=retailer)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(card)
+    return output
 
 
 def _personal_dm_embed(card: Any, reason: str) -> discord.Embed:

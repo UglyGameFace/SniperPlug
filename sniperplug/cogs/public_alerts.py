@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from sniperplug.models.deal import utc_now_iso
 from sniperplug.services.autoscan_history import format_latest_report_line, latest_autoscan_report
+from sniperplug.services.autoscan_live_guild_reconciliation import scheduler_membership_for_guild
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.deal_category_preferences import (
     CATEGORY_MODE_MUTED,
@@ -447,26 +448,62 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     config = repair.config if repair.config is not None else await get_public_alert_config(db, guild_id)
     threshold = await get_starting_deal_percent(db, guild_id)
     allowed, reason, walmart_settings = await auto_scan_allowed(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
+    scheduler_enrolled, scheduler_reason = await scheduler_membership_for_guild(db, bot, guild_id)
     last_run = await latest_auto_scan_run(db, guild_id, "walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
     latest_report = await latest_autoscan_report(db, guild_id=guild_id, retailer="walmart", scan_key=WALMART_AUTOSCAN_SCAN_KEY)
     posts_today = await count_public_posts_today(db, guild_id)
     active_cached = await count_active_cached_deals(db, guild_id)
     channel_status = public_alert_channel_status(bot, guild_id, config.get("channel_id"))
 
+    latest_settings = latest_report.get("settings") if isinstance(latest_report, dict) else {}
+    latest_is_manual = bool(isinstance(latest_settings, dict) and latest_settings.get("forced"))
+    latest_decision_label = "Last manual test decision" if latest_is_manual else "Last scheduled decision"
+    latest_report_source = "manual `/autoscan_now` force test" if latest_is_manual else "scheduled autoscan"
     latest_text = format_latest_report_line(latest_report)
     latest_lower = latest_text.lower()
     last_run_has_route_error = "public channel lookup failed" in latest_lower or "ghost guild" in latest_lower or "bot is not currently connected to guild" in latest_lower
-    critical_ok = bool(config.get("enabled")) and "walmart" in set(config.get("retailers") or ()) and channel_status.startswith("✅") and bool(walmart_settings.get("enabled")) and allowed and not last_run_has_route_error
-    embed = discord.Embed(title="🩺 Walmart Auto-Scan Health", description="This checks setup, channel permissions, schedule gates, and the exact last run decision trail.", color=discord.Color.green() if critical_ok else discord.Color.orange())
+    critical_ok = (
+        bool(config.get("enabled"))
+        and "walmart" in set(config.get("retailers") or ())
+        and channel_status.startswith("✅")
+        and bool(walmart_settings.get("enabled"))
+        and allowed
+        and scheduler_enrolled
+        and not repair.human_action_required
+        and not last_run_has_route_error
+    )
+    embed = discord.Embed(
+        title="🩺 Walmart Auto-Scan Health",
+        description="This checks saved setup, real scheduler enrollment, channel permissions, schedule gates, and the latest run decision trail.",
+        color=discord.Color.green() if critical_ok else discord.Color.orange(),
+    )
     embed.add_field(name="Setup", value=(f"Public alerts: **{'on' if config.get('enabled') else 'off'}**\n" f"Public stores: {format_retailers(tuple(config.get('retailers') or ())) }\n" f"Threshold: **{threshold}%+ verified markdown**\n" f"Walmart auto-scan: **{'on' if walmart_settings.get('enabled') else 'off'}**"), inline=False)
     embed.add_field(name="Self-heal", value=repair.discord_line(), inline=False)
     embed.add_field(name="Channel", value=channel_status, inline=False)
+    embed.add_field(
+        name="Scheduler enrollment",
+        value=(
+            f"In live scheduled set: **{'yes' if scheduler_enrolled else 'no'}**\n"
+            f"Reason: {scheduler_reason}\n"
+            "This is the scheduler's actual guild list, not merely a saved-config check."
+        ),
+        inline=False,
+    )
     embed.add_field(name="Schedule gate", value=(f"Allowed now: **{'yes' if allowed else 'no'}**\nReason: {reason}\nInterval: **{format_interval(int(walmart_settings.get('interval_hours', DEFAULT_AUTOSCAN_INTERVAL_HOURS)))}**\nDaily limit: **{format_daily_limit(int(walmart_settings.get('daily_limit', DEFAULT_AUTOSCAN_DAILY_LIMIT)))}**"), inline=False)
-    embed.add_field(name="Recent memory", value=(f"Last scheduled run: **{last_run or 'not logged yet'}**\nPublic posts today: **{posts_today}**\nActive cached deals: **{active_cached}**\nCache note: active cached deals are remembered product cards, not Discord posts. Use `/autoscan_clear_cache` if stale cache noise is confusing Deal Week testing."), inline=False)
+    embed.add_field(name="Recent memory", value=(f"Last scheduled execution: **{last_run or 'not logged yet'}**\nLatest detailed report source: **{latest_report_source}**\nPublic posts today: **{posts_today}**\nActive cached deals: **{active_cached}**\nCache note: active cached deals are remembered product cards, not Discord posts. Use `/autoscan_clear_cache` only when stale duplicate memory is the confirmed problem."), inline=False)
+    if not scheduler_enrolled:
+        embed.add_field(
+            name="🚨 Scheduler blocker",
+            value=(
+                "Saved setup may look valid, but this server is not in the scheduler's live eligible set. "
+                "That means background scans will not run here until the enrollment read is corrected."
+            ),
+            inline=False,
+        )
     if last_run_has_route_error:
         embed.add_field(name="🚨 Posting route problem", value="SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. SniperPlug now repairs saved routes automatically when a safe saved channel exists. If this still appears, run `/autoscan_health` and fix the exact channel/permission issue shown there.", inline=False)
-    embed.add_field(name="Last run decision", value=trim_field(latest_text, 1024), inline=False)
-    embed.add_field(name="How to read this", value="If setup/channel/gate are green but posts stay at 0, check Last run decision. It will show whether threshold, confidence, fresh filter, category preference, duplicate, not-alertable, or disabled guards blocked the candidates.", inline=False)
+    embed.add_field(name=latest_decision_label, value=trim_field(latest_text, 1024), inline=False)
+    embed.add_field(name="How to read this", value="Green requires the server to be in the scheduler's real live guild set. A manual `/autoscan_now` report is labeled separately and never counts as proof that the scheduled loop ran.", inline=False)
     return embed
 
 

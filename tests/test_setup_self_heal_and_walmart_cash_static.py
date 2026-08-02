@@ -9,6 +9,7 @@ SETUP = Path("sniperplug/cogs/canonical_workflow.py").read_text(encoding="utf-8"
 DEALS = Path("sniperplug/cogs/deal_scanner.py").read_text(encoding="utf-8")
 VERIFIED = Path("sniperplug/cogs/verified_deal_scanner.py").read_text(encoding="utf-8")
 CASH = Path("sniperplug/services/walmart_cash_offers.py").read_text(encoding="utf-8")
+PIPELINE = Path("sniperplug/services/walmart_cash_pipeline.py").read_text(encoding="utf-8")
 API_TRUTH = Path("sniperplug/services/walmart_cash_api_truth.py").read_text(encoding="utf-8")
 CATALOG = Path("sniperplug/services/command_catalog.py").read_text(encoding="utf-8")
 
@@ -50,11 +51,13 @@ def test_walmart_cash_only_command_and_button_exist():
     assert "build_walmart_cash_summary_embed" in DEALS
 
 
-def test_walmart_cash_only_blocks_guesses_and_onepay():
+def test_walmart_cash_only_blocks_guesses_onepay_and_query_text():
     assert "OnePay cashback" in CASH
     assert "generic promo text" in CASH or "generic rewards" in CASH
-    assert "search words" in CASH
-    assert "does not public-post markdown alerts" in CASH or "does not public-post markdown alerts" in CASH.lower()
+    assert "_reject_badge_path" in PIPELINE
+    assert '"query"' in PIPELINE
+    assert '"title"' in PIPELINE
+    assert "does not public-post markdown alerts" in CASH.lower()
 
     assert "BLOCKED_NON_WALMART_CASH_TERMS" in API_TRUTH
     assert "onepay" in API_TRUTH

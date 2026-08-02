@@ -17,7 +17,9 @@ def test_resilient_autoscan_uses_single_owner_live_guild_loader():
 
 
 def test_live_guild_loader_filters_without_second_delete_pass():
-    assert "This function never deletes" in RECONCILIATION
+    assert "Load only guilds present in Discord's current live guild cache" in RECONCILIATION
+    assert "CAST(guild_id AS TEXT) AS guild_id" in RECONCILIATION
+    assert "params = (snowflake_text(target),)" in RECONCILIATION
     assert "guild_id not in live_guild_ids" in RECONCILIATION
     assert "delete_ghost_public_alert_guild_row" not in RECONCILIATION
     assert "tombstoned_visible_ids" in RECONCILIATION

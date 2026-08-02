@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from sniperplug.models.deal import utc_now_iso
+from sniperplug.services.discord_snowflake import snowflake_text
 from sniperplug.services.public_posting import normalize_retailer_key
 
 
@@ -30,16 +31,20 @@ async def ensure_public_alert_table(db: Any) -> None:
 async def get_public_alert_config(db: Any, guild_id: int) -> dict[str, Any]:
     await ensure_public_alert_table(db)
     conn = db.require_conn()
+    guild_param = snowflake_text(guild_id)
     cursor = await conn.execute(
-        "SELECT enabled, retailers_json, channel_id FROM guild_public_alert_settings WHERE guild_id = ?",
-        (guild_id,),
+        "SELECT enabled, retailers_json, channel_id FROM guild_public_alert_settings "
+        "WHERE CAST(guild_id AS TEXT) = ?",
+        (guild_param,),
     )
     row = await cursor.fetchone()
     if not row:
         now = utc_now_iso()
         await conn.execute(
-            "INSERT INTO guild_public_alert_settings (guild_id, enabled, retailers_json, channel_id, created_at, updated_at) VALUES (?, 0, '[]', NULL, ?, ?)",
-            (guild_id, now, now),
+            "INSERT INTO guild_public_alert_settings "
+            "(guild_id, enabled, retailers_json, channel_id, created_at, updated_at) "
+            "VALUES (?, 0, '[]', NULL, ?, ?)",
+            (guild_param, now, now),
         )
         await conn.commit()
         return {"enabled": False, "retailers": (), "channel_id": None}
@@ -47,25 +52,55 @@ async def get_public_alert_config(db: Any, guild_id: int) -> dict[str, Any]:
     try:
         retailers = tuple(
             retailer
-            for retailer in (normalize_retailer_key(value) for value in json.loads(row["retailers_json"] or "[]"))
+            for retailer in (
+                normalize_retailer_key(value)
+                for value in json.loads(row["retailers_json"] or "[]")
+            )
             if retailer
         )
     except Exception:
         retailers = ()
     channel_id = decode_channel_id(row["channel_id"])
-    if row["channel_id"] and channel_id is not None and encode_channel_id(row["channel_id"]) != row["channel_id"]:
-        await set_public_alert_channel_id(db, guild_id=guild_id, channel_id=channel_id)
-    return {"enabled": bool(row["enabled"]), "retailers": retailers, "channel_id": channel_id}
+    if (
+        row["channel_id"]
+        and channel_id is not None
+        and encode_channel_id(row["channel_id"]) != row["channel_id"]
+    ):
+        await set_public_alert_channel_id(
+            db,
+            guild_id=int(guild_param),
+            channel_id=channel_id,
+        )
+    return {
+        "enabled": bool(row["enabled"]),
+        "retailers": retailers,
+        "channel_id": channel_id,
+    }
 
 
-async def set_public_alert_config(db: Any, *, guild_id: int, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None) -> None:
+async def set_public_alert_config(
+    db: Any,
+    *,
+    guild_id: int,
+    enabled: bool,
+    retailers: tuple[str, ...],
+    channel_id: int | str | None,
+) -> None:
     await ensure_public_alert_table(db)
     conn = db.require_conn()
     now = utc_now_iso()
-    normalized_retailers = tuple(retailer for retailer in (normalize_retailer_key(retailer) for retailer in retailers) if retailer)
+    guild_param = snowflake_text(guild_id)
+    normalized_retailers = tuple(
+        retailer
+        for retailer in (
+            normalize_retailer_key(retailer) for retailer in retailers
+        )
+        if retailer
+    )
     await conn.execute(
         """
-        INSERT INTO guild_public_alert_settings (guild_id, enabled, retailers_json, channel_id, created_at, updated_at)
+        INSERT INTO guild_public_alert_settings
+            (guild_id, enabled, retailers_json, channel_id, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(guild_id) DO UPDATE SET
             enabled = excluded.enabled,
@@ -74,7 +109,7 @@ async def set_public_alert_config(db: Any, *, guild_id: int, enabled: bool, reta
             updated_at = excluded.updated_at
         """,
         (
-            guild_id,
+            guild_param,
             int(enabled),
             json.dumps(list(dict.fromkeys(normalized_retailers))),
             encode_channel_id(channel_id),
@@ -85,12 +120,22 @@ async def set_public_alert_config(db: Any, *, guild_id: int, enabled: bool, reta
     await conn.commit()
 
 
-async def set_public_alert_channel_id(db: Any, *, guild_id: int, channel_id: int | str) -> None:
+async def set_public_alert_channel_id(
+    db: Any,
+    *,
+    guild_id: int,
+    channel_id: int | str,
+) -> None:
     await ensure_public_alert_table(db)
     conn = db.require_conn()
     await conn.execute(
-        "UPDATE guild_public_alert_settings SET channel_id = ?, updated_at = ? WHERE guild_id = ?",
-        (encode_channel_id(channel_id), utc_now_iso(), guild_id),
+        "UPDATE guild_public_alert_settings SET channel_id = ?, updated_at = ? "
+        "WHERE CAST(guild_id AS TEXT) = ?",
+        (
+            encode_channel_id(channel_id),
+            utc_now_iso(),
+            snowflake_text(guild_id),
+        ),
     )
     await conn.commit()
 

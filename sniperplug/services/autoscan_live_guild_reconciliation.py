@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from sniperplug.services.discord_snowflake import snowflake_text
 from sniperplug.services.ghost_guild_tombstones import (
     clear_live_ghost_tombstones,
     load_ghost_tombstones,
@@ -14,10 +15,12 @@ from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.setup_self_heal import (
     GHOST_CLEANUP_ATTEMPTS,
     GHOST_CLEANUP_RETRY_DELAY_SECONDS,
-    _delete_ghost_rows_once,
-    _discover_ghost_ids,
-    _remaining_ghost_ids,
     repair_public_alert_setup,
+)
+from sniperplug.services.snowflake_safe_ghost_cleanup import (
+    delete_ghost_rows_once,
+    discover_ghost_ids,
+    remaining_ghost_ids,
 )
 
 
@@ -41,10 +44,9 @@ class LiveGuildLoadResult:
 async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int]:
     """Repair live guilds and quarantine non-live setup rows once.
 
-    A Turso/libSQL replica can briefly surface a row after the connection that
-    deleted it already verified the row absent. Durable tombstones are backed by
-    a process-local quarantine set so a stale remote read cannot repeatedly
-    announce and delete the same ghost every scheduler cycle.
+    All cleanup comparisons and writes use decimal-text snowflakes. This keeps
+    remote libSQL transports from rounding a real Discord ID into a nearby
+    ghost ID, and prevents live-tombstone clearing from deleting the wrong row.
     """
 
     live_guild_ids = {
@@ -63,13 +65,11 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
         }
 
     conn = db.require_conn()
-    # Tombstone helpers commit their own schema and mutations. A guild that was
-    # genuinely rejoined is released durably and from the session quarantine.
     await clear_live_ghost_tombstones(conn, live_guild_ids)
     _SESSION_GHOST_TOMBSTONES.difference_update(live_guild_ids)
     tombstoned = await load_ghost_tombstones(conn)
     tombstoned.update(_SESSION_GHOST_TOMBSTONES)
-    visible_ghost_ids = await _discover_ghost_ids(conn, live_guild_ids)
+    visible_ghost_ids = await discover_ghost_ids(conn, live_guild_ids)
     already_quarantined = visible_ghost_ids & tombstoned
     new_ghost_ids = visible_ghost_ids - tombstoned
 
@@ -77,9 +77,9 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
     failures: list[str] = []
     if new_ghost_ids:
         for attempt in range(1, GHOST_CLEANUP_ATTEMPTS + 1):
-            failures.extend(await _delete_ghost_rows_once(conn, remaining))
+            failures.extend(await delete_ghost_rows_once(conn, remaining))
             await conn.commit()
-            remaining = await _remaining_ghost_ids(conn, remaining)
+            remaining = await remaining_ghost_ids(conn, remaining)
             if not remaining:
                 break
             if attempt < GHOST_CLEANUP_ATTEMPTS:
@@ -95,14 +95,14 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
     deleted = len(new_ghost_ids - remaining)
     if remaining:
         log.warning(
-            "Ghost guild rows quarantined after delete verification remained stale-visible "
+            "Ghost guild rows quarantined after exact-text delete verification remained stale-visible "
             "guild_ids=%s failures=%s",
             sorted(remaining),
             failures[-8:],
         )
     elif new_ghost_ids:
         log.info(
-            "Ghost guild setup cleanup verified and tombstoned guild_ids=%s",
+            "Ghost guild setup cleanup verified with exact-text snowflakes and tombstoned guild_ids=%s",
             sorted(new_ghost_ids),
         )
 
@@ -138,18 +138,9 @@ async def list_live_public_alert_guilds(
 ) -> LiveGuildLoadResult:
     """Load only guilds present in Discord's current live guild cache.
 
-    Discord snowflakes exceed JavaScript's exact integer range. Some libSQL
-    clients can therefore expose an INTEGER column as a rounded numeric value
-    even though SQLite stored the 64-bit integer exactly. CASTing inside SQLite
-    makes the wire value text, preserving every digit before Python parses it.
-
-    ``only_guild_id`` uses the same eligibility rules as the scheduled loader,
-    but constrains both the public-alert and tombstone reads to one exact text
-    snowflake for health checks.
-
-    This function never deletes. Reconciliation owns cleanup, while discovery
-    only filters. That prevents two independent cleanup paths from racing or
-    producing duplicate "deleted" warnings from inconsistent remote reads.
+    Discord snowflakes exceed JavaScript's exact integer range. CASTing inside
+    SQLite makes the wire value text, preserving every digit before Python
+    parses it. Filter parameters use the same exact decimal representation.
     """
 
     live_guild_ids = {
@@ -176,7 +167,7 @@ async def list_live_public_alert_guilds(
     params: tuple[str, ...] = ()
     if target is not None:
         sql += " AND CAST(guild_id AS TEXT) = ?"
-        params = (str(target),)
+        params = (snowflake_text(target),)
     cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
 
@@ -187,10 +178,12 @@ async def list_live_public_alert_guilds(
     for row in rows:
         guild_id = _guild_id_from_row(row)
         if guild_id is None:
-            log.warning("Skipped malformed public-alert row without a usable guild id: %r", row)
+            log.warning(
+                "Skipped malformed public-alert row without a usable guild id: %r",
+                row,
+            )
             continue
         if target is not None and guild_id != target:
-            # Defense in depth for clients/fakes that ignore SQL parameters.
             continue
         if guild_id not in live_guild_ids:
             stale_visible.add(guild_id)
@@ -220,7 +213,9 @@ async def list_live_public_alert_guilds(
             )
             continue
         seen.add(guild_id)
-        guilds.append(LiveAutoScanGuild(guild_id=guild_id, channel_id=channel_id))
+        guilds.append(
+            LiveAutoScanGuild(guild_id=guild_id, channel_id=channel_id)
+        )
 
     return LiveGuildLoadResult(
         guilds=tuple(guilds),
@@ -243,7 +238,7 @@ async def scheduler_membership_for_guild(
             bot,
             only_guild_id=target,
         )
-    except Exception as exc:  # Health diagnostics must still render on DB trouble.
+    except Exception as exc:
         log.exception(
             "Scheduler membership health check failed guild=%s error=%s",
             target,
@@ -259,10 +254,19 @@ async def scheduler_membership_for_guild(
     if target in eligible_ids:
         return True, "This server is present in the live scheduled autoscan set."
     if target in set(result.tombstoned_visible_ids):
-        return False, "This live server is incorrectly visible as tombstoned and will not be scheduled."
+        return (
+            False,
+            "This live server is incorrectly visible as tombstoned and will not be scheduled.",
+        )
     if target in set(result.stale_visible_ids):
-        return False, "This server's saved row is being read as a non-live guild and will not be scheduled."
-    return False, "This server is not present in the scheduler's eligible public-alert rows."
+        return (
+            False,
+            "This server's saved row is being read as a non-live guild and will not be scheduled.",
+        )
+    return (
+        False,
+        "This server is not present in the scheduler's eligible public-alert rows.",
+    )
 
 
 def is_live_bot_guild(bot: Any, guild_id: int) -> bool:
@@ -285,7 +289,7 @@ def _guild_id_from_row(row: Any) -> int | None:
     values.append(getattr(row, "guild_id", None))
     for value in values:
         try:
-            return int(value)
+            return int(str(value))
         except (TypeError, ValueError):
             continue
     return None

@@ -81,13 +81,9 @@ def test_reconciliation_session_quarantine_survives_stale_tombstone_read(monkeyp
         return 0
 
     async def fake_load(_conn):
-        # Simulate Turso continuing to return an empty tombstone read after the
-        # write was committed elsewhere.
         return set()
 
     async def fake_discover(_conn, _live_ids):
-        # Simulate a genuinely unrelated stale setup row, not a rounded copy of
-        # the real live guild snowflake.
         return {true_stale_id}
 
     async def fake_delete(_conn, ids):
@@ -107,9 +103,9 @@ def test_reconciliation_session_quarantine_survives_stale_tombstone_read(monkeyp
 
     monkeypatch.setattr(live, "clear_live_ghost_tombstones", fake_clear)
     monkeypatch.setattr(live, "load_ghost_tombstones", fake_load)
-    monkeypatch.setattr(live, "_discover_ghost_ids", fake_discover)
-    monkeypatch.setattr(live, "_delete_ghost_rows_once", fake_delete)
-    monkeypatch.setattr(live, "_remaining_ghost_ids", fake_remaining)
+    monkeypatch.setattr(live, "discover_ghost_ids", fake_discover)
+    monkeypatch.setattr(live, "delete_ghost_rows_once", fake_delete)
+    monkeypatch.setattr(live, "remaining_ghost_ids", fake_remaining)
     monkeypatch.setattr(live, "mark_ghost_tombstones", fake_mark)
     monkeypatch.setattr(live, "repair_public_alert_setup", fake_repair)
 
@@ -128,7 +124,9 @@ def test_reconciliation_session_quarantine_survives_stale_tombstone_read(monkeyp
 
 
 def test_is_live_bot_guild_fails_closed() -> None:
-    bot = SimpleNamespace(get_guild=lambda guild_id: object() if guild_id == 123 else None)
+    bot = SimpleNamespace(
+        get_guild=lambda guild_id: object() if guild_id == 123 else None
+    )
 
     assert live.is_live_bot_guild(bot, 123) is True
     assert live.is_live_bot_guild(bot, 456) is False

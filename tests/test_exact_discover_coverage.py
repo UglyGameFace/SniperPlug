@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 
 from sniperplug.cogs.auto_discovery import (
+    DISCOVERY_CHUNK_ROUTES,
+    chunk_discovery_queries,
     resolve_discovery_plan,
     select_discovery_notes,
 )
@@ -47,6 +49,20 @@ def test_quick_and_full_discover_coverage_are_explicit() -> None:
     assert "all" in full.coverage_line().lower()
 
 
+def test_full_discovery_is_split_into_queue_checkpointed_chunks() -> None:
+    full = resolve_discovery_plan(
+        guild_id=1514374173517152418,
+        coverage="full",
+    )
+    chunks = chunk_discovery_queries(full.queries)
+
+    assert len(chunks) == (
+        len(full.queries) + DISCOVERY_CHUNK_ROUTES - 1
+    ) // DISCOVERY_CHUNK_ROUTES
+    assert all(1 <= len(chunk) <= DISCOVERY_CHUNK_ROUTES for chunk in chunks)
+    assert tuple(query for chunk in chunks for query in chunk) == full.queries
+
+
 def test_discover_notes_prioritize_exact_queue_and_hide_internal_chatter() -> None:
     notes = select_discovery_notes(
         [
@@ -76,27 +92,49 @@ def test_discover_uses_exact_collector_not_legacy_search_only_path() -> None:
     assert "Search-only rows cannot become deal cards" in AUTO_DISCOVERY
 
 
+def test_discover_runs_as_durable_background_job() -> None:
+    assert "asyncio.create_task(" in AUTO_DISCOVERY
+    assert "DISCOVERY_MAX_RUNTIME_SECONDS" in AUTO_DISCOVERY
+    assert "interaction.user.send" in AUTO_DISCOVERY
+    assert "delivery_kind" in AUTO_DISCOVERY
+    assert "job.status_message.edit" in AUTO_DISCOVERY
+    assert "_discovery_progress_notice" not in AUTO_DISCOVERY
+
+
 def test_discover_shares_walmart_runtime_gates_for_long_sweeps() -> None:
     assert "autoscan_runtime.autoscan_lock(guild_id)" in AUTO_DISCOVERY
     assert "async with _WALMART_PROVIDER_OPERATION_LOCK" in AUTO_DISCOVERY
-    assert "guild_scan_lock.release()" in AUTO_DISCOVERY
-    assert "background exact worker" in AUTO_DISCOVERY
+    assert "job.guild_scan_lock.release()" in AUTO_DISCOVERY
+    assert "_set_watchdog_phase" in AUTO_DISCOVERY
+    assert "discover_" in AUTO_DISCOVERY
 
 
-def test_discover_shows_all_exact_cards_privately_but_caps_fresh_public_cards() -> None:
-    assert "shown_cards, category_suppressed_cards, category_notes = apply_category_preferences" in AUTO_DISCOVERY
+def test_discover_shows_exact_cards_privately_but_caps_fresh_public_cards() -> None:
+    assert (
+        "shown_cards, category_suppressed_cards, category_notes = "
+        "apply_category_preferences" in AUTO_DISCOVERY
+    )
     assert "cards=shown_cards" in AUTO_DISCOVERY
     assert "fresh_cards = list(fresh_selection.fresh)" in AUTO_DISCOVERY
-    assert "public_cards = fresh_cards[:" in AUTO_DISCOVERY
+    assert "public_cards = fresh_cards[: job.max_public_posts]" in AUTO_DISCOVERY
     assert "cards=public_cards" in AUTO_DISCOVERY
     assert "including already-posted duplicates when present" in AUTO_DISCOVERY
+    assert "batch_cards_for_limit(private_cards)" in AUTO_DISCOVERY
+
+
+def test_discover_status_is_one_edited_message_with_cancel_control() -> None:
+    assert 'label="Refresh status"' in AUTO_DISCOVERY
+    assert 'label="Cancel"' in AUTO_DISCOVERY
+    assert "response.edit_message" in AUTO_DISCOVERY
+    assert "One status message is edited in place" in AUTO_DISCOVERY
+    assert "completed chunk" in AUTO_DISCOVERY.lower()
 
 
 def test_discover_slash_metadata_fits_discord_limits() -> None:
     descriptions = (
-        "Run a broad exact-verified Walmart catalog sweep now.",
-        "Quick: 16 routes. Deep: 64. Full: every route and may take several minutes.",
-        "Fresh verified deals sent publicly; extra exact cards stay in your private result.",
+        "Start a broad exact-verified Walmart catalog discovery job.",
+        "Quick: 16 routes. Deep: 64. Full: every route in a durable background job.",
+        "Fresh verified deals sent publicly; extra exact cards are delivered privately.",
     )
     for description in descriptions:
         assert description in AUTO_DISCOVERY

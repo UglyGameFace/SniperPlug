@@ -49,7 +49,7 @@ def test_live_loader_filters_true_stale_replica_rows_without_deleting(monkeypatc
     db = _Database(conn)
     bot = SimpleNamespace(guilds=[SimpleNamespace(id=real_id)])
 
-    async def fake_tombstones(_conn):
+    async def fake_tombstones(_conn, **_kwargs):
         return {true_stale_id}
 
     async def fake_config(_db, guild_id):

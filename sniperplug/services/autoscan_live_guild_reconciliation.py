@@ -133,6 +133,11 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
 async def list_live_public_alert_guilds(db: Any, bot: Any) -> LiveGuildLoadResult:
     """Load only guilds present in Discord's current live guild cache.
 
+    Discord snowflakes exceed JavaScript's exact integer range. Some libSQL
+    clients can therefore expose an INTEGER column as a rounded numeric value
+    even though SQLite stored the 64-bit integer exactly. CASTing inside SQLite
+    makes the wire value text, preserving every digit before Python parses it.
+
     This function never deletes. Reconciliation owns cleanup, while discovery
     only filters. That prevents two independent cleanup paths from racing or
     producing duplicate "deleted" warnings from inconsistent remote reads.
@@ -148,7 +153,7 @@ async def list_live_public_alert_guilds(db: Any, bot: Any) -> LiveGuildLoadResul
     tombstoned = await load_ghost_tombstones(conn)
     tombstoned.update(_SESSION_GHOST_TOMBSTONES)
     cursor = await conn.execute(
-        "SELECT guild_id FROM guild_public_alert_settings "
+        "SELECT CAST(guild_id AS TEXT) AS guild_id FROM guild_public_alert_settings "
         "WHERE enabled = 1 AND channel_id IS NOT NULL"
     )
     rows = await cursor.fetchall()
@@ -197,6 +202,21 @@ async def list_live_public_alert_guilds(db: Any, bot: Any) -> LiveGuildLoadResul
         stale_visible_ids=tuple(sorted(stale_visible)),
         tombstoned_visible_ids=tuple(sorted(tombstoned_visible)),
     )
+
+
+async def scheduler_membership_for_guild(db: Any, bot: Any, guild_id: int) -> tuple[bool, str]:
+    """Return the scheduler's real live-guild enrollment decision."""
+
+    target = int(guild_id)
+    result = await list_live_public_alert_guilds(db, bot)
+    eligible_ids = {int(guild.guild_id) for guild in result.guilds}
+    if target in eligible_ids:
+        return True, "This server is present in the live scheduled autoscan set."
+    if target in set(result.tombstoned_visible_ids):
+        return False, "This live server is incorrectly visible as tombstoned and will not be scheduled."
+    if target in set(result.stale_visible_ids):
+        return False, "This server's saved row is being read as a non-live guild and will not be scheduled."
+    return False, "This server is not present in the scheduler's eligible public-alert rows."
 
 
 def is_live_bot_guild(bot: Any, guild_id: int) -> bool:

@@ -339,9 +339,19 @@ def _public_warning_lines(warnings: tuple[str, ...], *, diagnostic: bool = False
             continue
         if "publisher_id" in lowered or "direct walmart links" in lowered:
             continue
-        if "http" in lowered or "pdp" in lowered or "robot or human" in lowered or "html_" in lowered:
+
+        http_failure = re.search(r"\bwalmart\s+api\s+http\s+(\d{3})\b", lowered)
+        if http_failure:
+            status = http_failure.group(1)
+            if diagnostic:
+                clean = short(re.sub(r"https?://\S+", "[URL omitted]", text), 220)
+            else:
+                clean = f"Official Walmart API request failed (HTTP {status})."
+        elif re.search(r"https?://", lowered):
             continue
-        if "timed out" in lowered or "timeout" in lowered:
+        elif "pdp" in lowered or "robot or human" in lowered or "html_" in lowered:
+            continue
+        elif "timed out" in lowered or "timeout" in lowered:
             clean = "One or more official Walmart API requests timed out."
         elif "item detail unavailable" in lowered or "detail promo proof unavailable" in lowered:
             clean = "One or more official Walmart item-detail checks were unavailable."

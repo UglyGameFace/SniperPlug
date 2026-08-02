@@ -13,9 +13,11 @@ from discord.ext import commands
 
 from sniperplug.config import Settings
 from sniperplug.cogs.active_deal_history import ActiveDealHistoryCog
-from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
 from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
+from sniperplug.cogs.canonical_public_alerts import CanonicalPublicAlertsCog
+from sniperplug.cogs.canonical_settings import CanonicalSettingsCog
+from sniperplug.cogs.canonical_workflow import CanonicalWorkflowCog
 from sniperplug.cogs.global_auto_scan_runner import AutoScanRunnerCog as GlobalAutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
@@ -26,14 +28,11 @@ from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.movie_command_guide import MovieCommandGuideCog
 from sniperplug.cogs.movie_ticket_feedback import MovieTicketFeedbackCog
 from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
-from sniperplug.cogs.open_box_deals import OpenBoxDealsCog
-from sniperplug.cogs.public_alerts import PublicAlertsCog, register_persistent_public_panel_views
-from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
+from sniperplug.cogs.public_alerts import register_persistent_public_panel_views
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.cogs.storage_admin import StorageAdminCog
 from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
-from sniperplug.cogs.workflow import WorkflowCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
@@ -43,6 +42,11 @@ from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
 from sniperplug.services.active_deal_history import ensure_active_deal_history
 from sniperplug.services.bounded_feedback_views import (
     register_bounded_persistent_feedback_views as register_persistent_feedback_views,
+)
+from sniperplug.services.command_surface import (
+    command_surface_issues,
+    command_surface_summary,
+    prune_retired_commands,
 )
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
@@ -69,6 +73,7 @@ class SniperPlugBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self.settings = settings
         self.db = Database(settings.database_path)
+        self._command_surface_issues: tuple[str, ...] = ()
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
     async def setup_hook(self) -> None:
@@ -117,21 +122,21 @@ class SniperPlugBot(commands.Bot):
             bool(walmart_provider.config.publisher_id),
         )
 
+        # Canonical command surface. Legacy cogs may remain importable as helper
+        # libraries, but only the commands below are added to the live tree.
         await self.add_cog(SniperPlugCog(self))
-        await self.add_cog(WorkflowCog(self))
+        await self.add_cog(CanonicalWorkflowCog(self))
         await self.add_cog(VerifiedDealScannerCog(self))
-        await self.add_cog(OpenBoxDealsCog(self))
         await self.add_cog(LocalInventoryCog(self))
         await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))
         await self.add_cog(HomeDepotLocalCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
         await self.add_cog(DmDealAlertsCog(self))
-        await self.add_cog(PublicAlertsCog(self))
+        await self.add_cog(CanonicalPublicAlertsCog(self))
         await self.add_cog(ActiveDealsCog(self))
-        await self.add_cog(ActiveDealRecheckCog(self))
         await self.add_cog(ActiveDealHistoryCog(self))
-        await self.add_cog(SettingsDashboardCog(self))
+        await self.add_cog(CanonicalSettingsCog(self))
         await self.add_cog(DealFeedbackAdminCog(self))
         await self.add_cog(StorageAdminCog(self))
         await self.add_cog(VerizonShineCog(self))
@@ -139,8 +144,21 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(MovieTicketFeedbackCog(self))
         await self.add_cog(MovieCommandGuideCog(self))
         await self.add_cog(GlobalAutoScanRunnerCog(self))
-        log.info("Runtime services ready: provider_count=%s", len(provider_registry.providers))
 
+        removed = prune_retired_commands(self.tree)
+        self._command_surface_issues = command_surface_issues(self.tree.get_commands())
+        log.info(
+            "Canonical slash command surface ready %s retired=%s",
+            command_surface_summary(self.tree.get_commands()),
+            ",".join(item.name for item in removed) or "none",
+        )
+        if self._command_surface_issues:
+            log.critical(
+                "Canonical slash command surface has blocking issues: %s",
+                " | ".join(self._command_surface_issues),
+            )
+
+        log.info("Runtime services ready: provider_count=%s", len(provider_registry.providers))
         await self._sync_commands()
 
     async def _sync_commands(self) -> None:
@@ -161,7 +179,10 @@ class SniperPlugBot(commands.Bot):
             )
             return
 
-        schema_issues = app_command_schema_issues(self.tree.get_commands())
+        schema_issues = (
+            *app_command_schema_issues(self.tree.get_commands()),
+            *command_surface_issues(self.tree.get_commands()),
+        )
         if schema_issues:
             log.critical(
                 "Slash command sync skipped safely; bot startup continues with Discord's last registered command set. "
@@ -173,14 +194,21 @@ class SniperPlugBot(commands.Bot):
         if self.settings.sync_global_commands:
             synced = await self._sync_tree_safely(scope="global commands")
             if synced is not None:
-                log.info("Synced %s global slash commands", len(synced))
+                log.info("Synced %s canonical global slash commands", len(synced))
             return
 
         if self.settings.dev_guild_ids:
             for guild_id in self.settings.dev_guild_ids:
                 guild = discord.Object(id=guild_id)
+                # Rebuild the guild tree from the canonical global tree so
+                # removed aliases are actually deleted from Discord instead of
+                # lingering after code changes.
+                self.tree.clear_commands(guild=guild)
                 self.tree.copy_global_to(guild=guild)
-                guild_issues = app_command_schema_issues(self.tree.get_commands(guild=guild))
+                guild_issues = (
+                    *app_command_schema_issues(self.tree.get_commands(guild=guild)),
+                    *command_surface_issues(self.tree.get_commands(guild=guild)),
+                )
                 if guild_issues:
                     log.critical(
                         "Skipped slash command sync for guild=%s; bot startup continues. Invalid schema: %s",
@@ -193,7 +221,7 @@ class SniperPlugBot(commands.Bot):
                     scope=f"guild {guild_id}",
                 )
                 if synced is not None:
-                    log.info("Synced %s guild slash commands to %s", len(synced), guild_id)
+                    log.info("Synced %s canonical guild slash commands to %s", len(synced), guild_id)
             return
 
         log.info("No DEV_GUILD_IDS configured and global sync is off; skipped slash command sync.")

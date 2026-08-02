@@ -4,7 +4,8 @@ from pathlib import Path
 SELF_HEAL = Path("sniperplug/services/setup_self_heal.py").read_text(encoding="utf-8")
 BOT = Path("sniperplug/bot.py").read_text(encoding="utf-8")
 AUTO = Path("sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
-PUBLIC = Path("sniperplug/cogs/public_alerts.py").read_text(encoding="utf-8")
+PUBLIC = Path("sniperplug/cogs/canonical_public_alerts.py").read_text(encoding="utf-8")
+SETUP = Path("sniperplug/cogs/canonical_workflow.py").read_text(encoding="utf-8")
 DEALS = Path("sniperplug/cogs/deal_scanner.py").read_text(encoding="utf-8")
 VERIFIED = Path("sniperplug/cogs/verified_deal_scanner.py").read_text(encoding="utf-8")
 CASH = Path("sniperplug/services/walmart_cash_offers.py").read_text(encoding="utf-8")
@@ -20,7 +21,7 @@ def test_setup_repair_service_exists_and_cleans_ghost_rows():
     assert "guild_retailer_auto_scan_settings" in SELF_HEAL
 
 
-def test_setup_repair_is_not_installed_in_bot_startup():
+def test_setup_repair_is_not_installed_as_a_second_startup_command_flow():
     assert "repair_all_public_alert_setups" not in BOT
     assert "Setup self-heal complete" not in BOT
     assert "_setup_self_heal_done" not in BOT
@@ -33,11 +34,12 @@ def test_autoscan_can_repair_explicit_setup_without_startup_guard():
     assert "This should only require setup on first install" in AUTO
 
 
-def test_autoscan_health_shows_self_heal_not_repeat_setup_forever():
+def test_canonical_autoscan_health_shows_self_heal_and_global_fanout():
     assert "repair_public_alert_setup" in PUBLIC
-    assert "Self-heal" in PUBLIC
+    assert "Setup repair" in PUBLIC
+    assert "Global catalog coverage" in PUBLIC
+    assert "Live fanout enrollment" in PUBLIC
     assert "does not need rerun" in SELF_HEAL
-    assert "Run `/setup_sniperplug_here` inside the live #walmart-deals channel" not in PUBLIC
 
 
 def test_walmart_cash_only_command_and_button_exist():
@@ -49,13 +51,11 @@ def test_walmart_cash_only_command_and_button_exist():
 
 
 def test_walmart_cash_only_blocks_guesses_and_onepay():
-    # User-facing Cash Finder explains what does and does not count.
     assert "OnePay cashback" in CASH
     assert "generic promo text" in CASH or "generic rewards" in CASH
     assert "search words" in CASH
     assert "does not public-post markdown alerts" in CASH or "does not public-post markdown alerts" in CASH.lower()
 
-    # Actual trust logic lives in the raw Walmart API proof extractor.
     assert "BLOCKED_NON_WALMART_CASH_TERMS" in API_TRUTH
     assert "onepay" in API_TRUTH
     assert "one pay" in API_TRUTH
@@ -64,7 +64,9 @@ def test_walmart_cash_only_blocks_guesses_and_onepay():
     assert "return None" in API_TRUTH
 
 
-def test_command_catalog_lists_cash_and_setup_once():
+def test_command_catalog_lists_cash_and_one_setup_command():
     assert 'name="/walmart_cash"' in CATALOG
-    assert "Run once during first install" in CATALOG
+    assert "Run once during installation" in CATALOG
     assert CATALOG.count('name="/setup_sniperplug_here"') == 1
+    assert SETUP.count('name="setup_sniperplug_here"') == 1
+    assert "global" in SETUP.lower()

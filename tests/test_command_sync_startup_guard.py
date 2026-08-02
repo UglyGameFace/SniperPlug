@@ -8,6 +8,7 @@ from discord import app_commands
 
 from sniperplug.bot import SniperPlugBot, app_command_schema_issues
 from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
+from sniperplug.services.command_surface import REQUIRED_CANONICAL_COMMANDS
 
 
 class _FakeCommand:
@@ -55,6 +56,13 @@ class _FakeBot:
         )
 
 
+def canonical_fake_commands() -> list[_FakeCommand]:
+    return [
+        _FakeCommand(name=name, description=f"Canonical {name} command")
+        for name in sorted(REQUIRED_CANONICAL_COMMANDS)
+    ]
+
+
 def test_registered_movies_group_description_source_is_discord_safe() -> None:
     description = str(MovieTicketsCog.__doc__ or "").strip()
     assert MovieTicketsCog.__cog_is_app_commands_group__ is True
@@ -72,7 +80,10 @@ def test_schema_preflight_detects_oversized_description() -> None:
 def test_invalid_local_schema_skips_http_sync_without_crashing(monkeypatch) -> None:
     monkeypatch.delenv("CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT", raising=False)
     tree = _FakeTree(
-        commands=[_FakeCommand(name="movies", description="x" * 101)]
+        commands=[
+            *canonical_fake_commands(),
+            _FakeCommand(name="movies", description="x" * 101),
+        ]
     )
     bot = _FakeBot(tree)
 
@@ -94,7 +105,10 @@ def test_discord_command_sync_rejection_does_not_crash_startup(monkeypatch) -> N
         {"code": 50035, "message": "Invalid Form Body"},
     )
     sync_error = app_commands.CommandSyncFailure(http_error, [])
-    tree = _FakeTree(sync_error=sync_error)
+    tree = _FakeTree(
+        commands=canonical_fake_commands(),
+        sync_error=sync_error,
+    )
     bot = _FakeBot(tree)
 
     asyncio.run(bot._sync_commands())

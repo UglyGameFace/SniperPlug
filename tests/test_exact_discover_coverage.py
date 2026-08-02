@@ -145,6 +145,8 @@ def test_discover_slash_metadata_fits_discord_limits() -> None:
     assert all(1 <= len(name) <= 100 for name in choice_names)
 
 
-def test_command_catalog_explains_discover_vs_autoscan() -> None:
-    assert "Broad manual Walmart sweep using the exact-detail queue" in COMMAND_CATALOG
-    assert "`/autoscan_now` is the smaller diagnostic command" in COMMAND_CATALOG
+def test_command_catalog_explains_discover_vs_global_autoscan() -> None:
+    assert "optional immediate Quick, Deep, or Full exact Walmart sweep" in COMMAND_CATALOG
+    assert "Normal automatic coverage does not require this command" in COMMAND_CATALOG
+    assert "bounded manual autoscan test" in COMMAND_CATALOG
+    assert "not required for normal background coverage" in COMMAND_CATALOG

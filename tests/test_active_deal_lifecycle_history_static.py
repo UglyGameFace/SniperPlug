@@ -44,9 +44,11 @@ def test_history_command_is_owner_safe_and_truthful():
     assert "the event label describes only what actually changed" in COG
 
 
-def test_history_schema_and_cog_are_installed_at_startup():
+def test_history_schema_and_cog_are_installed_before_command_sync():
     assert "from sniperplug.cogs.active_deal_history import ActiveDealHistoryCog" in BOT
     assert "from sniperplug.services.active_deal_history import ensure_active_deal_history" in BOT
     assert "await ensure_active_deal_history(self.db)" in BOT
     assert "await self.add_cog(ActiveDealHistoryCog(self))" in BOT
-    assert BOT.index("await ensure_active_deal_history(self.db)") < BOT.index("await self.add_cog(ActiveDealRecheckCog(self))")
+    assert BOT.index("await ensure_active_deal_history(self.db)") < BOT.index("await self.add_cog(ActiveDealHistoryCog(self))")
+    assert BOT.index("await self.add_cog(ActiveDealHistoryCog(self))") < BOT.index("await self._sync_commands()")
+    assert "await self.add_cog(ActiveDealRecheckCog(self))" not in BOT

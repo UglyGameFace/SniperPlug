@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -44,6 +45,7 @@ STATE_KEY = "walmart"
 FANOUT_INGEST_LIMIT = 150
 FANOUT_EVENT_LIMIT = 20
 EVENT_RETENTION_DAYS = 30
+EVENT_LEASE_SECONDS = 30 * 60
 _FANOUT_LOCK = asyncio.Lock()
 log = logging.getLogger("sniperplug.autoscan.fanout")
 
@@ -80,6 +82,13 @@ class _IngestResult:
     new_events: int = 0
 
 
+@dataclass(frozen=True)
+class _ClaimedEvent:
+    deal_key: str
+    claim_token: str
+    card: Any
+
+
 async def ensure_global_deal_event_tables(db: Any) -> None:
     conn = db.require_conn()
     await conn.execute(
@@ -92,13 +101,15 @@ async def ensure_global_deal_event_tables(db: Any) -> None:
             last_attempt_at TEXT,
             processed_at TEXT,
             attempt_count INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT NOT NULL DEFAULT ''
+            last_error TEXT NOT NULL DEFAULT '',
+            claim_token TEXT NOT NULL DEFAULT '',
+            lease_until TEXT
         )
         """
     )
     await conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{EVENT_TABLE}_pending "
-        f"ON {EVENT_TABLE} (processed_at, first_seen_at)"
+        f"ON {EVENT_TABLE} (processed_at, lease_until, first_seen_at)"
     )
     await conn.execute(
         f"""
@@ -142,8 +153,8 @@ async def fanout_recent_exact_walmart_deals(
 
     The verification watermark prevents high-ranked rows from starving later
     rows. Every accepted event stores the exact candidate snapshot used to
-    create it, so a crash or destination outage can retry delivery even after
-    the live exact queue is updated or pruned.
+    create it. Durable database leases prevent overlapping bot processes from
+    sending the same event concurrently during deploys or failover.
     """
 
     db = getattr(bot, "db", None)
@@ -156,11 +167,11 @@ async def fanout_recent_exact_walmart_deals(
             db,
             limit=FANOUT_INGEST_LIMIT,
         )
-        pending_cards = await _load_pending_event_cards(
+        claimed_events = await _claim_pending_events(
             db,
             limit=max(1, int(event_limit)),
         )
-        if not pending_cards:
+        if not claimed_events:
             return GlobalDealFanoutResult(
                 candidates_loaded=ingested.loaded,
                 exact_cards=ingested.exact_cards,
@@ -183,9 +194,8 @@ async def fanout_recent_exact_walmart_deals(
             "dm_errors": 0,
         }
 
-        for deal_key, card in pending_cards:
+        for event in claimed_events:
             event_errors: list[str] = []
-            await _mark_event_attempt(db, deal_key)
 
             for guild in guilds:
                 guild_id = int(guild.guild_id)
@@ -195,7 +205,7 @@ async def fanout_recent_exact_walmart_deals(
                     public_result = await maybe_post_public_deal_cards(
                         bot=bot,
                         guild_id=guild_id,
-                        cards=[card],
+                        cards=[event.card],
                         source_label="global_catalog_autoscan:exact_verified",
                         fallback_retailer="walmart",
                         min_public_discount=int(threshold),
@@ -215,7 +225,7 @@ async def fanout_recent_exact_walmart_deals(
                         log.info(
                             "Global Walmart fanout destination completed with note guild=%s deal=%s notes=%s",
                             guild_id,
-                            deal_key,
+                            event.deal_key,
                             list(public_result.errors),
                         )
                 except Exception as error:  # noqa: BLE001 - one guild cannot block global fanout.
@@ -226,12 +236,12 @@ async def fanout_recent_exact_walmart_deals(
                     log.exception(
                         "Global Walmart public fanout failed guild=%s deal=%s",
                         guild_id,
-                        deal_key,
+                        event.deal_key,
                     )
 
             for preference in preferences:
                 totals["dm_preferences_checked"] += 1
-                decision = match_dm_deal(preference, card)
+                decision = match_dm_deal(preference, event.card)
                 if not decision.matched:
                     continue
                 totals["dm_matches"] += 1
@@ -239,7 +249,7 @@ async def fanout_recent_exact_walmart_deals(
                     if await dm_receipt_exists(
                         db,
                         user_id=preference.user_id,
-                        deal_key=deal_key,
+                        deal_key=event.deal_key,
                     ):
                         continue
                     sent_today = await dm_alerts_sent_today(db, preference.user_id)
@@ -248,11 +258,13 @@ async def fanout_recent_exact_walmart_deals(
                     user = bot.get_user(preference.user_id)
                     if user is None:
                         user = await bot.fetch_user(preference.user_id)
-                    await user.send(embed=_personal_dm_embed(card, decision.reason))
+                    await user.send(
+                        embed=_personal_dm_embed(event.card, decision.reason)
+                    )
                     await record_dm_receipt(
                         db,
                         user_id=preference.user_id,
-                        deal_key=deal_key,
+                        deal_key=event.deal_key,
                     )
                     await clear_dm_delivery_failures(db, user_id=preference.user_id)
                     totals["dm_sent"] += 1
@@ -286,13 +298,22 @@ async def fanout_recent_exact_walmart_deals(
                     log.exception(
                         "Global Walmart DM fanout failed user=%s deal=%s",
                         preference.user_id,
-                        deal_key,
+                        event.deal_key,
                     )
 
             if event_errors:
-                await _record_event_error(db, deal_key, event_errors)
+                await _release_event_with_error(
+                    db,
+                    deal_key=event.deal_key,
+                    claim_token=event.claim_token,
+                    errors=event_errors,
+                )
             else:
-                await _mark_event_processed(db, deal_key)
+                await _mark_event_processed(
+                    db,
+                    deal_key=event.deal_key,
+                    claim_token=event.claim_token,
+                )
                 totals["events_processed"] += 1
 
         return GlobalDealFanoutResult(
@@ -407,8 +428,8 @@ async def _insert_event_if_new(
         f"""
         INSERT INTO {EVENT_TABLE} (
             deal_key, snapshot_json, first_seen_at, source_verified_at,
-            attempt_count, last_error
-        ) VALUES (?, ?, ?, ?, 0, '')
+            attempt_count, last_error, claim_token
+        ) VALUES (?, ?, ?, ?, 0, '', '')
         ON CONFLICT(deal_key) DO NOTHING
         """,
         (deal_key, snapshot_json, now, verified_at),
@@ -417,36 +438,69 @@ async def _insert_event_if_new(
     return True
 
 
-async def _load_pending_event_cards(
-    db: Any,
-    *,
-    limit: int,
-) -> list[tuple[str, Any]]:
+async def _claim_pending_events(db: Any, *, limit: int) -> list[_ClaimedEvent]:
     conn = db.require_conn()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
     cursor = await conn.execute(
         f"""
         SELECT deal_key, snapshot_json
         FROM {EVENT_TABLE}
         WHERE processed_at IS NULL
+          AND (lease_until IS NULL OR lease_until <= ?)
         ORDER BY first_seen_at ASC
         LIMIT ?
         """,
-        (max(1, int(limit)),),
+        (now_iso, max(1, int(limit))),
     )
     rows = await cursor.fetchall()
-    pending: list[tuple[str, Any]] = []
+    claimed: list[_ClaimedEvent] = []
+    lease_until = (now + timedelta(seconds=EVENT_LEASE_SECONDS)).isoformat()
+
     for row in rows:
         deal_key = str(_row_get(row, "deal_key", 0) or "")
-        candidate = _candidate_from_snapshot(
-            str(_row_get(row, "snapshot_json", 1) or "")
-        )
-        card = _exact_card_for_candidate(candidate)
-        if not deal_key or card is None:
-            if deal_key:
-                await _mark_event_processed(db, deal_key)
+        snapshot_json = str(_row_get(row, "snapshot_json", 1) or "")
+        if not deal_key:
             continue
-        pending.append((deal_key, card))
-    return pending
+        token = uuid.uuid4().hex
+        await conn.execute(
+            f"""
+            UPDATE {EVENT_TABLE}
+            SET claim_token = ?, lease_until = ?, last_attempt_at = ?,
+                attempt_count = attempt_count + 1
+            WHERE deal_key = ?
+              AND processed_at IS NULL
+              AND (lease_until IS NULL OR lease_until <= ?)
+            """,
+            (token, lease_until, now_iso, deal_key, now_iso),
+        )
+        verify = await conn.execute(
+            f"SELECT claim_token FROM {EVENT_TABLE} WHERE deal_key = ?",
+            (deal_key,),
+        )
+        verify_row = await verify.fetchone()
+        if str(_row_get(verify_row, "claim_token", 0) or "") != token:
+            continue
+
+        candidate = _candidate_from_snapshot(snapshot_json)
+        card = _exact_card_for_candidate(candidate)
+        if card is None:
+            await _mark_event_processed(
+                db,
+                deal_key=deal_key,
+                claim_token=token,
+            )
+            continue
+        claimed.append(
+            _ClaimedEvent(
+                deal_key=deal_key,
+                claim_token=token,
+                card=card,
+            )
+        )
+
+    await conn.commit()
+    return claimed
 
 
 def _exact_card_for_candidate(candidate: Any) -> Any | None:
@@ -467,8 +521,6 @@ def _exact_card_for_candidate(candidate: Any) -> Any | None:
     )
     normalize_exact_verified_walmart_cards(cards, min_discount=1)
     for card in cards:
-        # Read-only proof validation here. Destination-specific public posting
-        # later mutates the card with the destination's real threshold field.
         if is_public_deal_candidate(
             card,
             source_label="global_catalog_autoscan:exact_verified",
@@ -478,42 +530,43 @@ def _exact_card_for_candidate(candidate: Any) -> Any | None:
     return None
 
 
-async def _mark_event_attempt(db: Any, deal_key: str) -> None:
+async def _mark_event_processed(
+    db: Any,
+    *,
+    deal_key: str,
+    claim_token: str,
+) -> None:
     conn = db.require_conn()
     now = datetime.now(timezone.utc).isoformat()
     await conn.execute(
         f"""
         UPDATE {EVENT_TABLE}
-        SET last_attempt_at = ?, attempt_count = attempt_count + 1
-        WHERE deal_key = ?
+        SET processed_at = ?, last_error = '', claim_token = '', lease_until = NULL
+        WHERE deal_key = ? AND claim_token = ?
         """,
-        (now, deal_key),
+        (now, deal_key, claim_token),
     )
     await conn.commit()
 
 
-async def _mark_event_processed(db: Any, deal_key: str) -> None:
-    conn = db.require_conn()
-    now = datetime.now(timezone.utc).isoformat()
-    await conn.execute(
-        f"""
-        UPDATE {EVENT_TABLE}
-        SET processed_at = ?, last_error = ''
-        WHERE deal_key = ?
-        """,
-        (now, deal_key),
-    )
-    await conn.commit()
-
-
-async def _record_event_error(db: Any, deal_key: str, errors: list[str]) -> None:
+async def _release_event_with_error(
+    db: Any,
+    *,
+    deal_key: str,
+    claim_token: str,
+    errors: list[str],
+) -> None:
     conn = db.require_conn()
     text = " | ".join(" ".join(str(error).split()) for error in errors if error)
     if len(text) > 1000:
         text = text[:999] + "…"
     await conn.execute(
-        f"UPDATE {EVENT_TABLE} SET last_error = ? WHERE deal_key = ?",
-        (text, deal_key),
+        f"""
+        UPDATE {EVENT_TABLE}
+        SET last_error = ?, claim_token = '', lease_until = NULL
+        WHERE deal_key = ? AND claim_token = ?
+        """,
+        (text, deal_key, claim_token),
     )
     await conn.commit()
 

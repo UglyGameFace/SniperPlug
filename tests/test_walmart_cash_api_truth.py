@@ -27,9 +27,7 @@ def test_rejects_walmart_cash_eligibility_without_amount():
         "badges": [{"text": "Walmart Cash eligible"}],
     }
 
-    proof = extract_walmart_cash_api_truth(item, current_price=12.99)
-
-    assert proof is None
+    assert extract_walmart_cash_api_truth(item, current_price=12.99) is None
 
 
 def test_extracts_walmart_cash_badge_when_amount_is_present():
@@ -43,6 +41,7 @@ def test_extracts_walmart_cash_badge_when_amount_is_present():
 
     assert proof is not None
     assert proof.amount == 5
+
 
 def test_blocks_onepay_cashback_as_walmart_cash():
     item = {
@@ -64,9 +63,14 @@ def test_blocks_buy_more_save_promo_as_walmart_cash():
     assert extract_walmart_cash_api_truth(item, current_price=18.99) is None
 
 
-def test_default_walmart_cash_search_uses_many_routes():
+def test_default_walmart_cash_search_uses_many_product_departments():
     routes = walmart_cash_search_terms("walmart cash offers")
 
     assert len(routes) >= 6
-    assert "personal care walmart cash" in routes
-    assert "detergent walmart cash" in routes
+    assert "personal care" in routes
+    assert "laundry detergent" in routes
+    assert all("walmart cash" not in route.lower() for route in routes)
+
+
+def test_custom_cash_query_removes_promo_words_before_walmart_search():
+    assert walmart_cash_search_terms("tide walmart cash offers") == ("tide",)

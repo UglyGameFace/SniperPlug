@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from sniperplug.cogs.auto_discovery import (
@@ -89,6 +90,21 @@ def test_discover_shows_all_exact_cards_privately_but_caps_fresh_public_cards() 
     assert "public_cards = fresh_cards[:" in AUTO_DISCOVERY
     assert "cards=public_cards" in AUTO_DISCOVERY
     assert "including already-posted duplicates when present" in AUTO_DISCOVERY
+
+
+def test_discover_slash_metadata_fits_discord_limits() -> None:
+    descriptions = (
+        "Run a broad exact-verified Walmart catalog sweep now.",
+        "Quick: 16 routes. Deep: 64. Full: every route and may take several minutes.",
+        "Fresh verified deals sent publicly; extra exact cards stay in your private result.",
+    )
+    for description in descriptions:
+        assert description in AUTO_DISCOVERY
+        assert 1 <= len(description) <= 100
+
+    choice_names = re.findall(r'app_commands\.Choice\(name="([^"]+)"', AUTO_DISCOVERY)
+    assert len(choice_names) == 3
+    assert all(1 <= len(name) <= 100 for name in choice_names)
 
 
 def test_command_catalog_explains_discover_vs_autoscan() -> None:

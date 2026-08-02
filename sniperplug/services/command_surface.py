@@ -100,9 +100,9 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
 
 RETIRED_COMMAND_NAMES = frozenset(item.name for item in RETIRED_COMMANDS)
 
-# Commands whose absence means the public command surface is incomplete. This
-# is intentionally small: specialist modules may be optional, but these are the
-# stable user and owner entry points.
+# Every command advertised by the canonical guide is required. Optional feature
+# groups such as Movies and Verizon remain outside this contract, but nothing in
+# the official command guide may silently disappear during a future refactor.
 REQUIRED_CANONICAL_COMMANDS = frozenset(
     {
         "deals",
@@ -110,6 +110,12 @@ REQUIRED_CANONICAL_COMMANDS = frozenset(
         "discover",
         "walmart_cash",
         "dm_deals",
+        "home_depot_search",
+        "home_depot_penny_hunt",
+        "hd_stock",
+        "local_check",
+        "seed_clearance",
+        "clearance_bank",
         "setup_sniperplug_here",
         "sniperplug_dashboard",
         "autoscan_health",
@@ -117,6 +123,8 @@ REQUIRED_CANONICAL_COMMANDS = frozenset(
         "deal_categories",
         "deal_threshold",
         "active_deals",
+        "active_deal_history",
+        "sniperplug",
     }
 )
 

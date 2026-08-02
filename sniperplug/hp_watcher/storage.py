@@ -519,7 +519,7 @@ async def record_exact_offer(
             product.sku,
             product.catalog_entry_id,
             current_cents,
-            msrp_cents,
+            reference_cents,
             lowest_next,
             _bool_db(offer.in_stock),
             _bool_db(offer.can_add_to_cart),
@@ -533,7 +533,7 @@ async def record_exact_offer(
 
     if price_changed or previous_in_stock != offer.in_stock or previous_promo != offer.promotion_text:
         observation_key = hashlib.sha256(
-            f"{offer_key}|{current_cents}|{msrp_cents}|{offer.in_stock}|{offer.can_add_to_cart}|{offer.promotion_text}".encode("utf-8")
+            f"{offer_key}|{current_cents}|{reference_cents}|{offer.in_stock}|{offer.can_add_to_cart}|{offer.promotion_text}".encode("utf-8")
         ).hexdigest()
         await conn.execute(
             f"""
@@ -548,7 +548,7 @@ async def record_exact_offer(
                 observation_key,
                 offer_key,
                 current_cents,
-                msrp_cents,
+                reference_cents,
                 _bool_db(offer.in_stock),
                 _bool_db(offer.can_add_to_cart),
                 offer.promotion_text,
@@ -570,7 +570,7 @@ async def record_exact_offer(
             now_iso,
             next_check_iso,
             current_cents,
-            msrp_cents,
+            reference_cents,
             _bool_db(offer.in_stock),
             _bool_db(offer.can_add_to_cart),
             offer.promotion_text,

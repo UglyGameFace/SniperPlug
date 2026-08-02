@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sniperplug.services.command_surface import RETIRED_COMMAND_NAMES
+
 
 @dataclass(frozen=True)
 class CommandCatalogEntry:
@@ -12,198 +14,136 @@ class CommandCatalogEntry:
     credit_risk: str = "none"
 
 
+# Canonical entry points only. Retired aliases, destructive maintenance commands,
+# and obsolete per-server Walmart interval controls do not belong in user help.
 COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
-    CommandCatalogEntry(
-        name="/setup_sniperplug_here",
-        audience="Owner",
-        purpose="Fastest setup: use the current channel for public alerts, default route, retailers, and Walmart auto-scan.",
-        when_to_use="Run once during first install or when intentionally moving the posting channel. Deploys should self-heal saved setup.",
-    ),
-    CommandCatalogEntry(
-        name="/sniperplug_workflow",
-        audience="Everyone",
-        purpose="Show the three primary search paths and separate normal commands from specialist/owner tools.",
-        when_to_use="Use this first when anyone is unsure whether to run `/deals`, `/hunt`, or `/discover`.",
-    ),
     CommandCatalogEntry(
         name="/deals",
         audience="Everyone",
-        purpose="Simple Walmart deal search.",
-        when_to_use="Use when you know the product words, like `turtle wax`, `gaming headset`, or `lego`.",
+        purpose="Search for a specific Walmart product using exact-detail verification.",
+        when_to_use="Use when you know what you want, such as `gaming headset`, `lego`, or `detergent`.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
         name="/hunt",
         audience="Everyone",
-        purpose="Button-based category hunt.",
-        when_to_use="Use when you do not know what to search and want SniperPlug to pick preset categories.",
+        purpose="Open category buttons for verified Walmart deal hunting.",
+        when_to_use="Use when you want SniperPlug to pick category and value lanes for you, including open-box/restored coverage.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
         name="/walmart_cash",
         audience="Everyone",
-        purpose="Cash-only Walmart search.",
-        when_to_use="Use when you only want products where the Walmart API returned explicit Walmart Cash offer proof.",
+        purpose="Find only products with strict API-proven Walmart Cash offers.",
+        when_to_use="Use for a manual Cash-only search. Global autoscan can attach the exact Cash amount to normal deal alerts automatically.",
         credit_risk="Walmart official API",
+    ),
+    CommandCatalogEntry(
+        name="/dm_deals",
+        audience="Everyone",
+        purpose="Enable, filter, test, pause, or delete personal exact-deal DM alerts.",
+        when_to_use="Use when you want your own Smart, All, or Custom deal stream without changing a server's public feed.",
     ),
     CommandCatalogEntry(
         name="/discover",
         audience="Everyone",
-        purpose="Broad manual Walmart sweep using the exact-detail queue and catalog-wide route coverage.",
-        when_to_use="Use `coverage:Deep` for the normal wide scan, `coverage:Quick` for a faster rotating slice, or owner-only `coverage:Full` to queue every configured route. `/autoscan_now` is the smaller diagnostic command, not the everything scan.",
-        credit_risk="Walmart official API",
-    ),
-    CommandCatalogEntry(
-        name="/autoscan_now",
-        audience="Owner",
-        purpose="Run the Walmart auto-scan immediately and show the exact post/block decision.",
-        when_to_use="Use after deploys or setup changes to confirm whether deals post, duplicate, cache, fail confidence, or fail channel/config gates. It now self-heals saved setup when safe.",
-        credit_risk="Walmart official API",
-    ),
-    CommandCatalogEntry(
-        name="/autoscan_health",
-        audience="Owner",
-        purpose="Diagnose Walmart auto-scan setup, channel, schedule gate, cache, and last-run decision.",
-        when_to_use="Use when auto-scan posts zero deals or you need to know exactly which gate stopped it.",
-    ),
-    CommandCatalogEntry(
-        name="/walmart_scan",
-        audience="Staff",
-        purpose="Advanced Walmart diagnostic scan with page, sort, discount, and alert-only controls.",
-        when_to_use="Power-user tool. Normal users should start with `/deals`; use this only when exact scan controls are required.",
+        purpose="Start an optional immediate Quick, Deep, or Full exact Walmart sweep.",
+        when_to_use="Use for an on-demand sweep. Normal automatic coverage does not require this command because the global cursor scans continuously.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
         name="/home_depot_search",
         audience="Staff",
-        purpose="Manual Home Depot SerpApi search with quota protection.",
-        when_to_use="Use for Home Depot product candidates. Results are verification candidates, not confirmed in-store deals.",
+        purpose="Run a targeted Home Depot SerpApi product search with quota protection.",
+        when_to_use="Use for private Home Depot shopper leads. Results are not automatically treated as confirmed local clearance.",
         credit_risk="SerpApi credit",
     ),
     CommandCatalogEntry(
         name="/home_depot_penny_hunt",
         audience="Staff",
-        purpose="Home Depot penny/clearance candidate hunt through SerpApi.",
-        when_to_use="Use with a ZIP or store ID when hunting local Home Depot penny-style leads.",
+        purpose="Run a targeted ZIP/store-anchored Home Depot penny or clearance hunt.",
+        when_to_use="Use instead of the retired ZIP-only alias so the query and location stay explicit.",
         credit_risk="SerpApi credit",
     ),
     CommandCatalogEntry(
         name="/hd_stock",
         audience="Staff",
-        purpose="Home Depot SKU + ZIP stock/price proof checker.",
-        when_to_use="Use when you have a Home Depot SKU or Internet # and want a Hidden-Clearances-style local proof card before posting.",
-        credit_risk="SerpApi credit",
-    ),
-    CommandCatalogEntry(
-        name="/hd_penny_zip",
-        audience="Staff",
-        purpose="ZIP-anchored Home Depot penny/clearance starter scan.",
-        when_to_use="Use to quickly scan a ZIP for Home Depot clearance candidates. This is V1 ranking, not a locked ZIP penny database yet.",
+        purpose="Check one exact Home Depot SKU against a selected nearby store.",
+        when_to_use="Use when you already have a SKU/Internet number and need store-specific private proof.",
         credit_risk="SerpApi credit",
     ),
     CommandCatalogEntry(
         name="/local_check",
         audience="Staff",
-        purpose="Private local inventory proof preview.",
-        when_to_use="Use when you have SKU/UPC/store/ZIP info and need a safe proof card without public posting.",
+        purpose="Create a private local-inventory proof preview for a supported retailer.",
+        when_to_use="Use when you have SKU, UPC, store, ZIP, or observed-price evidence and do not want public posting.",
     ),
     CommandCatalogEntry(
         name="/seed_clearance",
         audience="Staff",
-        purpose="Save a manual clearance lead into the server bank.",
-        when_to_use="Use when you find a lead manually and want SniperPlug to remember it for future checks.",
+        purpose="Save a manually found clearance lead to the server's review bank.",
+        when_to_use="Use for leads found outside SniperPlug that staff want to track safely.",
     ),
     CommandCatalogEntry(
         name="/clearance_bank",
         audience="Staff",
-        purpose="List saved manual clearance leads.",
-        when_to_use="Use to review manually seeded Home Depot/Walmart/local clearance leads.",
+        purpose="Review manually saved clearance leads.",
+        when_to_use="Use to revisit staff-seeded local or retailer-specific leads.",
     ),
     CommandCatalogEntry(
-        name="/active_deals",
+        name="/setup_sniperplug_here",
         audience="Owner",
-        purpose="Show recently observed public-quality deal rows from the server cache.",
-        when_to_use="Use when a scan cached deals but did not publicly post, or when reviewing recent observations before rechecking one.",
-    ),
-    CommandCatalogEntry(
-        name="/active_deal_recheck",
-        audience="Owner",
-        purpose="Recheck one exact cached Walmart item through the official detail endpoint.",
-        when_to_use="Use after `/active_deals` when you want fresh price, seller, variant, and availability proof for one cached Walmart observation.",
-        credit_risk="Walmart official API",
-    ),
-    CommandCatalogEntry(
-        name="/active_deals_recheck",
-        audience="Owner",
-        purpose="Safely recheck several recent cached Walmart observations with bounded concurrency.",
-        when_to_use="Use when you need to refresh multiple active Walmart rows at once. Runs are capped, timeout-protected, and share the exact-item anti-spam guard.",
-        credit_risk="Walmart official API",
-    ),
-    CommandCatalogEntry(
-        name="/active_deal_history",
-        audience="Owner",
-        purpose="Review durable price, markdown, and active/stale lifecycle changes for cached deals.",
-        when_to_use="Use when you need to see what changed after a verified recheck or fresh scan without searching ephemeral responses or public channels.",
-    ),
-    CommandCatalogEntry(
-        name="/active_deals_cleanup",
-        audience="Owner",
-        purpose="Mark old cached observations stale.",
-        when_to_use="Use when cached observations have not been seen again recently. Stale does not automatically mean the retailer listing is dead.",
-    ),
-    CommandCatalogEntry(
-        name="/public_alerts_status",
-        audience="Owner",
-        purpose="Show public posting settings: on/off, channel, and allowed retailer list.",
-        when_to_use="Use when you want to inspect public posting config without changing setup.",
-    ),
-    CommandCatalogEntry(
-        name="/setup_sniperplug_here_status",
-        audience="Owner",
-        purpose="Show current public posting settings.",
-        when_to_use="Use to confirm whether public posting is enabled, which retailers may post, and which channel receives alerts.",
-    ),
-    CommandCatalogEntry(
-        name="/retailer_autoscan",
-        audience="Owner",
-        purpose="Advanced scheduled/background scan settings.",
-        when_to_use="Use to protect paid/free-tier API credits. Manual commands still work when auto-scan is off.",
-    ),
-    CommandCatalogEntry(
-        name="/retailer_autoscan_status",
-        audience="Owner",
-        purpose="Show which retailers are allowed in background auto-scan.",
-        when_to_use="Use to verify scheduled scan settings and credit gates.",
+        purpose="Choose this channel for public exact-deal delivery and apply the normal server defaults.",
+        when_to_use="Run once during installation or when intentionally moving the posting channel. Global Walmart discovery itself is shared and continuous.",
     ),
     CommandCatalogEntry(
         name="/sniperplug_dashboard",
         audience="Owner",
-        purpose="One-page health/settings dashboard.",
-        when_to_use="Use after deploys and when troubleshooting posting, scans, providers, or active cache.",
+        purpose="Open Overview, Doctor, or Commands from one owner dashboard.",
+        when_to_use="Use instead of the retired workflow, health, doctor, commands, and raw status aliases.",
     ),
     CommandCatalogEntry(
-        name="/sniperplug_health",
+        name="/autoscan_health",
         audience="Owner",
-        purpose="Show DB, cache, quota, provider, scan-run, and query-memory health.",
-        when_to_use="Use after deploys or when cache/provider behavior looks wrong.",
+        purpose="Show global catalog progress, exact queue health, and this server's fanout enrollment.",
+        when_to_use="Use when automatic deals are missing or after changing the posting channel.",
     ),
     CommandCatalogEntry(
-        name="/sniperplug_doctor",
+        name="/autoscan_now",
         audience="Owner",
-        purpose="Post-deploy self-check for DB, providers, caches, slash commands, safety checks, and recent errors.",
-        when_to_use="Run this first after every deploy before testing deal commands.",
+        purpose="Run a bounded manual autoscan test and show exact post/block decisions.",
+        when_to_use="Use only for diagnostics after a deploy or setup change. It is not required for normal background coverage.",
+        credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
-        name="/sniperplug_commands",
+        name="/deal_categories",
         audience="Owner",
-        purpose="Show the full command reference grouped by primary, specialist, owner, and advanced paths.",
-        when_to_use="Use after `/sniperplug_workflow` when you need a specialist or diagnostic command.",
+        purpose="Boost, normalize, or mute categories for this server's public feed.",
+        when_to_use="Use to customize delivery after the normal Best Setup has been applied.",
     ),
     CommandCatalogEntry(
         name="/deal_threshold",
         audience="Owner",
-        purpose="Set the starting verified discount percent for deal hunting and auto-scan.",
-        when_to_use="Use 30–40% for normal hunting, lower for more results, or higher for stricter glitch-style alerts.",
+        purpose="Set this server's minimum exact Walmart markdown.",
+        when_to_use="Use 30-40% for normal coverage or 50%+ for stricter alerts. It filters delivery, not global discovery.",
+    ),
+    CommandCatalogEntry(
+        name="/active_deals",
+        audience="Owner",
+        purpose="Browse recently observed public-quality deals and recheck exact Walmart items from the page controls.",
+        when_to_use="Use for cache review, single-item rechecks, or bounded page rechecks. Separate recheck and cleanup aliases were retired.",
+    ),
+    CommandCatalogEntry(
+        name="/active_deal_history",
+        audience="Owner",
+        purpose="Review durable lifecycle changes and the Walmart recheck audit.",
+        when_to_use="Use when you need historical evidence instead of current active rows.",
+    ),
+    CommandCatalogEntry(
+        name="/sniperplug …",
+        audience="Owner",
+        purpose="Owner-only grouped diagnostics such as provider previews, routes, monitor plans, and test alerts.",
+        when_to_use="Use only for technical diagnostics. Normal users should use `/deals`, `/hunt`, `/walmart_cash`, or `/dm_deals`.",
     ),
 )
 
@@ -211,11 +151,17 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
 COMMAND_AUDIENCE_ORDER = ("Everyone", "Staff", "Owner")
 
 
-def entries_for_audience(audience: str | None = None) -> tuple[CommandCatalogEntry, ...]:
+def entries_for_audience(
+    audience: str | None = None,
+) -> tuple[CommandCatalogEntry, ...]:
     if not audience:
         return COMMAND_CATALOG
     normalized = audience.strip().lower()
-    return tuple(entry for entry in COMMAND_CATALOG if entry.audience.lower() == normalized)
+    return tuple(
+        entry
+        for entry in COMMAND_CATALOG
+        if entry.audience.lower() == normalized
+    )
 
 
 def validate_command_catalog() -> list[str]:
@@ -224,6 +170,7 @@ def validate_command_catalog() -> list[str]:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         errors.append(f"Duplicate command names: {', '.join(duplicates)}")
+
     for entry in COMMAND_CATALOG:
         if not entry.name.startswith("/"):
             errors.append(f"Command must start with slash: {entry.name}")
@@ -231,4 +178,9 @@ def validate_command_catalog() -> list[str]:
             errors.append(f"Missing purpose: {entry.name}")
         if not entry.when_to_use:
             errors.append(f"Missing when_to_use: {entry.name}")
+        command_name = entry.name[1:].split()[0].strip()
+        if command_name in RETIRED_COMMAND_NAMES:
+            errors.append(
+                f"Retired command advertised in canonical catalog: {entry.name}"
+            )
     return errors

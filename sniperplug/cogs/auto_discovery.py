@@ -117,14 +117,8 @@ class AutoDiscoveryCog(commands.Cog):
         description="Run a broad exact-verified Walmart catalog sweep now.",
     )
     @app_commands.describe(
-        coverage=(
-            "Quick checks 16 rotating routes; Deep checks 64; Full queues every configured "
-            "catalog route and can take several minutes."
-        ),
-        max_public_posts=(
-            "Maximum fresh exact-verified deals this manual run may send publicly. "
-            "All additional exact cards remain visible in the private result."
-        ),
+        coverage="Quick: 16 routes. Deep: 64. Full: every route and may take several minutes.",
+        max_public_posts="Fresh verified deals sent publicly; extra exact cards stay in your private result.",
     )
     @app_commands.choices(coverage=DISCOVERY_COVERAGE_CHOICES)
     async def discover(

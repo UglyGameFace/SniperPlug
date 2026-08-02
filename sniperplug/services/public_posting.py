@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-SUPPORTED_PUBLIC_RETAILERS = {"walmart", "home_depot", "bestbuy", "amazon"}
+SUPPORTED_PUBLIC_RETAILERS = {"walmart", "home_depot", "bestbuy", "amazon", "hp"}
 SUPPORTED_RETAILERS = SUPPORTED_PUBLIC_RETAILERS
 CREDITED_RETAILERS = {"home_depot", "amazon"}
 
@@ -41,6 +41,10 @@ def normalize_retailer_key(value: str | None) -> str:
         "bb": "bestbuy",
         "amazon": "amazon",
         "amz": "amazon",
+        "hp": "hp",
+        "hp_store": "hp",
+        "hp.com": "hp",
+        "hewlett_packard": "hp",
     }
     return aliases.get(text, text)
 
@@ -64,4 +68,6 @@ def retailer_credit_note(retailer: str) -> str:
     key = normalize_retailer_key(retailer)
     if key in CREDITED_RETAILERS:
         return "Limited/paid quota risk: keep auto scans off unless you intentionally want SniperPlug spending credits."
+    if key == "hp":
+        return "HP Store coverage comes from the standalone first-party watcher and does not spend third-party API credits."
     return "No third-party credit warning registered for this store yet."

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import time
 import uuid
 from typing import Any
 
@@ -18,6 +19,9 @@ EVENT_LEASE_SECONDS = 30 * 60
 EVENT_RETRY_BASE_SECONDS = 60
 EVENT_RETRY_MAX_SECONDS = 6 * 60 * 60
 EVENT_MAX_ATTEMPTS = 8
+EVENT_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+
+_last_event_cleanup_monotonic = 0.0
 
 
 @dataclass(frozen=True)
@@ -41,39 +45,54 @@ class RetailerEventReleaseResult:
 
 async def ensure_verified_retailer_event_table(db: Any) -> None:
     conn = db.require_conn()
-    await conn.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {EVENT_TABLE} (
-            event_key TEXT PRIMARY KEY,
-            retailer TEXT NOT NULL,
-            product_key TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            snapshot_json TEXT NOT NULL,
-            source_verified_at TEXT NOT NULL,
-            first_seen_at TEXT NOT NULL,
-            last_attempt_at TEXT,
-            processed_at TEXT,
-            attempt_count INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT NOT NULL DEFAULT '',
-            claim_token TEXT NOT NULL DEFAULT '',
-            lease_until TEXT
+    if not getattr(db, "_verified_retailer_event_table_ready", False):
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {EVENT_TABLE} (
+                event_key TEXT PRIMARY KEY,
+                retailer TEXT NOT NULL,
+                product_key TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                source_verified_at TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_attempt_at TEXT,
+                processed_at TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                claim_token TEXT NOT NULL DEFAULT '',
+                lease_until TEXT
+            )
+            """
         )
-        """
-    )
-    await conn.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{EVENT_TABLE}_pending "
-        f"ON {EVENT_TABLE} (processed_at, lease_until, first_seen_at)"
-    )
-    await conn.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{EVENT_TABLE}_retailer "
-        f"ON {EVENT_TABLE} (retailer, source_verified_at)"
-    )
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{EVENT_TABLE}_pending "
+            f"ON {EVENT_TABLE} (processed_at, lease_until, first_seen_at)"
+        )
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{EVENT_TABLE}_retailer "
+            f"ON {EVENT_TABLE} (retailer, source_verified_at)"
+        )
+        await conn.commit()
+        try:
+            setattr(db, "_verified_retailer_event_table_ready", True)
+        except Exception:
+            pass
+    await _maybe_prune_verified_retailer_events(conn)
+
+
+async def _maybe_prune_verified_retailer_events(conn: Any) -> None:
+    global _last_event_cleanup_monotonic
+    monotonic_now = time.monotonic()
+    if monotonic_now - _last_event_cleanup_monotonic < EVENT_CLEANUP_INTERVAL_SECONDS:
+        return
     cutoff = (datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)).isoformat()
     await conn.execute(
         f"DELETE FROM {EVENT_TABLE} WHERE processed_at IS NOT NULL AND first_seen_at < ?",
         (cutoff,),
     )
     await conn.commit()
+    _last_event_cleanup_monotonic = monotonic_now
 
 
 async def publish_verified_retailer_event(

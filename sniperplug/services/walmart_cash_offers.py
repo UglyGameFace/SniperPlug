@@ -11,9 +11,18 @@ from sniperplug.models.deal import NormalizedDeal
 from sniperplug.services.safe_links import LinkChoice
 
 
-# Walmart's product search indexes products, not the member/app Cash UI. Broad
-# discovery therefore searches likely product departments and inspects the raw
-# official API promo fields returned for each exact item.
+WALMART_CASH_OFFICIAL_CATALOG_URL = (
+    "https://www.walmart.com/shop/walmart-member-item-rewards/home"
+)
+WALMART_CASH_HELP_URL = (
+    "https://www.walmart.com/help/article/walmart-cash/"
+    "77662758469249c29aed82885d5e554f"
+)
+
+# These product departments are retained as future routing hints only. Walmart's
+# connected Affiliate Product API does not provide a documented/supported
+# Walmart Cash offer feed, so Cash Finder must not search ordinary catalog rows
+# and present that sample as offer coverage.
 DEFAULT_CASH_QUERIES = (
     "personal care",
     "beauty",
@@ -43,11 +52,11 @@ MIN_CONFIRMED_WALMART_CASH_AMOUNT = 0.01
 MIN_USEFUL_WALMART_CASH_AMOUNT = MIN_CONFIRMED_WALMART_CASH_AMOUNT
 
 CASH_FINDER_ZERO_RESULT_TRUTH_COPY = (
-    "No API-proven Walmart Cash in this scan",
-    "This does not prove the Walmart app has no Cash offers",
-    "Official Walmart API only",
+    "Walmart Cash feed unavailable",
+    "The Affiliate Product API is not a supported Walmart Cash offer feed",
+    "No ordinary product searches or detail probes are run",
+    "Open Walmart's official Manufacturer Offers catalog",
     "No public PDP scraping or Robot/Human-page probing",
-    "Unconfirmed badges are hidden until an exact dollar amount is returned",
 )
 
 
@@ -61,27 +70,16 @@ class WalmartCashOffer:
 
 
 def walmart_cash_search_terms(search: str | None) -> tuple[str, ...]:
-    """Return useful product queries without poisoning search with promo words."""
+    """Return no routes until a supported Walmart Cash offer feed is connected.
 
-    base = " ".join(str(search or "").split()).strip()
-    lowered = base.lower()
-    if not base or lowered in {
-        "walmart cash",
-        "walmart cash offers",
-        "cash offers",
-        "cash offer",
-        "cash",
-    }:
-        return DEFAULT_CASH_QUERIES
+    Searching phrases such as ``walmart cash offers`` or ordinary departments
+    through the Affiliate Product API checks product catalog records, not the
+    account-linked Ibotta/Manufacturer Offers inventory. Returning an empty route
+    set deliberately prevents a false-looking zero and unnecessary API calls.
+    """
 
-    cleaned = re.sub(
-        r"\b(?:walmart\s+cash(?:\s+offers?)?|cash\s+offers?|cash\s+eligible|eligible)\b",
-        " ",
-        base,
-        flags=re.IGNORECASE,
-    )
-    cleaned = " ".join(cleaned.split()).strip()
-    return (cleaned,) if cleaned else DEFAULT_CASH_QUERIES
+    _ = search, DEFAULT_CASH_QUERIES
+    return ()
 
 
 def find_walmart_cash_offer(candidate: SourceCandidate, deal: NormalizedDeal) -> WalmartCashOffer | None:
@@ -181,6 +179,57 @@ def build_walmart_cash_summary_embed(
     promo_counts: dict[str, int] | None = None,
 ) -> discord.Embed:
     promo_counts = promo_counts or {}
+
+    # No route list means the safety gate intentionally prevented ordinary
+    # Affiliate Product API rows from masquerading as Walmart Cash coverage.
+    if not queries and checked == 0 and detail_checked == 0 and found == 0:
+        embed = discord.Embed(
+            title="💸 Walmart Cash Offers",
+            description=(
+                "**The connected Walmart Affiliate Product API is not a supported "
+                "Walmart Cash offer feed.**\n\n"
+                "The previous finder searched ordinary products, checked their normal "
+                "item-detail records, and then displayed `0` when those records did not "
+                "contain account-linked Manufacturer Offer data. That was not meaningful "
+                "Walmart Cash coverage."
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.add_field(
+            name="✅ False scan disabled",
+            value=(
+                "Product searches made: **0**\n"
+                "Item-detail calls made: **0**\n"
+                "Fake no-offer conclusion: **blocked**"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🛒 Open the real official offer catalog",
+            value=(
+                f"[Browse Walmart Manufacturer Offers]({WALMART_CASH_OFFICIAL_CATALOG_URL})\n"
+                f"[How Walmart Cash works]({WALMART_CASH_HELP_URL})"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="What SniperPlug still requires",
+            value=(
+                "A documented or authorized offer feed that returns the exact eligible "
+                "item, Cash amount, requirements, and expiration. Until that exists, "
+                "SniperPlug will not guess, scrape blocked pages, or call ordinary product "
+                "records a Walmart Cash scan."
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text=(
+                "Walmart account, location, activation, and offer availability can affect "
+                "what the official catalog shows"
+            )
+        )
+        return embed
+
     badge_seen = int(promo_counts.get("cash_badge_seen", 0) or 0)
     badge_no_amount = int(promo_counts.get("badge_rows_without_amount", 0) or 0)
     detail_attempted = int(promo_counts.get("detail_rows_attempted", detail_checked) or 0)
@@ -192,7 +241,7 @@ def build_walmart_cash_summary_embed(
     embed = discord.Embed(
         title="💸 Walmart Cash Finder",
         description=(
-            "**Official Walmart API only** — no public PDP scraping, HTML parsing, or blocked-page probing.\n"
+            "**Supported official Walmart Cash API feed** — no public PDP scraping, HTML parsing, or blocked-page probing.\n"
             f"Products searched: **{checked}**\n"
             f"Exact API detail checks: **{detail_checked}/{detail_attempted}**\n"
             f"Confirmed Cash offers: **{found}**"
@@ -212,7 +261,7 @@ def build_walmart_cash_summary_embed(
     elif checked <= 0:
         embed.add_field(
             name="No products returned",
-            value="The official Walmart API did not return usable products for this search. Try a product or category name.",
+            value="The supported Walmart Cash feed did not return usable products for this search.",
             inline=False,
         )
     else:
@@ -220,7 +269,7 @@ def build_walmart_cash_summary_embed(
             name="No API-proven Walmart Cash in this scan",
             value=(
                 "None of the checked exact products returned a valid Walmart Cash dollar amount. "
-                "This does **not** prove the Walmart app has no Cash offers; it only means the official API did not expose one in this batch."
+                "This does **not** prove the Walmart app has no Cash offers; it only means the supported feed did not expose one in this batch."
             ),
             inline=False,
         )
@@ -273,10 +322,20 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
     counts = getattr(probe, "promo_counts", {}) or {}
     warnings = tuple(getattr(probe, "warnings", ()) or ())
     cash_candidates = tuple(getattr(probe, "cash_candidates", ()) or ())
+    no_supported_feed = (
+        not tuple(getattr(probe, "used_queries", ()) or ())
+        and getattr(probe, "search_rows_checked", 0) == 0
+        and getattr(probe, "detail_rows_checked", 0) == 0
+    )
     embed = discord.Embed(
         title="🧪 Walmart Cash API Diagnostic",
-        description="Owner-only official API capability check. This is not a shopping list.",
-        color=discord.Color.blurple(),
+        description=(
+            "No supported Walmart Cash offer feed is configured; ordinary product API "
+            "probing is disabled."
+            if no_supported_feed
+            else "Owner-only official API capability check. This is not a shopping list."
+        ),
+        color=discord.Color.orange() if no_supported_feed else discord.Color.blurple(),
     )
     embed.add_field(
         name="API coverage",
@@ -289,6 +348,19 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
         ),
         inline=False,
     )
+    if no_supported_feed:
+        embed.add_field(
+            name="Correct next source",
+            value=(
+                f"[Official Walmart Manufacturer Offers catalog]({WALMART_CASH_OFFICIAL_CATALOG_URL})\n"
+                "A supported offer feed must expose item eligibility, exact reward amount, "
+                "requirements, and expiration before automation resumes."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Product-catalog probing disabled • no fake Cash coverage")
+        return embed
+
     embed.add_field(
         name="Separated promo signals only",
         value=(
@@ -321,7 +393,7 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
     public_notes = _public_warning_lines(warnings, diagnostic=True)
     if public_notes:
         embed.add_field(name="Notes", value="\n".join(f"• {line}" for line in public_notes), inline=False)
-    embed.set_footer(text="Official Walmart API only • public PDP scraping disabled")
+    embed.set_footer(text="Supported official Walmart API only • public PDP scraping disabled")
     return embed
 
 
@@ -391,4 +463,4 @@ def short(value: Any, limit: int) -> str:
 
 
 # Cash Finder policy: does not public-post markdown alerts; Walmart Cash stays
-# separate from markdown/open-box lanes and requires an explicit API amount.
+# separate from markdown/open-box lanes and requires an explicit supported-feed amount.

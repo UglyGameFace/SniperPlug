@@ -564,7 +564,8 @@ def _url_matches_item_id(url: str, item_id: str) -> bool:
         parsed = urllib.parse.urlparse(url)
     except ValueError:
         return False
-    if "walmart.com" not in parsed.netloc.lower():
+    hostname = str(parsed.hostname or "").lower().rstrip(".")
+    if hostname != "walmart.com" and not hostname.endswith(".walmart.com"):
         return False
     path = urllib.parse.unquote(parsed.path or "")
     return bool(re.search(rf"/ip/(?:[^/]+/)?{re.escape(item_id)}(?:/|$)", path))

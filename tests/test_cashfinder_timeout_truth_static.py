@@ -12,12 +12,7 @@ def method_source(src: str, name: str) -> str:
     end = len(lines)
     for i in range(start + 1, len(lines)):
         line = lines[i]
-        if (
-            line.startswith("    @app_commands.")
-            or line.startswith("    @commands.")
-            or line.startswith("    async def ")
-            or line.startswith("    def ")
-        ):
+        if line.startswith(("    @app_commands.", "    @commands.", "    async def ", "    def ")):
             end = i
             break
     return "".join(lines[start:end])
@@ -34,8 +29,10 @@ def test_cashfinder_uses_cash_discovery_not_legacy_markdown_scan():
     assert "timeout=15" not in HELPER_C
 
 
-def test_cashfinder_zero_result_wording_is_truthful():
-    assert "This is **not** a proven no-offer result" in OFFERS
-    assert "Walmart API timed out before product data returned" in OFFERS
-    assert "No Walmart API product rows returned" in OFFERS
-    assert "No API-confirmed Cash Offers found in checked products" in OFFERS
+def test_cashfinder_zero_and_timeout_copy_is_truthful_and_compact():
+    assert "No API-proven Walmart Cash in this scan" in OFFERS
+    assert "This does not prove the Walmart app has no Cash offers" in OFFERS
+    assert "No products returned" in OFFERS
+    assert "Partial check" in OFFERS
+    assert "fake zero" in OFFERS
+    assert "public PDP scraping" in OFFERS

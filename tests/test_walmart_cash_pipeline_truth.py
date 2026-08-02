@@ -1,5 +1,3 @@
-import discord
-
 from sniperplug.services.walmart_promo_classifier import classify_walmart_api_promos
 from sniperplug.services.walmart_cash_api_truth import extract_walmart_cash_api_truth
 from sniperplug.services.walmart_cash_offers import build_walmart_cash_summary_embed
@@ -62,7 +60,7 @@ def test_buy_more_save_more_is_cart_promo_not_cash():
     assert scan.cart_promo.amount == 10
 
 
-def test_search_only_api_mode_says_proof_unavailable_not_no_offers():
+def test_search_only_api_mode_says_proof_unavailable_not_app_has_no_offers():
     embed = build_walmart_cash_summary_embed(
         "detergent",
         ("detergent",),
@@ -76,8 +74,8 @@ def test_search_only_api_mode_says_proof_unavailable_not_no_offers():
     text = "\n".join([embed.description or ""] + [f"{field.name}\n{field.value}" for field in embed.fields])
 
     assert "Proof unavailable" in text
-    assert "not a proven no-offer result" in text
-    assert "Walmart did not expose full promo detail through the current API access" in text
+    assert "missing coverage" in text
+    assert "not proof that the Walmart app has no Cash offers" in text
 
 
 def test_timeout_is_partial_check_not_fake_zero():
@@ -86,7 +84,7 @@ def test_timeout_is_partial_check_not_fake_zero():
         ("detergent",),
         0,
         0,
-        ("Timed out checking `detergent` page 1; partial result, not a proven no-offer result.",),
+        ("Timed out checking official Walmart API route `detergent` page 1.",),
         detail_checked=0,
         partial=True,
         capability_label="Signed Affiliate API configured",
@@ -94,7 +92,8 @@ def test_timeout_is_partial_check_not_fake_zero():
     text = "\n".join([embed.description or ""] + [f"{field.name}\n{field.value}" for field in embed.fields])
 
     assert "Partial check" in text
-    assert "not proof that no Walmart Cash offers exist" in text
+    assert "fake zero" in text
+    assert "official Walmart API" in text
 
 
 def test_api_probe_builder_exists():

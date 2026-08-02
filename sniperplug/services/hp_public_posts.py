@@ -185,6 +185,8 @@ def is_verified_hp_public_card(card: Any, *, min_discount: int) -> bool:
     attrs = dict(getattr(card, "variant_attributes", None) or {})
     if str(attrs.get("hpStructuredPriceProof") or "").lower() != "yes":
         return False
+    if str(attrs.get("hpIndependentConfirmation") or "").lower() != "yes":
+        return False
     catalog_entry_id = str(attrs.get("hpCatalogEntryId") or "").strip()
     sku = str(attrs.get("hpNormalizedSku") or "").strip().upper()
     if not catalog_entry_id.isdigit() or not sku:

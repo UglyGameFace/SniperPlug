@@ -8,6 +8,7 @@ from sniperplug.services.walmart_exact_verification_queue import QUEUE_RETENTION
 
 
 QUEUE_TABLE = "walmart_exact_detail_queue"
+TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
 
 
 @dataclass(frozen=True)
@@ -25,9 +26,9 @@ class WalmartExactQueueHealth:
     def summary_line(self) -> str:
         return (
             "queue health: "
-            f"total **{self.total}** • due now **{self.due_now}** • "
+            f"total **{self.total}** • actionable due now **{self.due_now}** • "
             f"delayed transient retries **{self.delayed_retries}** • "
-            f"identity unavailable / safely blocked **{self.identity_blocked}** • "
+            f"terminal identity blocked **{self.identity_blocked}** • "
             f"verified **{self.verified}** • verifying **{self.verifying}** • "
             f"pending **{self.pending}** • unavailable **{self.unavailable}** • "
             f"stale/unclaimable **{self.stale}**"
@@ -37,9 +38,9 @@ class WalmartExactQueueHealth:
 async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     """Return queue state using the same retention window as the worker.
 
-    ``due_now`` and delayed transient retry counts intentionally mirror the
-    worker's claimability rules. Identity-incomplete rows are reported in their
-    own fail-closed bucket rather than being double-counted as failures.
+    ``due_now`` counts actionable rows only. Terminal seller/offer identity
+    failures remain visible in their own bucket but never inflate backlog or
+    catalog backpressure after their fail-closed verification attempt.
     """
 
     if db is None:
@@ -60,6 +61,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 COUNT(*) AS total,
                 SUM(CASE
                     WHEN is_recent = 1
+                     AND status NOT IN ('incomplete_identity', 'identity_mismatch')
                      AND next_attempt_at <= ?
                      AND (lease_until IS NULL OR lease_until < ?)
                     THEN 1 ELSE 0 END) AS due_now,

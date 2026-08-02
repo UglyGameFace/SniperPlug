@@ -15,6 +15,9 @@ from sniperplug.services.source_candidate_snapshot import (
 EVENT_TABLE = "retailer_verified_deal_events"
 EVENT_RETENTION_DAYS = 45
 EVENT_LEASE_SECONDS = 30 * 60
+EVENT_RETRY_BASE_SECONDS = 60
+EVENT_RETRY_MAX_SECONDS = 6 * 60 * 60
+EVENT_MAX_ATTEMPTS = 8
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,14 @@ class ClaimedRetailerEvent:
     source_verified_at: str
     candidate: SourceCandidate
     claim_token: str
+
+
+@dataclass(frozen=True)
+class RetailerEventReleaseResult:
+    released: bool = False
+    dead_lettered: bool = False
+    attempt_count: int = 0
+    retry_at: str = ""
 
 
 async def ensure_verified_retailer_event_table(db: Any) -> None:
@@ -129,11 +140,12 @@ async def claim_verified_retailer_events(
     db: Any,
     *,
     limit: int = 20,
+    now: datetime | None = None,
 ) -> list[ClaimedRetailerEvent]:
     await ensure_verified_retailer_event_table(db)
     conn = db.require_conn()
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
+    now_dt = _utc(now)
+    now_iso = now_dt.isoformat()
     cursor = await conn.execute(
         f"""
         SELECT event_key, retailer, product_key, event_type,
@@ -147,7 +159,7 @@ async def claim_verified_retailer_events(
         (now_iso, max(1, int(limit))),
     )
     rows = await cursor.fetchall()
-    lease_until = (now + timedelta(seconds=EVENT_LEASE_SECONDS)).isoformat()
+    lease_until = (now_dt + timedelta(seconds=EVENT_LEASE_SECONDS)).isoformat()
     claimed: list[ClaimedRetailerEvent] = []
 
     for row in rows:
@@ -181,6 +193,7 @@ async def claim_verified_retailer_events(
                 event_key=event_key,
                 claim_token=token,
                 note="malformed candidate snapshot discarded safely",
+                now=now_dt,
             )
             continue
         claimed.append(
@@ -204,6 +217,7 @@ async def mark_verified_retailer_event_processed(
     event_key: str,
     claim_token: str,
     note: str = "",
+    now: datetime | None = None,
 ) -> None:
     conn = db.require_conn()
     await conn.execute(
@@ -213,7 +227,7 @@ async def mark_verified_retailer_event_processed(
         WHERE event_key = ? AND claim_token = ?
         """,
         (
-            datetime.now(timezone.utc).isoformat(),
+            _utc(now).isoformat(),
             _compact(note, 1000),
             event_key,
             claim_token,
@@ -228,17 +242,75 @@ async def release_verified_retailer_event(
     event_key: str,
     claim_token: str,
     error: str,
-) -> None:
+    now: datetime | None = None,
+) -> RetailerEventReleaseResult:
+    """Release one failed event with backoff or dead-letter it safely.
+
+    A persistent destination failure must not let the oldest event monopolize
+    every claim batch. Attempts use exponential backoff and become terminal
+    after ``EVENT_MAX_ATTEMPTS``. Successful destinations remain protected by
+    their existing per-guild and per-user duplicate receipts on retries.
+    """
+
     conn = db.require_conn()
+    cursor = await conn.execute(
+        f"SELECT attempt_count FROM {EVENT_TABLE} WHERE event_key = ? AND claim_token = ?",
+        (event_key, claim_token),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return RetailerEventReleaseResult()
+
+    attempt_count = max(0, int(_row_get(row, "attempt_count", 0) or 0))
+    now_dt = _utc(now)
+    compact_error = _compact(error, 900)
+    if attempt_count >= EVENT_MAX_ATTEMPTS:
+        note = _compact(
+            f"dead-lettered after {attempt_count} attempts: {compact_error}",
+            1000,
+        )
+        await conn.execute(
+            f"""
+            UPDATE {EVENT_TABLE}
+            SET processed_at = ?, last_error = ?, claim_token = '', lease_until = NULL
+            WHERE event_key = ? AND claim_token = ?
+            """,
+            (now_dt.isoformat(), note, event_key, claim_token),
+        )
+        await conn.commit()
+        return RetailerEventReleaseResult(
+            released=True,
+            dead_lettered=True,
+            attempt_count=attempt_count,
+        )
+
+    delay_seconds = min(
+        EVENT_RETRY_MAX_SECONDS,
+        EVENT_RETRY_BASE_SECONDS * (2 ** max(0, attempt_count - 1)),
+    )
+    retry_at = (now_dt + timedelta(seconds=delay_seconds)).isoformat()
     await conn.execute(
         f"""
         UPDATE {EVENT_TABLE}
-        SET last_error = ?, claim_token = '', lease_until = NULL
+        SET last_error = ?, claim_token = '', lease_until = ?
         WHERE event_key = ? AND claim_token = ?
         """,
-        (_compact(error, 1000), event_key, claim_token),
+        (compact_error, retry_at, event_key, claim_token),
     )
     await conn.commit()
+    return RetailerEventReleaseResult(
+        released=True,
+        dead_lettered=False,
+        attempt_count=attempt_count,
+        retry_at=retry_at,
+    )
+
+
+def _utc(value: datetime | None) -> datetime:
+    result = value or datetime.now(timezone.utc)
+    if result.tzinfo is None:
+        result = result.replace(tzinfo=timezone.utc)
+    return result.astimezone(timezone.utc)
 
 
 def _row_get(row: Any, key: str, index: int) -> Any:

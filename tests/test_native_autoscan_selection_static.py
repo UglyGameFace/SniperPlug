@@ -69,8 +69,10 @@ def test_exact_cards_are_refreshed_between_repeated_public_gates() -> None:
     assert proof_index < freshness_refresh < fresh_index < final_refresh < final_post
 
 
-def test_only_resilient_autoscan_runner_is_imported_by_runtime() -> None:
+def test_only_global_autoscan_runner_is_imported_by_runtime() -> None:
     source = read("sniperplug/bot.py")
+    global_source = read("sniperplug/cogs/global_auto_scan_runner.py")
     assert "from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog\n" not in source
-    assert "from sniperplug.cogs.resilient_auto_scan_runner import AutoScanRunnerCog as ResilientAutoScanRunnerCog" in source
-    assert source.count("await self.add_cog(ResilientAutoScanRunnerCog(self))") == 1
+    assert "from sniperplug.cogs.global_auto_scan_runner import AutoScanRunnerCog as GlobalAutoScanRunnerCog" in source
+    assert source.count("await self.add_cog(GlobalAutoScanRunnerCog(self))") == 1
+    assert "class AutoScanRunnerCog(resilient.AutoScanRunnerCog)" in global_source

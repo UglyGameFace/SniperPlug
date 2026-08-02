@@ -3,6 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = (ROOT / "sniperplug/cogs/resilient_auto_scan_runner.py").read_text(encoding="utf-8")
+GLOBAL = (ROOT / "sniperplug/cogs/global_auto_scan_runner.py").read_text(encoding="utf-8")
 BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 
 
@@ -25,8 +26,9 @@ def test_manual_autoscan_sends_repeated_truthful_progress():
     assert "Elapsed: **{elapsed}s**" in RUNNER
 
 
-def test_bot_registers_only_the_resilient_autoscan_runtime():
+def test_bot_registers_only_the_global_autoscan_runtime():
     assert "from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog\n" not in BOT
-    assert "from sniperplug.cogs.resilient_auto_scan_runner import AutoScanRunnerCog as ResilientAutoScanRunnerCog" in BOT
-    assert BOT.count("await self.add_cog(ResilientAutoScanRunnerCog(self))") == 1
-    assert "await self.add_cog(AutoScanRunnerCog(self))" not in BOT
+    assert "from sniperplug.cogs.global_auto_scan_runner import AutoScanRunnerCog as GlobalAutoScanRunnerCog" in BOT
+    assert BOT.count("await self.add_cog(GlobalAutoScanRunnerCog(self))") == 1
+    assert "await self.add_cog(ResilientAutoScanRunnerCog(self))" not in BOT
+    assert "class AutoScanRunnerCog(resilient.AutoScanRunnerCog)" in GLOBAL

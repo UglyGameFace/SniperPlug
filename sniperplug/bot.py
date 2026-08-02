@@ -16,9 +16,10 @@ from sniperplug.cogs.active_deal_history import ActiveDealHistoryCog
 from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
 from sniperplug.cogs.active_deals import ActiveDealsCog
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
-from sniperplug.cogs.resilient_auto_scan_runner import AutoScanRunnerCog as ResilientAutoScanRunnerCog
+from sniperplug.cogs.global_auto_scan_runner import AutoScanRunnerCog as GlobalAutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
+from sniperplug.cogs.dm_deal_alerts import DmDealAlertsCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
@@ -125,6 +126,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(HomeDepotSearchCog(self))
         await self.add_cog(HomeDepotLocalCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
+        await self.add_cog(DmDealAlertsCog(self))
         await self.add_cog(PublicAlertsCog(self))
         await self.add_cog(ActiveDealsCog(self))
         await self.add_cog(ActiveDealRecheckCog(self))
@@ -136,7 +138,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(MovieTicketsCog(self))
         await self.add_cog(MovieTicketFeedbackCog(self))
         await self.add_cog(MovieCommandGuideCog(self))
-        await self.add_cog(ResilientAutoScanRunnerCog(self))
+        await self.add_cog(GlobalAutoScanRunnerCog(self))
         log.info("Runtime services ready: provider_count=%s", len(provider_registry.providers))
 
         await self._sync_commands()

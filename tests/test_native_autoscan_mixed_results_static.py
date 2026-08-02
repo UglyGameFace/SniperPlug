@@ -4,17 +4,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "sniperplug" / "cogs" / "native_auto_scan_runner.py"
 RESILIENT = ROOT / "sniperplug" / "cogs" / "resilient_auto_scan_runner.py"
+GLOBAL = ROOT / "sniperplug" / "cogs" / "global_auto_scan_runner.py"
 BOT = ROOT / "sniperplug" / "bot.py"
 
 
-def test_resilient_runtime_inherits_the_single_native_implementation() -> None:
+def test_global_runtime_inherits_the_single_native_implementation() -> None:
     bot_source = BOT.read_text(encoding="utf-8")
     resilient_source = RESILIENT.read_text(encoding="utf-8")
+    global_source = GLOBAL.read_text(encoding="utf-8")
     assert "from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog\n" not in bot_source
-    assert "from sniperplug.cogs.resilient_auto_scan_runner import AutoScanRunnerCog as ResilientAutoScanRunnerCog" in bot_source
+    assert "from sniperplug.cogs.global_auto_scan_runner import AutoScanRunnerCog as GlobalAutoScanRunnerCog" in bot_source
     assert "from sniperplug.cogs.native_auto_scan_runner import AutoScanRunnerCog as NativeAutoScanRunnerCog" in resilient_source
     assert "class AutoScanRunnerCog(NativeAutoScanRunnerCog):" in resilient_source
-    assert "native_auto_scan_runner_v2" not in bot_source + resilient_source
+    assert "class AutoScanRunnerCog(resilient.AutoScanRunnerCog):" in global_source
+    assert "native_auto_scan_runner_v2" not in bot_source + resilient_source + global_source
 
 
 def test_review_candidates_are_counted_but_not_rendered_as_cards() -> None:

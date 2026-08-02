@@ -18,6 +18,7 @@ from sniperplug.services.autoscan_live_guild_reconciliation import (
 )
 from sniperplug.services.deal_category_preferences import get_category_preferences
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
+from sniperplug.services.hp_watcher_health import load_hp_watcher_health
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.setup_self_heal import repair_public_alert_setup
 from sniperplug.services.walmart_catalog_coverage import catalog_route_pool
@@ -61,7 +62,7 @@ class CanonicalPublicAlertsCog(commands.Cog):
 
     @app_commands.command(
         name="autoscan_health",
-        description="Check global Walmart coverage and this server's deal delivery.",
+        description="Check global retailer coverage and this server's deal delivery.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def autoscan_health(self, interaction: discord.Interaction) -> None:
@@ -121,6 +122,7 @@ async def build_global_autoscan_health_embed(
     )
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
+    hp_health = await load_hp_watcher_health(db)
     latest_report = await latest_autoscan_report(
         db,
         guild_id=int(guild_id),
@@ -133,19 +135,24 @@ async def build_global_autoscan_health_embed(
         config.get("channel_id"),
     )
     routes = catalog_route_pool()
+    retailers = set(config.get("retailers") or ())
 
-    delivery_ready = (
+    base_delivery_ready = (
         bool(config.get("enabled"))
-        and "walmart" in set(config.get("retailers") or ())
         and channel_status.startswith("✅")
         and enrolled
         and not repair.human_action_required
     )
+    walmart_delivery_ready = base_delivery_ready and "walmart" in retailers
+    hp_delivery_ready = base_delivery_ready and "hp" in retailers and hp_health.ok
+    delivery_ready = walmart_delivery_ready and (
+        "hp" not in retailers or hp_delivery_ready
+    )
     embed = discord.Embed(
-        title="🩺 Walmart Global Autoscan Health",
+        title="🩺 Global Autoscan Health",
         description=(
-            "Walmart discovery runs once globally for SniperPlug. This panel checks shared catalog progress, "
-            "exact verification, and whether this server can receive the resulting deals."
+            "Walmart discovery runs once inside SniperPlug, while HP Store discovery runs in its own watcher process. "
+            "Both feed exact-verified deals through this server's shared delivery controls."
         ),
         color=discord.Color.green() if delivery_ready else discord.Color.orange(),
     )
@@ -154,7 +161,8 @@ async def build_global_autoscan_health_embed(
         value=(
             f"Ready: **{'yes' if delivery_ready else 'no'}**\n"
             f"Public alerts: **{'on' if config.get('enabled') else 'off'}**\n"
-            f"Walmart enabled: **{'yes' if 'walmart' in set(config.get('retailers') or ()) else 'no'}**\n"
+            f"Walmart enabled: **{'yes' if 'walmart' in retailers else 'no'}**\n"
+            f"HP Store enabled: **{'yes' if 'hp' in retailers else 'no'}**\n"
             f"Minimum exact markdown: **{threshold}%+**"
         ),
         inline=False,
@@ -170,7 +178,7 @@ async def build_global_autoscan_health_embed(
         inline=False,
     )
     embed.add_field(
-        name="Global catalog coverage",
+        name="Walmart global catalog",
         value=(
             f"Configured routes: **{len(routes)}**\n"
             f"{global_state.summary_line(total_routes=len(routes))}\n"
@@ -179,29 +187,48 @@ async def build_global_autoscan_health_embed(
         inline=False,
     )
     embed.add_field(
-        name="Exact verification queue",
+        name="Walmart exact verification queue",
         value=queue_health.summary_line(),
         inline=False,
     )
+    hp_health_detail = hp_health.summary_line()
+    if hp_health.last_successful_cycle_at:
+        hp_health_detail += f"\nLast successful cycle: `{hp_health.last_successful_cycle_at}`"
+    if hp_health.last_error:
+        hp_health_detail += f"\nLast error: `{trim_field(hp_health.last_error, 350)}`"
     embed.add_field(
-        name="Latest server decision",
+        name="HP Store standalone watcher",
+        value=trim_field(hp_health_detail, 1024),
+        inline=False,
+    )
+    embed.add_field(
+        name="Latest Walmart server decision",
         value=trim_field(format_latest_report_line(latest_report), 1024),
         inline=False,
     )
     embed.add_field(
         name="What commands are actually needed",
         value=(
-            "Normal automatic coverage needs no manual command. `/discover` is optional for an immediate deep sweep, "
-            "and `/autoscan_now` is an owner diagnostic—not the background engine."
+            "Normal automatic coverage needs no manual command. `/discover` is optional for an immediate Walmart sweep, "
+            "and `/autoscan_now` is an owner diagnostic—not either background engine."
         ),
         inline=False,
     )
-    if not delivery_ready:
+    if not base_delivery_ready or "walmart" not in retailers or "hp" not in retailers:
         embed.add_field(
             name="Next action",
             value=(
                 "Run `/setup_sniperplug_here` in the exact channel that should receive deals, then reopen this panel. "
-                "The global scanner itself keeps running even when one server's delivery setup needs repair."
+                "The global scanners keep running even when one server's delivery setup needs repair."
+            ),
+            inline=False,
+        )
+    elif not hp_health.ok:
+        embed.add_field(
+            name="Next action",
+            value=(
+                "This server's delivery is configured, but the HP watcher is not reporting healthy. "
+                "The bot owner should check the separate HP watcher deployment and confirm it uses the same Turso database as SniperPlug."
             ),
             inline=False,
         )

@@ -3,6 +3,7 @@ from pathlib import Path
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.services.walmart_cash_offers import (
     DEFAULT_CASH_QUERIES,
+    WALMART_CASH_OFFICIAL_CATALOG_URL,
     build_walmart_cash_summary_embed,
     walmart_cash_search_terms,
 )
@@ -44,15 +45,15 @@ def test_runtime_has_no_public_pdp_cash_fetch_path() -> None:
     assert '"public_pdp_fallback": "disabled"' in PIPELINE_SOURCE
 
 
-def test_broad_cash_routes_are_product_departments_not_promo_phrases() -> None:
+def test_unsupported_product_api_routes_are_disabled() -> None:
     assert len(DEFAULT_CASH_QUERIES) >= 6
     assert all("walmart cash" not in query.lower() for query in DEFAULT_CASH_QUERIES)
-    assert walmart_cash_search_terms("walmart cash") == DEFAULT_CASH_QUERIES
-    assert walmart_cash_search_terms("tide walmart cash") == ("tide",)
-    assert walmart_cash_search_terms("tide walmart cash offers") == ("tide",)
+    assert walmart_cash_search_terms("walmart cash") == ()
+    assert walmart_cash_search_terms("tide walmart cash") == ()
+    assert walmart_cash_search_terms("personal care") == ()
 
 
-def test_exact_search_api_cash_proof_is_preserved() -> None:
+def test_exact_search_api_cash_proof_parser_is_preserved_for_future_feed() -> None:
     candidate = _strip_search_level_cash_attrs(exact_candidate())
     attrs = candidate.variant_attributes
 
@@ -95,27 +96,21 @@ def test_real_walmart_subdomain_still_preserves_search_cash_proof() -> None:
     assert sanitized.variant_attributes["cashAmountConfirmed"] == "yes"
 
 
-def test_normal_cash_summary_is_compact_hides_raw_diagnostics_and_keeps_api_failure() -> None:
+def test_unsupported_cash_summary_is_compact_and_routes_to_official_catalog() -> None:
     embed = build_walmart_cash_summary_embed(
         "walmart cash",
-        ("personal care", "beauty"),
-        checked=48,
+        (),
+        checked=0,
         found=0,
         warnings=(
             "WALMART_PUBLISHER_ID is blank; using direct Walmart links.",
             "Exact Walmart PDP checked at https://www.walmart.com/ip/123; Robot or Human; html_chars=15190",
-            "Walmart API HTTP 500: temporary failure",
         ),
-        detail_checked=24,
+        detail_checked=0,
         detail_unavailable=False,
         partial=False,
         capability_label="Signed Affiliate API configured",
-        promo_counts={
-            "cash_badge_seen": 2,
-            "badge_rows_without_amount": 2,
-            "detail_rows_attempted": 24,
-            "confirmed_walmart_cash_amount_rows": 0,
-        },
+        promo_counts={},
     )
 
     rendered = "\n".join(
@@ -127,15 +122,41 @@ def test_normal_cash_summary_is_compact_hides_raw_diagnostics_and_keeps_api_fail
 
     assert len(embed.fields) <= 3
     assert len(rendered) < 1800
-    assert "official walmart api only" in lowered
-    assert "no api-proven walmart cash in this scan" in lowered
-    assert "official walmart api request failed (http 500)" in lowered
-    assert "temporary failure" not in lowered
+    assert "not a supported walmart cash offer feed" in lowered
+    assert "product searches made: **0**" in lowered
+    assert "item-detail calls made: **0**" in lowered
+    assert "fake no-offer conclusion: **blocked**" in lowered
+    assert WALMART_CASH_OFFICIAL_CATALOG_URL in rendered
     assert "robot or human" not in lowered
     assert "html_chars" not in lowered
-    assert "https://www.walmart.com/ip/123" not in rendered
-    assert "search routes actually checked" not in lowered
-    assert "other promo types seen separately" not in lowered
+    assert "products searched: **0**" not in lowered
+
+
+def test_supported_feed_summary_still_hides_raw_diagnostics_and_keeps_api_failure() -> None:
+    embed = build_walmart_cash_summary_embed(
+        "walmart cash",
+        ("supported-feed-route",),
+        checked=48,
+        found=0,
+        warnings=(
+            "WALMART_PUBLISHER_ID is blank; using direct Walmart links.",
+            "Exact Walmart PDP checked at https://www.walmart.com/ip/123; Robot or Human; html_chars=15190",
+            "Walmart API HTTP 500: temporary failure",
+        ),
+        detail_checked=24,
+        promo_counts={
+            "cash_badge_seen": 2,
+            "badge_rows_without_amount": 2,
+            "detail_rows_attempted": 24,
+        },
+    )
+    rendered = str(embed.to_dict()).lower()
+
+    assert "supported official walmart cash api feed" in rendered
+    assert "official walmart api request failed (http 500)" in rendered
+    assert "temporary failure" not in rendered
+    assert "robot or human" not in rendered
+    assert "html_chars" not in rendered
 
 
 def test_offer_copy_never_advertises_api_pdp_hybrid_proof() -> None:

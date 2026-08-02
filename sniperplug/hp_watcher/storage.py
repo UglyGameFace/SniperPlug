@@ -50,6 +50,9 @@ class OfferDecision:
 
 
 async def ensure_hp_watcher_tables(db: Any) -> None:
+    if getattr(db, "_hp_watcher_tables_ready", False):
+        return
+
     conn = db.require_conn()
     await conn.execute(
         f"""
@@ -157,6 +160,10 @@ async def ensure_hp_watcher_tables(db: Any) -> None:
         """
     )
     await conn.commit()
+    try:
+        setattr(db, "_hp_watcher_tables_ready", True)
+    except Exception:
+        pass
 
 
 async def upsert_sitemap_sources(
@@ -256,33 +263,52 @@ async def upsert_product_urls(
     *,
     now: datetime | None = None,
 ) -> int:
+    """Upsert a product sitemap without one remote round trip per URL."""
+
     await ensure_hp_watcher_tables(db)
     conn = db.require_conn()
     now_iso = _utc(now).isoformat()
     unique = tuple(dict.fromkeys(str(url).strip() for url in urls if str(url).strip()))
-    inserted = 0
-    for url in unique:
-        product_key = hp_product_key(url)
-        existing = await conn.execute(
-            f"SELECT 1 FROM {PRODUCT_TABLE} WHERE product_key = ?",
-            (product_key,),
+    if not unique:
+        return 0
+
+    records = [
+        (hp_product_key(url), url, now_iso, now_iso, now_iso, now_iso)
+        for url in unique
+    ]
+    existing_keys: set[str] = set()
+    batch_size = 100
+    for start in range(0, len(records), batch_size):
+        batch = records[start : start + batch_size]
+        keys = [record[0] for record in batch]
+        key_placeholders = ",".join("?" for _ in keys)
+        cursor = await conn.execute(
+            f"SELECT product_key FROM {PRODUCT_TABLE} WHERE product_key IN ({key_placeholders})",
+            tuple(keys),
         )
-        is_new = await existing.fetchone() is None
+        existing_keys.update(
+            str(_row_get(row, "product_key", 0) or "")
+            for row in await cursor.fetchall()
+        )
+
+        row_placeholders = ",".join("(?, ?, ?, ?, ?, ?)" for _ in batch)
+        params: list[Any] = []
+        for record in batch:
+            params.extend(record)
         await conn.execute(
             f"""
             INSERT INTO {PRODUCT_TABLE} (
                 product_key, product_url, first_seen_at, last_seen_at,
                 page_next_check_at, offer_next_check_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES {row_placeholders}
             ON CONFLICT(product_key) DO UPDATE SET
                 product_url = excluded.product_url,
                 last_seen_at = excluded.last_seen_at
             """,
-            (product_key, url, now_iso, now_iso, now_iso, now_iso),
+            tuple(params),
         )
-        inserted += int(is_new)
     await conn.commit()
-    return inserted
+    return sum(1 for product_key, *_ in records if product_key not in existing_keys)
 
 
 async def claim_products_for_page_refresh(

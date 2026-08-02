@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Iterable
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -14,6 +16,7 @@ from sniperplug.services.public_alert_config import (
     get_public_alert_config,
     set_public_alert_config,
 )
+from sniperplug.services.public_posting import normalize_retailer_key
 
 
 REQUIRED_CHANNEL_PERMS = {
@@ -72,12 +75,14 @@ class CanonicalWorkflowCog(commands.Cog):
             return
 
         guild_id = int(interaction.guild_id)
+        existing_config = await get_public_alert_config(self.bot.db, guild_id)
+        retailers = merge_canonical_retailers(existing_config.get("retailers") or ())
         await self.bot.db.set_guild_deal_channel(guild_id, int(channel.id))
         await set_public_alert_config(
             self.bot.db,
             guild_id=guild_id,
             enabled=bool(public_alerts),
-            retailers=("walmart", "hp"),
+            retailers=retailers,
             channel_id=int(channel.id),
         )
 
@@ -158,6 +163,17 @@ class CanonicalWorkflowCog(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+
+def merge_canonical_retailers(existing: Iterable[str]) -> tuple[str, ...]:
+    """Add canonical sources without deleting a server's other store choices."""
+
+    merged: list[str] = []
+    for value in (*tuple(existing), "walmart", "hp"):
+        retailer = normalize_retailer_key(value)
+        if retailer and retailer not in merged:
+            merged.append(retailer)
+    return tuple(merged)
 
 
 def missing_channel_permissions(

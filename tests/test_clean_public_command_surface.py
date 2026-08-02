@@ -2,78 +2,88 @@ from pathlib import Path
 import re
 
 
-COG_SOURCES = {
-    str(path): path.read_text(encoding="utf-8")
-    for path in Path("sniperplug/cogs").glob("*.py")
-}
-COGS = "\n".join(COG_SOURCES.values())
+BOT = Path("sniperplug/bot.py").read_text(encoding="utf-8")
+CANONICAL_SOURCES = "\n".join(
+    Path(path).read_text(encoding="utf-8")
+    for path in (
+        "sniperplug/cogs/canonical_workflow.py",
+        "sniperplug/cogs/canonical_public_alerts.py",
+        "sniperplug/cogs/canonical_settings.py",
+        "sniperplug/cogs/verified_deal_scanner.py",
+        "sniperplug/cogs/auto_discovery.py",
+        "sniperplug/cogs/dm_deal_alerts.py",
+    )
+)
 CATALOG = Path("sniperplug/services/command_catalog.py").read_text(encoding="utf-8")
-HOME_DEPOT = Path("sniperplug/cogs/home_depot_local.py").read_text(encoding="utf-8") if Path("sniperplug/cogs/home_depot_local.py").exists() else ""
+SURFACE = Path("sniperplug/services/command_surface.py").read_text(encoding="utf-8")
+HOME_DEPOT_SEARCH = Path("sniperplug/cogs/home_depot_search.py").read_text(encoding="utf-8")
+HOME_DEPOT_LOCAL = Path("sniperplug/cogs/home_depot_local.py").read_text(encoding="utf-8")
 
 
-def slash_command_names() -> set[str]:
-    return set(re.findall(r'@app_commands\.command\(\s*name=["\']([^"\']+)["\']', COGS, flags=re.S))
+def slash_command_names(source: str = CANONICAL_SOURCES) -> set[str]:
+    return set(re.findall(r'@app_commands\.command\(\s*name=["\']([^"\']+)["\']', source, flags=re.S))
 
 
 def catalog_names() -> set[str]:
     return set(re.findall(r'name="([^"]+)"', CATALOG))
 
 
-def test_only_one_public_channel_setup_command_remains():
+def test_only_one_public_channel_setup_command_is_loaded():
     names = slash_command_names()
-
     assert "setup_sniperplug_here" in names
-
-    assert "public_alerts" not in names
-    assert "autoscan_setup" not in names
-    assert "setup_sniperplug" not in names
-    assert "set_channel" not in names
+    assert BOT.count("await self.add_cog(CanonicalWorkflowCog(self))") == 1
+    assert "await self.add_cog(WorkflowCog(self))" not in BOT
 
 
-def test_old_channel_setters_removed_from_command_catalog():
+def test_old_channel_and_status_aliases_are_retired():
     names = catalog_names()
-
     assert "/setup_sniperplug_here" in names
-    assert "/setup_sniperplug" not in names
-    assert "/public_alerts" not in names
-    assert "/sniperplug set_channel" not in names
+    for retired in (
+        "/setup_sniperplug",
+        "/public_alerts",
+        "/public_alerts_status",
+        "/setup_sniperplug_here_status",
+        "/retailer_autoscan",
+        "/retailer_autoscan_status",
+    ):
+        assert retired not in names
+    assert "public_alerts_status" in SURFACE
+    assert "retailer_autoscan" in SURFACE
 
 
-def test_core_deal_commands_are_not_removed():
+def test_core_deal_commands_remain_canonical():
     names = slash_command_names()
-    for command in [
-        "autoscan_now",
+    for command in (
         "autoscan_health",
         "deal_categories",
-        "deals",
-        "hunt",
         "discover",
-        "walmart_scan",
-    ]:
-        assert command in names, f"Missing deal command: {command}"
+        "dm_deals",
+        "setup_sniperplug_here",
+        "sniperplug_dashboard",
+    ):
+        assert command in names
+    assert "walmart_scan" not in names
 
 
-def test_home_depot_and_penny_commands_are_not_removed():
-    assert "home depot" in HOME_DEPOT.lower() or "depot" in HOME_DEPOT.lower()
-    assert "penny" in HOME_DEPOT.lower()
-    assert "hd_stock" in HOME_DEPOT
-    assert "hd_penny" in HOME_DEPOT
+def test_home_depot_surface_keeps_targeted_commands_only():
+    combined = HOME_DEPOT_SEARCH + HOME_DEPOT_LOCAL
+    assert 'name="home_depot_search"' in combined
+    assert 'name="home_depot_penny_hunt"' in combined
+    assert 'name="hd_stock"' in combined
+    assert "/hd_penny_zip" not in CATALOG
+    assert '"hd_penny_zip"' in SURFACE
 
 
-def test_help_text_points_to_single_setup_flow():
+def test_help_text_points_to_dashboard_and_one_setup_flow():
     names = catalog_names()
-
     assert "/setup_sniperplug_here" in names
-    assert "/setup_sniperplug" not in names
-    assert "/setup_sniperplug channel:" not in CATALOG
-
-    # Exact old setter is gone, but the read-only status command is allowed.
-    assert "/public_alerts" not in names
-    assert "/public_alerts_status" in names
+    assert "/sniperplug_dashboard" in names
+    assert "/autoscan_health" in names
+    assert "/public_alerts_status" not in names
+    assert "/sniperplug_workflow" not in names
 
 
-def test_removed_command_error_handlers_are_not_left_dangling():
-    assert "@set_channel.error" not in COGS
-    assert "@setup_sniperplug.error" not in COGS
-    assert "@public_alerts.error" not in COGS
-    assert "@autoscan_setup.error" not in COGS
+def test_guild_sync_rebuilds_tree_so_stale_discord_commands_are_deleted():
+    assert "self.tree.clear_commands(guild=guild)" in BOT
+    assert "self.tree.copy_global_to(guild=guild)" in BOT
+    assert "prune_retired_commands(self.tree)" in BOT

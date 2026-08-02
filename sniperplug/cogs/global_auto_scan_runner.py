@@ -17,6 +17,9 @@ from sniperplug.services.autoscan_live_guild_reconciliation import (
 from sniperplug.services.autoscan_observed_price_memory import (
     collect_verified_discount_cards_with_observed_memory,
 )
+from sniperplug.services.verified_retailer_event_fanout import (
+    fanout_verified_retailer_events,
+)
 from sniperplug.services.walmart_global_catalog_autoscan import (
     DEFAULT_ROUTES_PER_BATCH,
     catalog_backpressure_reason,
@@ -46,16 +49,12 @@ GLOBAL_FANOUT_EVENT_LIMIT = 20
 
 
 class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
-    """Global Walmart discovery plus per-destination exact-deal fanout.
+    """Global retailer discovery plus per-destination exact-deal fanout.
 
-    One durable catalog cursor discovers Walmart item IDs for the entire bot.
-    Exact verification is likewise global. Only after an exact markdown exists
-    does SniperPlug fan it out to each eligible guild and opted-in DM subscriber
-    through their own thresholds, filters, and duplicate guards.
-
-    This avoids multiplying Walmart API traffic by the number of Discord
-    servers and guarantees that the configured route pool advances in order
-    instead of depending on wall-clock rotation slots.
+    Walmart discovery and verification remain inside this bot. Standalone
+    retailer watchers, beginning with HP Store, publish exact candidates through
+    the shared durable event outbox. This bot alone owns Discord delivery,
+    thresholds, category preferences, duplicate guards, and DM subscriptions.
     """
 
     def __init__(self, bot):
@@ -85,7 +84,8 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "per_guild_discovery=false global_catalog_routes_per_batch=%s "
             "global_catalog_interval_s=%s exact_queue_batch=%s "
             "exact_queue_interval_s=%s global_exact_fanout=true personal_dm_alerts=true "
-            "terminal_identity_quarantine=true exact_parse_off_event_loop=true",
+            "external_verified_event_fanout=true terminal_identity_quarantine=true "
+            "exact_parse_off_event_loop=true",
             platform.python_version(),
             sys.platform,
             DEFAULT_ROUTES_PER_BATCH,
@@ -164,6 +164,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             )
             if fanout.new_events or fanout.events_processed or fanout.public_posts or fanout.dm_sent:
                 legacy.log.info(fanout.summary_line())
+            await self._fanout_external_verified_events()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -272,6 +273,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     )
                     if fanout.new_events or fanout.events_processed or fanout.public_posts or fanout.dm_sent:
                         legacy.log.info(fanout.summary_line())
+                    await self._fanout_external_verified_events()
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -340,6 +342,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     )
                     if fanout.new_events or fanout.events_processed or fanout.public_posts or fanout.dm_sent:
                         legacy.log.info(fanout.summary_line())
+                    await self._fanout_external_verified_events()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -352,6 +355,14 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                 await asyncio.sleep(resilient.WALMART_QUEUE_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             return
+
+    async def _fanout_external_verified_events(self) -> None:
+        result = await fanout_verified_retailer_events(
+            self.bot,
+            event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
+        )
+        if result.events_claimed or result.public_posts or result.dm_sent:
+            legacy.log.info(result.summary_line())
 
     def _log_global_result_notes(self, warnings) -> None:
         for warning in tuple(warnings or ()):

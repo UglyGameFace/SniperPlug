@@ -27,9 +27,22 @@ async def ensure_ghost_tombstone_table(conn: Any) -> None:
     await conn.commit()
 
 
-async def load_ghost_tombstones(conn: Any) -> set[int]:
+async def load_ghost_tombstones(
+    conn: Any,
+    *,
+    guild_ids: Iterable[int] | None = None,
+) -> set[int]:
     await ensure_ghost_tombstone_table(conn)
-    cursor = await conn.execute(f"SELECT guild_id FROM {TOMBSTONE_TABLE}")
+    # Force SQLite/libSQL to serialize the 64-bit Discord snowflake as text.
+    # A numeric wire decoder may otherwise round IDs above 2**53.
+    ids = sorted({int(guild_id) for guild_id in guild_ids or ()})
+    sql = f"SELECT CAST(guild_id AS TEXT) AS guild_id FROM {TOMBSTONE_TABLE}"
+    params: tuple[str, ...] = ()
+    if ids:
+        placeholders = ", ".join("?" for _ in ids)
+        sql += f" WHERE CAST(guild_id AS TEXT) IN ({placeholders})"
+        params = tuple(str(guild_id) for guild_id in ids)
+    cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
     output: set[int] = set()
     for row in rows:

@@ -25,7 +25,7 @@ class _Connection:
         self.commits = 0
 
     async def execute(self, sql: str, params=()):
-        if "SELECT guild_id FROM guild_public_alert_settings" in sql:
+        if "CAST(guild_id AS TEXT) AS guild_id FROM guild_public_alert_settings" in sql:
             return _Cursor(self.public_rows)
         return _Cursor()
 
@@ -41,16 +41,16 @@ class _Database:
         return self.conn
 
 
-def test_live_loader_filters_stale_replica_rows_without_deleting(monkeypatch) -> None:
+def test_live_loader_filters_true_stale_replica_rows_without_deleting(monkeypatch) -> None:
     live._SESSION_GHOST_TOMBSTONES.clear()
     real_id = 1514374173517152418
-    ghost_id = 1514374173517152512
-    conn = _Connection(public_rows=[(real_id,), (ghost_id,)])
+    true_stale_id = 777777777777777777
+    conn = _Connection(public_rows=[(str(real_id),), (str(true_stale_id),)])
     db = _Database(conn)
     bot = SimpleNamespace(guilds=[SimpleNamespace(id=real_id)])
 
-    async def fake_tombstones(_conn):
-        return {ghost_id}
+    async def fake_tombstones(_conn, **_kwargs):
+        return {true_stale_id}
 
     async def fake_config(_db, guild_id):
         assert guild_id == real_id
@@ -62,15 +62,15 @@ def test_live_loader_filters_stale_replica_rows_without_deleting(monkeypatch) ->
     result = asyncio.run(live.list_live_public_alert_guilds(db, bot))
 
     assert [guild.guild_id for guild in result.guilds] == [real_id]
-    assert result.stale_visible_ids == (ghost_id,)
-    assert result.tombstoned_visible_ids == (ghost_id,)
+    assert result.stale_visible_ids == (true_stale_id,)
+    assert result.tombstoned_visible_ids == (true_stale_id,)
     assert conn.commits == 0
 
 
 def test_reconciliation_session_quarantine_survives_stale_tombstone_read(monkeypatch) -> None:
     live._SESSION_GHOST_TOMBSTONES.clear()
     real_id = 1514374173517152418
-    ghost_id = 1514374173517152512
+    true_stale_id = 777777777777777777
     conn = _Connection()
     db = _Database(conn)
     bot = SimpleNamespace(guilds=[SimpleNamespace(id=real_id)])
@@ -86,8 +86,9 @@ def test_reconciliation_session_quarantine_survives_stale_tombstone_read(monkeyp
         return set()
 
     async def fake_discover(_conn, _live_ids):
-        # Simulate a remote replica continuing to expose the old setup row.
-        return {ghost_id}
+        # Simulate a genuinely unrelated stale setup row, not a rounded copy of
+        # the real live guild snowflake.
+        return {true_stale_id}
 
     async def fake_delete(_conn, ids):
         delete_calls.append(set(ids))
@@ -121,9 +122,9 @@ def test_reconciliation_session_quarantine_survives_stale_tombstone_read(monkeyp
     assert second["ghost_rows_found"] == 0
     assert second["ghost_rows_deleted"] == 0
     assert second["ghost_rows_already_quarantined"] == 1
-    assert delete_calls == [{ghost_id}]
-    assert mark_calls == [{ghost_id}]
-    assert ghost_id in live._SESSION_GHOST_TOMBSTONES
+    assert delete_calls == [{true_stale_id}]
+    assert mark_calls == [{true_stale_id}]
+    assert true_stale_id in live._SESSION_GHOST_TOMBSTONES
 
 
 def test_is_live_bot_guild_fails_closed() -> None:

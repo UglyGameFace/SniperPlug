@@ -104,10 +104,9 @@ async def cleanup_ghost_setup_rows_detailed(db: Any, bot: discord.Client) -> dic
     """Delete and verify setup rows for guilds the bot no longer serves.
 
     Turso/libSQL can briefly return a stale read immediately after a remote write.
-    A best-effort DELETE followed by no verification caused the same typo guild to
-    be announced as deleted every scheduler cycle. This routine deletes dependent
-    tables first, commits, verifies every table, and retries boundedly before it
-    reports success.
+    Large Discord snowflakes can also be rounded by a numeric wire decoder unless
+    SQLite casts them to text before returning them. Discovery therefore reads
+    IDs as text and only then converts them to Python integers.
     """
 
     live_guild_ids = {int(guild.id) for guild in list(getattr(bot, "guilds", []) or [])}
@@ -157,7 +156,9 @@ async def _discover_ghost_ids(conn: Any, live_guild_ids: set[int]) -> set[int]:
     ghost_ids: set[int] = set()
     for table in CONFIG_TABLES:
         try:
-            cursor = await conn.execute(f"SELECT DISTINCT guild_id FROM {table}")
+            cursor = await conn.execute(
+                f"SELECT DISTINCT CAST(guild_id AS TEXT) AS guild_id FROM {table}"
+            )
             rows = await cursor.fetchall()
         except Exception as exc:
             if not _missing_table_error(exc):

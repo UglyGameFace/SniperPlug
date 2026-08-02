@@ -130,8 +130,22 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
     }
 
 
-async def list_live_public_alert_guilds(db: Any, bot: Any) -> LiveGuildLoadResult:
+async def list_live_public_alert_guilds(
+    db: Any,
+    bot: Any,
+    *,
+    only_guild_id: int | None = None,
+) -> LiveGuildLoadResult:
     """Load only guilds present in Discord's current live guild cache.
+
+    Discord snowflakes exceed JavaScript's exact integer range. Some libSQL
+    clients can therefore expose an INTEGER column as a rounded numeric value
+    even though SQLite stored the 64-bit integer exactly. CASTing inside SQLite
+    makes the wire value text, preserving every digit before Python parses it.
+
+    ``only_guild_id`` uses the same eligibility rules as the scheduled loader,
+    but constrains both the public-alert and tombstone reads to one exact text
+    snowflake for health checks.
 
     This function never deletes. Reconciliation owns cleanup, while discovery
     only filters. That prevents two independent cleanup paths from racing or
@@ -144,13 +158,26 @@ async def list_live_public_alert_guilds(db: Any, bot: Any) -> LiveGuildLoadResul
     if not live_guild_ids:
         return LiveGuildLoadResult()
 
+    target = int(only_guild_id) if only_guild_id is not None else None
     conn = db.require_conn()
-    tombstoned = await load_ghost_tombstones(conn)
-    tombstoned.update(_SESSION_GHOST_TOMBSTONES)
-    cursor = await conn.execute(
-        "SELECT guild_id FROM guild_public_alert_settings "
+    tombstoned = await load_ghost_tombstones(
+        conn,
+        guild_ids=(target,) if target is not None else None,
+    )
+    if target is None:
+        tombstoned.update(_SESSION_GHOST_TOMBSTONES)
+    elif target in _SESSION_GHOST_TOMBSTONES:
+        tombstoned.add(target)
+
+    sql = (
+        "SELECT CAST(guild_id AS TEXT) AS guild_id FROM guild_public_alert_settings "
         "WHERE enabled = 1 AND channel_id IS NOT NULL"
     )
+    params: tuple[str, ...] = ()
+    if target is not None:
+        sql += " AND CAST(guild_id AS TEXT) = ?"
+        params = (str(target),)
+    cursor = await conn.execute(sql, params)
     rows = await cursor.fetchall()
 
     guilds: list[LiveAutoScanGuild] = []
@@ -161,6 +188,9 @@ async def list_live_public_alert_guilds(db: Any, bot: Any) -> LiveGuildLoadResul
         guild_id = _guild_id_from_row(row)
         if guild_id is None:
             log.warning("Skipped malformed public-alert row without a usable guild id: %r", row)
+            continue
+        if target is not None and guild_id != target:
+            # Defense in depth for clients/fakes that ignore SQL parameters.
             continue
         if guild_id not in live_guild_ids:
             stale_visible.add(guild_id)
@@ -197,6 +227,42 @@ async def list_live_public_alert_guilds(db: Any, bot: Any) -> LiveGuildLoadResul
         stale_visible_ids=tuple(sorted(stale_visible)),
         tombstoned_visible_ids=tuple(sorted(tombstoned_visible)),
     )
+
+
+async def scheduler_membership_for_guild(
+    db: Any,
+    bot: Any,
+    guild_id: int,
+) -> tuple[bool, str]:
+    """Return the scheduler's real live-guild enrollment decision safely."""
+
+    target = int(guild_id)
+    try:
+        result = await list_live_public_alert_guilds(
+            db,
+            bot,
+            only_guild_id=target,
+        )
+    except Exception as exc:  # Health diagnostics must still render on DB trouble.
+        log.exception(
+            "Scheduler membership health check failed guild=%s error=%s",
+            target,
+            exc,
+        )
+        return (
+            False,
+            "Scheduler enrollment check failed because the database could not be read. "
+            "The health panel is failing closed; try again after the database recovers.",
+        )
+
+    eligible_ids = {int(guild.guild_id) for guild in result.guilds}
+    if target in eligible_ids:
+        return True, "This server is present in the live scheduled autoscan set."
+    if target in set(result.tombstoned_visible_ids):
+        return False, "This live server is incorrectly visible as tombstoned and will not be scheduled."
+    if target in set(result.stale_visible_ids):
+        return False, "This server's saved row is being read as a non-live guild and will not be scheduled."
+    return False, "This server is not present in the scheduler's eligible public-alert rows."
 
 
 def is_live_bot_guild(bot: Any, guild_id: int) -> bool:

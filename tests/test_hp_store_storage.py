@@ -7,6 +7,8 @@ import aiosqlite
 
 from sniperplug.hp_watcher.parser import HPPriceOffer, ProductPageIdentity
 from sniperplug.hp_watcher.storage import (
+    OFFER_TABLE,
+    PRODUCT_TABLE,
     CatalogProduct,
     claim_products_for_offer_poll,
     claim_products_for_page_refresh,
@@ -129,7 +131,7 @@ def test_first_seen_hp_msrp_markdown_and_later_price_drop_are_events() -> None:
     asyncio.run(run())
 
 
-def test_missing_msrp_learns_exact_price_then_detects_later_drop() -> None:
+def test_missing_msrp_learns_exact_price_then_preserves_markdown_baseline() -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
         conn.row_factory = aiosqlite.Row
@@ -171,6 +173,7 @@ def test_missing_msrp_learns_exact_price_then_detects_later_drop() -> None:
         )
         assert learned.should_publish is False
 
+        drop_time = now + timedelta(hours=1)
         drop = await record_exact_offer(
             db,
             product=product,
@@ -186,12 +189,45 @@ def test_missing_msrp_learns_exact_price_then_detects_later_drop() -> None:
             min_event_discount_percent=10,
             normal_interval_minutes=30,
             markdown_interval_seconds=90,
-            now=now + timedelta(hours=1),
+            now=drop_time,
         )
         assert drop.should_publish is True
         assert drop.event_type == "price_drop"
         assert drop.reference_price == 50.0
         assert drop.reference_source == "sniperplug.hp.exact_price_history.previous_price"
+
+        stable_time = drop_time + timedelta(minutes=2)
+        stable = await record_exact_offer(
+            db,
+            product=product,
+            offer=HPPriceOffer(
+                product_id=PRODUCT_ID,
+                part_number=SKU,
+                sku=SKU,
+                current_price=20.0,
+                msrp_price=None,
+                in_stock=True,
+                can_add_to_cart=True,
+            ),
+            min_event_discount_percent=10,
+            normal_interval_minutes=30,
+            markdown_interval_seconds=90,
+            now=stable_time,
+        )
+        assert stable.should_publish is False
+        assert stable.reference_price == 50.0
+        assert stable.reference_source == "sniperplug.hp.exact_price_history.reference_price"
+        assert stable.next_check_at == (stable_time + timedelta(seconds=90)).isoformat()
+
+        offer_cursor = await conn.execute(
+            f"SELECT reference_price_cents FROM {OFFER_TABLE}"
+        )
+        product_cursor = await conn.execute(
+            f"SELECT reference_price_cents FROM {PRODUCT_TABLE} WHERE product_key = ?",
+            (product.product_key,),
+        )
+        assert (await offer_cursor.fetchone())[0] == 5000
+        assert (await product_cursor.fetchone())[0] == 5000
         await conn.close()
 
     asyncio.run(run())

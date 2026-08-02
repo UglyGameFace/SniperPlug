@@ -75,6 +75,22 @@ def test_discover_uses_exact_collector_not_legacy_search_only_path() -> None:
     assert "Search-only rows cannot become deal cards" in AUTO_DISCOVERY
 
 
+def test_discover_shares_walmart_runtime_gates_for_long_sweeps() -> None:
+    assert "autoscan_runtime.autoscan_lock(guild_id)" in AUTO_DISCOVERY
+    assert "async with _WALMART_PROVIDER_OPERATION_LOCK" in AUTO_DISCOVERY
+    assert "guild_scan_lock.release()" in AUTO_DISCOVERY
+    assert "background exact worker" in AUTO_DISCOVERY
+
+
+def test_discover_shows_all_exact_cards_privately_but_caps_fresh_public_cards() -> None:
+    assert "shown_cards, category_suppressed_cards, category_notes = apply_category_preferences" in AUTO_DISCOVERY
+    assert "cards=shown_cards" in AUTO_DISCOVERY
+    assert "fresh_cards = list(fresh_selection.fresh)" in AUTO_DISCOVERY
+    assert "public_cards = fresh_cards[:" in AUTO_DISCOVERY
+    assert "cards=public_cards" in AUTO_DISCOVERY
+    assert "including already-posted duplicates when present" in AUTO_DISCOVERY
+
+
 def test_command_catalog_explains_discover_vs_autoscan() -> None:
     assert "Broad manual Walmart sweep using the exact-detail queue" in COMMAND_CATALOG
     assert "`/autoscan_now` is the smaller diagnostic command" in COMMAND_CATALOG

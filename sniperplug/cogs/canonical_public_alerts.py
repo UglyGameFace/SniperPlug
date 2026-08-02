@@ -136,6 +136,7 @@ async def build_global_autoscan_health_embed(
     )
     routes = catalog_route_pool()
     retailers = set(config.get("retailers") or ())
+    selected_retailers = retailers.intersection({"walmart", "hp"})
 
     base_delivery_ready = (
         bool(config.get("enabled"))
@@ -143,10 +144,13 @@ async def build_global_autoscan_health_embed(
         and enrolled
         and not repair.human_action_required
     )
-    walmart_delivery_ready = base_delivery_ready and "walmart" in retailers
-    hp_delivery_ready = base_delivery_ready and "hp" in retailers and hp_health.ok
-    delivery_ready = walmart_delivery_ready and (
-        "hp" not in retailers or hp_delivery_ready
+    walmart_delivery_ready = base_delivery_ready and "walmart" in selected_retailers
+    hp_delivery_ready = base_delivery_ready and "hp" in selected_retailers and hp_health.ok
+    delivery_ready = (
+        base_delivery_ready
+        and bool(selected_retailers)
+        and ("walmart" not in selected_retailers or walmart_delivery_ready)
+        and ("hp" not in selected_retailers or hp_delivery_ready)
     )
     embed = discord.Embed(
         title="🩺 Global Autoscan Health",
@@ -214,7 +218,7 @@ async def build_global_autoscan_health_embed(
         ),
         inline=False,
     )
-    if not base_delivery_ready or "walmart" not in retailers or "hp" not in retailers:
+    if not base_delivery_ready or not selected_retailers:
         embed.add_field(
             name="Next action",
             value=(
@@ -223,7 +227,7 @@ async def build_global_autoscan_health_embed(
             ),
             inline=False,
         )
-    elif not hp_health.ok:
+    elif "hp" in selected_retailers and not hp_health.ok:
         embed.add_field(
             name="Next action",
             value=(

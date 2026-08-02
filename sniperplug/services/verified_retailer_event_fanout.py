@@ -36,6 +36,8 @@ log = logging.getLogger("sniperplug.retailer_event_fanout")
 class VerifiedRetailerFanoutResult:
     events_claimed: int = 0
     events_processed: int = 0
+    events_deferred: int = 0
+    events_dead_lettered: int = 0
     guilds_checked: int = 0
     public_posts: int = 0
     public_errors: int = 0
@@ -49,6 +51,7 @@ class VerifiedRetailerFanoutResult:
         return (
             "verified retailer fanout: "
             f"claimed **{self.events_claimed}** • processed **{self.events_processed}** • "
+            f"deferred **{self.events_deferred}** • dead-lettered **{self.events_dead_lettered}** • "
             f"guild posts **{self.public_posts}** • DM sent **{self.dm_sent}** • "
             f"errors public/DM **{self.public_errors}/{self.dm_errors}**"
         )
@@ -73,6 +76,8 @@ async def fanout_verified_retailer_events(
         preferences = await list_enabled_dm_deal_alert_preferences(db)
         totals = {
             "events_processed": 0,
+            "events_deferred": 0,
+            "events_dead_lettered": 0,
             "guilds_checked": 0,
             "public_posts": 0,
             "public_errors": 0,
@@ -183,12 +188,28 @@ async def fanout_verified_retailer_events(
                     )
 
             if errors:
-                await release_verified_retailer_event(
+                release = await release_verified_retailer_event(
                     db,
                     event_key=event.event_key,
                     claim_token=event.claim_token,
                     error=" | ".join(errors),
                 )
+                if release.dead_lettered:
+                    totals["events_processed"] += 1
+                    totals["events_dead_lettered"] += 1
+                    log.error(
+                        "Verified retailer event dead-lettered event=%s attempts=%s",
+                        event.event_key,
+                        release.attempt_count,
+                    )
+                elif release.released:
+                    totals["events_deferred"] += 1
+                    log.warning(
+                        "Verified retailer event deferred event=%s attempts=%s retry_at=%s",
+                        event.event_key,
+                        release.attempt_count,
+                        release.retry_at,
+                    )
             else:
                 await mark_verified_retailer_event_processed(
                     db,

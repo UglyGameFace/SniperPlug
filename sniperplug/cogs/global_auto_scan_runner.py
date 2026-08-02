@@ -320,7 +320,12 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         now - self._last_queue_health_log_monotonic
                         >= resilient.WALMART_QUEUE_HEALTH_LOG_INTERVAL_SECONDS
                     )
-                    if result.claimed or result.terminal_quarantined or health_due:
+                    if (
+                        result.claimed
+                        or result.terminal_quarantined
+                        or result.terminal_rearmed
+                        or health_due
+                    ):
                         health = await load_walmart_exact_queue_health(self.bot.db)
                         legacy.log.info(
                             "%s • %s",

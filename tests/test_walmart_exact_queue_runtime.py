@@ -228,3 +228,56 @@ def test_terminal_identity_rows_do_not_inflate_actionable_health_or_claims() -> 
         await conn.close()
 
     asyncio.run(run())
+
+
+def test_rediscovered_terminal_identity_row_rearms_once_with_indexed_queries() -> None:
+    async def run() -> None:
+        conn = await aiosqlite.connect(":memory:")
+        db = FakeDatabase(conn)
+        await enqueue_walmart_exact_verification_candidates(
+            db,
+            [search_candidate("333333")],
+            min_discount=50,
+            source_label="global:test",
+        )
+        now = datetime.now(timezone.utc)
+        old_attempt = (now - timedelta(days=8)).isoformat()
+        rediscovered = (now - timedelta(hours=1)).isoformat()
+        await conn.execute(
+            f"""
+            UPDATE {QUEUE_TABLE}
+            SET status = 'incomplete_identity',
+                last_attempt_at = ?,
+                last_seen_at = ?,
+                next_attempt_at = '9999-12-31T23:59:59+00:00',
+                last_error = 'missing seller identity'
+            WHERE item_id = '333333'
+            """,
+            (old_attempt, rediscovered),
+        )
+        await conn.commit()
+
+        first = await maintain_terminal_identity_rows(db, now=now)
+        assert first.rearmed == 1
+        assert first.quarantined == 0
+
+        cursor = await conn.execute(
+            f"SELECT status, next_attempt_at, last_error FROM {QUEUE_TABLE} WHERE item_id = ?",
+            ("333333",),
+        )
+        status, next_attempt_at, last_error = await cursor.fetchone()
+        assert status == "pending"
+        assert next_attempt_at == now.isoformat()
+        assert "scheduled weekly identity reprobe" in last_error
+
+        second = await maintain_terminal_identity_rows(db, now=now)
+        assert second.rearmed == 0
+        assert second.quarantined == 0
+
+        cursor = await conn.execute(f"PRAGMA index_list({QUEUE_TABLE})")
+        index_names = {str(row[1]) for row in await cursor.fetchall()}
+        assert f"idx_{QUEUE_TABLE}_terminal_rearm" in index_names
+        assert f"idx_{QUEUE_TABLE}_terminal_quarantine" in index_names
+        await conn.close()
+
+    asyncio.run(run())

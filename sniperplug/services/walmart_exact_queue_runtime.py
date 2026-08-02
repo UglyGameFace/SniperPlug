@@ -103,6 +103,7 @@ async def maintain_terminal_identity_rows(
 
     await ensure_walmart_exact_verification_queue(db)
     conn = db.require_conn()
+    await _ensure_terminal_identity_indexes(conn)
     now_dt = now or datetime.now(timezone.utc)
     if now_dt.tzinfo is None:
         now_dt = now_dt.replace(tzinfo=timezone.utc)
@@ -112,58 +113,38 @@ async def maintain_terminal_identity_rows(
         - timedelta(days=TERMINAL_IDENTITY_REPROBE_DAYS)
     ).isoformat()
 
-    rearm_count = await _count_rows(
-        conn,
+    rearm_cursor = await conn.execute(
         f"""
-        SELECT COUNT(*) FROM {QUEUE_TABLE}
+        UPDATE {QUEUE_TABLE}
+        SET status = 'pending',
+            next_attempt_at = ?,
+            lease_token = '',
+            lease_until = NULL,
+            last_error = CASE
+                WHEN last_error = '' THEN 'scheduled weekly identity reprobe'
+                ELSE last_error || ' | scheduled weekly identity reprobe'
+            END
         WHERE status IN ('incomplete_identity', 'identity_mismatch')
           AND last_attempt_at IS NOT NULL
-          AND julianday(last_attempt_at) <= julianday(?)
-          AND julianday(last_seen_at) > julianday(last_attempt_at)
+          AND last_attempt_at <= ?
+          AND last_seen_at > last_attempt_at
         """,
-        (reprobe_cutoff,),
+        (now_iso, reprobe_cutoff),
     )
-    if rearm_count:
-        await conn.execute(
-            f"""
-            UPDATE {QUEUE_TABLE}
-            SET status = 'pending',
-                next_attempt_at = ?,
-                lease_token = '',
-                lease_until = NULL,
-                last_error = CASE
-                    WHEN last_error = '' THEN 'scheduled weekly identity reprobe'
-                    ELSE last_error || ' | scheduled weekly identity reprobe'
-                END
-            WHERE status IN ('incomplete_identity', 'identity_mismatch')
-              AND last_attempt_at IS NOT NULL
-              AND julianday(last_attempt_at) <= julianday(?)
-              AND julianday(last_seen_at) > julianday(last_attempt_at)
-            """,
-            (now_iso, reprobe_cutoff),
-        )
+    rearm_count = await _affected_rows(conn, rearm_cursor)
 
-    quarantine_count = await _count_rows(
-        conn,
+    quarantine_cursor = await conn.execute(
         f"""
-        SELECT COUNT(*) FROM {QUEUE_TABLE}
+        UPDATE {QUEUE_TABLE}
+        SET next_attempt_at = ?,
+            lease_token = '',
+            lease_until = NULL
         WHERE status IN ('incomplete_identity', 'identity_mismatch')
           AND next_attempt_at <= ?
         """,
-        (now_iso,),
+        (TERMINAL_NEXT_ATTEMPT, now_iso),
     )
-    if quarantine_count:
-        await conn.execute(
-            f"""
-            UPDATE {QUEUE_TABLE}
-            SET next_attempt_at = ?,
-                lease_token = '',
-                lease_until = NULL
-            WHERE status IN ('incomplete_identity', 'identity_mismatch')
-              AND next_attempt_at <= ?
-            """,
-            (TERMINAL_NEXT_ATTEMPT, now_iso),
-        )
+    quarantine_count = await _affected_rows(conn, quarantine_cursor)
 
     if rearm_count or quarantine_count:
         await conn.commit()
@@ -397,16 +378,41 @@ def _identity_error_bucket(*, status: str, error: str) -> str:
     return "identity_other"
 
 
-async def _count_rows(conn: Any, sql: str, params: tuple[Any, ...]) -> int:
-    cursor = await conn.execute(sql, params)
-    row = await cursor.fetchone()
+async def _ensure_terminal_identity_indexes(conn: Any) -> None:
+    if getattr(conn, "_sniperplug_terminal_identity_indexes_ready", False):
+        return
+    await conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{QUEUE_TABLE}_terminal_rearm "
+        f"ON {QUEUE_TABLE} (status, last_attempt_at, last_seen_at)"
+    )
+    await conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{QUEUE_TABLE}_terminal_quarantine "
+        f"ON {QUEUE_TABLE} (status, next_attempt_at)"
+    )
+    await conn.commit()
+    try:
+        setattr(conn, "_sniperplug_terminal_identity_indexes_ready", True)
+    except Exception:
+        pass
+
+
+async def _affected_rows(conn: Any, cursor: Any) -> int:
+    try:
+        rowcount = int(cursor.rowcount)
+    except (AttributeError, TypeError, ValueError):
+        rowcount = -1
+    if rowcount >= 0:
+        return rowcount
+
+    changes = await conn.execute("SELECT changes()")
+    row = await changes.fetchone()
     if row is None:
         return 0
     try:
         return int(row[0] or 0)
     except (TypeError, ValueError, KeyError, IndexError):
         try:
-            return int(row["COUNT(*)"] or 0)
+            return int(row["changes()"] or 0)
         except Exception:
             return 0
 

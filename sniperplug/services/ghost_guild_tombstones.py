@@ -29,7 +29,11 @@ async def ensure_ghost_tombstone_table(conn: Any) -> None:
 
 async def load_ghost_tombstones(conn: Any) -> set[int]:
     await ensure_ghost_tombstone_table(conn)
-    cursor = await conn.execute(f"SELECT guild_id FROM {TOMBSTONE_TABLE}")
+    # Force SQLite/libSQL to serialize the 64-bit Discord snowflake as text.
+    # A numeric wire decoder may otherwise round IDs above 2**53.
+    cursor = await conn.execute(
+        f"SELECT CAST(guild_id AS TEXT) AS guild_id FROM {TOMBSTONE_TABLE}"
+    )
     rows = await cursor.fetchall()
     output: set[int] = set()
     for row in rows:

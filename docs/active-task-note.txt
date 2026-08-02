@@ -1,1 +1,0 @@
-This branch completes the Walmart exact-queue maintenance follow-up before work begins on the standalone HP Store watcher tracked in issue #195.

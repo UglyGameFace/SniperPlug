@@ -7,11 +7,13 @@ CATEGORY_PREFS = (ROOT / "sniperplug/services/deal_category_preferences.py").rea
 AUTOSCAN_RUNNER = (ROOT / "sniperplug/cogs/auto_scan_runner.py").read_text(encoding="utf-8")
 
 
-def test_public_alert_config_is_guild_scoped():
+def test_public_alert_config_is_guild_scoped_without_snowflake_rounding():
     assert "guild_id INTEGER PRIMARY KEY" in PUBLIC_ALERT_CONFIG
-    assert "SELECT enabled, retailers_json, channel_id FROM guild_public_alert_settings WHERE guild_id = ?" in PUBLIC_ALERT_CONFIG
+    assert "guild_param = snowflake_text(guild_id)" in PUBLIC_ALERT_CONFIG
+    assert "WHERE CAST(guild_id AS TEXT) = ?" in PUBLIC_ALERT_CONFIG
     assert "ON CONFLICT(guild_id) DO UPDATE" in PUBLIC_ALERT_CONFIG
-    assert "UPDATE guild_public_alert_settings SET channel_id = ?, updated_at = ? WHERE guild_id = ?" in PUBLIC_ALERT_CONFIG
+    assert "snowflake_text(guild_id)" in PUBLIC_ALERT_CONFIG
+    assert "WHERE guild_id = ?" not in PUBLIC_ALERT_CONFIG
 
 
 def test_retailer_autoscan_settings_are_guild_and_retailer_scoped():

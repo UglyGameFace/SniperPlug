@@ -20,10 +20,10 @@ from sniperplug.services.dm_deal_alerts import (
     dm_alerts_sent_today,
     dm_receipt_exists,
     list_enabled_dm_deal_alert_preferences,
-    match_dm_deal,
     record_dm_delivery_failure,
     record_dm_receipt,
 )
+from sniperplug.services.dm_deal_matching import match_dm_deal
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_deal_posts import (
     card_deal_key,

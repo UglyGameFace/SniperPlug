@@ -48,6 +48,9 @@ class _FakeBot:
 
     def __init__(self, tree: _FakeTree) -> None:
         self.tree = tree
+        # setup_hook owns the canonical-surface preflight in production. These
+        # unit fakes test only the HTTP/schema guard after that phase.
+        self._command_surface_issues = ()
         self.settings = SimpleNamespace(
             sync_commands_on_boot=True,
             sync_global_commands=True,

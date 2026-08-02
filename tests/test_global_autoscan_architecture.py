@@ -20,6 +20,9 @@ FANOUT = (ROOT / "sniperplug/services/walmart_global_deal_fanout.py").read_text(
 STATE = (ROOT / "sniperplug/services/walmart_global_catalog_autoscan.py").read_text(
     encoding="utf-8"
 )
+DM_STORE = (ROOT / "sniperplug/services/dm_deal_alerts.py").read_text(
+    encoding="utf-8"
+)
 
 
 def test_global_runner_replaces_per_guild_scheduled_discovery() -> None:
@@ -48,6 +51,33 @@ def test_exact_worker_fans_out_to_guilds_and_personal_dms() -> None:
     assert "dm_receipt_exists" in FANOUT
     assert "max_alerts_per_day" in FANOUT
     assert "global_catalog_autoscan:exact_verified" in FANOUT
+
+
+def test_fanout_events_use_durable_cross_process_leases() -> None:
+    assert "claim_token TEXT NOT NULL DEFAULT ''" in FANOUT
+    assert "lease_until TEXT" in FANOUT
+    assert "EVENT_LEASE_SECONDS" in FANOUT
+    assert "async def _claim_pending_events" in FANOUT
+    assert "AND (lease_until IS NULL OR lease_until <= ?)" in FANOUT
+    assert "WHERE deal_key = ? AND claim_token = ?" in FANOUT
+    assert "uuid.uuid4().hex" in FANOUT
+
+
+def test_fanout_uses_watermark_and_durable_snapshots_without_starvation() -> None:
+    assert "walmart_global_exact_deal_fanout_state" in FANOUT
+    assert "last_verified_at" in FANOUT
+    assert "last_item_id" in FANOUT
+    assert "ORDER BY verified_at ASC, item_id ASC" in FANOUT
+    assert "snapshot_json TEXT NOT NULL" in FANOUT
+    assert "_candidate_from_snapshot" in FANOUT
+
+
+def test_dm_schema_initialization_is_one_time_and_receipts_are_bounded() -> None:
+    assert "_SCHEMA_READY = False" in DM_STORE
+    assert "_SCHEMA_LOCK = asyncio.Lock()" in DM_STORE
+    assert DM_STORE.count("if _SCHEMA_READY:") >= 2
+    assert "RECEIPT_RETENTION_DAYS = 90" in DM_STORE
+    assert "DELETE FROM {RECEIPTS_TABLE} WHERE delivered_at < ?" in DM_STORE
 
 
 def test_bot_loads_global_runner_and_dm_command() -> None:

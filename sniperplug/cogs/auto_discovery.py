@@ -41,11 +41,11 @@ AUTO_DISCOVERY_RETAILER = "walmart"
 DISCOVERY_PROGRESS_SECONDS = 45
 DISCOVERY_PRIVATE_CARD_LIMIT = 50
 
-DISCOVERY_COVERAGE_CHOICES = (
+DISCOVERY_COVERAGE_CHOICES = [
     app_commands.Choice(name="Quick — 16 rotating routes", value="quick"),
     app_commands.Choice(name="Deep — 64 rotating routes", value="deep"),
     app_commands.Choice(name="Full catalog — every configured route (slow)", value="full"),
-)
+]
 
 
 @dataclass(frozen=True)

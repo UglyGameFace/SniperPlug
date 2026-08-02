@@ -1,35 +1,45 @@
 # Active Task
 
 ## Status
-In progress — make scheduled Walmart scans retain bounded observed-price history so verified price-drop deals can mature and post.
+In progress — finish and validate the standalone HP Store watcher and its SniperPlug delivery integration.
 
 ## Scope
-Repair the authoritative autoscan collector only. Keep the strict verified public threshold, four scheduled routes, eight manual routes, bounded provider concurrency, and one scheduled guild scan at a time.
+Build a separate continuously running HP catalog/price watcher that requires no Discord token, shares SniperPlug's Turso/libSQL database, and sends only exact-verified HP events through SniperPlug's existing server thresholds, category filters, channels, duplicate guards, feedback controls, active-deal cache, and opt-in DMs.
 
-## Root cause
-- The live autoscan path called `collect_verified_discount_cards(... use_price_memory=False)`.
-- Logs therefore reported `price_memory_summary: not used` after every scan.
-- Walmart frequently omits trustworthy reference prices, so strict verification rejected nearly every product.
-- Because scheduled scans discarded observations, SniperPlug could never build its own exact-item historical baseline and later prove a real price drop.
+## Root cause and execution path findings
+- HP product pages can expose a visible `$0.00` placeholder, so visible page text is not reliable price proof.
+- Official HP sitemaps can discover the US Store catalog.
+- HP's structured `HPServices?action=cupis` response exposes exact `productId`, `partNumber`, `price`, and `lPrice` fields.
+- A separate Discloud app cannot share SniperPlug's local SQLite file; both production processes must use the same Turso/libSQL database.
+- Review found that a non-MSRP historical reference was selected for one price-drop cycle but not persisted, which would demote a sustained markdown to the slow polling lane.
+- Review found that a permanently failing fanout event could be released with no delay and monopolize every oldest-first claim batch.
+- `/autoscan_health` originally had no visibility into the separate HP process even though health state was stored.
 
 ## Changes
-- Delegate the authoritative autoscan collector to the existing bounded observed-memory service.
-- Preserve two pages per route, concurrency three inside the provider collector, a four-item memory recheck seed limit, and a 300-observation write cap per pass.
-- Keep all public-deal quality gates unchanged.
-- Add structural regressions forbidding `use_price_memory=False` on autoscan.
+- Added a standalone HP watcher entrypoint, configuration, bounded HTTP client, sitemap/product parsers, durable scheduling, exact offer history, and health state.
+- Added strict identity and price gates that reject zero prices, malformed responses, missing identity, cross-product/SKU data, unsupported URLs, and untrusted references.
+- Label HP `lPrice` as HP MSRP; use prior exact HP.com observations when MSRP is absent.
+- Added a shared leased/idempotent verified-retailer event outbox and SniperPlug HP fanout.
+- Added HP-specific Discord cards and public proof gates while reusing existing per-server delivery controls and DM receipts.
+- Added HP to canonical setup and a one-time migration for existing enabled Walmart alert destinations.
+- Persist the selected historical reference baseline so sustained non-MSRP markdowns remain on the fast polling lane.
+- Add exponential fanout retry backoff and terminal dead-lettering so one broken destination cannot starve newer events.
+- Surface HP watcher health, catalog coverage, failures, and pending fanout in `/autoscan_health`.
+- Added separate Discloud deployment configuration and documentation using the same Turso credentials and no Discord token.
 
 ## Validation required
-- Compile changed runtime and tests.
-- Run targeted observed-memory and autoscan tests.
-- Run import smoke.
-- Run complete pytest suite.
-- Remove temporary applicator/workflow and inspect final diff before merge.
+- Compile all changed Python files.
+- Run import smoke checks for both SniperPlug and the standalone HP watcher.
+- Run targeted HP parser, storage/history, public proof, health, event-backoff, setup migration, and configuration tests.
+- Run the complete pytest suite.
+- Reinspect review threads, conflicts, redundant code, temporary files, and the final branch diff before merge.
 
 ## Cleanup status
-Pending.
+In progress. No temporary applicators or placeholder files are intended in the branch. The previously unused HP health reader is now integrated into `/autoscan_health`.
 
 ## Blockers
-None.
+None currently.
 
 ## Backlog
-- Surface observation baseline counts and time-to-maturity in `/autoscan_health` after this fix is deployed.
+- After merge, create the second Discloud application from `discloud.hp-watcher.config` and give it the exact same Turso/libSQL credentials as SniperPlug.
+- Observe initial catalog coverage and tune only within the bounded settings if HP rate limits or schema behavior require it.

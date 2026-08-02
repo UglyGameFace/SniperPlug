@@ -72,8 +72,9 @@ def explain_autoscan_decision_trail(
     """Explain why the top candidates did or did not reach public posting.
 
     The fresh-deal preflight annotates every processed public candidate with its
-    concrete quality, duplicate, reservation, or cache decision. This report
-    surfaces that exact reason rather than collapsing unrelated gates together.
+    concrete quality, duplicate, reservation, cache, or bounded-result decision.
+    This report surfaces that exact reason rather than calling an expected post
+    cap an unidentified failure.
     """
     if not all_verified_cards:
         return (
@@ -101,7 +102,10 @@ def explain_autoscan_decision_trail(
         if id(card) not in public_ids:
             reasons.append("not in final public-quality lane")
         if id(card) in public_ids and id(card) not in fresh_ids:
-            reasons.append(_preflight_reason(card) or "blocked by an unidentified preflight gate")
+            reasons.append(
+                _preflight_reason(card)
+                or "not selected by the bounded public preflight"
+            )
         if id(card) in fresh_ids:
             preflight = _preflight_reason(card)
             reasons.append(
@@ -135,5 +139,5 @@ def no_post_plain_english(
     if public_candidate_count <= 0:
         return "Verified cards existed, but none reached the final public-quality lane."
     if fresh_count <= 0:
-        return "Public-quality cards existed, but fresh/duplicate/preflight gates blocked them; the detailed decision trail now shows the exact duplicate, reservation, quality, or cache reason for each one."
+        return "Public-quality cards existed, but fresh/duplicate/preflight gates blocked them; the detailed decision trail now shows the exact duplicate, reservation, quality, cache, or bounded-result reason for each one."
     return "Fresh public-quality cards reached the public guard, but final posting gates blocked them."

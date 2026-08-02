@@ -6,6 +6,22 @@ from typing import Iterable
 from sniperplug.models.candidate import SourceCandidate
 
 
+ACTIONABLE_WARNING_TERMS = (
+    "error",
+    "failed",
+    "failure",
+    "timeout",
+    "timed out",
+    "http 4",
+    "http 5",
+    "invalid",
+    "unavailable",
+    "denied",
+    "forbidden",
+    "rate limit",
+)
+
+
 @dataclass(frozen=True)
 class SearchRouteStats:
     query: str
@@ -15,7 +31,8 @@ class SearchRouteStats:
 
     @property
     def score(self) -> int:
-        warning_penalty = len(self.warnings) * 3
+        error_count, _note_count = warning_kind_counts(self.warnings)
+        warning_penalty = error_count * 3
         return max(0, self.returned_products + self.pages_checked - warning_penalty)
 
 
@@ -55,8 +72,27 @@ def merge_route_stats(stats: Iterable[SearchRouteStats]) -> tuple[SearchRouteSta
 def top_route_lines(stats: Iterable[SearchRouteStats], *, limit: int = 5) -> list[str]:
     lines: list[str] = []
     for stat in list(stats)[:limit]:
+        error_count, note_count = warning_kind_counts(stat.warnings)
+        suffix_parts: list[str] = []
+        if error_count:
+            suffix_parts.append(f"{error_count} error(s)")
+        if note_count:
+            suffix_parts.append(f"{note_count} API note(s)")
+        suffix = f" • {' • '.join(suffix_parts)}" if suffix_parts else ""
         lines.append(
             f"• `{stat.query}` — **{stat.returned_products}** products across **{stat.pages_checked}** page(s)"
-            + (f" • {len(stat.warnings)} warning(s)" if stat.warnings else "")
+            + suffix
         )
     return lines
+
+
+def warning_kind_counts(warnings: Iterable[str]) -> tuple[int, int]:
+    error_count = 0
+    note_count = 0
+    for warning in warnings:
+        text = " ".join(str(warning or "").lower().split())
+        if any(term in text for term in ACTIONABLE_WARNING_TERMS):
+            error_count += 1
+        else:
+            note_count += 1
+    return error_count, note_count

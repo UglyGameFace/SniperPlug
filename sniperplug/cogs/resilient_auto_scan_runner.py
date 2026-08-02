@@ -35,6 +35,20 @@ WALMART_QUEUE_BATCH_SIZE = 6
 WALMART_QUEUE_CONCURRENCY = 2
 WALMART_QUEUE_HEALTH_LOG_INTERVAL_SECONDS = 5 * 60
 
+AUTOSCAN_ACTIONABLE_WARNING_TERMS = (
+    "error",
+    "failed",
+    "failure",
+    "timeout",
+    "timed out",
+    "http 4",
+    "http 5",
+    "invalid",
+    "rate limit",
+    "denied",
+    "forbidden",
+)
+
 _WALMART_SCHEDULE_LOCK = asyncio.Lock()
 _WALMART_PROVIDER_OPERATION_LOCK = asyncio.Lock()
 _NEXT_SCHEDULED_RUN_AT: dict[int, float] = {}
@@ -337,15 +351,27 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
         await self.bot.wait_until_ready()
 
     def _log_all_report_warnings(self, report, *, source: str) -> None:
-        for index, warning in enumerate(tuple(report.warnings or ()), start=1):
-            legacy.log.warning(
-                "Autoscan warning source=%s guild=%s warning=%s/%s detail=%s",
-                source,
-                report.guild_id,
-                index,
-                len(report.warnings),
-                legacy.clean_log_text(warning),
-            )
+        warnings = tuple(report.warnings or ())
+        for index, warning in enumerate(warnings, start=1):
+            detail = legacy.clean_log_text(warning)
+            if _is_actionable_autoscan_warning(detail):
+                legacy.log.warning(
+                    "Autoscan warning source=%s guild=%s warning=%s/%s detail=%s",
+                    source,
+                    report.guild_id,
+                    index,
+                    len(warnings),
+                    detail,
+                )
+            else:
+                legacy.log.info(
+                    "Autoscan note source=%s guild=%s note=%s/%s detail=%s",
+                    source,
+                    report.guild_id,
+                    index,
+                    len(warnings),
+                    detail,
+                )
 
     async def _walmart_exact_verification_worker(self) -> None:
         await self.bot.wait_until_ready()
@@ -373,7 +399,11 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                     )
                     if result.claimed or health_due:
                         health = await load_walmart_exact_queue_health(self.bot.db)
-                        legacy.log.info("%s • %s", result.summary_line(), health.summary_line())
+                        legacy.log.info(
+                            "%s • %s",
+                            _walmart_queue_batch_summary(result),
+                            health.summary_line(),
+                        )
                         self._last_queue_health_log_monotonic = now
                 except asyncio.CancelledError:
                     raise
@@ -412,3 +442,27 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                     )
         except asyncio.CancelledError:
             return
+
+
+def _is_actionable_autoscan_warning(value: str) -> bool:
+    text = " ".join(str(value or "").lower().split())
+    return any(term in text for term in AUTOSCAN_ACTIONABLE_WARNING_TERMS)
+
+
+def _walmart_queue_batch_summary(result) -> str:
+    identity_blocked = max(0, int(getattr(result, "identity_blocked", 0) or 0))
+    reported_failed = max(0, int(getattr(result, "failed", 0) or 0))
+    transient_failures = max(0, reported_failed - identity_blocked)
+    return (
+        "Walmart background exact verification: "
+        f"claimed **{int(getattr(result, 'claimed', 0) or 0)}** • "
+        f"verified **{int(getattr(result, 'verified', 0) or 0)}** • "
+        f"official was prices **{int(getattr(result, 'official_references', 0) or 0)}** • "
+        f"markdowns **{int(getattr(result, 'markdowns', 0) or 0)}** • "
+        f"no reference **{int(getattr(result, 'no_reference', 0) or 0)}** • "
+        f"under threshold **{int(getattr(result, 'under_threshold', 0) or 0)}** • "
+        f"unavailable **{int(getattr(result, 'unavailable', 0) or 0)}** • "
+        f"identity unavailable / safely blocked **{identity_blocked}** • "
+        f"transient failures **{transient_failures}** • "
+        f"due/pending **{int(getattr(result, 'pending_total', 0) or 0)}**"
+    )

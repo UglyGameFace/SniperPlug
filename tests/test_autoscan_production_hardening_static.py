@@ -52,9 +52,12 @@ def test_event_loop_lag_is_observable() -> None:
     assert "sniperplug-event-loop-watchdog" in RUNNER
 
 
-def test_all_autoscan_warnings_are_logged() -> None:
-    assert "for index, warning in enumerate(tuple(report.warnings or ())" in RUNNER
+def test_all_autoscan_diagnostics_are_logged_at_truthful_severity() -> None:
+    assert "warnings = tuple(report.warnings or ())" in RUNNER
+    assert "for index, warning in enumerate(warnings" in RUNNER
     assert "Autoscan warning source=%s" in RUNNER
+    assert "Autoscan note source=%s" in RUNNER
+    assert "_is_actionable_autoscan_warning" in RUNNER
 
 
 def test_feedback_views_are_bounded() -> None:

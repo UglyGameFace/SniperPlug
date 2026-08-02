@@ -17,6 +17,21 @@ NATIVE_MANUAL_QUERY_COUNT = 8
 NATIVE_MANUAL_TIMEOUT_SECONDS = 90
 NATIVE_BROAD_PRESET_KEY = "catalog_wide_rotating"
 
+REPORT_NOTE_PRIORITY_TERMS = (
+    "Catalog-wide route rotation:",
+    "Walmart Cash routes are included",
+    "Walmart exact-detail queue:",
+    "Global exact-detail queue results:",
+    "Official Walmart detail gate:",
+)
+REPORT_NOTE_HIDDEN_PREFIXES = (
+    "WALMART_PUBLISHER_ID is blank",
+    "Autoscan lightweight scan:",
+    "Verified-only result policy:",
+    "Suppressed ",
+    "Refreshed ",
+)
+
 
 class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
     """Single-pass autoscan runner with persistent catalog-wide rotation.
@@ -322,9 +337,10 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                 value=legacy.trim_discord_value(report.route_summary),
                 inline=False,
             )
-        if report.warnings:
-            warning_text = chr(10).join(f"• {warning}" for warning in report.warnings[:5])
-            embed.add_field(name="Verification notes", value=warning_text, inline=False)
+        report_notes = select_user_facing_report_notes(report.warnings)
+        if report_notes:
+            note_text = chr(10).join(f"• {note}" for note in report_notes)
+            embed.add_field(name="Scan notes", value=legacy.trim_discord_value(note_text), inline=False)
         if not report.public_result.posted:
             embed.add_field(
                 name="Why no verified deal was shown",
@@ -336,6 +352,29 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
             embed.add_field(name="Errors", value=error_text, inline=False)
         embed.set_footer(text="Exact-verified deals only. Search hints and review-only candidates are never displayed as deals.")
         await self._safe_autoscan_followup(interaction, embed=embed)
+
+
+def select_user_facing_report_notes(warnings, *, limit: int = 4) -> tuple[str, ...]:
+    cleaned = [" ".join(str(value or "").split()) for value in tuple(warnings or ())]
+    cleaned = [
+        value
+        for value in cleaned
+        if value and not value.startswith(REPORT_NOTE_HIDDEN_PREFIXES)
+    ]
+    selected: list[str] = []
+    for marker in REPORT_NOTE_PRIORITY_TERMS:
+        for value in cleaned:
+            if marker in value and value not in selected:
+                selected.append(value)
+                break
+        if len(selected) >= max(1, int(limit)):
+            return tuple(selected)
+    for value in cleaned:
+        if value not in selected:
+            selected.append(value)
+        if len(selected) >= max(1, int(limit)):
+            break
+    return tuple(selected)
 
 
 def resolve_native_query_count(*, force: bool, query_count_override: int | None) -> int:

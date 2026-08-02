@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.cogs import auto_scan_runner as autoscan_runtime
 from sniperplug.cogs.deal_scanner import DealCard, HuntPreset, provider_health_error_message
 from sniperplug.cogs.public_alerts import (
     default_auto_scan_config,
@@ -15,6 +16,7 @@ from sniperplug.cogs.public_alerts import (
     format_interval,
     list_retailer_auto_scan_settings,
 )
+from sniperplug.cogs.resilient_auto_scan_runner import _WALMART_PROVIDER_OPERATION_LOCK
 from sniperplug.services.autoscan_observed_price_memory import (
     collect_verified_discount_cards_with_observed_memory,
 )
@@ -140,8 +142,9 @@ class AutoDiscoveryCog(commands.Cog):
             )
             return
 
+        guild_id = int(interaction.guild_id)
         plan = resolve_discovery_plan(
-            guild_id=int(interaction.guild_id),
+            guild_id=guild_id,
             coverage=coverage.value if coverage else None,
         )
         if plan.key == "full" and not bool(
@@ -158,10 +161,12 @@ class AutoDiscoveryCog(commands.Cog):
             await interaction.followup.send(health_error, ephemeral=True)
             return
 
-        # One guild-wide discovery lock prevents different users or coverage
-        # options from launching overlapping high-volume Walmart scans.
+        # One guild-wide discovery key blocks duplicate command clicks. The
+        # autoscan lock has no stale timeout, so even a long full-catalog sweep
+        # cannot be overlapped after three minutes. Holding it also pauses the
+        # background exact worker through the autoscan runner's busy check.
         lock_key = ScanLockKey(
-            guild_id=int(interaction.guild_id),
+            guild_id=guild_id,
             user_id=0,
             action="manual_exact_discovery",
             preset="catalog_wide_exact",
@@ -172,6 +177,16 @@ class AutoDiscoveryCog(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        guild_scan_lock = autoscan_runtime.autoscan_lock(guild_id)
+        if guild_scan_lock.locked():
+            await scan_operation_locks.release(lock_key)
+            await interaction.followup.send(
+                "A Walmart autoscan or discovery pass is already running for this server. I blocked the overlapping run so completed work and public duplicate protection stay reliable.",
+                ephemeral=True,
+            )
+            return
+        await guild_scan_lock.acquire()
 
         started = time.monotonic()
         progress_task: asyncio.Task | None = None
@@ -189,7 +204,7 @@ class AutoDiscoveryCog(commands.Cog):
 
             auto_scan_settings = await list_retailer_auto_scan_settings(
                 self.bot.db,
-                int(interaction.guild_id),
+                guild_id,
             )
             gate_settings = auto_scan_settings.get(
                 AUTO_DISCOVERY_RETAILER,
@@ -206,47 +221,54 @@ class AutoDiscoveryCog(commands.Cog):
                 queries=plan.queries,
                 min_discount=50,
             )
-            result = await collect_verified_discount_cards_with_observed_memory(
-                requested_by=f"discover:{interaction.user.id}",
-                preset=preset,
-                db=self.bot.db,
-                guild_id=int(interaction.guild_id),
-                use_price_memory=True,
-            )
+            # Share the same provider gate as scheduled scans and the exact
+            # worker. A deep command can wait, but it cannot run hundreds of
+            # Walmart requests on top of another foreground provider operation.
+            async with _WALMART_PROVIDER_OPERATION_LOCK:
+                result = await collect_verified_discount_cards_with_observed_memory(
+                    requested_by=f"discover:{interaction.user.id}",
+                    preset=preset,
+                    db=self.bot.db,
+                    guild_id=guild_id,
+                    use_price_memory=True,
+                )
 
             exact_cards = list(result.cards)
             normalized_exact = normalize_exact_verified_walmart_cards(
                 exact_cards,
                 min_discount=result.min_discount,
             )
+            category_preferences = await get_category_preferences(
+                self.bot.db,
+                guild_id,
+            )
+            shown_cards, category_suppressed_cards, category_notes = apply_category_preferences(
+                exact_cards,
+                category_preferences,
+            )
+
+            # Private results show every exact, category-allowed card—even when
+            # it was already posted. Freshness/duplicate filtering is only for
+            # the public lane so users can actually inspect all verified deals.
             fresh_selection = await select_fresh_deal_cards(
                 self.bot.db,
-                guild_id=int(interaction.guild_id),
-                cards=exact_cards,
+                guild_id=guild_id,
+                cards=shown_cards,
                 fallback_retailer=AUTO_DISCOVERY_RETAILER,
-                limit=max(len(exact_cards), 1),
+                limit=max(len(shown_cards), 1),
                 hide_active_cache_repeats=False,
                 min_public_discount=result.min_discount,
                 source_label=f"discover:{plan.key}:exact_verified",
             )
-            shown_cards = list(fresh_selection.fresh)
-            category_preferences = await get_category_preferences(
-                self.bot.db,
-                int(interaction.guild_id),
-            )
-            shown_cards, category_suppressed_cards, category_notes = apply_category_preferences(
-                shown_cards,
-                category_preferences,
-            )
-
-            public_cards = shown_cards[: max(1, int(max_public_posts))]
+            fresh_cards = list(fresh_selection.fresh)
+            public_cards = fresh_cards[: max(1, int(max_public_posts))]
             normalize_exact_verified_walmart_cards(
                 public_cards,
                 min_discount=result.min_discount,
             )
             public_result = await maybe_post_public_deal_cards(
                 bot=self.bot,
-                guild_id=int(interaction.guild_id),
+                guild_id=guild_id,
                 cards=public_cards,
                 source_label=f"discover:{plan.key}:exact_verified_{result.min_discount}_plus",
                 fallback_retailer=AUTO_DISCOVERY_RETAILER,
@@ -265,7 +287,8 @@ class AutoDiscoveryCog(commands.Cog):
                     f"Checked: **{result.products_checked} returned products** across "
                     f"**{result.pages_checked} API result pages**\n"
                     f"Exact verified total: **{result.total_verified_cards}** • "
-                    f"fresh/private results: **{len(shown_cards)}**\n"
+                    f"private exact results: **{len(shown_cards)}** • "
+                    f"fresh public-ready: **{len(fresh_cards)}**\n"
                     f"Public cap for this run: **{int(max_public_posts)}** • "
                     f"sent to public guard: **{len(public_cards)}**\n"
                     f"Review/under-threshold exact leads: **{review_count}** • elapsed: **{elapsed}s**\n"
@@ -301,7 +324,7 @@ class AutoDiscoveryCog(commands.Cog):
                 embed.add_field(
                     name="More exact deals found",
                     value=(
-                        f"**{len(shown_cards) - len(public_cards)}** additional fresh exact-verified card(s) were kept in the private results instead of flooding the public channel."
+                        f"**{len(shown_cards) - len(public_cards)}** additional exact-verified card(s), including already-posted duplicates when present, were kept in the private results instead of flooding the public channel."
                     ),
                     inline=False,
                 )
@@ -390,6 +413,8 @@ class AutoDiscoveryCog(commands.Cog):
                     await progress_task
                 except asyncio.CancelledError:
                     pass
+            if guild_scan_lock.locked():
+                guild_scan_lock.release()
             await scan_operation_locks.release(lock_key)
 
     async def _discovery_progress_notice(

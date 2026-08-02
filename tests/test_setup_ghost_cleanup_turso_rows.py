@@ -32,9 +32,11 @@ class FakeConnection:
         self._ignored_once = False
 
     async def execute(self, sql: str, params=()):
-        if sql.startswith("SELECT DISTINCT guild_id FROM "):
+        if sql.startswith("SELECT DISTINCT CAST(guild_id AS TEXT) AS guild_id FROM "):
             table = sql.split()[-1]
-            return FakeCursor([(guild_id,) for guild_id in sorted(self.rows_by_table[table])])
+            return FakeCursor(
+                [(str(guild_id),) for guild_id in sorted(self.rows_by_table[table])]
+            )
         if sql.startswith("SELECT 1 AS present FROM "):
             table = sql.split()[5]
             guild_id = int(params[0])
@@ -69,10 +71,10 @@ def test_guild_id_reader_supports_mapping_tuple_and_attribute_rows() -> None:
     assert _guild_id_from_row(("not-an-id",)) is None
 
 
-def test_cleanup_deletes_tuple_row_ghost_from_every_config_table() -> None:
+def test_cleanup_deletes_true_tuple_row_ghost_from_every_config_table() -> None:
     live_id = 1514374173517152418
-    ghost_id = 1514374173517152512
-    conn = FakeConnection([(live_id,), (ghost_id,)])
+    true_ghost_id = 777777777777777777
+    conn = FakeConnection([(live_id,), (true_ghost_id,)])
     db = FakeDatabase(conn)
     bot = SimpleNamespace(guilds=[SimpleNamespace(id=live_id)])
 
@@ -80,15 +82,17 @@ def test_cleanup_deletes_tuple_row_ghost_from_every_config_table() -> None:
 
     assert deleted_count == 1
     assert conn.commits == 1
-    assert conn.deleted == [(table, ghost_id) for table in reversed(CONFIG_TABLES)]
-    assert all(ghost_id not in rows for rows in conn.rows_by_table.values())
+    assert conn.deleted == [
+        (table, true_ghost_id) for table in reversed(CONFIG_TABLES)
+    ]
+    assert all(true_ghost_id not in rows for rows in conn.rows_by_table.values())
 
 
 def test_cleanup_retries_when_remote_delete_is_not_immediately_visible() -> None:
     live_id = 1514374173517152418
-    ghost_id = 1514374173517152512
+    true_ghost_id = 777777777777777777
     conn = FakeConnection(
-        [(live_id,), (ghost_id,)],
+        [(live_id,), (true_ghost_id,)],
         ignore_first_delete_table="guild_public_alert_settings",
     )
     db = FakeDatabase(conn)
@@ -98,5 +102,5 @@ def test_cleanup_retries_when_remote_delete_is_not_immediately_visible() -> None
 
     assert result == {"found": 1, "deleted": 1, "remaining": 0}
     assert conn.commits == 2
-    assert conn.deleted.count(("guild_public_alert_settings", ghost_id)) == 2
-    assert all(ghost_id not in rows for rows in conn.rows_by_table.values())
+    assert conn.deleted.count(("guild_public_alert_settings", true_ghost_id)) == 2
+    assert all(true_ghost_id not in rows for rows in conn.rows_by_table.values())

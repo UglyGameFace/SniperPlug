@@ -136,7 +136,53 @@ def test_smart_filter_rejects_cheap_low_savings_noise() -> None:
     )
 
     assert decision.matched is False
-    assert decision.required_discount == 35
+    assert decision.required_discount == 50
+
+
+def test_smart_mode_never_lowers_explicit_discount_or_score_floors() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        mode="smart",
+        min_discount=70,
+        min_score=180,
+    )
+
+    below_discount = match_dm_deal(
+        preference,
+        _card(discount=69.0, score=250),
+    )
+    below_score = match_dm_deal(
+        preference,
+        _card(discount=70.0, score=179),
+    )
+
+    assert below_discount.matched is False
+    assert below_discount.required_discount == 70
+    assert below_score.matched is False
+    assert "score 179 is below the required 180" in below_score.reason
+
+
+def test_walmart_cash_cannot_soften_below_user_discount_floor() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        mode="smart",
+        min_discount=60,
+        min_score=78,
+    )
+    card = _card(
+        discount=59.0,
+        attrs={
+            "walmartCashApiProof": "yes",
+            "walmartCashAmount": 10,
+        },
+    )
+
+    decision = match_dm_deal(preference, card)
+
+    assert decision.matched is False
+    assert decision.required_discount == 60
 
 
 def test_category_aliases_expand_without_duplicates() -> None:

@@ -92,7 +92,9 @@ def find_walmart_cash_offer(candidate: SourceCandidate, deal: NormalizedDeal) ->
         return None
 
     amount = _float_or_none(attrs.get("walmartCashAmount") or attrs.get("walmartCashSavings"))
-    if amount is None or amount < MIN_CONFIRMED_WALMART_CASH_AMOUNT:
+    if amount is None or amount <= 0:
+        return None
+    if amount < MIN_CONFIRMED_WALMART_CASH_AMOUNT:
         return None
 
     proof_path = str(attrs.get("walmartCashProofPath") or "").strip()
@@ -182,7 +184,6 @@ def build_walmart_cash_summary_embed(
     badge_seen = int(promo_counts.get("cash_badge_seen", 0) or 0)
     badge_no_amount = int(promo_counts.get("badge_rows_without_amount", 0) or 0)
     detail_attempted = int(promo_counts.get("detail_rows_attempted", detail_checked) or 0)
-    confirmed_rows = int(promo_counts.get("confirmed_walmart_cash_amount_rows", found) or 0)
     timed_out = partial or any(
         "timed out" in str(warning).lower() or "timeout" in str(warning).lower()
         for warning in warnings
@@ -228,17 +229,26 @@ def build_walmart_cash_summary_embed(
         embed.add_field(
             name="🏷️ Unconfirmed Cash hints hidden",
             value=(
-                f"Walmart Cash-style badge hints: **{badge_seen}** • hints without an amount: **{badge_no_amount}**. "
+                f"Cash badges seen: **{badge_seen}** • badge hints without an amount: **{badge_no_amount}**. "
                 "They are not shown as deals until Walmart returns an exact dollar amount."
             ),
             inline=False,
         )
 
-    if detail_unavailable or timed_out:
+    if detail_unavailable:
         embed.add_field(
-            name="⚠️ Coverage note",
+            name="⚠️ Proof unavailable",
             value=(
-                "Some official API detail checks were unavailable or timed out, so this was a partial scan. "
+                "Walmart did not expose usable official item-detail promo data for part or all of this batch. "
+                "That is missing coverage, not proof that the Walmart app has no Cash offers."
+            ),
+            inline=False,
+        )
+    elif timed_out:
+        embed.add_field(
+            name="⚠️ Partial check",
+            value=(
+                "One or more official Walmart API checks timed out, so this batch was incomplete. "
                 "SniperPlug did not turn missing data into a fake zero or a guessed offer."
             ),
             inline=False,
@@ -251,7 +261,7 @@ def build_walmart_cash_summary_embed(
     embed.set_footer(
         text=(
             "Private Cash-only search • explicit Walmart Cash amount required • "
-            "OnePay, generic cashback, markdowns, and promo wording do not count"
+            "OnePay cashback, generic cashback, markdowns, and promo wording do not count"
         )
     )
     return embed
@@ -280,17 +290,26 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
         inline=False,
     )
     embed.add_field(
-        name="Separated signals",
+        name="Separated promo signals only",
         value=(
             f"Cash badge only: **{counts.get('cash_badge_seen', 0)}**\n"
             f"Badge without amount: **{counts.get('badge_rows_without_amount', 0)}**\n"
             f"Cart promo: **{counts.get('cart_promo', 0)}**\n"
-            f"OnePay: **{counts.get('onepay', 0)}**\n"
+            f"OnePay cashback: **{counts.get('onepay', 0)}**\n"
             f"Markdown: **{counts.get('markdown', 0)}**\n"
             f"Clearance: **{counts.get('clearance', 0)}**"
         ),
         inline=False,
     )
+
+    links: list[str] = []
+    for candidate in cash_candidates[:5]:
+        url = str(getattr(candidate, "product_url", "") or "").strip()
+        if url.startswith("http"):
+            links.append(f"• [{short(getattr(candidate, 'title', 'Walmart product'), 70)}]({url})")
+    if links:
+        embed.add_field(name="API-proven Cash links", value="\n".join(links)[:1024], inline=False)
+
     debug_lines = tuple(getattr(probe, "debug_lines", ()) or ())
     if debug_lines:
         embed.add_field(
@@ -323,7 +342,7 @@ def _public_warning_lines(warnings: tuple[str, ...], *, diagnostic: bool = False
             continue
         if "timed out" in lowered or "timeout" in lowered:
             clean = "One or more official Walmart API requests timed out."
-        elif "detail promo proof unavailable" in lowered:
+        elif "item detail unavailable" in lowered or "detail promo proof unavailable" in lowered:
             clean = "One or more official Walmart item-detail checks were unavailable."
         elif diagnostic:
             clean = short(text, 220)

@@ -6,9 +6,9 @@ import discord
 
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
-    match_dm_deal,
     normalize_categories,
 )
+from sniperplug.services.dm_deal_matching import match_dm_deal
 
 
 def _card(
@@ -183,6 +183,25 @@ def test_walmart_cash_cannot_soften_below_user_discount_floor() -> None:
 
     assert decision.matched is False
     assert decision.required_discount == 60
+
+
+def test_high_markdown_cannot_bypass_explicit_savings_floor() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        mode="smart",
+        min_discount=50,
+        min_score=78,
+        min_savings_cents=20000,
+    )
+
+    decision = match_dm_deal(
+        preference,
+        _card(current=20.0, reference=100.0, discount=80.0, score=200),
+    )
+
+    assert decision.matched is False
+    assert "below the required $200.00" in decision.reason
 
 
 def test_category_aliases_expand_without_duplicates() -> None:

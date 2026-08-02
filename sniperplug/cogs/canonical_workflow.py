@@ -35,7 +35,7 @@ class CanonicalWorkflowCog(commands.Cog):
         description="Use this channel for exact-verified deal alerts.",
     )
     @app_commands.describe(
-        public_alerts="Allow exact-verified Walmart deals to post in this channel.",
+        public_alerts="Allow exact-verified Walmart and HP Store deals in this channel.",
         threshold="Minimum exact markdown for this server. Recommended: 30-40.",
         best_categories="Apply broad Deal Week and Walmart Cash category coverage.",
     )
@@ -77,13 +77,13 @@ class CanonicalWorkflowCog(commands.Cog):
             self.bot.db,
             guild_id=guild_id,
             enabled=bool(public_alerts),
-            retailers=("walmart",),
+            retailers=("walmart", "hp"),
             channel_id=int(channel.id),
         )
 
-        # The global catalog scanner runs once for the whole bot. This row now
-        # means "this server receives Walmart fanout," not "run another catalog
-        # scan on this server's own interval."
+        # Walmart discovery runs globally inside SniperPlug. HP discovery runs in
+        # its own process and writes exact events to the same shared database.
+        # Neither path creates one duplicate scanner per Discord server.
         await set_retailer_auto_scan(
             self.bot.db,
             guild_id,
@@ -105,8 +105,8 @@ class CanonicalWorkflowCog(commands.Cog):
         embed = discord.Embed(
             title="✅ SniperPlug delivery setup complete",
             description=(
-                "SniperPlug's **global** Walmart scanner covers the shared catalog route pool in the background. "
-                "This server does not launch its own duplicate Walmart scan and you do not need to run `/discover` for normal alerts."
+                "SniperPlug now receives exact-verified deals from its global Walmart scanner and the standalone HP Store watcher. "
+                "This server only receives delivery fanout; it never launches duplicate retailer scans."
             ),
             color=discord.Color.green() if config.get("enabled") else discord.Color.orange(),
         )
@@ -118,16 +118,21 @@ class CanonicalWorkflowCog(commands.Cog):
         )
         embed.add_field(
             name="Server filter",
-            value=f"Exact Walmart markdown: **{saved_threshold}%+**",
+            value=f"Exact retailer markdown: **{saved_threshold}%+**",
             inline=True,
+        )
+        embed.add_field(
+            name="Retailers",
+            value="**Walmart** global catalog + **HP Store** standalone exact-price watcher",
+            inline=False,
         )
         embed.add_field(
             name="How autoscan works now",
             value=(
-                "• One durable global cursor covers every configured Walmart route.\n"
-                "• Exact verification happens once globally.\n"
-                "• Newly proven deals fan out to this server using its threshold, categories, channel, and duplicate rules.\n"
-                "• `/discover` remains an optional manual deep sweep—not a requirement for automatic coverage."
+                "• One durable global cursor covers Walmart routes.\n"
+                "• The separate HP watcher covers HP's US product catalog and writes verified events into SniperPlug's shared database.\n"
+                "• Exact deals fan out using this server's threshold, categories, channel, and duplicate rules.\n"
+                "• `/discover` remains an optional manual sweep—not a requirement for automatic coverage."
             ),
             inline=False,
         )

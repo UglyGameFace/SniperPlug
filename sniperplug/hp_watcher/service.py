@@ -53,6 +53,7 @@ class HPWatcherCycleResult:
     offers_verified: int = 0
     offer_failures: int = 0
     events_published: int = 0
+    exact_confirmations: int = 0
 
     def summary_line(self) -> str:
         return (
@@ -61,6 +62,7 @@ class HPWatcherCycleResult:
             f"product_urls={self.product_urls_found} new_products={self.new_products} "
             f"pages={self.product_pages_checked} page_failures={self.product_page_failures} "
             f"offers={self.offers_verified}/{self.offers_requested} "
+            f"confirmations={self.exact_confirmations} "
             f"offer_failures={self.offer_failures} events={self.events_published}"
         )
 
@@ -124,6 +126,7 @@ class HPWatcherService:
             offers_verified=offer_counts[1],
             offer_failures=offer_counts[2],
             events_published=offer_counts[3],
+            exact_confirmations=offer_counts[4],
         )
 
     async def _process_sitemaps(self, client: HPStoreClient) -> tuple[int, int, int, int]:
@@ -219,13 +222,13 @@ class HPWatcherService:
             )
         return len(products), failures
 
-    async def _process_offers(self, client: HPStoreClient) -> tuple[int, int, int, int]:
+    async def _process_offers(self, client: HPStoreClient) -> tuple[int, int, int, int, int]:
         products = await claim_products_for_offer_poll(
             self.db,
             limit=self.settings.offer_batch_size,
         )
         if not products:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0
 
         expected = {product.catalog_entry_id: product.sku for product in products}
         by_id = {product.catalog_entry_id: product for product in products}
@@ -244,9 +247,9 @@ class HPWatcherService:
                 product_keys=[product.product_key for product in products],
                 error=f"{type(error).__name__}: {error}",
             )
-            return len(products), 0, len(products), 0
+            return len(products), 0, len(products), 0, 0
 
-        verified = failures = events = 0
+        verified = failures = events = confirmations = 0
         returned_ids: set[str] = set()
         for offer in offers:
             product = by_id.get(offer.product_id)
@@ -254,6 +257,14 @@ class HPWatcherService:
                 continue
             returned_ids.add(offer.product_id)
             try:
+                if offer_requires_exact_confirmation(
+                    product,
+                    offer,
+                    min_discount=self.settings.min_event_discount_percent,
+                ):
+                    offer = await confirm_exact_hp_offer(client, product, offer)
+                    confirmations += 1
+
                 decision = await record_exact_offer(
                     self.db,
                     product=product,
@@ -297,7 +308,92 @@ class HPWatcherService:
                 product_keys=missing,
                 error="HP structured price response omitted the exact claimed product identity",
             )
-        return len(products), verified, failures, events
+        return len(products), verified, failures, events, confirmations
+
+
+async def confirm_exact_hp_offer(
+    client: Any,
+    product: CatalogProduct,
+    discovered: HPPriceOffer,
+) -> HPPriceOffer:
+    """Independently re-fetch an alert-worthy HP offer before state/event writes."""
+
+    await asyncio.sleep(0.75)
+    document = await client.fetch_price_batch(
+        [product.catalog_entry_id],
+        cache_bust=True,
+    )
+    confirmations = await asyncio.to_thread(
+        parse_hp_services_price_response,
+        document.text,
+        expected_products={product.catalog_entry_id: product.sku},
+    )
+    if len(confirmations) != 1:
+        raise ValueError("HP confirmation response did not return one exact matching offer")
+    confirmed = confirmations[0]
+    if not exact_hp_offers_match(discovered, confirmed):
+        raise ValueError("HP exact price confirmation disagreed with the discovery response")
+    return confirmed
+
+
+def offer_requires_exact_confirmation(
+    product: CatalogProduct,
+    offer: HPPriceOffer,
+    *,
+    min_discount: int,
+) -> bool:
+    """Confirm only observations capable of generating a public deal event."""
+
+    reference = _best_reference_price(product, offer)
+    active_markdown = bool(
+        reference is not None
+        and reference > offer.current_price
+        and ((reference - offer.current_price) / reference * 100.0) >= max(1, int(min_discount))
+        and offer.in_stock is not False
+        and offer.can_add_to_cart is not False
+    )
+    if not active_markdown:
+        return False
+    if product.previous_current_price is None:
+        return offer.msrp_price is not None and offer.msrp_price > offer.current_price
+    if offer.current_price < product.previous_current_price:
+        return True
+    return product.previous_in_stock is False and offer.in_stock is True
+
+
+def exact_hp_offers_match(first: HPPriceOffer, second: HPPriceOffer) -> bool:
+    return bool(
+        first.product_id == second.product_id
+        and first.sku == second.sku
+        and _money_equal(first.current_price, second.current_price)
+        and _optional_money_equal(first.msrp_price, second.msrp_price)
+        and _optional_bool_equal(first.in_stock, second.in_stock)
+        and _optional_bool_equal(first.can_add_to_cart, second.can_add_to_cart)
+    )
+
+
+def _best_reference_price(product: CatalogProduct, offer: HPPriceOffer) -> float | None:
+    if offer.msrp_price is not None and offer.msrp_price > offer.current_price:
+        return offer.msrp_price
+    if product.previous_current_price is not None and product.previous_current_price > offer.current_price:
+        return product.previous_current_price
+    if product.previous_reference_price is not None and product.previous_reference_price > offer.current_price:
+        return product.previous_reference_price
+    return None
+
+
+def _money_equal(left: float, right: float) -> bool:
+    return int(round(float(left) * 100)) == int(round(float(right) * 100))
+
+
+def _optional_money_equal(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return left is right
+    return _money_equal(left, right)
+
+
+def _optional_bool_equal(left: bool | None, right: bool | None) -> bool:
+    return left == right
 
 
 def _candidate_for_hp_offer(product: CatalogProduct, offer: HPPriceOffer, decision: Any) -> SourceCandidate:
@@ -309,6 +405,7 @@ def _candidate_for_hp_offer(product: CatalogProduct, offer: HPPriceOffer, decisi
     reference_source = str(decision.reference_source or "")
     attrs = {
         "hpStructuredPriceProof": "yes",
+        "hpIndependentConfirmation": "yes",
         "hpCatalogEntryId": product.catalog_entry_id,
         "hpPartNumber": offer.part_number,
         "hpNormalizedSku": offer.sku,
@@ -352,6 +449,7 @@ def _candidate_for_hp_offer(product: CatalogProduct, offer: HPPriceOffer, decisi
         can_add_to_cart=offer.can_add_to_cart,
         signals=[
             "Exact HP catalog entry and part number matched structured HPServices priceData",
+            "Alert-worthy price was independently re-fetched with a cache-busting request",
             "HP strikethrough reference is labeled MSRP, not prevailing market price",
         ],
     )

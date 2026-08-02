@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from sniperplug.services.opportunity_watchlist import category_for_title
@@ -16,6 +17,9 @@ DEFAULT_MIN_DISCOUNT = 35
 DEFAULT_MIN_SCORE = 78
 DEFAULT_MAX_ALERTS_PER_DAY = 25
 MAX_FILTER_TERMS = 12
+RECEIPT_RETENTION_DAYS = 90
+_SCHEMA_READY = False
+_SCHEMA_LOCK = asyncio.Lock()
 
 CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
     "tech": (
@@ -119,44 +123,60 @@ class DmDealMatchDecision:
 
 
 async def ensure_dm_deal_alert_tables(db: Any) -> None:
-    conn = db.require_conn()
-    await conn.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {PREFERENCES_TABLE} (
-            user_id TEXT PRIMARY KEY,
-            enabled INTEGER NOT NULL DEFAULT 0,
-            mode TEXT NOT NULL DEFAULT 'smart',
-            min_discount INTEGER NOT NULL DEFAULT 35,
-            max_price_cents INTEGER,
-            min_score INTEGER NOT NULL DEFAULT 78,
-            min_savings_cents INTEGER NOT NULL DEFAULT 0,
-            categories_json TEXT NOT NULL DEFAULT '[]',
-            keywords_json TEXT NOT NULL DEFAULT '[]',
-            exclude_keywords_json TEXT NOT NULL DEFAULT '[]',
-            walmart_cash_only INTEGER NOT NULL DEFAULT 0,
-            max_alerts_per_day INTEGER NOT NULL DEFAULT 25,
-            failure_count INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+    """Initialize DM alert storage once per process, outside delivery hot paths."""
+
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
+    async with _SCHEMA_LOCK:
+        if _SCHEMA_READY:
+            return
+        conn = db.require_conn()
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {PREFERENCES_TABLE} (
+                user_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                mode TEXT NOT NULL DEFAULT 'smart',
+                min_discount INTEGER NOT NULL DEFAULT 35,
+                max_price_cents INTEGER,
+                min_score INTEGER NOT NULL DEFAULT 78,
+                min_savings_cents INTEGER NOT NULL DEFAULT 0,
+                categories_json TEXT NOT NULL DEFAULT '[]',
+                keywords_json TEXT NOT NULL DEFAULT '[]',
+                exclude_keywords_json TEXT NOT NULL DEFAULT '[]',
+                walmart_cash_only INTEGER NOT NULL DEFAULT 0,
+                max_alerts_per_day INTEGER NOT NULL DEFAULT 25,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    await conn.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {RECEIPTS_TABLE} (
-            user_id TEXT NOT NULL,
-            deal_key TEXT NOT NULL,
-            delivered_at TEXT NOT NULL,
-            PRIMARY KEY (user_id, deal_key)
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {RECEIPTS_TABLE} (
+                user_id TEXT NOT NULL,
+                deal_key TEXT NOT NULL,
+                delivered_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, deal_key)
+            )
+            """
         )
-        """
-    )
-    await conn.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{RECEIPTS_TABLE}_delivered "
-        f"ON {RECEIPTS_TABLE} (user_id, delivered_at)"
-    )
-    await conn.commit()
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{RECEIPTS_TABLE}_delivered "
+            f"ON {RECEIPTS_TABLE} (user_id, delivered_at)"
+        )
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=RECEIPT_RETENTION_DAYS)
+        ).isoformat()
+        await conn.execute(
+            f"DELETE FROM {RECEIPTS_TABLE} WHERE delivered_at < ?",
+            (cutoff,),
+        )
+        await conn.commit()
+        _SCHEMA_READY = True
 
 
 async def get_dm_deal_alert_preference(db: Any, user_id: int) -> DmDealAlertPreference:
@@ -350,8 +370,6 @@ def match_dm_deal(preference: DmDealAlertPreference, card: Any) -> DmDealMatchDe
     search_text = card_search_text(card)
     category = category_for_title(title)
     category_key = category.key if category is not None else "uncategorized"
-    attrs = getattr(card, "variant_attributes", None)
-    attrs = attrs if isinstance(attrs, dict) else {}
 
     current_cents = _money_to_cents(
         getattr(card, "api_current_price", None)
@@ -391,13 +409,17 @@ def match_dm_deal(preference: DmDealAlertPreference, card: Any) -> DmDealMatchDe
 
     if pref.mode == "smart":
         smart_discount, smart_savings = smart_requirements(current_cents)
-        required_discount = max(20, min(pref.min_discount, smart_discount))
-        required_score = max(70, min(pref.min_score, 110))
+        required_discount = max(20, pref.min_discount, smart_discount)
+        required_score = max(70, pref.min_score)
         required_savings = max(pref.min_savings_cents, smart_savings)
-        # Strict API-proven Walmart Cash is useful extra value, but it may only
-        # soften a real markdown requirement. It can never create a deal alone.
+        # Walmart Cash may soften Smart's additional adaptive requirement, but
+        # never below the user's explicit hard floor or the 20% safety floor.
         if cash_cents > 0 and discount >= 20:
-            required_discount = max(20, required_discount - 5)
+            required_discount = max(
+                20,
+                pref.min_discount,
+                required_discount - 5,
+            )
 
     if discount < required_discount:
         return DmDealMatchDecision(

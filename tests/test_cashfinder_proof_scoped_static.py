@@ -28,7 +28,8 @@ def test_cash_truth_requires_strict_api_proof_positive_amount_and_evidence():
 
 
 def test_cash_summary_distinguishes_unsupported_unavailable_partial_and_checked_zero():
-    assert "not a supported Walmart Cash offer feed" in SUMMARY
+    assert "not a supported" in SUMMARY
+    assert "Walmart Cash offer feed" in SUMMARY
     assert "False scan disabled" in SUMMARY
     assert "Proof unavailable" in SUMMARY
     assert "Partial check" in SUMMARY

@@ -22,6 +22,7 @@ from sniperplug.services.setup_self_heal import (
 
 
 log = logging.getLogger("sniperplug.autoscan.live_guilds")
+_SESSION_GHOST_TOMBSTONES: set[int] = set()
 
 
 @dataclass(frozen=True)
@@ -41,9 +42,9 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
     """Repair live guilds and quarantine non-live setup rows once.
 
     A Turso/libSQL replica can briefly surface a row after the connection that
-    deleted it already verified the row absent. Tombstones make that stale view
-    idempotent: the row is never treated as live work and is not repeatedly
-    announced as newly deleted every scheduler cycle.
+    deleted it already verified the row absent. Durable tombstones are backed by
+    a process-local quarantine set so a stale remote read cannot repeatedly
+    announce and delete the same ghost every scheduler cycle.
     """
 
     live_guild_ids = {
@@ -63,9 +64,11 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
 
     conn = db.require_conn()
     # Tombstone helpers commit their own schema and mutations. A guild that was
-    # genuinely rejoined is released durably before quarantine state is read.
+    # genuinely rejoined is released durably and from the session quarantine.
     await clear_live_ghost_tombstones(conn, live_guild_ids)
+    _SESSION_GHOST_TOMBSTONES.difference_update(live_guild_ids)
     tombstoned = await load_ghost_tombstones(conn)
+    tombstoned.update(_SESSION_GHOST_TOMBSTONES)
     visible_ghost_ids = await _discover_ghost_ids(conn, live_guild_ids)
     already_quarantined = visible_ghost_ids & tombstoned
     new_ghost_ids = visible_ghost_ids - tombstoned
@@ -87,6 +90,7 @@ async def reconcile_live_public_alert_setups(db: Any, bot: Any) -> dict[str, int
             new_ghost_ids,
             reason="not_in_live_discord_guild_cache",
         )
+        _SESSION_GHOST_TOMBSTONES.update(new_ghost_ids)
 
     deleted = len(new_ghost_ids - remaining)
     if remaining:
@@ -142,6 +146,7 @@ async def list_live_public_alert_guilds(db: Any, bot: Any) -> LiveGuildLoadResul
 
     conn = db.require_conn()
     tombstoned = await load_ghost_tombstones(conn)
+    tombstoned.update(_SESSION_GHOST_TOMBSTONES)
     cursor = await conn.execute(
         "SELECT guild_id FROM guild_public_alert_settings "
         "WHERE enabled = 1 AND channel_id IS NOT NULL"

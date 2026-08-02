@@ -15,12 +15,7 @@ def method_source(src: str, name: str) -> str:
     end = len(lines)
     for i in range(start + 1, len(lines)):
         line = lines[i]
-        if (
-            line.startswith("    @app_commands.")
-            or line.startswith("    @commands.")
-            or line.startswith("    async def ")
-            or line.startswith("    def ")
-        ):
+        if line.startswith(("    @app_commands.", "    @commands.", "    async def ", "    def ")):
             end = i
             break
     return "".join(lines[start:end])
@@ -36,13 +31,17 @@ def test_cash_command_delegates_to_scoped_pipeline():
     assert "timeout=150" not in re.sub(r"\s+", "", HELPER)
 
 
-def test_pipeline_is_fast_bounded_and_has_detail_stage():
-    assert "queries[:2]" in PIPELINE
-    assert "asyncio.Semaphore(2)" in PIPELINE
-    assert "asyncio.Semaphore(3)" in PIPELINE
+def test_pipeline_is_bounded_official_api_only_and_has_detail_stage():
+    assert "queries[:DEFAULT_ROUTE_LIMIT]" in PIPELINE
+    assert "DEFAULT_ROUTE_LIMIT = 6" in PIPELINE
+    assert "DETAIL_CANDIDATE_LIMIT = 24" in PIPELINE
+    assert "SEARCH_CONCURRENCY = 3" in PIPELINE
+    assert "DETAIL_CONCURRENCY = 4" in PIPELINE
     assert "fetch_product_detail_payload" in PIPELINE
     assert "detail_rows_checked" in PIPELINE
-    assert "Walmart did not expose full promo detail through the current API access" in PIPELINE
+    assert '"public_pdp_fallback": "disabled"' in PIPELINE
+    assert "walmart_pdp_cash_proof" not in PIPELINE
+    assert "check_walmart_pdp_cash_truth" not in PIPELINE
 
 
 def test_classifier_separates_promo_types():
@@ -51,13 +50,14 @@ def test_classifier_separates_promo_types():
         assert token in lower
 
 
-def test_probe_command_and_embed_are_wired():
+def test_owner_probe_and_compact_embed_are_wired():
     assert 'name="walmart_api_probe"' in DEALS
     assert "run_walmart_api_probe" in DEALS
     assert "build_walmart_api_probe_embed" in OFFERS
+    assert "public PDP scraping disabled" in OFFERS
 
 
-def test_provider_has_detail_fetch_without_removing_normal_scan():
+def test_provider_has_official_detail_fetch_without_removing_normal_scan():
     assert "fetch_product_detail_payload" in PROVIDER
     assert "detail_url" in PROVIDER
     assert "def _search(" in PROVIDER

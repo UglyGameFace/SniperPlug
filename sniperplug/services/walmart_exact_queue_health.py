@@ -28,7 +28,7 @@ class WalmartExactQueueHealth:
             "queue health: "
             f"total **{self.total}** • actionable due now **{self.due_now}** • "
             f"delayed transient retries **{self.delayed_retries}** • "
-            f"terminal identity blocked **{self.identity_blocked}** • "
+            f"identity unavailable / safely blocked **{self.identity_blocked}** (terminal) • "
             f"verified **{self.verified}** • verifying **{self.verifying}** • "
             f"pending **{self.pending}** • unavailable **{self.unavailable}** • "
             f"stale/unclaimable **{self.stale}**"

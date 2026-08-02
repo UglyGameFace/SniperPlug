@@ -53,6 +53,7 @@ def test_exact_hp_card_passes_hp_specific_public_gate() -> None:
     assert card.selected_offer_id == f"hp:{PRODUCT.catalog_entry_id}:{PRODUCT.sku}"
     assert card.api_current_price == 12.99
     assert card.api_reference_price == 54.99
+    assert card.variant_attributes["hpIndependentConfirmation"] == "yes"
 
 
 def test_hp_public_gate_rejects_wrong_domain_and_offer_identity() -> None:
@@ -76,6 +77,13 @@ def test_hp_public_gate_rejects_zero_price_and_untrusted_reference() -> None:
     untrusted.variant_attributes = deepcopy(untrusted.variant_attributes)
     untrusted.variant_attributes["trustedReferencePrice"] = "999.99"
     assert is_verified_hp_public_card(untrusted, min_discount=10) is False
+
+
+def test_hp_public_gate_rejects_unconfirmed_structured_price() -> None:
+    card = verified_card()
+    card.variant_attributes = deepcopy(card.variant_attributes)
+    card.variant_attributes.pop("hpIndependentConfirmation")
+    assert is_verified_hp_public_card(card, min_discount=10) is False
 
 
 def test_hp_public_gate_honors_each_server_threshold() -> None:

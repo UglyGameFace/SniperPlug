@@ -182,9 +182,9 @@ async def build_global_autoscan_health_embed(
         inline=False,
     )
     embed.add_field(
-        name="Walmart global catalog",
+        name="Global catalog coverage",
         value=(
-            f"Configured routes: **{len(routes)}**\n"
+            f"Walmart configured routes: **{len(routes)}**\n"
             f"{global_state.summary_line(total_routes=len(routes))}\n"
             "A durable cursor advances in order and resumes after restarts. Per-server interval settings no longer control discovery."
         ),

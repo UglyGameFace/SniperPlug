@@ -54,14 +54,15 @@ def test_public_autoscan_route_policy_does_not_mutate_legacy_hunt_buttons():
     assert "essentials" in deal_scanner.HUNT_PRESETS
 
 
-def test_cash_finder_uses_private_department_discovery_without_promo_phrase_queries():
+def test_cash_finder_keeps_department_discovery_private_without_promo_queries():
     cash_queries = "\n".join(DEFAULT_CASH_QUERIES).lower()
     policy_queries = "\n".join(PRIVATE_WALMART_CASH_ROUTES).lower()
 
     assert "personal care" in cash_queries
     assert "laundry detergent" in cash_queries
     assert "walmart cash" not in cash_queries
-    assert "walmart cash eligible" in policy_queries
+    assert "personal care" in policy_queries
+    assert "walmart cash" not in policy_queries
     assert is_private_promo_route("walmart cash eligible")
 
 

@@ -75,7 +75,7 @@ def walmart_cash_search_terms(search: str | None) -> tuple[str, ...]:
         return DEFAULT_CASH_QUERIES
 
     cleaned = re.sub(
-        r"\b(?:walmart\s+cash|cash\s+offers?|cash\s+eligible|eligible)\b",
+        r"\b(?:walmart\s+cash(?:\s+offers?)?|cash\s+offers?|cash\s+eligible|eligible)\b",
         " ",
         base,
         flags=re.IGNORECASE,
@@ -297,7 +297,8 @@ def build_walmart_api_probe_embed(probe: Any) -> discord.Embed:
             f"Cart promo: **{counts.get('cart_promo', 0)}**\n"
             f"OnePay cashback: **{counts.get('onepay', 0)}**\n"
             f"Markdown: **{counts.get('markdown', 0)}**\n"
-            f"Clearance: **{counts.get('clearance', 0)}**"
+            f"Clearance: **{counts.get('clearance', 0)}**\n"
+            "A clearance flag by itself does not prove a discount, profit, or buy-worthy Cash offer."
         ),
         inline=False,
     )

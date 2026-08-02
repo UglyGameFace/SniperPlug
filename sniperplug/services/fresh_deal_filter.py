@@ -70,14 +70,14 @@ async def select_fresh_deal_cards(
 ) -> FreshDealSelection:
     """Return cards that the public post guard is likely to actually post.
 
-    Each processed card receives ``autoscan_preflight_reason``. Reports can then
-    identify the exact quality, duplicate, reservation, or active-cache gate
-    instead of collapsing every failure into one vague preflight message.
+    Every input card receives ``autoscan_preflight_reason``. Reports can then
+    identify the exact quality, duplicate, reservation, cache, or bounded-result
+    decision instead of leaving lower-ranked cards with an unidentified gate.
     """
     if not cards:
         return FreshDealSelection(fresh=[])
+    limit_value = max(1, int(limit))
     if guild_id is None:
-        limit_value = max(1, int(limit))
         quality_passed: list[Any] = []
         quality_passed_ids: set[int] = set()
         for card in cards:
@@ -106,7 +106,7 @@ async def select_fresh_deal_cards(
             elif id(card) in quality_passed_ids:
                 _set_preflight_reason(
                     card,
-                    f"not selected: outside top {limit_value} public-quality result(s)",
+                    f"not selected: public post cap kept the top {limit_value} ranked deal(s)",
                 )
         return FreshDealSelection(
             fresh=selected,
@@ -126,6 +126,32 @@ async def select_fresh_deal_cards(
 
     for card in cards:
         _set_preflight_reason(card, "preflight not evaluated")
+
+        # Once the bounded public result is full, keep annotating every later
+        # card without doing unnecessary duplicate/cache database reads. This is
+        # an expected ranking cap, not an unknown failure.
+        if len(fresh) >= limit_value:
+            if prepare_public_deal_candidate(
+                card,
+                source_label=source_label,
+                min_discount=min_public_discount,
+            ):
+                _set_preflight_reason(
+                    card,
+                    f"not selected: public post cap kept the top {limit_value} ranked deal(s)",
+                )
+            else:
+                not_alertable += 1
+                _set_preflight_reason(
+                    card,
+                    public_quality_block_reason(
+                        card,
+                        source_label=source_label,
+                        min_discount=min_public_discount,
+                    ),
+                )
+            continue
+
         retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
         if not prepare_public_deal_candidate(card, source_label=source_label, min_discount=min_public_discount):
             not_alertable += 1
@@ -216,8 +242,6 @@ async def select_fresh_deal_cards(
             fresh.append(card)
             _set_preflight_reason(card, "passed quality and public duplicate preflight")
 
-        if len(fresh) >= limit:
-            break
     return FreshDealSelection(
         fresh=fresh,
         repeated_same_or_higher_price=repeated_same_or_higher_price,

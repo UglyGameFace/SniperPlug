@@ -74,8 +74,13 @@ async def _migrate_existing_walmart_alerts_to_hp(db: Any) -> int:
             continue
         retailers.append("hp")
         await conn.execute(
-            "UPDATE guild_public_alert_settings SET retailers_json = ?, updated_at = ? WHERE guild_id = ?",
-            (json.dumps(list(dict.fromkeys(retailers))), utc_now_iso(), row["guild_id"]),
+            "UPDATE guild_public_alert_settings SET retailers_json = ?, updated_at = ? "
+            "WHERE CAST(guild_id AS TEXT) = ?",
+            (
+                json.dumps(list(dict.fromkeys(retailers))),
+                utc_now_iso(),
+                snowflake_text(row["guild_id"]),
+            ),
         )
         updated += 1
 

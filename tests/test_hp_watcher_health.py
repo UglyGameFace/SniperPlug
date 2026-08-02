@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
@@ -69,7 +69,7 @@ def test_hp_watcher_health_reads_shared_catalog_and_event_state() -> None:
                 offer_next_check_at = ?
             WHERE product_key = ?
             """,
-            (now.isoformat(), product_key),
+            ((now - timedelta(minutes=1)).isoformat(), product_key),
         )
         await conn.commit()
         candidate = SourceCandidate(
@@ -95,6 +95,7 @@ def test_hp_watcher_health_reads_shared_catalog_and_event_state() -> None:
         assert health.products == 1
         assert health.identified_products == 1
         assert health.active_markdowns == 1
+        assert health.due_offers == 1
         assert health.pending_events == 1
         assert health.last_error == ""
         assert "**healthy**" in health.summary_line()

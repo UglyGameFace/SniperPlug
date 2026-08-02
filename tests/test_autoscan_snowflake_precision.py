@@ -44,10 +44,14 @@ class _SnowflakeConn:
     """
 
     def __init__(self):
-        self.queries: list[str] = []
+        self.calls: list[tuple[str, tuple]] = []
+
+    @property
+    def queries(self) -> list[str]:
+        return [query for query, _params in self.calls]
 
     async def execute(self, query: str, params=()):
-        self.queries.append(query)
+        self.calls.append((query, tuple(params)))
         value = str(REAL_GUILD_ID) if "CAST(guild_id AS TEXT)" in query else ROUNDED_GUILD_ID
         return _Cursor([{"guild_id": value}])
 
@@ -108,7 +112,7 @@ async def test_scheduler_loader_preserves_exact_guild_snowflake(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_health_membership_uses_same_real_scheduler_loader(monkeypatch) -> None:
+async def test_health_membership_uses_scoped_real_scheduler_loader(monkeypatch) -> None:
     expected = reconciliation.LiveGuildLoadResult(
         guilds=(
             reconciliation.LiveAutoScanGuild(
@@ -119,6 +123,24 @@ async def test_health_membership_uses_same_real_scheduler_loader(monkeypatch) ->
     )
     loader = AsyncMock(return_value=expected)
     monkeypatch.setattr(reconciliation, "list_live_public_alert_guilds", loader)
+    db = object()
+    bot = _Bot()
+
+    enrolled, reason = await reconciliation.scheduler_membership_for_guild(
+        db,
+        bot,
+        REAL_GUILD_ID,
+    )
+
+    assert enrolled is True
+    assert "live scheduled autoscan set" in reason
+    loader.assert_awaited_once_with(db, bot, only_guild_id=REAL_GUILD_ID)
+
+
+@pytest.mark.asyncio
+async def test_health_membership_fails_closed_without_crashing(monkeypatch) -> None:
+    loader = AsyncMock(side_effect=RuntimeError("temporary libsql outage"))
+    monkeypatch.setattr(reconciliation, "list_live_public_alert_guilds", loader)
 
     enrolled, reason = await reconciliation.scheduler_membership_for_guild(
         object(),
@@ -126,9 +148,45 @@ async def test_health_membership_uses_same_real_scheduler_loader(monkeypatch) ->
         REAL_GUILD_ID,
     )
 
-    assert enrolled is True
-    assert "live scheduled autoscan set" in reason
-    loader.assert_awaited_once()
+    assert enrolled is False
+    assert "database could not be read" in reason
+    assert "failing closed" in reason
+
+
+@pytest.mark.asyncio
+async def test_filtered_scheduler_loader_uses_exact_text_parameter(monkeypatch) -> None:
+    conn = _SnowflakeConn()
+    db = _Db(conn)
+    bot = _Bot()
+    tombstone_loader = AsyncMock(return_value=set())
+    monkeypatch.setattr(reconciliation, "load_ghost_tombstones", tombstone_loader)
+    monkeypatch.setattr(
+        reconciliation,
+        "get_public_alert_config",
+        AsyncMock(
+            return_value={
+                "enabled": True,
+                "retailers": ("walmart",),
+                "channel_id": REAL_CHANNEL_ID,
+            }
+        ),
+    )
+
+    result = await reconciliation.list_live_public_alert_guilds(
+        db,
+        bot,
+        only_guild_id=REAL_GUILD_ID,
+    )
+
+    assert [guild.guild_id for guild in result.guilds] == [REAL_GUILD_ID]
+    tombstone_loader.assert_awaited_once_with(conn, guild_ids=(REAL_GUILD_ID,))
+    public_call = next(
+        (query, params)
+        for query, params in conn.calls
+        if "guild_public_alert_settings" in query
+    )
+    assert "CAST(guild_id AS TEXT) = ?" in public_call[0]
+    assert public_call[1] == (str(REAL_GUILD_ID),)
 
 
 @pytest.mark.asyncio
@@ -143,7 +201,7 @@ async def test_ghost_discovery_does_not_invent_rounded_ghost_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tombstone_loader_preserves_exact_snowflake(monkeypatch) -> None:
+async def test_tombstone_loader_preserves_and_filters_exact_snowflake(monkeypatch) -> None:
     conn = _SnowflakeConn()
     monkeypatch.setattr(
         tombstones,
@@ -151,10 +209,16 @@ async def test_tombstone_loader_preserves_exact_snowflake(monkeypatch) -> None:
         AsyncMock(return_value=None),
     )
 
-    loaded = await tombstones.load_ghost_tombstones(conn)
+    loaded = await tombstones.load_ghost_tombstones(
+        conn,
+        guild_ids=(REAL_GUILD_ID,),
+    )
 
     assert loaded == {REAL_GUILD_ID}
-    assert any("CAST(guild_id AS TEXT) AS guild_id" in query for query in conn.queries)
+    query, params = conn.calls[-1]
+    assert "CAST(guild_id AS TEXT) AS guild_id" in query
+    assert "WHERE CAST(guild_id AS TEXT) IN (?)" in query
+    assert params == (str(REAL_GUILD_ID),)
 
 
 def test_health_requires_real_scheduler_enrollment_and_labels_manual_report() -> None:

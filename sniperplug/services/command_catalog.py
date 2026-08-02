@@ -49,8 +49,8 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
         name="/discover",
         audience="Everyone",
-        purpose="Manual broad discovery run across deal categories.",
-        when_to_use="Use when you want a newspaper-style scan now. This is manual and does not depend on auto-scan being enabled.",
+        purpose="Broad manual Walmart sweep using the exact-detail queue and catalog-wide route coverage.",
+        when_to_use="Use `coverage:Deep` for the normal wide scan, `coverage:Quick` for a faster rotating slice, or owner-only `coverage:Full` to queue every configured route. `/autoscan_now` is the smaller diagnostic command, not the everything scan.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(

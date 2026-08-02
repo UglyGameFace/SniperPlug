@@ -26,8 +26,8 @@ class WalmartExactQueueHealth:
         return (
             "queue health: "
             f"total **{self.total}** • due now **{self.due_now}** • "
-            f"delayed retries **{self.delayed_retries}** • "
-            f"identity blocked **{self.identity_blocked}** • "
+            f"delayed transient retries **{self.delayed_retries}** • "
+            f"identity unavailable / safely blocked **{self.identity_blocked}** • "
             f"verified **{self.verified}** • verifying **{self.verifying}** • "
             f"pending **{self.pending}** • unavailable **{self.unavailable}** • "
             f"stale/unclaimable **{self.stale}**"
@@ -37,9 +37,9 @@ class WalmartExactQueueHealth:
 async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     """Return queue state using the same retention window as the worker.
 
-    ``due_now`` and delayed retry counts intentionally mirror the worker's
-    claimability rules. Old rows outside the discovery-retention window are
-    reported separately as stale/unclaimable instead of inflating due work.
+    ``due_now`` and delayed transient retry counts intentionally mirror the
+    worker's claimability rules. Identity-incomplete rows are reported in their
+    own fail-closed bucket rather than being double-counted as failures.
     """
 
     if db is None:
@@ -65,7 +65,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                     THEN 1 ELSE 0 END) AS due_now,
                 SUM(CASE
                     WHEN is_recent = 1
-                     AND status IN ('retry', 'failed', 'incomplete_identity', 'identity_mismatch')
+                     AND status IN ('retry', 'failed')
                      AND next_attempt_at > ?
                     THEN 1 ELSE 0 END) AS delayed_retries,
                 SUM(CASE

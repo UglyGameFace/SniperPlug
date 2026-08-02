@@ -9,6 +9,7 @@ from sniperplug.services.public_posting import normalize_retailer_key
 
 
 CHANNEL_PREFIX = "ch:"
+HP_RETAILER_MIGRATION = "20260802_enable_hp_for_existing_walmart_public_alerts"
 
 
 async def ensure_public_alert_table(db: Any) -> None:
@@ -25,7 +26,70 @@ async def ensure_public_alert_table(db: Any) -> None:
         )
         """
     )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sniperplug_data_migrations (
+            migration_key TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
     await conn.commit()
+    await _migrate_existing_walmart_alerts_to_hp(db)
+
+
+async def _migrate_existing_walmart_alerts_to_hp(db: Any) -> int:
+    """Enroll existing enabled Walmart destinations in free HP fanout once.
+
+    HP did not exist as a selectable retailer before this migration, so no
+    existing user preference can be overwritten. Disabled destinations remain
+    disabled, and non-Walmart custom retailer sets are left untouched.
+    """
+
+    conn = db.require_conn()
+    marker = await conn.execute(
+        "SELECT 1 FROM sniperplug_data_migrations WHERE migration_key = ? LIMIT 1",
+        (HP_RETAILER_MIGRATION,),
+    )
+    if await marker.fetchone() is not None:
+        return 0
+
+    cursor = await conn.execute(
+        "SELECT guild_id, retailers_json FROM guild_public_alert_settings WHERE enabled = 1"
+    )
+    updated = 0
+    for row in await cursor.fetchall():
+        try:
+            retailers = [
+                key
+                for key in (
+                    normalize_retailer_key(value)
+                    for value in json.loads(row["retailers_json"] or "[]")
+                )
+                if key
+            ]
+        except Exception:
+            continue
+        if "walmart" not in retailers or "hp" in retailers:
+            continue
+        retailers.append("hp")
+        await conn.execute(
+            "UPDATE guild_public_alert_settings SET retailers_json = ?, updated_at = ? "
+            "WHERE CAST(guild_id AS TEXT) = ?",
+            (
+                json.dumps(list(dict.fromkeys(retailers))),
+                utc_now_iso(),
+                snowflake_text(row["guild_id"]),
+            ),
+        )
+        updated += 1
+
+    await conn.execute(
+        "INSERT INTO sniperplug_data_migrations (migration_key, applied_at) VALUES (?, ?) ON CONFLICT(migration_key) DO NOTHING",
+        (HP_RETAILER_MIGRATION, utc_now_iso()),
+    )
+    await conn.commit()
+    return updated
 
 
 async def get_public_alert_config(db: Any, guild_id: int) -> dict[str, Any]:

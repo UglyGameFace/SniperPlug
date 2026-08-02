@@ -27,12 +27,14 @@ def test_cash_truth_requires_strict_api_proof_positive_amount_and_evidence():
     assert "return None" in OFFERS_FIND
 
 
-def test_cash_summary_distinguishes_unavailable_partial_and_checked_zero():
+def test_cash_summary_distinguishes_unsupported_unavailable_partial_and_checked_zero():
+    assert "not a supported" in SUMMARY
+    assert "Walmart Cash offer feed" in SUMMARY
+    assert "False scan disabled" in SUMMARY
     assert "Proof unavailable" in SUMMARY
     assert "Partial check" in SUMMARY
     assert "No API-proven Walmart Cash in this scan" in SUMMARY
-    assert "does **not** prove the Walmart app has no Cash offers" in SUMMARY
-    assert "fake zero" in SUMMARY
+    assert "fake zero" in SUMMARY.lower()
 
 
 def test_normal_cash_summary_does_not_dump_other_promo_diagnostics():
@@ -46,8 +48,8 @@ def test_normal_cash_summary_does_not_dump_other_promo_diagnostics():
         assert token not in SUMMARY
 
 
-def test_cash_terms_strip_promo_words_and_use_department_defaults():
-    assert "DEFAULT_CASH_QUERIES" in TERMS
-    assert "walmart\\s+cash" in TERMS
-    assert "cash\\s+offers?" in TERMS
-    assert "return (cleaned,)" in TERMS
+def test_cash_terms_fail_closed_without_supported_offer_feed():
+    assert "supported Walmart Cash offer feed" in TERMS
+    assert "false-looking zero" in TERMS
+    assert "unnecessary API calls" in TERMS
+    assert "return ()" in TERMS

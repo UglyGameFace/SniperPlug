@@ -35,10 +35,8 @@ def test_exact_action_text_with_amount_is_accepted_but_nearby_price_is_not():
     assert extract_walmart_cash_api_truth(invalid, current_price=24.98) is None
 
 
-def test_default_discovery_uses_product_departments_not_promo_search_phrases():
-    terms = walmart_cash_search_terms(None)
-    assert terms[0] == "personal care"
-    assert "laundry detergent" in terms
-    assert "manufacturer offers" not in terms
-    assert "get walmart cash" not in terms
-    assert all("walmart cash" not in term.lower() for term in terms)
+def test_product_catalog_discovery_is_disabled_without_supported_offer_feed():
+    assert walmart_cash_search_terms(None) == ()
+    assert walmart_cash_search_terms("manufacturer offers") == ()
+    assert walmart_cash_search_terms("get walmart cash") == ()
+    assert walmart_cash_search_terms("personal care") == ()

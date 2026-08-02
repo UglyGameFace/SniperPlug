@@ -29,10 +29,11 @@ def test_cashfinder_uses_cash_discovery_not_legacy_markdown_scan():
     assert "timeout=15" not in HELPER_C
 
 
-def test_cashfinder_zero_and_timeout_copy_is_truthful_and_compact():
-    assert "No API-proven Walmart Cash in this scan" in OFFERS
-    assert "This does not prove the Walmart app has no Cash offers" in OFFERS
-    assert "No products returned" in OFFERS
+def test_cashfinder_unsupported_and_timeout_copy_is_truthful_and_compact():
+    assert "Walmart Cash feed unavailable" in OFFERS
+    assert "Fake no-offer conclusion" in OFFERS
+    assert "Product searches made" in OFFERS
+    assert "Item-detail calls made" in OFFERS
     assert "Partial check" in OFFERS
-    assert "fake zero" in OFFERS
+    assert "fake zero" in OFFERS.lower()
     assert "public PDP scraping" in OFFERS

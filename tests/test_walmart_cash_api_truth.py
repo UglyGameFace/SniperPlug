@@ -63,14 +63,10 @@ def test_blocks_buy_more_save_promo_as_walmart_cash():
     assert extract_walmart_cash_api_truth(item, current_price=18.99) is None
 
 
-def test_default_walmart_cash_search_uses_many_product_departments():
-    routes = walmart_cash_search_terms("walmart cash offers")
-
-    assert len(routes) >= 6
-    assert "personal care" in routes
-    assert "laundry detergent" in routes
-    assert all("walmart cash" not in route.lower() for route in routes)
+def test_default_walmart_cash_search_is_disabled_without_offer_feed():
+    assert walmart_cash_search_terms("walmart cash offers") == ()
 
 
-def test_custom_cash_query_removes_promo_words_before_walmart_search():
-    assert walmart_cash_search_terms("tide walmart cash offers") == ("tide",)
+def test_custom_walmart_cash_search_is_also_disabled_without_offer_feed():
+    assert walmart_cash_search_terms("tide walmart cash offers") == ()
+    assert walmart_cash_search_terms("tide") == ()

@@ -25,7 +25,7 @@ def test_cashfinder_hides_legacy_blocked_pdp_diagnostics_from_normal_output():
     )
     rendered = str(embed.to_dict()).lower()
 
-    assert "official walmart api only" in rendered
+    assert "supported official walmart cash api feed" in rendered
     assert "no api-proven walmart cash in this scan" in rendered
     assert "robot or human" not in rendered
     assert "html_chars" not in rendered

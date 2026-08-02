@@ -1,39 +1,11 @@
 from __future__ import annotations
 
-import pytest
-
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.services.walmart_cash_offers import build_walmart_cash_summary_embed
 from sniperplug.services.walmart_cash_pipeline import (
     detect_confirmed_walmart_cash_amount,
     detect_walmart_cash_badge,
-    run_walmart_cash_discovery,
 )
-
-
-class FakeConfig:
-    enabled = True
-    consumer_id = "cid"
-    timeout_seconds = 12
-
-
-class FakeProvider:
-    config = FakeConfig()
-
-    def __init__(self, candidates, details):
-        self._candidates = tuple(candidates)
-        self._details = dict(details)
-        self.detail_attempts = []
-
-    async def scan(self, request):
-        class Result:
-            candidates = self._candidates
-            warnings = ()
-        return Result()
-
-    async def fetch_product_detail_payload(self, item_id: str):
-        self.detail_attempts.append(item_id)
-        return self._details[item_id]
 
 
 def candidate(**kwargs) -> SourceCandidate:
@@ -51,31 +23,6 @@ def candidate(**kwargs) -> SourceCandidate:
     return SourceCandidate(**base)
 
 
-@pytest.mark.asyncio
-async def test_missing_badge_and_missing_api_amount_stays_unconfirmed(monkeypatch):
-    monkeypatch.setenv("WALMART_OAUTH_ACCESS_TOKEN", "test-token")
-    row = candidate(variant_attributes={"clearance": "clearance"})
-    provider = FakeProvider(
-        [row],
-        {"123": {"itemId": "123", "name": "Glad ForceFlex Trash Bags", "clearance": True}},
-    )
-
-    result = await run_walmart_cash_discovery(
-        provider,
-        search="trash bags walmart cash",
-        max_results=4,
-        requested_by="tester",
-    )
-
-    assert result.cash_badges_seen == 0
-    assert result.detail_rows_checked == 1
-    assert result.pdp_fallback_attempted == 0
-    assert result.pdp_fallback_checked == 0
-    assert result.confirmed_cash_amount_rows == 0
-    assert result.cash_candidates == ()
-    assert provider.detail_attempts == ["123"]
-
-
 def test_search_row_badge_creates_private_candidate_state():
     row = candidate(variant_attributes={"badge": "Walmart Cash available"})
     badge = detect_walmart_cash_badge(row)
@@ -83,69 +30,22 @@ def test_search_row_badge_creates_private_candidate_state():
     assert badge.proof_path == "variant_attributes.badge"
 
 
-@pytest.mark.asyncio
-async def test_badge_only_api_row_does_not_count_as_confirmed_offer(monkeypatch):
-    monkeypatch.setenv("WALMART_OAUTH_ACCESS_TOKEN", "test-token")
-    row = candidate(variant_attributes={"badge": "Walmart Cash available"})
-    provider = FakeProvider(
-        [row],
-        {
-            "123": {
-                "itemId": "123",
-                "name": "Glad ForceFlex Trash Bags",
-                "badges": [{"text": "Walmart Cash available"}],
-            }
-        },
-    )
-
-    result = await run_walmart_cash_discovery(
-        provider,
-        search="detergent walmart cash",
-        max_results=4,
-        requested_by="tester",
-    )
-
-    assert result.search_rows_checked == 1
-    assert result.cash_badges_seen == 1
-    assert result.detail_rows_attempted == 1
-    assert result.detail_rows_checked == 1
-    assert result.pdp_fallback_attempted == 0
-    assert result.confirmed_cash_amount_rows == 0
-    assert result.badge_rows_without_amount == 1
-    assert result.cash_candidates == ()
-    assert provider.detail_attempts == ["123"]
+def test_badge_without_amount_does_not_confirm_offer():
+    item = {
+        "itemId": "123",
+        "name": "Glad ForceFlex Trash Bags",
+        "badges": [{"text": "Walmart Cash available"}],
+    }
+    assert not detect_confirmed_walmart_cash_amount(item, current_price=5.92)
 
 
-@pytest.mark.asyncio
-async def test_official_detail_row_with_exact_amount_confirms_offer(monkeypatch):
-    monkeypatch.setenv("WALMART_OAUTH_ACCESS_TOKEN", "test-token")
-    row = candidate(variant_attributes={"badge": "Walmart Cash available"})
-    provider = FakeProvider(
-        [row],
-        {
-            "123": {
-                "itemId": "123",
-                "name": "Glad ForceFlex Trash Bags",
-                "promo": {"headline": "Earn $5 Walmart Cash"},
-            }
-        },
-    )
-
-    result = await run_walmart_cash_discovery(
-        provider,
-        search="detergent walmart cash",
-        max_results=4,
-        requested_by="tester",
-    )
-
-    assert result.cash_badges_seen == 1
-    assert result.confirmed_cash_amount_rows == 1
-    assert result.pdp_fallback_attempted == 0
-    assert len(result.cash_candidates) == 1
-    attrs = result.cash_candidates[0].variant_attributes
-    assert attrs["walmartCashApiProof"] == "yes"
-    assert attrs["cashProofSource"] == "affiliate_detail"
-    assert attrs["walmartCashAmount"] == "5.00"
+def test_official_feed_payload_with_exact_amount_can_confirm_offer():
+    item = {
+        "itemId": "123",
+        "name": "Glad ForceFlex Trash Bags",
+        "promo": {"headline": "Earn $5 Walmart Cash"},
+    }
+    assert detect_confirmed_walmart_cash_amount(item, current_price=5.92)
 
 
 def test_nested_detail_promo_object_with_amount_confirms_offer():
@@ -167,10 +67,10 @@ def test_user_query_or_plain_title_does_not_prove_badge():
     assert detect_walmart_cash_badge(row) is None
 
 
-def test_summary_reports_badge_hints_without_pdp_or_unrelated_promo_wall():
+def test_supported_feed_summary_reports_badge_hints_without_pdp_wall():
     embed = build_walmart_cash_summary_embed(
         "detergent",
-        ("detergent",),
+        ("supported-feed-route",),
         checked=2,
         found=0,
         warnings=(),

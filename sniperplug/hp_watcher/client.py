@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
+import time
 from typing import Any
 from urllib.parse import urlencode
 
@@ -84,7 +85,12 @@ class HPStoreClient:
                 last_modified=response.headers.get("Last-Modified", ""),
             )
 
-    async def fetch_price_batch(self, catalog_entry_ids: list[str]) -> HTTPDocument:
+    async def fetch_price_batch(
+        self,
+        catalog_entry_ids: list[str],
+        *,
+        cache_bust: bool = False,
+    ) -> HTTPDocument:
         clean_ids = [str(value).strip() for value in catalog_entry_ids if str(value).strip().isdigit()]
         if not clean_ids:
             raise ValueError("HP price batch requires numeric catalog entry IDs")
@@ -96,6 +102,8 @@ class HPStoreClient:
             "modelId": "",
             "storeId": "10151",
         }
+        if cache_bust:
+            params["_"] = str(int(time.time() * 1000))
         separator = "&" if "?" in self.settings.price_endpoint_url else "?"
         url = f"{self.settings.price_endpoint_url}{separator}{urlencode(params)}"
         return await self.fetch_document(url)

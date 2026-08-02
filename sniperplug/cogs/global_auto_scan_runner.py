@@ -31,8 +31,8 @@ from sniperplug.services.walmart_global_deal_fanout import (
 from sniperplug.services.walmart_exact_queue_health import (
     load_walmart_exact_queue_health,
 )
-from sniperplug.services.walmart_exact_verification_queue import (
-    process_walmart_exact_verification_queue_batch,
+from sniperplug.services.walmart_exact_queue_runtime import (
+    process_actionable_walmart_exact_queue_batch,
 )
 
 
@@ -84,7 +84,8 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "Autoscan global architecture active python=%s platform=%s "
             "per_guild_discovery=false global_catalog_routes_per_batch=%s "
             "global_catalog_interval_s=%s exact_queue_batch=%s "
-            "exact_queue_interval_s=%s global_exact_fanout=true personal_dm_alerts=true",
+            "exact_queue_interval_s=%s global_exact_fanout=true personal_dm_alerts=true "
+            "terminal_identity_quarantine=true exact_parse_off_event_loop=true",
             platform.python_version(),
             sys.platform,
             DEFAULT_ROUTES_PER_BATCH,
@@ -307,7 +308,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                 try:
                     self._runtime_phase = "exact_verification_queue"
                     async with resilient._WALMART_PROVIDER_OPERATION_LOCK:
-                        result = await process_walmart_exact_verification_queue_batch(
+                        result = await process_actionable_walmart_exact_queue_batch(
                             self.bot.db,
                             provider=provider_registry.get("walmart"),
                             limit=resilient.WALMART_QUEUE_BATCH_SIZE,
@@ -319,11 +320,11 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         now - self._last_queue_health_log_monotonic
                         >= resilient.WALMART_QUEUE_HEALTH_LOG_INTERVAL_SECONDS
                     )
-                    if result.claimed or health_due:
+                    if result.claimed or result.terminal_quarantined or health_due:
                         health = await load_walmart_exact_queue_health(self.bot.db)
                         legacy.log.info(
                             "%s • %s",
-                            resilient._walmart_queue_batch_summary(result),
+                            result.summary_line(),
                             health.summary_line(),
                         )
                         self._last_queue_health_log_monotonic = now

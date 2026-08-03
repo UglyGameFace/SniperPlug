@@ -191,7 +191,7 @@ async def build_global_autoscan_health_embed(
         inline=False,
     )
     embed.add_field(
-        name="Walmart exact verification queue",
+        name="Exact verification queue — Walmart",
         value=queue_health.summary_line(),
         inline=False,
     )

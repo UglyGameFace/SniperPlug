@@ -1,45 +1,47 @@
 # Active Task
 
 ## Status
-In progress — finish and validate the standalone HP Store watcher and its SniperPlug delivery integration.
+Complete — HP big-ticket price-error fast lane implemented, validated, and ready for deployment.
 
 ## Scope
-Build a separate continuously running HP catalog/price watcher that requires no Discord token, shares SniperPlug's Turso/libSQL database, and sends only exact-verified HP events through SniperPlug's existing server thresholds, category filters, channels, duplicate guards, feedback controls, active-deal cache, and opt-in DMs.
+Keep the standalone HP watcher architecture, but make its urgent alert path focus exclusively on expensive products with extreme, independently verified markdowns. Default policy: HP reference/current value of at least **$200** and a verified discount of at least **69%**.
 
-## Root cause and execution path findings
-- HP product pages can expose a visible `$0.00` placeholder, so visible page text is not reliable price proof.
-- Official HP sitemaps can discover the US Store catalog.
-- HP's structured `HPServices?action=cupis` response exposes exact `productId`, `partNumber`, `price`, and `lPrice` fields.
-- A separate Discloud app cannot share SniperPlug's local SQLite file; both production processes must use the same Turso/libSQL database.
-- Review found that a non-MSRP historical reference was selected for one price-drop cycle but not persisted, which would demote a sustained markdown to the slow polling lane.
-- Review found that a permanently failing fanout event could be released with no delay and monopolize every oldest-first claim batch.
-- `/autoscan_health` originally had no visibility into the separate HP process even though health state was stored.
+## Root cause and execution-path findings
+- The first HP watcher prioritized existing markdowns and used one general due queue.
+- Enough ordinary sale products could delay a full-price expensive item that suddenly dropped 69%+.
+- A server-level discount threshold alone could still allow cheap accessories with large percentages.
+- Expensive products need protected polling capacity before the drop occurs, using their current/MSRP/prior exact value to classify them.
 
 ## Changes
-- Added a standalone HP watcher entrypoint, configuration, bounded HTTP client, sitemap/product parsers, durable scheduling, exact offer history, and health state.
-- Added strict identity and price gates that reject zero prices, malformed responses, missing identity, cross-product/SKU data, unsupported URLs, and untrusted references.
-- Label HP `lPrice` as HP MSRP; use prior exact HP.com observations when MSRP is absent.
-- Added a shared leased/idempotent verified-retailer event outbox and SniperPlug HP fanout.
-- Added HP-specific Discord cards and public proof gates while reusing existing per-server delivery controls and DM receipts.
-- Added HP to canonical setup and a one-time migration for existing enabled Walmart alert destinations.
-- Persist the selected historical reference baseline so sustained non-MSRP markdowns remain on the fast polling lane.
-- Add exponential fanout retry backoff and terminal dead-lettering so one broken destination cannot starve newer events.
-- Surface HP watcher health, catalog coverage, failures, and pending fanout in `/autoscan_health`.
-- Added separate Discloud deployment configuration and documentation using the same Turso credentials and no Discord token.
+- Added `HPPriceErrorWatcherService` on top of the proven sitemap, identity, structured-price, history, and outbox implementation.
+- Reserve up to 75% of each offer batch for known due big-ticket products; unused capacity immediately fills from unclassified and background products.
+- Default watcher cycle is 10 seconds with an 80-offer structured batch.
+- Known big-ticket products are rescheduled every 45 seconds.
+- Cheap products are returned to the slower background schedule even when they have a large percentage markdown.
+- Only $200+ reference/value products at 69%+ off can publish HP events.
+- Alert-worthy observations still require the independent cache-busted exact-product confirmation.
+- Added candidate proof attributes identifying the price-error lane and policy floors.
+- Added configurable environment values:
+  - `HP_BIG_TICKET_MIN_REFERENCE_PRICE=200`
+  - `HP_PRICE_ERROR_MIN_DISCOUNT_PERCENT=69`
+  - `HP_BIG_TICKET_OFFER_INTERVAL_SECONDS=45`
+- Restored the canonical `/autoscan_health` exact-verification queue label required by the established command-surface regression.
 
-## Validation required
-- Compile all changed Python files.
-- Run import smoke checks for both SniperPlug and the standalone HP watcher.
-- Run targeted HP parser, storage/history, public proof, health, event-backoff, setup migration, and configuration tests.
-- Run the complete pytest suite.
-- Reinspect review threads, conflicts, redundant code, temporary files, and the final branch diff before merge.
+## Validation
+- Python compilation passed.
+- SniperPlug and standalone watcher import smoke checks passed.
+- Targeted big-ticket qualification, protected-claim, scheduling, history, and configuration tests passed.
+- Complete pytest suite passed.
+- Pull request is mergeable with zero commits behind `main`.
+- Review-thread inspection found no unresolved findings.
+- Final changed-file inspection found no temporary, backup, or applicator files.
 
 ## Cleanup status
-In progress. No temporary applicators or placeholder files are intended in the branch. The previously unused HP health reader is now integrated into `/autoscan_health`.
+Complete.
 
 ## Blockers
-None currently.
+None.
 
 ## Backlog
-- After merge, create the second Discloud application from `discloud.hp-watcher.config` and give it the exact same Turso/libSQL credentials as SniperPlug.
-- Observe initial catalog coverage and tune only within the bounded settings if HP rate limits or schema behavior require it.
+- Deploy/redeploy the separate Discloud HP watcher using the same Turso credentials as SniperPlug.
+- Measure live catalog size and effective big-ticket sweep latency from `/autoscan_health` before changing the bounded defaults.

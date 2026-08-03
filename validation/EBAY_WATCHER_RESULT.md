@@ -1,14 +1,14 @@
 # eBay watcher validation result
 
-- Recorded at: `2026-08-03T01:56:40.165152+00:00`
-- Validated commit: `184332faed01617aeadd50bcd5e1fdcc38c19150`
+- Recorded at: `2026-08-03T01:59:34.993720+00:00`
+- Validated commit: `aeed8581496af677aefb593af556084e5ef4d744`
 
 ## Status
 - Install requirements: **PASS**
 - Compile all Python: **PASS**
 - Import SniperPlug and eBay watcher runtimes: **PASS**
 - Targeted eBay watcher tests: **PASS**
-- Complete pytest regression suite: **FAIL (1)**
+- Complete pytest regression suite: **PASS**
 
 ## Install requirements output
 
@@ -122,84 +122,24 @@ Successfully installed aiohappyeyeballs-2.7.1 aiohttp-3.14.3 aiosignal-1.4.0 aio
 ## Complete pytest regression suite output
 
 ```text
-tests/test_hp_public_alert_migration.py:75: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/asyncio/runners.py:195: in run
-    return runner.run(main)
-           ^^^^^^^^^^^^^^^^
-/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/asyncio/runners.py:118: in run
-    return self._loop.run_until_complete(task)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/asyncio/base_events.py:691: in run_until_complete
-    return future.result()
-           ^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-    async def run() -> None:
-        conn = await aiosqlite.connect(":memory:")
-        conn.row_factory = aiosqlite.Row
-        db = FakeDatabase(conn)
-        await conn.execute(
-            """
-            CREATE TABLE guild_public_alert_settings (
-                guild_id INTEGER PRIMARY KEY,
-                enabled INTEGER NOT NULL DEFAULT 0,
-                retailers_json TEXT NOT NULL DEFAULT '[]',
-                channel_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        await conn.executemany(
-            """
-            INSERT INTO guild_public_alert_settings
-                (guild_id, enabled, retailers_json, channel_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'now', 'now')
-            """,
-            (
-                (1, 1, json.dumps(["walmart"]), "ch:100"),
-                (2, 0, json.dumps(["walmart"]), "ch:200"),
-                (3, 1, json.dumps(["amazon"]), "ch:300"),
-                (4, 1, json.dumps(["walmart", "hp"]), "ch:400"),
-            ),
-        )
-        await conn.commit()
-    
-        await ensure_public_alert_table(db)
-        enabled = await get_public_alert_config(db, 1)
-        disabled = await get_public_alert_config(db, 2)
-        custom = await get_public_alert_config(db, 3)
-        already = await get_public_alert_config(db, 4)
->       assert enabled["retailers"] == ("walmart", "hp")
-E       AssertionError: assert ('walmart', 'hp', 'ebay') == ('walmart', 'hp')
-E         
-E         Left contains one more item: 'ebay'
-E         
-E         Full diff:
-E           (
-E               'walmart',
-E               'hp',
-E         +     'ebay',
-E           )
-
-tests/test_hp_public_alert_migration.py:60: AssertionError
+........................................................................ [  7%]
+........................................................................ [ 15%]
+........................................................................ [ 23%]
+........................................................................ [ 30%]
+........................................................................ [ 38%]
+........................................................................ [ 46%]
+........................................................................ [ 54%]
+........................................................................ [ 61%]
+........................................................................ [ 69%]
+........................................................................ [ 77%]
+........................................................................ [ 84%]
+........................................................................ [ 92%]
+....................................................................     [100%]
 =============================== warnings summary ===============================
 ../../../../../opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages/discord/player.py:30
   /opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_hp_public_alert_migration.py::test_existing_enabled_walmart_destinations_receive_hp_once - AssertionError: assert ('walmart', 'hp', 'ebay') == ('walmart', 'hp')
-  
-  Left contains one more item: 'ebay'
-  
-  Full diff:
-    (
-        'walmart',
-        'hp',
-  +     'ebay',
-    )
-1 failed, 931 passed, 1 warning in 7.59s
+932 passed, 1 warning in 7.40s
 ```

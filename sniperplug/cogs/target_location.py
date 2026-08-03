@@ -11,6 +11,7 @@ from sniperplug.services.public_alert_config import (
 from sniperplug.services.public_posting import normalize_retailer_key
 from sniperplug.services.target_locations import (
     TargetLocationContext,
+    prune_orphan_target_product_rows,
     save_guild_target_location,
     save_user_target_location,
 )
@@ -100,6 +101,7 @@ class TargetStoreSelectView(discord.ui.View):
                 **kwargs,
             )
             scope_message = "Your local Target DM filter now uses this exact store."
+        await prune_orphan_target_product_rows(self.db)
         self.store_select.disabled = True
         embed = saved_location_embed(location, scope_message=scope_message)
         await interaction.response.edit_message(embed=embed, view=self)

@@ -205,15 +205,9 @@ async def record_exact_offer(
     big_ticket_interval_seconds: int,
     now: datetime | None = None,
 ) -> storage.TargetOfferDecision:
-    if not await _owns_live_lease(
-        db,
-        work_type=PRODUCT_WORK_TYPE,
-        work_key=product.product_key,
-        claim_token=product.claim_token,
-        now=now,
-    ):
+    if not await owns_product_lease(db, product=product, now=now):
         raise RuntimeError("Target product work lease expired or was reclaimed")
-    decision = await storage.record_exact_offer(
+    return await storage.record_exact_offer(
         db,
         product=product,
         offer=offer,
@@ -225,13 +219,38 @@ async def record_exact_offer(
         big_ticket_interval_seconds=big_ticket_interval_seconds,
         now=now,
     )
+
+
+async def complete_product_work(
+    db: Any,
+    *,
+    product: LeasedTargetCatalogProduct,
+    now: datetime | None = None,
+) -> bool:
+    if not await owns_product_lease(db, product=product, now=now):
+        return False
     await _release_lease(
         db,
         work_type=PRODUCT_WORK_TYPE,
         work_key=product.product_key,
         claim_token=product.claim_token,
     )
-    return decision
+    return True
+
+
+async def owns_product_lease(
+    db: Any,
+    *,
+    product: LeasedTargetCatalogProduct,
+    now: datetime | None = None,
+) -> bool:
+    return await _owns_live_lease(
+        db,
+        work_type=PRODUCT_WORK_TYPE,
+        work_key=product.product_key,
+        claim_token=product.claim_token,
+        now=now,
+    )
 
 
 async def store_offer_failure(
@@ -243,13 +262,7 @@ async def store_offer_failure(
 ) -> int:
     owned: list[LeasedTargetCatalogProduct] = []
     for product in products:
-        if await _owns_live_lease(
-            db,
-            work_type=PRODUCT_WORK_TYPE,
-            work_key=product.product_key,
-            claim_token=product.claim_token,
-            now=now,
-        ):
+        if await owns_product_lease(db, product=product, now=now):
             owned.append(product)
     if not owned:
         return 0

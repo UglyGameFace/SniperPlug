@@ -122,6 +122,42 @@ def test_backpressure_ignores_terminal_identity_blocks() -> None:
     assert catalog_backpressure_reason(actionable_backlog) is not None
 
 
+def test_backpressure_does_not_subtract_terminal_blocks_twice() -> None:
+    production_shape = WalmartExactQueueHealth(
+        total=11372,
+        due_now=2818,
+        delayed_retries=69,
+        identity_blocked=7591,
+        verified=2632,
+        verifying=0,
+        pending=0,
+        unavailable=1054,
+        stale=0,
+    )
+
+    reason = catalog_backpressure_reason(production_shape)
+
+    assert reason is not None
+    assert "2818/450" in reason
+    assert "terminal identity blocks excluded **7591**" in reason
+
+
+def test_backpressure_counts_active_verification_without_double_counting_pending() -> None:
+    below_limit = WalmartExactQueueHealth(
+        due_now=440,
+        pending=440,
+        verifying=9,
+    )
+    at_limit = WalmartExactQueueHealth(
+        due_now=440,
+        pending=440,
+        verifying=10,
+    )
+
+    assert catalog_backpressure_reason(below_limit) is None
+    assert catalog_backpressure_reason(at_limit) is not None
+
+
 def test_global_state_is_durable_and_not_wall_clock_rotation() -> None:
     assert "walmart_global_catalog_autoscan_state" in STATE
     assert "cursor_index" in STATE

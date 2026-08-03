@@ -27,6 +27,7 @@ from sniperplug.services.target_locations import (
     clear_target_location,
     get_guild_target_location,
     get_user_target_location,
+    prune_orphan_target_product_rows,
 )
 from sniperplug.target_watcher.client import TargetRedSkyClient
 from sniperplug.target_watcher.config import TargetWatcherSettings
@@ -236,6 +237,7 @@ class CanonicalWorkflowCog(commands.Cog):
             scope_id=guild_id,
         )
         await remove_target_retailer(self.bot.db, guild_id)
+        await prune_orphan_target_product_rows(self.bot.db)
         await interaction.followup.send(
             (
                 "✅ This server's Target location was cleared. Local Target alerts are disabled until an admin runs `/target_location` again."
@@ -295,6 +297,7 @@ class CanonicalWorkflowCog(commands.Cog):
             scope_type="user",
             scope_id=int(interaction.user.id),
         )
+        await prune_orphan_target_product_rows(self.bot.db)
         await interaction.followup.send(
             (
                 "✅ Your personal Target location was cleared. Local Target DMs will not be sent until you choose another store."

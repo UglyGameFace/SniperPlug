@@ -7,6 +7,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from sniperplug.cogs.public_alerts import set_retailer_auto_scan
+from sniperplug.cogs.target_location import (
+    TargetStoreSelectView,
+    clean_zip,
+    remove_target_retailer,
+    store_picker_embed,
+)
 from sniperplug.services.deal_category_preferences import apply_preset
 from sniperplug.services.deal_threshold_settings import (
     get_starting_deal_percent,
@@ -17,6 +23,14 @@ from sniperplug.services.public_alert_config import (
     set_public_alert_config,
 )
 from sniperplug.services.public_posting import normalize_retailer_key
+from sniperplug.services.target_locations import (
+    clear_target_location,
+    get_guild_target_location,
+    get_user_target_location,
+)
+from sniperplug.target_watcher.client import TargetRedSkyClient
+from sniperplug.target_watcher.config import TargetWatcherSettings
+from sniperplug.target_watcher.stores import TargetStore
 
 
 REQUIRED_CHANNEL_PERMS = {
@@ -28,7 +42,7 @@ REQUIRED_CHANNEL_PERMS = {
 
 
 class CanonicalWorkflowCog(commands.Cog):
-    """One setup command for global discovery and per-server delivery."""
+    """Canonical setup plus location-safe Target enrollment."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -38,7 +52,7 @@ class CanonicalWorkflowCog(commands.Cog):
         description="Use this channel for exact-verified deal alerts.",
     )
     @app_commands.describe(
-        public_alerts="Allow exact-verified Walmart, HP Store, and Target deals here.",
+        public_alerts="Allow exact-verified retailer deals in this channel.",
         threshold="Minimum exact markdown for this server. Recommended: 30-40.",
         best_categories="Apply broad Deal Week and Walmart Cash category coverage.",
     )
@@ -75,8 +89,13 @@ class CanonicalWorkflowCog(commands.Cog):
             return
 
         guild_id = int(interaction.guild_id)
+        target_location = await get_guild_target_location(self.bot.db, guild_id)
+        target_ready = bool(target_location and target_location.enabled)
         existing_config = await get_public_alert_config(self.bot.db, guild_id)
-        retailers = merge_canonical_retailers(existing_config.get("retailers") or ())
+        retailers = merge_canonical_retailers(
+            existing_config.get("retailers") or (),
+            include_target=target_ready,
+        )
         await self.bot.db.set_guild_deal_channel(guild_id, int(channel.id))
         await set_public_alert_config(
             self.bot.db,
@@ -86,8 +105,6 @@ class CanonicalWorkflowCog(commands.Cog):
             channel_id=int(channel.id),
         )
 
-        # Walmart discovery runs globally inside SniperPlug. HP and Target run
-        # as standalone watchers and publish exact events to the shared database.
         await set_retailer_auto_scan(
             self.bot.db,
             guild_id,
@@ -109,8 +126,7 @@ class CanonicalWorkflowCog(commands.Cog):
         embed = discord.Embed(
             title="✅ SniperPlug delivery setup complete",
             description=(
-                "SniperPlug now receives exact-verified deals from its global Walmart scanner plus the standalone HP Store and Target watchers. "
-                "This server only receives delivery fanout; it never launches duplicate retailer scans."
+                "This server receives fanout from shared retailer scanners. Target is only enrolled after an admin chooses an exact local store."
             ),
             color=discord.Color.green() if config.get("enabled") else discord.Color.orange(),
         )
@@ -128,36 +144,206 @@ class CanonicalWorkflowCog(commands.Cog):
         embed.add_field(
             name="Retailers",
             value=(
-                "**Walmart** global catalog + **HP Store** standalone exact-price watcher + "
-                "**Target** standalone sitemap/RedSky watcher"
+                "**Walmart** global catalog + **HP Store** exact-price watcher + "
+                + (
+                    f"**Target** at **{target_location.display_name}**"
+                    if target_ready and target_location is not None
+                    else "**Target paused** — run `/target_location` to choose a store"
+                )
             ),
             inline=False,
         )
         embed.add_field(
-            name="How autoscan works now",
+            name="How Target remains location-safe",
             value=(
-                "• One durable global cursor covers Walmart routes.\n"
-                "• Separate HP and Target processes cover their catalogs and write exact events into the same shared database.\n"
-                "• Exact deals fan out using this server's threshold, categories, channel, and duplicate rules.\n"
-                "• `/discover` remains an optional manual Walmart sweep—not a requirement for automatic coverage."
+                "• The server saves one chosen Target store and ZIP.\n"
+                "• Target events from other stores are blocked.\n"
+                "• Servers using the same store share one watcher location scan.\n"
+                "• No Connecticut or owner location is used as a fallback."
             ),
             inline=False,
         )
         embed.add_field(
             name="Next check",
-            value="Run `/autoscan_health` to confirm this server is enrolled in live fanout.",
+            value="Run `/autoscan_health` to confirm live delivery and Target location health.",
             inline=False,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @app_commands.command(
+        name="target_location",
+        description="Choose the Target store used for this server's local alerts.",
+    )
+    @app_commands.describe(zip_code="Five-digit ZIP used to find nearby Target stores.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def target_location(
+        self,
+        interaction: discord.Interaction,
+        zip_code: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send(
+                "Use this command inside the server you are configuring.",
+                ephemeral=True,
+            )
+            return
+        stores, error = await self._find_target_stores(zip_code)
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+        guild_id = int(interaction.guild_id)
+        current = await get_guild_target_location(self.bot.db, guild_id)
+        view = TargetStoreSelectView(
+            db=self.bot.db,
+            requester_id=int(interaction.user.id),
+            scope_type="guild",
+            scope_id=guild_id,
+            requested_zip=clean_zip(zip_code),
+            stores=stores,
+        )
+        await interaction.followup.send(
+            embed=store_picker_embed(
+                stores,
+                requested_zip=clean_zip(zip_code),
+                scope_label="this server",
+                current=current,
+            ),
+            view=view,
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="target_location_clear",
+        description="Disable local Target alerts for this server.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def target_location_clear(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send(
+                "Use this command inside the server you are configuring.",
+                ephemeral=True,
+            )
+            return
+        guild_id = int(interaction.guild_id)
+        removed = await clear_target_location(
+            self.bot.db,
+            scope_type="guild",
+            scope_id=guild_id,
+        )
+        await remove_target_retailer(self.bot.db, guild_id)
+        await interaction.followup.send(
+            (
+                "✅ This server's Target location was cleared. Local Target alerts are disabled until an admin runs `/target_location` again."
+                if removed
+                else "This server did not have an active Target location. Target remains disabled."
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="target_dm_location",
+        description="Choose the Target store used for your personal deal DMs.",
+    )
+    @app_commands.describe(zip_code="Five-digit ZIP used to find nearby Target stores.")
+    async def target_dm_location(
+        self,
+        interaction: discord.Interaction,
+        zip_code: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        stores, error = await self._find_target_stores(zip_code)
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+        user_id = int(interaction.user.id)
+        current = await get_user_target_location(self.bot.db, user_id)
+        view = TargetStoreSelectView(
+            db=self.bot.db,
+            requester_id=user_id,
+            scope_type="user",
+            scope_id=user_id,
+            requested_zip=clean_zip(zip_code),
+            stores=stores,
+        )
+        await interaction.followup.send(
+            embed=store_picker_embed(
+                stores,
+                requested_zip=clean_zip(zip_code),
+                scope_label="your personal Target DMs",
+                current=current,
+            ),
+            view=view,
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="target_dm_location_clear",
+        description="Disable location-specific Target deal DMs for you.",
+    )
+    async def target_dm_location_clear(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        removed = await clear_target_location(
+            self.bot.db,
+            scope_type="user",
+            scope_id=int(interaction.user.id),
+        )
+        await interaction.followup.send(
+            (
+                "✅ Your personal Target location was cleared. Local Target DMs will not be sent until you choose another store."
+                if removed
+                else "You did not have an active personal Target location."
+            ),
+            ephemeral=True,
+        )
+
+    async def _find_target_stores(
+        self,
+        zip_code: str,
+    ) -> tuple[tuple[TargetStore, ...], str]:
+        cleaned = clean_zip(zip_code)
+        if len(cleaned) != 5:
+            return (), "Enter a valid five-digit ZIP code."
+        api_key = str(
+            getattr(self.bot.settings, "target_redsky_api_key", None) or ""
+        ).strip()
+        if not api_key:
+            return (
+                (),
+                "Target location setup is temporarily unavailable because the owner has not configured `TARGET_REDSKY_API_KEY`.",
+            )
+        settings = TargetWatcherSettings(
+            redsky_api_key=api_key,
+            require_remote_database=False,
+        )
+        try:
+            async with TargetRedSkyClient(settings) as client:
+                return await client.find_nearby_stores(cleaned, limit=10), ""
+        except Exception as error:
+            text = " ".join(str(error or type(error).__name__).split())[:300]
+            return (
+                (),
+                "Target did not return a usable nearby-store list for that ZIP. "
+                f"Nothing was saved. `{type(error).__name__}: {text}`",
+            )
+
     @setup_sniperplug_here.error
-    async def setup_sniperplug_here_error(
+    @target_location.error
+    @target_location_clear.error
+    async def setup_permissions_error(
         self,
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
         message = (
-            "You need **Manage Server** permission to configure SniperPlug."
+            "You need **Manage Server** permission to configure SniperPlug or the server's Target location."
             if isinstance(error, app_commands.MissingPermissions)
             else f"SniperPlug setup failed safely: `{type(error).__name__}`"
         )
@@ -167,12 +353,21 @@ class CanonicalWorkflowCog(commands.Cog):
             await interaction.response.send_message(message, ephemeral=True)
 
 
-def merge_canonical_retailers(existing: Iterable[str]) -> tuple[str, ...]:
-    """Add canonical sources without deleting a server's other store choices."""
+def merge_canonical_retailers(
+    existing: Iterable[str],
+    *,
+    include_target: bool = False,
+) -> tuple[str, ...]:
+    """Add safe canonical sources without silently enrolling local Target."""
 
     merged: list[str] = []
-    for value in (*tuple(existing), "walmart", "hp", "target"):
+    values = [*tuple(existing), "walmart", "hp"]
+    if include_target:
+        values.append("target")
+    for value in values:
         retailer = normalize_retailer_key(value)
+        if retailer == "target" and not include_target:
+            continue
         if retailer and retailer not in merged:
             merged.append(retailer)
     return tuple(merged)

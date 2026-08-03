@@ -36,3 +36,5 @@ jobs:
         run: python -m pytest -q tests/test_ebay_watcher.py
       - name: Complete regression suite
         run: python -m pytest -q
+
+# Trigger validation after workflow registration.

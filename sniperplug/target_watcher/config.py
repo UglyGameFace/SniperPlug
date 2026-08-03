@@ -55,12 +55,12 @@ class TargetWatcherSettings:
             watch_tcins=_tcin_list(os.getenv("TARGET_WATCH_TCINS", "")),
             loop_seconds=_bounded_int("TARGET_WATCHER_LOOP_SECONDS", 15, 10, 3600),
             sitemap_batch_size=_bounded_int("TARGET_SITEMAP_BATCH_SIZE", 2, 1, 20),
-            product_batch_size=_bounded_int("TARGET_PRODUCT_BATCH_SIZE", 20, 1, 100),
+            product_batch_size=_bounded_int("TARGET_PRODUCT_BATCH_SIZE", 20, 1, 24),
             locations_per_cycle=_bounded_int(
                 "TARGET_LOCATIONS_PER_CYCLE", 2, 1, 25
             ),
             products_per_location_batch=_bounded_int(
-                "TARGET_PRODUCTS_PER_LOCATION_BATCH", 20, 1, 100
+                "TARGET_PRODUCTS_PER_LOCATION_BATCH", 20, 1, 24
             ),
             location_scan_spacing_seconds=_bounded_int(
                 "TARGET_LOCATION_SCAN_SPACING_SECONDS", 15, 10, 3600

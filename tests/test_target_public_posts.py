@@ -3,19 +3,33 @@ from __future__ import annotations
 from copy import deepcopy
 
 from sniperplug.services.target_deal_cards import build_target_deal_card
+from sniperplug.services.target_locations import TargetLocationContext
 from sniperplug.services.target_public_posts import is_verified_target_public_card
 from sniperplug.target_watcher.config import TargetWatcherSettings
 from sniperplug.target_watcher.parser import TargetOffer
-from sniperplug.target_watcher.service import _candidate_for_target_offer
+from sniperplug.target_watcher.production_service import candidate_for_target_offer
 from sniperplug.target_watcher.storage import TargetCatalogProduct, TargetOfferDecision
 
 
 TCIN = "91234567"
-PRODUCT = TargetCatalogProduct(
-    product_key=f"target:1956:06604:{TCIN}",
-    tcin=TCIN,
-    store_id="1956",
+LOCATION = TargetLocationContext(
+    scope_type="guild",
+    scope_id="1",
     zip_code="06604",
+    store_id="1956",
+    store_name="Target Bridgeport",
+    address_line="120 Hawley Ln",
+    city="Trumbull",
+    state="CT",
+    postal_code="06611",
+    latitude="41.230000",
+    longitude="-73.150000",
+)
+PRODUCT = TargetCatalogProduct(
+    product_key=f"target:{LOCATION.store_id}:{LOCATION.zip_code}:{TCIN}",
+    tcin=TCIN,
+    store_id=LOCATION.store_id,
+    zip_code=LOCATION.zip_code,
     title="Example Console",
     product_url=f"https://www.target.com/p/example-console/-/A-{TCIN}",
     image_url="https://target.scene7.com/example.jpg",
@@ -47,10 +61,11 @@ SETTINGS = TargetWatcherSettings(require_remote_database=False)
 
 
 def verified_card():
-    candidate = _candidate_for_target_offer(
+    candidate = candidate_for_target_offer(
         PRODUCT,
         OFFER,
         DECISION,
+        location=LOCATION,
         settings=SETTINGS,
     )
     return build_target_deal_card(candidate, event_key=DECISION.event_key)
@@ -60,8 +75,10 @@ def test_exact_target_card_passes_target_specific_public_gate() -> None:
     card = verified_card()
     assert is_verified_target_public_card(card, min_discount=50) is True
     assert card.public_post_key == DECISION.event_key
-    assert card.selected_offer_id == f"target:1956:{TCIN}"
+    assert card.selected_offer_id == f"target:{LOCATION.store_id}:{TCIN}"
     assert card.variant_attributes["targetIndependentConfirmation"] == "yes"
+    assert card.variant_attributes["targetLocationScope"] == "local"
+    assert card.variant_attributes["targetZip"] == LOCATION.zip_code
 
 
 def test_target_public_gate_rejects_cross_domain_or_identity() -> None:

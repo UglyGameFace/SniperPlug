@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import discord
 
@@ -21,6 +21,8 @@ from sniperplug.services.dm_deal_matching import match_dm_deal
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.hp_deal_cards import build_hp_deal_card
 from sniperplug.services.hp_public_posts import maybe_post_hp_deal_cards
+from sniperplug.services.target_deal_cards import build_target_deal_card
+from sniperplug.services.target_public_posts import maybe_post_target_deal_cards
 from sniperplug.services.verified_retailer_events import (
     claim_verified_retailer_events,
     mark_verified_retailer_event_processed,
@@ -30,6 +32,13 @@ from sniperplug.services.verified_retailer_events import (
 
 _FANOUT_LOCK = asyncio.Lock()
 log = logging.getLogger("sniperplug.retailer_event_fanout")
+
+
+@dataclass(frozen=True)
+class RetailerFanoutHandler:
+    label: str
+    build_card: Callable[..., Any]
+    post_cards: Callable[..., Any]
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,23 @@ class VerifiedRetailerFanoutResult:
             f"guild posts **{self.public_posts}** • DM sent **{self.dm_sent}** • "
             f"errors public/DM **{self.public_errors}/{self.dm_errors}**"
         )
+
+
+def retailer_fanout_handler(retailer: str) -> RetailerFanoutHandler | None:
+    key = str(retailer or "").strip().lower()
+    if key == "hp":
+        return RetailerFanoutHandler(
+            label="HP",
+            build_card=build_hp_deal_card,
+            post_cards=maybe_post_hp_deal_cards,
+        )
+    if key == "target":
+        return RetailerFanoutHandler(
+            label="Target",
+            build_card=build_target_deal_card,
+            post_cards=maybe_post_target_deal_cards,
+        )
+    return None
 
 
 async def fanout_verified_retailer_events(
@@ -90,23 +116,27 @@ async def fanout_verified_retailer_events(
 
         for event in events:
             errors: list[str] = []
-            if event.retailer != "hp":
+            handler = retailer_fanout_handler(event.retailer)
+            if handler is None:
                 await mark_verified_retailer_event_processed(
                     db,
                     event_key=event.event_key,
                     claim_token=event.claim_token,
-                    note=f"unsupported verified retailer event discarded safely: {event.retailer}",
+                    note=(
+                        "unsupported verified retailer event discarded safely: "
+                        f"{event.retailer}"
+                    ),
                 )
                 totals["events_processed"] += 1
                 continue
 
-            card = build_hp_deal_card(event.candidate, event_key=event.event_key)
+            card = handler.build_card(event.candidate, event_key=event.event_key)
             for guild in guilds:
                 guild_id = int(guild.guild_id)
                 totals["guilds_checked"] += 1
                 try:
                     threshold = await get_starting_deal_percent(db, guild_id)
-                    result = await maybe_post_hp_deal_cards(
+                    result = await handler.post_cards(
                         bot=bot,
                         guild_id=guild_id,
                         cards=[card],
@@ -125,7 +155,8 @@ async def fanout_verified_retailer_events(
                         errors.extend(result.errors)
                     elif result.errors:
                         log.info(
-                            "HP fanout destination completed with notes guild=%s event=%s notes=%s",
+                            "%s fanout destination completed with notes guild=%s event=%s notes=%s",
+                            handler.label,
                             guild_id,
                             event.event_key,
                             list(result.errors),
@@ -133,7 +164,12 @@ async def fanout_verified_retailer_events(
                 except Exception as error:  # noqa: BLE001 - one guild cannot block others.
                     totals["public_errors"] += 1
                     errors.append(f"guild {guild_id}: {type(error).__name__}: {error}")
-                    log.exception("HP public fanout failed guild=%s event=%s", guild_id, event.event_key)
+                    log.exception(
+                        "%s public fanout failed guild=%s event=%s",
+                        handler.label,
+                        guild_id,
+                        event.event_key,
+                    )
 
             for preference in preferences:
                 totals["dm_preferences_checked"] += 1
@@ -148,18 +184,29 @@ async def fanout_verified_retailer_events(
                         deal_key=event.event_key,
                     ):
                         continue
-                    if await dm_alerts_sent_today(db, preference.user_id) >= preference.max_alerts_per_day:
+                    if (
+                        await dm_alerts_sent_today(db, preference.user_id)
+                        >= preference.max_alerts_per_day
+                    ):
                         continue
                     user = bot.get_user(preference.user_id)
                     if user is None:
                         user = await bot.fetch_user(preference.user_id)
-                    await user.send(embed=_personal_dm_embed(card, decision.reason))
+                    await user.send(
+                        embed=_personal_dm_embed(
+                            card,
+                            decision.reason,
+                            retailer_label=handler.label,
+                        )
+                    )
                     await record_dm_receipt(
                         db,
                         user_id=preference.user_id,
                         deal_key=event.event_key,
                     )
-                    await clear_dm_delivery_failures(db, user_id=preference.user_id)
+                    await clear_dm_delivery_failures(
+                        db, user_id=preference.user_id
+                    )
                     totals["dm_sent"] += 1
                 except discord.Forbidden as error:
                     totals["dm_disabled"] += 1
@@ -179,7 +226,9 @@ async def fanout_verified_retailer_events(
                     )
                 except Exception as error:  # noqa: BLE001 - one subscriber cannot block others.
                     totals["dm_errors"] += 1
-                    errors.append(f"DM {preference.user_id}: {type(error).__name__}: {error}")
+                    errors.append(
+                        f"DM {preference.user_id}: {type(error).__name__}: {error}"
+                    )
                     await record_dm_delivery_failure(
                         db,
                         user_id=preference.user_id,
@@ -221,14 +270,27 @@ async def fanout_verified_retailer_events(
         return VerifiedRetailerFanoutResult(events_claimed=len(events), **totals)
 
 
-def _personal_dm_embed(card: Any, reason: str) -> discord.Embed:
+def _personal_dm_embed(
+    card: Any,
+    reason: str,
+    *,
+    retailer_label: str,
+) -> discord.Embed:
     source = getattr(card, "embed", None)
-    embed = discord.Embed.from_dict(source.to_dict()) if source is not None else discord.Embed(title="HP deal")
+    embed = (
+        discord.Embed.from_dict(source.to_dict())
+        if source is not None
+        else discord.Embed(title=f"{retailer_label} deal")
+    )
     value = (
         f"{reason}\n"
-        "This came from your opt-in `/dm_deals` filter and was verified against the exact HP.com structured offer. "
+        f"This came from your opt-in `/dm_deals` filter and was verified against the exact {retailer_label} structured offer. "
         "Prices can change; recheck the product before buying."
     )
     if len(embed.fields) < 25:
-        embed.add_field(name="🔔 Your smart alert", value=value[:1024], inline=False)
+        embed.add_field(
+            name="🔔 Your smart alert",
+            value=value[:1024],
+            inline=False,
+        )
     return sanitize_embed(embed)

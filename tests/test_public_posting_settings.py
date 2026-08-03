@@ -3,16 +3,30 @@ from sniperplug.services.public_posting import parse_retailer_list, retailer_cre
 
 
 def test_parse_retailer_list_normalizes_supported_aliases():
-    assert parse_retailer_list("walmart, home, best buy, amz") == ("walmart", "home_depot", "bestbuy", "amazon")
+    assert parse_retailer_list("walmart, home, best buy, amz, target store") == (
+        "walmart",
+        "home_depot",
+        "bestbuy",
+        "amazon",
+        "target",
+    )
 
 
 def test_parse_retailer_list_dedupes_and_ignores_unknowns():
-    assert parse_retailer_list("walmart, walmart, target, hd") == ("walmart", "home_depot")
+    assert parse_retailer_list("walmart, walmart, target, target.com, unknown, hd") == (
+        "walmart",
+        "target",
+        "home_depot",
+    )
 
 
 def test_credit_note_warns_for_limited_credit_retailers():
     assert "Limited/paid quota" in retailer_credit_note("home_depot")
     assert "Limited/paid quota" in retailer_credit_note("amazon")
+
+
+def test_target_credit_note_describes_standalone_watcher():
+    assert "standalone sitemap + RedSky watcher" in retailer_credit_note("target")
 
 
 def test_default_auto_scan_config_is_safe_off():

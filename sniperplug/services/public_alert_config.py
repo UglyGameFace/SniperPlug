@@ -10,6 +10,7 @@ from sniperplug.services.public_posting import normalize_retailer_key
 
 CHANNEL_PREFIX = "ch:"
 HP_RETAILER_MIGRATION = "20260802_enable_hp_for_existing_walmart_public_alerts"
+TARGET_RETAILER_MIGRATION = "20260802_enable_target_for_existing_walmart_public_alerts"
 
 
 async def ensure_public_alert_table(db: Any) -> None:
@@ -35,21 +36,30 @@ async def ensure_public_alert_table(db: Any) -> None:
         """
     )
     await conn.commit()
-    await _migrate_existing_walmart_alerts_to_hp(db)
+    await _migrate_existing_walmart_alerts_to_retailer(
+        db,
+        migration_key=HP_RETAILER_MIGRATION,
+        retailer="hp",
+    )
+    await _migrate_existing_walmart_alerts_to_retailer(
+        db,
+        migration_key=TARGET_RETAILER_MIGRATION,
+        retailer="target",
+    )
 
 
-async def _migrate_existing_walmart_alerts_to_hp(db: Any) -> int:
-    """Enroll existing enabled Walmart destinations in free HP fanout once.
-
-    HP did not exist as a selectable retailer before this migration, so no
-    existing user preference can be overwritten. Disabled destinations remain
-    disabled, and non-Walmart custom retailer sets are left untouched.
-    """
+async def _migrate_existing_walmart_alerts_to_retailer(
+    db: Any,
+    *,
+    migration_key: str,
+    retailer: str,
+) -> int:
+    """Enroll enabled Walmart destinations in a newly introduced free source once."""
 
     conn = db.require_conn()
     marker = await conn.execute(
         "SELECT 1 FROM sniperplug_data_migrations WHERE migration_key = ? LIMIT 1",
-        (HP_RETAILER_MIGRATION,),
+        (migration_key,),
     )
     if await marker.fetchone() is not None:
         return 0
@@ -58,6 +68,7 @@ async def _migrate_existing_walmart_alerts_to_hp(db: Any) -> int:
         "SELECT guild_id, retailers_json FROM guild_public_alert_settings WHERE enabled = 1"
     )
     updated = 0
+    normalized_new = normalize_retailer_key(retailer)
     for row in await cursor.fetchall():
         try:
             retailers = [
@@ -70,9 +81,9 @@ async def _migrate_existing_walmart_alerts_to_hp(db: Any) -> int:
             ]
         except Exception:
             continue
-        if "walmart" not in retailers or "hp" in retailers:
+        if "walmart" not in retailers or normalized_new in retailers:
             continue
-        retailers.append("hp")
+        retailers.append(normalized_new)
         await conn.execute(
             "UPDATE guild_public_alert_settings SET retailers_json = ?, updated_at = ? "
             "WHERE CAST(guild_id AS TEXT) = ?",
@@ -85,8 +96,9 @@ async def _migrate_existing_walmart_alerts_to_hp(db: Any) -> int:
         updated += 1
 
     await conn.execute(
-        "INSERT INTO sniperplug_data_migrations (migration_key, applied_at) VALUES (?, ?) ON CONFLICT(migration_key) DO NOTHING",
-        (HP_RETAILER_MIGRATION, utc_now_iso()),
+        "INSERT INTO sniperplug_data_migrations (migration_key, applied_at) VALUES (?, ?) "
+        "ON CONFLICT(migration_key) DO NOTHING",
+        (migration_key, utc_now_iso()),
     )
     await conn.commit()
     return updated

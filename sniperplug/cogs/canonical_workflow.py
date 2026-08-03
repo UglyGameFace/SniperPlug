@@ -38,7 +38,7 @@ class CanonicalWorkflowCog(commands.Cog):
         description="Use this channel for exact-verified deal alerts.",
     )
     @app_commands.describe(
-        public_alerts="Allow exact-verified Walmart and HP Store deals in this channel.",
+        public_alerts="Allow exact-verified Walmart, HP Store, and Target deals here.",
         threshold="Minimum exact markdown for this server. Recommended: 30-40.",
         best_categories="Apply broad Deal Week and Walmart Cash category coverage.",
     )
@@ -86,9 +86,8 @@ class CanonicalWorkflowCog(commands.Cog):
             channel_id=int(channel.id),
         )
 
-        # Walmart discovery runs globally inside SniperPlug. HP discovery runs in
-        # its own process and writes exact events to the same shared database.
-        # Neither path creates one duplicate scanner per Discord server.
+        # Walmart discovery runs globally inside SniperPlug. HP and Target run
+        # as standalone watchers and publish exact events to the shared database.
         await set_retailer_auto_scan(
             self.bot.db,
             guild_id,
@@ -110,7 +109,7 @@ class CanonicalWorkflowCog(commands.Cog):
         embed = discord.Embed(
             title="✅ SniperPlug delivery setup complete",
             description=(
-                "SniperPlug now receives exact-verified deals from its global Walmart scanner and the standalone HP Store watcher. "
+                "SniperPlug now receives exact-verified deals from its global Walmart scanner plus the standalone HP Store and Target watchers. "
                 "This server only receives delivery fanout; it never launches duplicate retailer scans."
             ),
             color=discord.Color.green() if config.get("enabled") else discord.Color.orange(),
@@ -128,16 +127,19 @@ class CanonicalWorkflowCog(commands.Cog):
         )
         embed.add_field(
             name="Retailers",
-            value="**Walmart** global catalog + **HP Store** standalone exact-price watcher",
+            value=(
+                "**Walmart** global catalog + **HP Store** standalone exact-price watcher + "
+                "**Target** standalone sitemap/RedSky watcher"
+            ),
             inline=False,
         )
         embed.add_field(
             name="How autoscan works now",
             value=(
                 "• One durable global cursor covers Walmart routes.\n"
-                "• The separate HP watcher covers HP's US product catalog and writes verified events into SniperPlug's shared database.\n"
+                "• Separate HP and Target processes cover their catalogs and write exact events into the same shared database.\n"
                 "• Exact deals fan out using this server's threshold, categories, channel, and duplicate rules.\n"
-                "• `/discover` remains an optional manual sweep—not a requirement for automatic coverage."
+                "• `/discover` remains an optional manual Walmart sweep—not a requirement for automatic coverage."
             ),
             inline=False,
         )
@@ -169,7 +171,7 @@ def merge_canonical_retailers(existing: Iterable[str]) -> tuple[str, ...]:
     """Add canonical sources without deleting a server's other store choices."""
 
     merged: list[str] = []
-    for value in (*tuple(existing), "walmart", "hp"):
+    for value in (*tuple(existing), "walmart", "hp", "target"):
         retailer = normalize_retailer_key(value)
         if retailer and retailer not in merged:
             merged.append(retailer)

@@ -1,47 +1,53 @@
 # Active Task
 
 ## Status
-Complete — HP big-ticket price-error fast lane implemented, validated, and ready for deployment.
+Complete — standalone Target catalog and exact-offer watcher implemented, hardened, and validated in PR #199.
 
 ## Scope
-Keep the standalone HP watcher architecture, but make its urgent alert path focus exclusively on expensive products with extreme, independently verified markdowns. Default policy: HP reference/current value of at least **$200** and a verified discount of at least **69%**.
+Build Target as a separate continuously running watcher that uses Target's published PDP sitemap for catalog discovery, Target RedSky JSON for exact TCIN pricing and fulfillment, the existing Turso/libSQL verified-retailer outbox for delivery, and SniperPlug's existing server thresholds, categories, channels, duplicate guards, feedback controls, active-deal cache, and opt-in DMs.
 
 ## Root cause and execution-path findings
-- The first HP watcher prioritized existing markdowns and used one general due queue.
-- Enough ordinary sale products could delay a full-price expensive item that suddenly dropped 69%+.
-- A server-level discount threshold alone could still allow cheap accessories with large percentages.
-- Expensive products need protected polling capacity before the drop occurs, using their current/MSRP/prior exact value to classify them.
+- Target does not provide the same easy public retail API contract as Best Buy.
+- Target publishes a PDP sitemap index that can provide broad catalog identity without relying on search-result completeness.
+- Target's web application uses structured RedSky product and fulfillment responses keyed by exact TCIN and store/ZIP context.
+- The existing verified-retailer outbox was reusable, but its fanout consumer hard-rejected every retailer except HP.
+- Target availability strings require negative-first parsing because `unavailable` contains the word `available`.
+- A fulfillment response can contain more than one store; pickup proof must never borrow availability from a different store.
+- Target Plus products require an explicit marketplace seller and must not fall back to a manufacturer/vendor name or be mislabeled as sold by Target.
+- Public alerts must fail closed unless exact TCIN, seller, prices, and local fulfillment survive an independent second request.
+- The standalone process must share SniperPlug's Turso/libSQL database; a separate local SQLite file cannot feed the bot.
 
 ## Changes
-- Added `HPPriceErrorWatcherService` on top of the proven sitemap, identity, structured-price, history, and outbox implementation.
-- Reserve up to 75% of each offer batch for known due big-ticket products; unused capacity immediately fills from unclassified and background products.
-- Default watcher cycle is 10 seconds with an 80-offer structured batch.
-- Known big-ticket products are rescheduled every 45 seconds.
-- Cheap products are returned to the slower background schedule even when they have a large percentage markdown.
-- Only $200+ reference/value products at 69%+ off can publish HP events.
-- Alert-worthy observations still require the independent cache-busted exact-product confirmation.
-- Added candidate proof attributes identifying the price-error lane and policy floors.
-- Added configurable environment values:
-  - `HP_BIG_TICKET_MIN_REFERENCE_PRICE=200`
-  - `HP_PRICE_ERROR_MIN_DISCOUNT_PERCENT=69`
-  - `HP_BIG_TICKET_OFFER_INTERVAL_SECONDS=45`
-- Restored the canonical `/autoscan_health` exact-verification queue label required by the established command-surface regression.
+- Added standalone Target configuration, entrypoint, Discloud configuration, bounded HTTP client, gzip/XML sitemap parsing, RedSky JSON parsing, exact offer history, durable scheduling, and health state.
+- Added optional `TARGET_WATCH_TCINS` seeding while full sitemap discovery progresses.
+- Added strict TCIN URL validation, positive-price validation, exact seller preservation, store/ZIP context, fulfillment verification, and independent cache-busted confirmation.
+- Added fail-closed Target Plus handling: marketplace products without an exact seller identity are rejected.
+- Added exact-store pickup selection: multi-store responses cannot leak another store's stock into the configured location.
+- Removed the unsafe inference that a false global out-of-stock flag automatically means the item is purchasable.
+- Added a protected $200+/69% price-error lane while preserving ordinary exact markdown events for server-level thresholds.
+- Added Target-specific Discord cards and a Target public proof gate.
+- Refactored verified-retailer fanout into explicit retailer dispatch instead of a hard-coded single-retailer branch.
+- Added Target to supported retailer normalization, canonical setup, existing enabled Walmart destination migration, `/autoscan_health`, active-deal cache, and DM fanout.
+- Added deployment documentation and CI coverage.
 
 ## Validation
 - Python compilation passed.
-- SniperPlug and standalone watcher import smoke checks passed.
-- Targeted big-ticket qualification, protected-claim, scheduling, history, and configuration tests passed.
-- Complete pytest suite passed.
-- Pull request is mergeable with zero commits behind `main`.
-- Review-thread inspection found no unresolved findings.
+- Import smoke check passed.
+- Full Python Check workflow passed.
+- Full repository pytest workflow passed.
+- Target parser regressions cover exact TCINs, gzip sitemaps, unavailable-state parsing, Target Plus seller identity, configured-store-only pickup proof, and non-invented availability.
+- Target storage/history regressions cover initial verified markdowns, duplicate suppression, later price drops, big-ticket scheduling, and unavailable-offer blocking.
+- Target public proof regressions cover domain, TCIN/store offer identity, trusted references, fulfillment, and per-server thresholds.
+- PR #199 is mergeable, zero commits behind `main`, with no unresolved inline review threads.
 - Final changed-file inspection found no temporary, backup, or applicator files.
 
 ## Cleanup status
-Complete.
+Complete. Target code is isolated under `sniperplug/target_watcher` and Target-specific delivery modules; shared delivery is extended through one retailer dispatch function rather than duplicated.
 
 ## Blockers
-None.
+None in code.
 
 ## Backlog
-- Deploy/redeploy the separate Discloud HP watcher using the same Turso credentials as SniperPlug.
-- Measure live catalog size and effective big-ticket sweep latency from `/autoscan_health` before changing the bounded defaults.
+- Merge PR #199.
+- Deploy the separate Target Discloud app using `discloud.target-watcher.config` and the same Turso credentials as SniperPlug.
+- Observe live sitemap size, RedSky response stability, and effective sweep latency before changing bounded defaults.

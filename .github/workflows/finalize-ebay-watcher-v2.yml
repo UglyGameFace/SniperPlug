@@ -1,0 +1,180 @@
+name: Finalize eBay watcher v2
+
+on:
+  push:
+    branches:
+      - feature/ebay-big-ticket-watcher
+    paths:
+      - .github/workflows/finalize-ebay-watcher-v2.yml
+
+concurrency:
+  group: finalize-ebay-watcher
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/ebay-big-ticket-watcher
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install requirements
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Validate diff, imports, and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check origin/main...HEAD
+          ! git grep -n -E 'standard_api_daily_budget|get_items_api_daily_budget|EBAY_STANDARD_API_DAILY_BUDGET|EBAY_GET_ITEMS_API_DAILY_BUDGET' -- sniperplug docs tests
+          python -m compileall -q sniperplug ebay_watcher_main.py
+          python -c 'import sniperplug.bot; import sniperplug.ebay_watcher.app'
+          python -m pytest -q \
+            tests/test_ebay_watcher.py \
+            tests/test_ebay_watcher_exact_identity.py \
+            tests/test_ebay_watcher_shared_budget.py \
+            | tee /tmp/ebay-targeted.log
+          python -m pytest -q | tee /tmp/ebay-full.log
+          TARGETED_SUMMARY="$(tail -n 1 /tmp/ebay-targeted.log)"
+          FULL_SUMMARY="$(tail -n 1 /tmp/ebay-full.log)"
+          printf 'TARGETED_SUMMARY=%s\n' "$TARGETED_SUMMARY" >> "$GITHUB_ENV"
+          printf 'FULL_SUMMARY=%s\n' "$FULL_SUMMARY" >> "$GITHUB_ENV"
+      - name: Cancel obsolete eBay validation runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run list --repo "$GITHUB_REPOSITORY" --branch feature/ebay-big-ticket-watcher \
+            --limit 50 --json databaseId,workflowName,status \
+            --jq '.[] | select((.workflowName == "Validate eBay watcher branch" or .workflowName == "Validate final eBay watcher" or .workflowName == "Finalize eBay watcher") and (.status == "queued" or .status == "in_progress")) | .databaseId' \
+            | while read -r run_id; do
+                [ -n "$run_id" ] && gh run cancel "$run_id" --repo "$GITHUB_REPOSITORY" || true
+              done
+      - name: Record final task state and remove validation scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > ACTIVE_TASK.md <<EOF
+          # Active Task
+
+          ## Status
+          Complete — verified eBay big-ticket and highly sought-after watcher implemented and validated.
+
+          ## Scope
+          Add a standalone, always-on eBay watcher to SniperPlug. Default alerts require a 69% independently verified discount, with customizable rules for big-ticket products and explicitly sought-after products.
+
+          ## Root cause and execution-path findings
+          - A command-time search is not a watcher; discovery, refresh, history, and alert delivery must run in a durable background worker.
+          - Seller crossed-out/original prices cannot prove a discount.
+          - Exact item variation, condition, shipping, and seller identity must match before prices are compared.
+          - eBay Browse has one shared daily API allowance, so search, getItems, getItem confirmations, and retries must consume one durable total budget.
+          - Broad searches can retain low-value noise and stale ended listings unless the worker filters and retires them.
+
+          ## Changes
+          - Added official eBay OAuth and Browse API client with bounded retry and token caching.
+          - Added durable custom watch rules, listing history, observations, leases, API usage, and health state.
+          - Added protected sought-after and broad big-ticket seed lanes.
+          - Added exact GTIN/ePID or brand-model/MPN fingerprints with important variation aspects.
+          - Added structured delivered-price, condition-grade, seller-feedback, suspicious-listing, fixed-price, and availability gates.
+          - Added independently verified references from stable same-listing history or at least five distinct exact-product/same-condition sellers.
+          - Added conservative lower-reference selection when both history and market proof exist.
+          - Added a second exact getItem confirmation before the shared verified-retailer outbox.
+          - Added durable shared 4,500-call Browse safety budget with per-method diagnostics.
+          - Added low-value noise rejection, priority-rule preservation, and retirement after three tracked-item omissions.
+          - Added owner /ebay_watch management, Discord cards, public proof gates, health output, documentation, and separate Discloud worker configuration.
+          - Preserved explicit server retailer preferences; eBay is available but existing servers are not silently opted in.
+
+          ## Validation
+          - Git diff whitespace validation passed.
+          - Legacy split-budget reference inspection passed.
+          - Python compilation passed.
+          - SniperPlug and standalone eBay watcher import smoke checks passed.
+          - Targeted eBay watcher suite: ${TARGETED_SUMMARY}.
+          - Complete regression suite: ${FULL_SUMMARY}.
+
+          ## Cleanup status
+          Complete. Temporary payloads, applicators, validation workflows, and validation result files were removed. Oversized service/storage modules were integrated as normal Python packages.
+
+          ## Blockers
+          Live monitoring still requires eBay Production Client ID/Client Secret and approved Buy API access, the same Turso credentials as SniperPlug, deployment of the separate Discloud worker, and explicit eBay retailer opt-in for each destination server.
+
+          ## Backlog
+          - Add approved eBay Feed API ingestion later if broader category-wide coverage is needed.
+          - Tune rule cadence only from live health and API-budget data after deployment.
+          EOF
+
+          git rm -f --ignore-unmatch \
+            .github/workflows/validate-ebay-watcher.yml \
+            .github/workflows/validate-ebay-final.yml \
+            .github/workflows/finalize-ebay-watcher.yml \
+            .github/workflows/finalize-ebay-watcher-v2.yml \
+            validation/EBAY_WATCHER_RESULT.md \
+            validation/EBAY_WATCHER_FINAL_RESULT.md
+          rm -f validation/final_statuses.env
+          rmdir validation/logs 2>/dev/null || true
+          rmdir validation 2>/dev/null || true
+          git add ACTIVE_TASK.md
+
+          if git ls-files | grep -E 'ebay_(impl|hardening).*\.b64|apply-ebay|validate-ebay|finalize-ebay|EBAY_WATCHER_(FINAL_)?RESULT'; then
+            echo 'Temporary eBay implementation/validation files remain tracked.' >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --cached --check
+          git commit -m 'Finalize verified eBay watcher'
+          git push origin HEAD:feature/ebay-big-ticket-watcher
+      - name: Update pull request and mark ready
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/pr-body.md <<EOF
+          ## Active task
+
+          Build a standalone eBay watcher for big-ticket and highly sought-after products, with independently verified, customizable extreme-drop alerts.
+
+          ## Defaults
+          - 69% minimum verified discount
+          - \$200 big-ticket reference/value floor
+          - \$75 default floor for explicitly sought-after rules
+          - Fixed-price listings only
+          - Shared 4,500-call/day Browse safety budget
+
+          ## Verification
+          - Exact item/variation identity from GTIN/ePID or brand + MPN/model
+          - Structured item price plus shipping
+          - Condition-grade and seller-feedback gates
+          - Suspicious packaging/parts/replica rejection
+          - Same-listing durable history or 5+ distinct exact-product/same-condition sellers
+          - Seller marketing original price is never proof
+          - Second exact getItem confirmation before fanout
+
+          ## Scale and reliability
+          - Protected sought-after and broad big-ticket rule lanes
+          - Durable rules, history, observations, leases, API usage, and health
+          - One shared Browse budget across search, getItems, getItem, and retries
+          - Low-value search-noise rejection and stale listing retirement
+          - Existing SniperPlug outbox, duplicate protection, delivery controls, and Discord fanout
+
+          ## Validation
+          - Targeted eBay watcher suite: ${TARGETED_SUMMARY}
+          - Complete regression suite: ${FULL_SUMMARY}
+          - Compilation, imports, diff validation, cleanup, and legacy split-budget inspection passed
+
+          ## Deployment boundary
+          Live monitoring requires eBay Production Client ID/Client Secret and approved Buy API access. Deploy the separate Discloud worker with SniperPlug's same Turso credentials, then explicitly enable eBay for each destination server.
+          EOF
+          gh pr edit 200 --repo "$GITHUB_REPOSITORY" --body-file /tmp/pr-body.md
+          gh pr ready 200 --repo "$GITHUB_REPOSITORY"

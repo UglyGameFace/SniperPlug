@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-SUPPORTED_PUBLIC_RETAILERS = {"walmart", "home_depot", "bestbuy", "amazon", "hp"}
+SUPPORTED_PUBLIC_RETAILERS = {
+    "walmart",
+    "home_depot",
+    "bestbuy",
+    "amazon",
+    "hp",
+    "ebay",
+}
 SUPPORTED_RETAILERS = SUPPORTED_PUBLIC_RETAILERS
 CREDITED_RETAILERS = {"home_depot", "amazon"}
 
@@ -14,7 +21,10 @@ class PublicPostingSettings:
     retailers: tuple[str, ...]
 
     def allows(self, retailer: str) -> bool:
-        return self.enabled and normalize_retailer_key(retailer) in set(self.retailers)
+        return (
+            self.enabled
+            and normalize_retailer_key(retailer) in set(self.retailers)
+        )
 
 
 @dataclass(frozen=True)
@@ -28,7 +38,13 @@ class RetailerAutoScanSettings:
 
 
 def normalize_retailer_key(value: str | None) -> str:
-    text = (value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    text = (
+        (value or "")
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
     aliases = {
         "home": "home_depot",
         "homedepot": "home_depot",
@@ -45,6 +61,9 @@ def normalize_retailer_key(value: str | None) -> str:
         "hp_store": "hp",
         "hp.com": "hp",
         "hewlett_packard": "hp",
+        "ebay": "ebay",
+        "e_bay": "ebay",
+        "ebay.com": "ebay",
     }
     return aliases.get(text, text)
 
@@ -55,19 +74,39 @@ def parse_retailer_list(value: str | None) -> tuple[str, ...]:
     retailers: list[str] = []
     for piece in value.replace(";", ",").split(","):
         key = normalize_retailer_key(piece)
-        if key and key in SUPPORTED_RETAILERS and key not in retailers:
+        if (
+            key
+            and key in SUPPORTED_RETAILERS
+            and key not in retailers
+        ):
             retailers.append(key)
     return tuple(retailers)
 
 
 def format_retailers(retailers: tuple[str, ...]) -> str:
-    return ", ".join(f"`{retailer}`" for retailer in retailers) if retailers else "none"
+    return (
+        ", ".join(f"`{retailer}`" for retailer in retailers)
+        if retailers
+        else "none"
+    )
 
 
 def retailer_credit_note(retailer: str) -> str:
     key = normalize_retailer_key(retailer)
     if key in CREDITED_RETAILERS:
-        return "Limited/paid quota risk: keep auto scans off unless you intentionally want SniperPlug spending credits."
+        return (
+            "Limited/paid quota risk: keep auto scans off unless you "
+            "intentionally want SniperPlug spending credits."
+        )
     if key == "hp":
-        return "HP Store coverage comes from the standalone first-party watcher and does not spend third-party API credits."
+        return (
+            "HP Store coverage comes from the standalone first-party watcher "
+            "and does not spend third-party API credits."
+        )
+    if key == "ebay":
+        return (
+            "eBay coverage comes from the standalone official Browse API "
+            "watcher. It uses eBay's application call allowance, not a paid "
+            "third-party scraping service."
+        )
     return "No third-party credit warning registered for this store yet."

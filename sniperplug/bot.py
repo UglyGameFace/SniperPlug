@@ -22,6 +22,7 @@ from sniperplug.cogs.global_auto_scan_runner import AutoScanRunnerCog as GlobalA
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.dm_deal_alerts import DmDealAlertsCog
+from sniperplug.cogs.ebay_watch import EbayWatchCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
@@ -133,6 +134,7 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(HomeDepotLocalCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
         await self.add_cog(DmDealAlertsCog(self))
+        await self.add_cog(EbayWatchCog(self))
         await self.add_cog(CanonicalPublicAlertsCog(self))
         await self.add_cog(ActiveDealsCog(self))
         await self.add_cog(ActiveDealHistoryCog(self))

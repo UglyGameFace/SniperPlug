@@ -1,0 +1,38 @@
+name: Validate eBay watcher branch
+
+on:
+  push:
+    branches:
+      - feature/ebay-big-ticket-watcher
+    paths:
+      - .github/workflows/validate-ebay-watcher.yml
+      - sniperplug/**
+      - tests/**
+      - ebay_watcher_main.py
+      - requirements.txt
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/ebay-big-ticket-watcher
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install requirements
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q sniperplug ebay_watcher_main.py
+      - name: Import runtimes
+        run: python -c "import sniperplug.bot; import sniperplug.ebay_watcher.app"
+      - name: Targeted eBay watcher tests
+        run: python -m pytest -q tests/test_ebay_watcher.py
+      - name: Complete regression suite
+        run: python -m pytest -q

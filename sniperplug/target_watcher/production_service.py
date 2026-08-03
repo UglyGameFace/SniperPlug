@@ -10,6 +10,7 @@ from sniperplug.target_watcher.leased_storage import (
     LeasedTargetCatalogProduct,
     claim_due_sitemap_sources,
     claim_products_for_offer_poll,
+    complete_product_work,
     complete_sitemap_source,
     record_exact_offer,
     store_offer_failure,
@@ -223,6 +224,10 @@ class ProductionTargetWatcherService(TargetWatcherService):
                         source_verified_at=datetime.now(timezone.utc).isoformat(),
                     )
                     events += int(inserted)
+                if not await complete_product_work(self.db, product=product):
+                    raise RuntimeError(
+                        "Target product work lease expired before completion"
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as error:

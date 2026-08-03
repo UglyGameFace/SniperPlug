@@ -1,7 +1,7 @@
 # eBay watcher validation result
 
-- Recorded at: `2026-08-03T02:00:23.900526+00:00`
-- Validated commit: `0d3502502648489133b1f078459e51e6055b5331`
+- Recorded at: `2026-08-03T02:07:46.379068+00:00`
+- Validated commit: `20fcdffc65b45328143bb1c2f65e74447f538171`
 
 ## Status
 - Install requirements: **PASS**
@@ -116,7 +116,7 @@ Successfully installed aiohappyeyeballs-2.7.1 aiohttp-3.14.3 aiosignal-1.4.0 aio
     import audioop
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-11 passed, 1 warning in 0.34s
+11 passed, 1 warning in 0.30s
 ```
 
 ## Complete pytest regression suite output
@@ -141,5 +141,5 @@ Successfully installed aiohappyeyeballs-2.7.1 aiohttp-3.14.3 aiosignal-1.4.0 aio
     import audioop
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-933 passed, 1 warning in 7.77s
+933 passed, 1 warning in 6.77s
 ```

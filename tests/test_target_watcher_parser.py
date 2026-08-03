@@ -73,6 +73,29 @@ def test_target_product_parser_requires_exact_tcin_and_positive_price() -> None:
         parse_target_product_response(payload, expected_tcin=TCIN)
 
 
+def test_target_plus_requires_exact_marketplace_seller_identity() -> None:
+    product = {
+        "tcin": TCIN,
+        "item": {
+            "product_description": {"title": "Marketplace Product"},
+            "is_target_plus": True,
+        },
+        "price": {"current_retail": 43.99},
+    }
+    with pytest.raises(ValueError, match="exact seller identity"):
+        parse_target_product_response(
+            {"data": {"product": product}},
+            expected_tcin=TCIN,
+        )
+
+    product["merchant"] = {"display_name": "iHerb"}
+    offer = parse_target_product_response(
+        {"data": {"product": product}},
+        expected_tcin=TCIN,
+    )
+    assert offer.seller_name == "iHerb"
+
+
 def test_unavailable_is_never_misread_as_available() -> None:
     payload = {
         "data": {
@@ -97,6 +120,70 @@ def test_unavailable_is_never_misread_as_available() -> None:
     assert result.shipping_available is False
     assert result.pickup_available is False
     assert result.can_add_to_cart is False
+
+
+def test_pickup_proof_uses_only_the_configured_target_store() -> None:
+    payload = {
+        "data": {
+            "product_summaries": [
+                {
+                    "tcin": TCIN,
+                    "fulfillment": {
+                        "shipping_options": {"availability_status": "UNAVAILABLE"},
+                        "store_options": [
+                            {
+                                "store_id": "1956",
+                                "order_pickup": {"availability_status": "OUT_OF_STOCK"},
+                                "drive_up": {"availability_status": "UNAVAILABLE"},
+                            },
+                            {
+                                "store_id": "9999",
+                                "order_pickup": {"availability_status": "AVAILABLE"},
+                                "drive_up": {"availability_status": "AVAILABLE"},
+                            },
+                        ],
+                    },
+                }
+            ]
+        }
+    }
+    result = parse_target_fulfillment_response(
+        payload,
+        expected_tcins=[TCIN],
+        expected_store_id="1956",
+    )[TCIN]
+    assert result.shipping_available is False
+    assert result.pickup_available is False
+    assert result.can_add_to_cart is False
+    assert "store:9999" not in result.stock_status
+
+    ambiguous = parse_target_fulfillment_response(
+        payload,
+        expected_tcins=[TCIN],
+    )[TCIN]
+    assert ambiguous.pickup_available is None
+    assert ambiguous.can_add_to_cart is None
+
+
+def test_false_global_out_of_stock_flag_does_not_invent_availability() -> None:
+    payload = {
+        "data": {
+            "product_summaries": [
+                {
+                    "tcin": TCIN,
+                    "is_out_of_stock_in_all_store_locations": False,
+                    "fulfillment": {
+                        "shipping_options": {"availability_status": "UNAVAILABLE"},
+                        "store_options": [],
+                    },
+                }
+            ]
+        }
+    }
+    result = parse_target_fulfillment_response(payload, expected_tcins=[TCIN])[TCIN]
+    assert result.shipping_available is False
+    assert result.pickup_available is None
+    assert result.can_add_to_cart is None
 
 
 def test_fulfillment_only_merges_the_expected_tcin() -> None:

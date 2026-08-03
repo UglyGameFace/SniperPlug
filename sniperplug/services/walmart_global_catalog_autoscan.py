@@ -294,21 +294,24 @@ def catalog_backpressure_reason(
 ) -> str | None:
     """Pause discovery when exact verification cannot keep up.
 
-    Fail-closed identity-unavailable rows are excluded from actionable backlog;
-    they remain visible in health metrics but cannot be fixed by hammering the
-    exact endpoint again. Pending, verifying, and non-identity due work controls
-    discovery pressure.
+    ``due_now`` is already the health service's fail-closed count of actionable
+    rows: terminal seller/offer identity failures are excluded there. Count it
+    once, then include only actively leased verification work. Subtracting the
+    terminal bucket again can turn a real backlog into zero and let discovery
+    starve the exact verifier indefinitely.
     """
 
-    non_identity_due = max(0, int(health.due_now) - int(health.identity_blocked))
-    actionable = int(health.pending) + int(health.verifying) + non_identity_due
+    actionable_due = max(0, int(health.due_now))
+    verifying = max(0, int(health.verifying))
+    actionable = actionable_due + verifying
     limit = max(25, int(actionable_limit))
     if actionable < limit:
         return None
     return (
         "exact-detail backpressure active: "
-        f"actionable backlog **{actionable}/{limit}** • pending **{health.pending}** • "
-        f"non-identity due **{non_identity_due}** • verifying **{health.verifying}**"
+        f"actionable backlog **{actionable}/{limit}** • "
+        f"actionable due **{actionable_due}** • verifying **{verifying}** • "
+        f"terminal identity blocks excluded **{max(0, int(health.identity_blocked))}**"
     )
 
 

@@ -12,7 +12,7 @@ on:
       - requirements.txt
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -22,19 +22,88 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/ebay-big-ticket-watcher
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install requirements
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
-      - name: Compile Python
-        run: python -m compileall -q sniperplug ebay_watcher_main.py
-      - name: Import runtimes
-        run: python -c "import sniperplug.bot; import sniperplug.ebay_watcher.app"
-      - name: Targeted eBay watcher tests
-        run: python -m pytest -q tests/test_ebay_watcher.py
-      - name: Complete regression suite
-        run: python -m pytest -q
+      - name: Run and record repository validation
+        shell: bash
+        run: |
+          set +e
+          mkdir -p validation/logs
 
-# Trigger validation after workflow registration.
+          run_check() {
+            name="$1"
+            shift
+            "$@" >"validation/logs/${name}.log" 2>&1
+            status=$?
+            printf '%s=%s\n' "$name" "$status" >> validation/statuses.env
+            return $status
+          }
+
+          : > validation/statuses.env
+          run_check install bash -lc 'python -m pip install --upgrade pip && python -m pip install -r requirements.txt'
+          install_status=$?
+
+          if [ "$install_status" -eq 0 ]; then
+            run_check compile python -m compileall -q sniperplug ebay_watcher_main.py
+            run_check imports python -c 'import sniperplug.bot; import sniperplug.ebay_watcher.app'
+            run_check targeted python -m pytest -q tests/test_ebay_watcher.py
+            run_check full_suite python -m pytest -q
+          else
+            printf 'compile=125\nimports=125\ntargeted=125\nfull_suite=125\n' >> validation/statuses.env
+          fi
+
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          from datetime import datetime, timezone
+
+          statuses = {}
+          for line in Path('validation/statuses.env').read_text().splitlines():
+              key, value = line.split('=', 1)
+              statuses[key] = int(value)
+
+          labels = {
+              'install': 'Install requirements',
+              'compile': 'Compile all Python',
+              'imports': 'Import SniperPlug and eBay watcher runtimes',
+              'targeted': 'Targeted eBay watcher tests',
+              'full_suite': 'Complete pytest regression suite',
+          }
+          lines = [
+              '# eBay watcher validation result',
+              '',
+              f"- Recorded at: `{datetime.now(timezone.utc).isoformat()}`",
+              f"- Validated commit: `{os.environ.get('GITHUB_SHA', '')}`",
+              '',
+              '## Status',
+          ]
+          for key in labels:
+              code = statuses.get(key, 999)
+              state = 'PASS' if code == 0 else ('SKIPPED' if code == 125 else f'FAIL ({code})')
+              lines.append(f"- {labels[key]}: **{state}**")
+
+          for key in labels:
+              log_path = Path(f'validation/logs/{key}.log')
+              if not log_path.exists():
+                  continue
+              text = log_path.read_text(errors='replace').splitlines()
+              tail = '\n'.join(text[-80:])
+              lines.extend(['', f'## {labels[key]} output', '', '```text', tail, '```'])
+
+          Path('validation/EBAY_WATCHER_RESULT.md').write_text('\n'.join(lines) + '\n')
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add validation/EBAY_WATCHER_RESULT.md
+          git commit -m 'Record eBay watcher validation results'
+          git push origin HEAD:feature/ebay-big-ticket-watcher
+
+          overall=0
+          while IFS='=' read -r _key code; do
+            if [ "$code" -ne 0 ]; then overall=1; fi
+          done < validation/statuses.env
+          exit "$overall"

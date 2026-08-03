@@ -7,6 +7,7 @@ import aiosqlite
 
 from sniperplug.services.public_alert_config import (
     HP_RETAILER_MIGRATION,
+    TARGET_RETAILER_MIGRATION,
     ensure_public_alert_table,
     get_public_alert_config,
 )
@@ -20,7 +21,7 @@ class FakeDatabase:
         return self.conn
 
 
-def test_existing_enabled_walmart_destinations_receive_hp_once() -> None:
+def test_existing_enabled_walmart_destinations_receive_new_free_watchers_once() -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
         conn.row_factory = aiosqlite.Row
@@ -47,7 +48,7 @@ def test_existing_enabled_walmart_destinations_receive_hp_once() -> None:
                 (1, 1, json.dumps(["walmart"]), "ch:100"),
                 (2, 0, json.dumps(["walmart"]), "ch:200"),
                 (3, 1, json.dumps(["amazon"]), "ch:300"),
-                (4, 1, json.dumps(["walmart", "hp"]), "ch:400"),
+                (4, 1, json.dumps(["walmart", "hp", "target"]), "ch:400"),
             ),
         )
         await conn.commit()
@@ -57,19 +58,20 @@ def test_existing_enabled_walmart_destinations_receive_hp_once() -> None:
         disabled = await get_public_alert_config(db, 2)
         custom = await get_public_alert_config(db, 3)
         already = await get_public_alert_config(db, 4)
-        assert enabled["retailers"] == ("walmart", "hp")
+        assert enabled["retailers"] == ("walmart", "hp", "target")
         assert disabled["retailers"] == ("walmart",)
         assert custom["retailers"] == ("amazon",)
-        assert already["retailers"] == ("walmart", "hp")
+        assert already["retailers"] == ("walmart", "hp", "target")
 
-        marker = await conn.execute(
-            "SELECT COUNT(*) FROM sniperplug_data_migrations WHERE migration_key = ?",
-            (HP_RETAILER_MIGRATION,),
-        )
-        assert (await marker.fetchone())[0] == 1
+        for migration_key in (HP_RETAILER_MIGRATION, TARGET_RETAILER_MIGRATION):
+            marker = await conn.execute(
+                "SELECT COUNT(*) FROM sniperplug_data_migrations WHERE migration_key = ?",
+                (migration_key,),
+            )
+            assert (await marker.fetchone())[0] == 1
         await ensure_public_alert_table(db)
         repeat = await get_public_alert_config(db, 1)
-        assert repeat["retailers"] == ("walmart", "hp")
+        assert repeat["retailers"] == ("walmart", "hp", "target")
         await conn.close()
 
     asyncio.run(run())

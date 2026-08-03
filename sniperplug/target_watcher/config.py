@@ -10,7 +10,6 @@ from sniperplug.config import env_bool
 
 DEFAULT_SITEMAP_INDEX = "https://www.target.com/sitemap_pdp-index.xml.gz"
 DEFAULT_REDSKY_BASE_URL = "https://redsky.target.com/redsky_aggregations/v1/web"
-DEFAULT_REDSKY_KEY = "9f36aeafbe60771e321a7cc95a78140772ab3e96"
 
 
 @dataclass(frozen=True)
@@ -18,7 +17,7 @@ class TargetWatcherSettings:
     database_path: str = "./data/sniperplug.sqlite3"
     sitemap_index_url: str = DEFAULT_SITEMAP_INDEX
     redsky_base_url: str = DEFAULT_REDSKY_BASE_URL
-    redsky_api_key: str = DEFAULT_REDSKY_KEY
+    redsky_api_key: str = ""
     store_id: str = "1956"
     zip_code: str = "06604"
     state: str = "CT"
@@ -54,9 +53,7 @@ class TargetWatcherSettings:
             redsky_base_url=os.getenv(
                 "TARGET_REDSKY_BASE_URL", DEFAULT_REDSKY_BASE_URL
             ).strip(),
-            redsky_api_key=os.getenv(
-                "TARGET_REDSKY_API_KEY", DEFAULT_REDSKY_KEY
-            ).strip(),
+            redsky_api_key=os.getenv("TARGET_REDSKY_API_KEY", "").strip(),
             store_id=_digits_env("TARGET_STORE_ID", "1956"),
             zip_code=_digits_env("TARGET_ZIP", "06604"),
             state=_state_env("TARGET_STATE", "CT"),
@@ -124,7 +121,9 @@ class TargetWatcherSettings:
                 "TARGET_REDSKY_BASE_URL must use Target's official RedSky web aggregation origin."
             )
         if not self.redsky_api_key:
-            raise RuntimeError("TARGET_REDSKY_API_KEY is required.")
+            raise RuntimeError(
+                "TARGET_REDSKY_API_KEY is required and must be provided as a deployment secret."
+            )
         if not self.store_id.isdigit() or not self.zip_code.isdigit():
             raise RuntimeError("TARGET_STORE_ID and TARGET_ZIP must be numeric.")
         if self.require_remote_database:

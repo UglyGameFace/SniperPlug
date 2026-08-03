@@ -10,7 +10,6 @@ from sniperplug.services.public_posting import normalize_retailer_key
 
 CHANNEL_PREFIX = "ch:"
 HP_RETAILER_MIGRATION = "20260802_enable_hp_for_existing_walmart_public_alerts"
-EBAY_RETAILER_MIGRATION = "20260803_enable_ebay_for_existing_walmart_public_alerts"
 
 
 async def ensure_public_alert_table(db: Any) -> None:
@@ -40,11 +39,6 @@ async def ensure_public_alert_table(db: Any) -> None:
         db,
         migration_key=HP_RETAILER_MIGRATION,
         retailer="hp",
-    )
-    await _migrate_existing_walmart_alerts_to_retailer(
-        db,
-        migration_key=EBAY_RETAILER_MIGRATION,
-        retailer="ebay",
     )
 
 

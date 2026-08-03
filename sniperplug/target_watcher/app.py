@@ -23,14 +23,15 @@ async def run(settings: TargetWatcherSettings | None = None) -> None:
     try:
         await db.init()
         log.info(
-            "Standalone Target watcher starting backend=%s store=%s zip=%s "
-            "sitemap_batch=%s product_batch=%s big_ticket_floor=$%.2f "
-            "price_error_floor=%s%% leased_work=yes",
+            "Standalone Target watcher starting backend=%s "
+            "sitemap_batch=%s offer_batch=%s locations_per_cycle=%s "
+            "products_per_location=%s big_ticket_floor=$%.2f "
+            "price_error_floor=%s%% leased_work=yes multitenant_locations=yes",
             getattr(db, "backend", "unknown"),
-            resolved.store_id,
-            resolved.zip_code,
             resolved.sitemap_batch_size,
             resolved.product_batch_size,
+            resolved.locations_per_cycle,
+            resolved.products_per_location_batch,
             resolved.big_ticket_min_reference_price,
             resolved.price_error_min_discount_percent,
         )

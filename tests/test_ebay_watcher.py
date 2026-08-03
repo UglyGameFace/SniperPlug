@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -30,6 +31,10 @@ from sniperplug.ebay_watcher.storage import (
     store_listing_observation,
 )
 from sniperplug.services.ebay_public_posts import is_verified_ebay_public_card
+from sniperplug.services.public_alert_config import (
+    ensure_public_alert_table,
+    get_public_alert_config,
+)
 
 
 class FakeDatabase:
@@ -115,7 +120,6 @@ def _history(
     )
 
 
-
 def test_browse_client_uses_fixed_price_delivery_country_and_new_listing_sort() -> None:
     class CapturingClient(EbayBrowseClient):
         def __init__(self, settings):
@@ -149,6 +153,7 @@ def test_browse_client_uses_fixed_price_delivery_country_and_new_listing_sort() 
         )
 
     asyncio.run(run())
+
 
 def test_parser_uses_delivered_price_and_structured_condition() -> None:
     payload = {
@@ -376,6 +381,42 @@ def test_storage_retains_stable_exact_baseline_and_seeds_both_lanes() -> None:
         row = await cursor.fetchone()
         assert row["baseline_price_cents"] == 100000
         assert row["baseline_observation_count"] == 2
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_ebay_is_available_without_silently_opt_in_existing_servers() -> None:
+    async def run() -> None:
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        db = FakeDatabase(conn)
+        await conn.execute(
+            """
+            CREATE TABLE guild_public_alert_settings (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                retailers_json TEXT NOT NULL DEFAULT '[]',
+                channel_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO guild_public_alert_settings
+                (guild_id, enabled, retailers_json, channel_id, created_at, updated_at)
+            VALUES (?, 1, ?, ?, 'now', 'now')
+            """,
+            (1, json.dumps(["walmart"]), "ch:100"),
+        )
+        await conn.commit()
+
+        await ensure_public_alert_table(db)
+        config = await get_public_alert_config(db, 1)
+        assert config["retailers"] == ("walmart", "hp")
+        assert "ebay" not in config["retailers"]
         await conn.close()
 
     asyncio.run(run())

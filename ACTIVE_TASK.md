@@ -1,14 +1,14 @@
 # Active Task
 
 ## Status
-In progress — replace the original single-location Target watcher configuration with location-safe multi-tenant server and user profiles.
+Complete — the Target watcher and delivery path now use location-safe multi-tenant server and user profiles with no process-wide store fallback.
 
 ## Scope
-Target must use one global catalog and one shared watcher process while preserving exact store/ZIP pricing and fulfillment for every SniperPlug server and personal DM subscriber. No owner, Connecticut, or process-wide location may be used as a fallback.
+Target uses one global catalog and one shared watcher process while preserving exact store/ZIP pricing and fulfillment for every SniperPlug server and personal DM subscriber. No owner, Connecticut, or process-wide location is used as a fallback.
 
 ## Root cause
 - PR #199 correctly required exact Target store/ZIP proof but put one store, ZIP, state, latitude, and longitude in the worker environment.
-- That model could only represent one location and would have attached the owner's test location to every server.
+- That model could only represent one location and could have attached the owner's test location to every server.
 - Target was also auto-enrolled for existing Walmart destinations before those servers had chosen a Target store.
 - Fanout originally trusted the event proof but did not independently compare its store/ZIP to each destination's saved location.
 
@@ -26,6 +26,7 @@ Target must use one global catalog and one shared watcher process while preservi
 - Added explicit location information to Target event proof and health output.
 - Capped product and per-location fulfillment batches at RedSky's 24-TCIN limit.
 - Removed duplicate/unregistered Target command definitions.
+- Prunes abandoned location product rows immediately after store changes or clears while preserving rows still used by another profile.
 - Updated deployment documentation so only Turso credentials and the Target key are global secrets.
 
 ## Safety behavior
@@ -36,18 +37,23 @@ Target must use one global catalog and one shared watcher process while preservi
 - Missing location, malformed nearby-store data, missing coordinates, or failed RedSky lookup saves nothing.
 - A watcher can run with zero saved locations and waits safely for configuration.
 
-## Validation in progress
-- Added tests for opt-in Target enrollment.
-- Added tests for unsafe-enrollment remediation.
-- Added tests for shared unique-location grouping and bounded catalog staging.
-- Added tests for exact guild/user fanout matching.
-- Added tests for strict nearby-store parsing.
-- Added tests proving the watcher has no process-wide location fields and caps fulfillment batches at 24.
-- Full repository compilation and pytest workflows still required.
-- Final PR review, conflict, changed-file, and temporary-file inspection still required.
+## Validation
+- Python compilation passed.
+- Import smoke check passed.
+- Full Python Check workflow passed.
+- Full repository pytest workflow passed.
+- Opt-in Target retailer enrollment tests passed.
+- Unsafe-enrollment remediation tests passed.
+- Shared unique-location grouping and bounded catalog staging tests passed.
+- Exact guild/user location fanout matching tests passed.
+- Strict nearby-store parser tests passed.
+- Runtime tests prove no process-wide Target location fields remain.
+- Runtime tests prove fulfillment batches cannot exceed 24 TCINs.
+- PR #201 is zero commits behind `main`, mergeable, and has no unresolved inline review threads.
+- Changed-file inspection found no temporary, backup, or applicator files.
 
 ## Blockers
-None currently.
+None in code.
 
 ## Deployment after merge
 - Redeploy the main SniperPlug app so startup remediation and location commands are live.

@@ -7,7 +7,6 @@ import aiosqlite
 
 from sniperplug.services.public_alert_config import (
     HP_RETAILER_MIGRATION,
-    TARGET_RETAILER_MIGRATION,
     ensure_public_alert_table,
     get_public_alert_config,
 )
@@ -21,7 +20,7 @@ class FakeDatabase:
         return self.conn
 
 
-def test_existing_enabled_walmart_destinations_receive_new_free_watchers_once() -> None:
+def test_existing_enabled_walmart_destinations_receive_hp_but_not_local_target() -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
         conn.row_factory = aiosqlite.Row
@@ -58,20 +57,21 @@ def test_existing_enabled_walmart_destinations_receive_new_free_watchers_once() 
         disabled = await get_public_alert_config(db, 2)
         custom = await get_public_alert_config(db, 3)
         already = await get_public_alert_config(db, 4)
-        assert enabled["retailers"] == ("walmart", "hp", "target")
+        assert enabled["retailers"] == ("walmart", "hp")
         assert disabled["retailers"] == ("walmart",)
         assert custom["retailers"] == ("amazon",)
+        # Existing Target rows are remediated by target_locations once its
+        # location table is initialized; this migration no longer creates them.
         assert already["retailers"] == ("walmart", "hp", "target")
 
-        for migration_key in (HP_RETAILER_MIGRATION, TARGET_RETAILER_MIGRATION):
-            marker = await conn.execute(
-                "SELECT COUNT(*) FROM sniperplug_data_migrations WHERE migration_key = ?",
-                (migration_key,),
-            )
-            assert (await marker.fetchone())[0] == 1
+        marker = await conn.execute(
+            "SELECT COUNT(*) FROM sniperplug_data_migrations WHERE migration_key = ?",
+            (HP_RETAILER_MIGRATION,),
+        )
+        assert (await marker.fetchone())[0] == 1
         await ensure_public_alert_table(db)
         repeat = await get_public_alert_config(db, 1)
-        assert repeat["retailers"] == ("walmart", "hp", "target")
+        assert repeat["retailers"] == ("walmart", "hp")
         await conn.close()
 
     asyncio.run(run())

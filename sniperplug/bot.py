@@ -57,6 +57,7 @@ from sniperplug.services.error_logging import (
 )
 from sniperplug.services.home_depot_product_lookup import configure_home_depot_product_detail_cache
 from sniperplug.services.storage_maintenance import run_storage_maintenance
+from sniperplug.services.target_locations import ensure_target_location_tables
 from sniperplug.services.walmart_recheck_audit import ensure_walmart_recheck_audit
 from sniperplug.storage.db import Database
 
@@ -91,11 +92,13 @@ class SniperPlugBot(commands.Bot):
         await ensure_error_logging_table(self.db)
         await ensure_active_deal_history(self.db)
         await ensure_walmart_recheck_audit(self.db)
+        await ensure_target_location_tables(self.db)
         install_discord_error_handlers(self)
         install_asyncio_exception_handler(asyncio.get_running_loop(), lambda: self.db)
         log.info("Error logging installed: discord=true asyncio=true db_table=error_events")
         log.info("Active deal lifecycle history installed: retention_days=30 max_rows_per_guild=1000")
         log.info("Walmart recheck audit installed: retention_days=30 max_rows_per_guild=2000")
+        log.info("Target location safety installed: global_location_fallback=false")
         log.info("Database schema ready backend=%s", getattr(self.db, "backend", "unknown"))
         configure_home_depot_product_detail_cache(self.db)
         configure_home_depot_search_cache(self.db)

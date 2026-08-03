@@ -10,7 +10,6 @@ from sniperplug.services.public_posting import normalize_retailer_key
 
 CHANNEL_PREFIX = "ch:"
 HP_RETAILER_MIGRATION = "20260802_enable_hp_for_existing_walmart_public_alerts"
-TARGET_RETAILER_MIGRATION = "20260802_enable_target_for_existing_walmart_public_alerts"
 
 
 async def ensure_public_alert_table(db: Any) -> None:
@@ -41,11 +40,6 @@ async def ensure_public_alert_table(db: Any) -> None:
         migration_key=HP_RETAILER_MIGRATION,
         retailer="hp",
     )
-    await _migrate_existing_walmart_alerts_to_retailer(
-        db,
-        migration_key=TARGET_RETAILER_MIGRATION,
-        retailer="target",
-    )
 
 
 async def _migrate_existing_walmart_alerts_to_retailer(
@@ -54,7 +48,7 @@ async def _migrate_existing_walmart_alerts_to_retailer(
     migration_key: str,
     retailer: str,
 ) -> int:
-    """Enroll enabled Walmart destinations in a newly introduced free source once."""
+    """Enroll enabled Walmart destinations in a new non-local free source once."""
 
     conn = db.require_conn()
     marker = await conn.execute(

@@ -19,6 +19,7 @@ class Settings:
     sync_global_commands: bool = False
     sync_commands_on_boot: bool = False
     bestbuy_api_key: str | None = None
+    target_redsky_api_key: str | None = None
     walmart_consumer_id: str | None = None
     walmart_key_version: str | None = None
     walmart_private_key_b64: str | None = None
@@ -42,9 +43,15 @@ class Settings:
             dev_guild_ids = (dev_guild_id, *dev_guild_ids)
 
         sync_global_commands = env_bool("SYNC_GLOBAL_COMMANDS", default=False)
-        sync_commands_on_boot = env_bool("SYNC_COMMANDS_ON_BOOT", default=bool(dev_guild_ids or sync_global_commands))
+        sync_commands_on_boot = env_bool(
+            "SYNC_COMMANDS_ON_BOOT",
+            default=bool(dev_guild_ids or sync_global_commands),
+        )
 
         bestbuy_api_key = os.getenv("BESTBUY_API_KEY", "").strip() or None
+        target_redsky_api_key = (
+            os.getenv("TARGET_REDSKY_API_KEY", "").strip() or None
+        )
 
         walmart_consumer_id = os.getenv("WALMART_CONSUMER_ID", "").strip() or None
         walmart_key_version = os.getenv("WALMART_KEY_VERSION", "1").strip() or "1"
@@ -60,6 +67,7 @@ class Settings:
             sync_global_commands=sync_global_commands,
             sync_commands_on_boot=sync_commands_on_boot,
             bestbuy_api_key=bestbuy_api_key,
+            target_redsky_api_key=target_redsky_api_key,
             walmart_consumer_id=walmart_consumer_id,
             walmart_key_version=walmart_key_version,
             walmart_private_key_b64=walmart_private_key_b64,

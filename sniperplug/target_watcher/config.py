@@ -18,15 +18,13 @@ class TargetWatcherSettings:
     sitemap_index_url: str = DEFAULT_SITEMAP_INDEX
     redsky_base_url: str = DEFAULT_REDSKY_BASE_URL
     redsky_api_key: str = ""
-    store_id: str = "1956"
-    zip_code: str = "06604"
-    state: str = "CT"
-    latitude: str = "41.1865"
-    longitude: str = "-73.1952"
     watch_tcins: tuple[str, ...] = ()
     loop_seconds: int = 15
     sitemap_batch_size: int = 2
     product_batch_size: int = 20
+    locations_per_cycle: int = 2
+    products_per_location_batch: int = 20
+    location_scan_spacing_seconds: int = 15
     request_concurrency: int = 3
     request_timeout_seconds: float = 20.0
     sitemap_max_compressed_bytes: int = 25 * 1024 * 1024
@@ -54,15 +52,19 @@ class TargetWatcherSettings:
                 "TARGET_REDSKY_BASE_URL", DEFAULT_REDSKY_BASE_URL
             ).strip(),
             redsky_api_key=os.getenv("TARGET_REDSKY_API_KEY", "").strip(),
-            store_id=_digits_env("TARGET_STORE_ID", "1956"),
-            zip_code=_digits_env("TARGET_ZIP", "06604"),
-            state=_state_env("TARGET_STATE", "CT"),
-            latitude=_coordinate_env("TARGET_LATITUDE", "41.1865", -90.0, 90.0),
-            longitude=_coordinate_env("TARGET_LONGITUDE", "-73.1952", -180.0, 180.0),
             watch_tcins=_tcin_list(os.getenv("TARGET_WATCH_TCINS", "")),
             loop_seconds=_bounded_int("TARGET_WATCHER_LOOP_SECONDS", 15, 10, 3600),
             sitemap_batch_size=_bounded_int("TARGET_SITEMAP_BATCH_SIZE", 2, 1, 20),
             product_batch_size=_bounded_int("TARGET_PRODUCT_BATCH_SIZE", 20, 1, 24),
+            locations_per_cycle=_bounded_int(
+                "TARGET_LOCATIONS_PER_CYCLE", 2, 1, 25
+            ),
+            products_per_location_batch=_bounded_int(
+                "TARGET_PRODUCTS_PER_LOCATION_BATCH", 20, 1, 24
+            ),
+            location_scan_spacing_seconds=_bounded_int(
+                "TARGET_LOCATION_SCAN_SPACING_SECONDS", 15, 10, 3600
+            ),
             request_concurrency=_bounded_int("TARGET_REQUEST_CONCURRENCY", 3, 1, 8),
             request_timeout_seconds=_bounded_float(
                 "TARGET_REQUEST_TIMEOUT_SECONDS", 20.0, 3.0, 90.0
@@ -124,8 +126,6 @@ class TargetWatcherSettings:
             raise RuntimeError(
                 "TARGET_REDSKY_API_KEY is required and must be provided as a deployment secret."
             )
-        if not self.store_id.isdigit() or not self.zip_code.isdigit():
-            raise RuntimeError("TARGET_STORE_ID and TARGET_ZIP must be numeric.")
         if self.require_remote_database:
             remote_url = os.getenv("TURSO_DATABASE_URL", "").strip() or os.getenv(
                 "LIBSQL_URL", ""
@@ -157,26 +157,6 @@ def _bounded_float(name: str, default: float, minimum: float, maximum: float) ->
     except ValueError:
         value = float(default)
     return max(minimum, min(maximum, value))
-
-
-def _digits_env(name: str, default: str) -> str:
-    value = os.getenv(name, default).strip()
-    return value if value.isdigit() else default
-
-
-def _state_env(name: str, default: str) -> str:
-    value = os.getenv(name, default).strip().upper()
-    return value if len(value) == 2 and value.isalpha() else default
-
-
-def _coordinate_env(name: str, default: str, minimum: float, maximum: float) -> str:
-    raw = os.getenv(name, default).strip()
-    try:
-        parsed = float(raw)
-    except ValueError:
-        parsed = float(default)
-    parsed = max(minimum, min(maximum, parsed))
-    return f"{parsed:.6f}".rstrip("0").rstrip(".")
 
 
 def _tcin_list(value: str) -> tuple[str, ...]:

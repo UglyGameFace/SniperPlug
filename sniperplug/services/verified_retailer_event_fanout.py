@@ -22,6 +22,10 @@ from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.hp_deal_cards import build_hp_deal_card
 from sniperplug.services.hp_public_posts import maybe_post_hp_deal_cards
 from sniperplug.services.target_deal_cards import build_target_deal_card
+from sniperplug.services.target_locations import (
+    target_card_matches_guild_location,
+    target_card_matches_user_location,
+)
 from sniperplug.services.target_public_posts import maybe_post_target_deal_cards
 from sniperplug.services.verified_retailer_events import (
     claim_verified_retailer_events,
@@ -116,7 +120,8 @@ async def fanout_verified_retailer_events(
 
         for event in events:
             errors: list[str] = []
-            handler = retailer_fanout_handler(event.retailer)
+            retailer_key = str(event.retailer or "").strip().lower()
+            handler = retailer_fanout_handler(retailer_key)
             if handler is None:
                 await mark_verified_retailer_event_processed(
                     db,
@@ -135,6 +140,12 @@ async def fanout_verified_retailer_events(
                 guild_id = int(guild.guild_id)
                 totals["guilds_checked"] += 1
                 try:
+                    if retailer_key == "target" and not await target_card_matches_guild_location(
+                        db,
+                        guild_id=guild_id,
+                        card=card,
+                    ):
+                        continue
                     threshold = await get_starting_deal_percent(db, guild_id)
                     result = await handler.post_cards(
                         bot=bot,
@@ -173,6 +184,12 @@ async def fanout_verified_retailer_events(
 
             for preference in preferences:
                 totals["dm_preferences_checked"] += 1
+                if retailer_key == "target" and not await target_card_matches_user_location(
+                    db,
+                    user_id=preference.user_id,
+                    card=card,
+                ):
+                    continue
                 decision = match_dm_deal(preference, card)
                 if not decision.matched:
                     continue

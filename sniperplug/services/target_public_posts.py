@@ -22,6 +22,7 @@ from sniperplug.services.public_deal_posts import (
     should_suppress_recent_alert,
 )
 from sniperplug.services.public_posting import normalize_retailer_key
+from sniperplug.services.target_locations import target_card_matches_guild_location
 
 
 TARGET_REFERENCE_SOURCES = {
@@ -82,6 +83,13 @@ async def maybe_post_target_deal_cards(
     posted = duplicate = not_alertable = 0
     notes: list[str] = [channel_note] if channel_note else []
     for card in cards:
+        if not await target_card_matches_guild_location(
+            db,
+            guild_id=int(guild_id),
+            card=card,
+        ):
+            not_alertable += 1
+            continue
         try:
             from sniperplug.services.deal_category_preferences import decide_category
 
@@ -212,6 +220,8 @@ def is_verified_target_public_card(card: Any, *, min_discount: int) -> bool:
     if str(attrs.get("targetStructuredPriceProof") or "").lower() != "yes":
         return False
     if str(attrs.get("targetIndependentConfirmation") or "").lower() != "yes":
+        return False
+    if str(attrs.get("targetLocationScope") or "").lower() not in {"local", "national"}:
         return False
     tcin = str(attrs.get("targetTcin") or "").strip()
     store_id = str(attrs.get("targetStoreId") or "").strip()

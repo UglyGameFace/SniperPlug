@@ -9,7 +9,9 @@ from urllib.parse import urlencode
 
 import aiohttp
 
+from sniperplug.services.target_locations import TargetLocationContext
 from sniperplug.target_watcher.config import TargetWatcherSettings
+from sniperplug.target_watcher.stores import TargetStore, parse_target_nearby_stores
 
 
 @dataclass(frozen=True)
@@ -32,8 +34,9 @@ class TargetJSONDocument:
 class TargetRedSkyClient:
     """Typed client for official Target web data origins.
 
-    The client deliberately has no proxy rotation, challenge bypass, or browser
-    impersonation. A rejected request backs off and fails closed.
+    Every product or fulfillment request requires an explicit location context.
+    There is no process-wide store fallback, which prevents one server's test ZIP
+    from leaking into every SniperPlug installation.
     """
 
     def __init__(self, settings: TargetWatcherSettings):
@@ -56,8 +59,6 @@ class TargetRedSkyClient:
             raise_for_status=False,
             auto_decompress=True,
         )
-        # Sitemap requests must preserve wire bytes so the compressed and
-        # expanded safety limits remain two distinct, enforceable boundaries.
         self._sitemap_session = aiohttp.ClientSession(
             timeout=timeout,
             headers=headers,
@@ -122,17 +123,42 @@ class TargetRedSkyClient:
                 last_modified=response.headers.get("Last-Modified", ""),
             )
 
+    async def find_nearby_stores(
+        self,
+        place: str,
+        *,
+        limit: int = 10,
+    ) -> tuple[TargetStore, ...]:
+        clean_place = " ".join(str(place or "").split())
+        digits = "".join(character for character in clean_place if character.isdigit())
+        if len(digits) != 5:
+            raise ValueError("Target store search requires a five-digit ZIP code")
+        document = await self._fetch_json(
+            "nearby_stores_v1",
+            {
+                "key": self.settings.redsky_api_key,
+                "channel": "WEB",
+                "limit": str(max(1, min(20, int(limit)))),
+                "within": "100",
+                "place": digits,
+                "page": "/c/root",
+                "visitor_id": "sniperplug-target-location-setup",
+            },
+        )
+        return parse_target_nearby_stores(document.payload, limit=limit)
+
     async def search_products(
         self,
         query: str,
         *,
+        location: TargetLocationContext,
         offset: int = 0,
         count: int = 24,
     ) -> TargetJSONDocument:
         clean_query = " ".join(str(query or "").split())
         if not clean_query:
             raise ValueError("Target search requires a query")
-        params = self._geo_params()
+        params = self._geo_params(location)
         params.update(
             {
                 "key": self.settings.redsky_api_key,
@@ -144,8 +170,8 @@ class TargetRedSkyClient:
                 "keyword": clean_query,
                 "default_purchasability_filter": "true",
                 "include_sponsored": "false",
-                "scheduled_delivery_store_id": self.settings.store_id,
-                "store_ids": self.settings.store_id,
+                "scheduled_delivery_store_id": location.store_id,
+                "store_ids": location.store_id,
                 "visitor_id": "sniperplug-target-watcher",
             }
         )
@@ -155,12 +181,13 @@ class TargetRedSkyClient:
         self,
         tcin: str,
         *,
+        location: TargetLocationContext,
         cache_bust: bool = False,
     ) -> TargetJSONDocument:
         clean_tcin = str(tcin or "").strip()
         if not clean_tcin.isdigit():
             raise ValueError("Target PDP request requires a numeric TCIN")
-        params = self._geo_params()
+        params = self._geo_params(location)
         params.update(
             {
                 "key": self.settings.redsky_api_key,
@@ -177,6 +204,7 @@ class TargetRedSkyClient:
         self,
         tcins: list[str],
         *,
+        location: TargetLocationContext,
         cache_bust: bool = False,
     ) -> TargetJSONDocument:
         clean = list(
@@ -190,7 +218,7 @@ class TargetRedSkyClient:
             raise ValueError("Target fulfillment request requires numeric TCINs")
         if len(clean) > 24:
             raise ValueError("Target fulfillment requests are bounded to 24 TCINs")
-        params = self._geo_params()
+        params = self._geo_params(location)
         params.update(
             {
                 "key": self.settings.redsky_api_key,
@@ -202,14 +230,17 @@ class TargetRedSkyClient:
             params["_"] = str(int(time.time() * 1000))
         return await self._fetch_json("product_summary_with_fulfillment_v1", params)
 
-    def _geo_params(self) -> dict[str, str]:
+    @staticmethod
+    def _geo_params(location: TargetLocationContext) -> dict[str, str]:
+        if location is None:
+            raise ValueError("Target requests require an explicit saved location")
         return {
-            "store_id": self.settings.store_id,
-            "pricing_store_id": self.settings.store_id,
-            "zip": self.settings.zip_code,
-            "state": self.settings.state,
-            "latitude": self.settings.latitude,
-            "longitude": self.settings.longitude,
+            "store_id": location.store_id,
+            "pricing_store_id": location.store_id,
+            "zip": location.zip_code,
+            "state": location.state,
+            "latitude": location.latitude,
+            "longitude": location.longitude,
         }
 
     async def _fetch_json(

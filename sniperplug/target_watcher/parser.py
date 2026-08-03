@@ -61,7 +61,11 @@ class TargetFulfillment:
     can_add_to_cart: bool | None = None
 
 
-def parse_target_sitemap(payload: bytes | str, *, max_expanded_bytes: int) -> TargetSitemap:
+def parse_target_sitemap(
+    payload: bytes | str,
+    *,
+    max_expanded_bytes: int,
+) -> TargetSitemap:
     raw = payload.encode("utf-8") if isinstance(payload, str) else bytes(payload)
     if raw[:2] == b"\x1f\x8b":
         raw = _safe_gzip_decompress(raw, max_expanded_bytes=max_expanded_bytes)
@@ -72,19 +76,18 @@ def parse_target_sitemap(payload: bytes | str, *, max_expanded_bytes: int) -> Ta
     except ET.ParseError as error:
         raise ValueError("Target sitemap was not valid XML") from error
 
-    tag = _local_name(root.tag)
-    if tag not in {"sitemapindex", "urlset"}:
+    kind = _local_name(root.tag)
+    if kind not in {"sitemapindex", "urlset"}:
         raise ValueError("Target sitemap root must be sitemapindex or urlset")
+
     locations: list[str] = []
     for node in root.iter():
         if _local_name(node.tag) != "loc" or not node.text:
             continue
         url = " ".join(node.text.split())
-        if not _is_official_target_url(url):
-            continue
-        if url not in locations:
+        if _is_official_target_url(url) and url not in locations:
             locations.append(url)
-    return TargetSitemap(kind=tag, locations=tuple(locations))
+    return TargetSitemap(kind=kind, locations=tuple(locations))
 
 
 def target_product_seeds(sitemap: TargetSitemap) -> tuple[TargetProductSeed, ...]:
@@ -111,6 +114,7 @@ def parse_target_search_response(payload: Any) -> tuple[TargetOffer, ...]:
     products = _path(data, "data", "search", "products")
     if not isinstance(products, list):
         raise ValueError("Target RedSky search response is missing data.search.products")
+
     offers: list[TargetOffer] = []
     seen: set[str] = set()
     for raw in products:
@@ -143,43 +147,51 @@ def parse_target_fulfillment_response(
     payload: Any,
     *,
     expected_tcins: Iterable[str],
+    expected_store_id: str | None = None,
 ) -> dict[str, TargetFulfillment]:
     expected = {
         clean for clean in (normalize_tcin(value) for value in expected_tcins) if clean
     }
     if not expected:
         raise ValueError("Target fulfillment parser requires expected TCINs")
+
+    clean_store_id = _clean_text(expected_store_id)
+    if clean_store_id and not clean_store_id.isdigit():
+        raise ValueError("Target fulfillment parser requires a numeric store id")
+
     data = _json_object(payload)
-    summaries = _path(data, "data", "product_summaries")
-    if not isinstance(summaries, list):
+    summaries = _normalize_summary_rows(_path(data, "data", "product_summaries"))
+    if summaries is None:
         raise ValueError(
             "Target RedSky fulfillment response is missing data.product_summaries"
         )
+
     results: dict[str, TargetFulfillment] = {}
     for raw in summaries:
         if not isinstance(raw, dict):
             continue
-        tcin = normalize_tcin(raw.get("tcin"))
+        tcin = normalize_tcin(raw.get("tcin") or _path(raw, "item", "tcin"))
         if tcin not in expected:
             continue
+
         fulfillment = raw.get("fulfillment") or {}
         if not isinstance(fulfillment, dict):
             fulfillment = {}
-        shipping = fulfillment.get("shipping_options") or {}
-        if not isinstance(shipping, dict):
-            shipping = {}
-        store_options = fulfillment.get("store_options") or []
+
+        shipping_available, shipping_labels = _shipping_state(
+            fulfillment.get("shipping_options")
+        )
+        store_options = _normalize_object_rows(fulfillment.get("store_options"))
+        selected_store_options = _select_store_options(
+            store_options,
+            expected_store_id=clean_store_id,
+        )
+
         pickup_states: list[bool] = []
-        stock_labels: list[str] = []
-
-        shipping_status = _clean_text(shipping.get("availability_status"))
-        shipping_available = _availability_bool(shipping_status)
-        if shipping_status:
-            stock_labels.append(f"shipping:{shipping_status}")
-
-        for option in store_options if isinstance(store_options, list) else ():
-            if not isinstance(option, dict):
-                continue
+        stock_labels: list[str] = list(shipping_labels)
+        for option in selected_store_options:
+            store_id = _store_id(option)
+            label_prefix = f"store:{store_id}:" if store_id else "store:"
             for key in ("order_pickup", "drive_up", "ship_to_store"):
                 method = option.get(key) or {}
                 status = _clean_text(
@@ -191,26 +203,30 @@ def parse_target_fulfillment_response(
                 if available is not None:
                     pickup_states.append(available)
                 if status:
-                    stock_labels.append(f"{key}:{status}")
+                    stock_labels.append(f"{label_prefix}{key}:{status}")
 
-        pickup_available: bool | None
-        if any(pickup_states):
-            pickup_available = True
-        elif pickup_states:
-            pickup_available = False
+        pickup_available = _aggregate_availability(pickup_states)
+        explicit_can_add = _first_optional_bool(
+            raw.get("is_add_to_cart"),
+            raw.get("can_add_to_cart"),
+            raw.get("purchasable"),
+            fulfillment.get("is_add_to_cart"),
+            fulfillment.get("can_add_to_cart"),
+        )
+        out_everywhere = _optional_bool(
+            raw.get("is_out_of_stock_in_all_store_locations")
+        )
+
+        if out_everywhere is True:
+            can_add = False
+        elif explicit_can_add is not None:
+            can_add = explicit_can_add
+        elif shipping_available is True or pickup_available is True:
+            can_add = True
+        elif shipping_available is False and pickup_available is False:
+            can_add = False
         else:
-            pickup_available = None
-
-        out_everywhere = _optional_bool(raw.get("is_out_of_stock_in_all_store_locations"))
-        can_add = None if out_everywhere is None else not out_everywhere
-        if can_add is None:
-            can_add = (
-                True
-                if shipping_available is True or pickup_available is True
-                else False
-                if shipping_available is False and pickup_available is False
-                else None
-            )
+            can_add = None
 
         results[tcin] = TargetFulfillment(
             tcin=tcin,
@@ -251,8 +267,8 @@ def exact_target_offers_match(first: TargetOffer, second: TargetOffer) -> bool:
         first.tcin == second.tcin
         and _money_equal(first.current_price, second.current_price)
         and _optional_money_equal(first.regular_price, second.regular_price)
-        and _clean_text(first.seller_name).lower()
-        == _clean_text(second.seller_name).lower()
+        and _clean_text(first.seller_name).casefold()
+        == _clean_text(second.seller_name).casefold()
     )
 
 
@@ -291,6 +307,7 @@ def _parse_product(raw: Any) -> TargetOffer:
     item = raw.get("item") or {}
     if not isinstance(item, dict):
         item = {}
+
     tcin = normalize_tcin(raw.get("tcin") or item.get("tcin"))
     if not tcin:
         raise ValueError("Target product row is missing a numeric TCIN")
@@ -346,10 +363,10 @@ def _parse_product(raw: Any) -> TargetOffer:
         or _path(raw, "fulfillment", "shipping_options", "availability_status")
     )
     shipping_available = _availability_bool(availability)
-    can_add = _optional_bool(
-        raw.get("is_add_to_cart")
-        if "is_add_to_cart" in raw
-        else raw.get("can_add_to_cart")
+    can_add = _first_optional_bool(
+        raw.get("is_add_to_cart"),
+        raw.get("can_add_to_cart"),
+        raw.get("purchasable"),
     )
     if can_add is None and shipping_available is not None:
         can_add = shipping_available
@@ -378,12 +395,19 @@ def _safe_gzip_decompress(raw: bytes, *, max_expanded_bytes: int) -> bytes:
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(raw), mode="rb") as archive:
             while True:
-                chunk = archive.read(min(1024 * 1024, limit + 1 - output.tell()))
+                remaining = limit + 1 - output.tell()
+                if remaining <= 0:
+                    raise ValueError(
+                        "Target sitemap exceeded the expanded-size safety limit"
+                    )
+                chunk = archive.read(min(1024 * 1024, remaining))
                 if not chunk:
                     break
                 output.write(chunk)
                 if output.tell() > limit:
-                    raise ValueError("Target sitemap exceeded the expanded-size safety limit")
+                    raise ValueError(
+                        "Target sitemap exceeded the expanded-size safety limit"
+                    )
     except OSError as error:
         raise ValueError("Target sitemap gzip payload was invalid") from error
     return output.getvalue()
@@ -395,6 +419,7 @@ def _primary_image_url(enrichment: dict[str, Any]) -> str:
         direct = _clean_text(images.get("primary_image_url"))
         if _safe_https_url(direct):
             return direct
+
     image_info = enrichment.get("image_info") or {}
     if not isinstance(image_info, dict):
         return ""
@@ -404,6 +429,7 @@ def _primary_image_url(enrichment: dict[str, Any]) -> str:
     direct = _clean_text(primary.get("url"))
     if _safe_https_url(direct):
         return direct
+
     name = _clean_text(primary.get("image_name"))
     base = _clean_text(image_info.get("base_url"))
     if base.startswith("//"):
@@ -417,14 +443,52 @@ def _seller_name(raw: dict[str, Any], item: dict[str, Any]) -> str:
     candidates = (
         raw.get("seller_name"),
         raw.get("merchant_name"),
+        raw.get("sold_by"),
         _path(raw, "seller", "name"),
-        _path(item, "product_vendors", 0, "vendor_name"),
+        _path(raw, "seller", "display_name"),
+        _path(raw, "merchant", "name"),
+        _path(raw, "merchant", "display_name"),
+        _path(raw, "marketplace", "seller_name"),
+        item.get("seller_name"),
+        item.get("merchant_name"),
+        _path(item, "seller", "name"),
+        _path(item, "merchant", "name"),
     )
     for value in candidates:
         text = _clean_text(value)
-        if text and text.lower() not in {"owned", "unknown"}:
+        if text and text.casefold() not in {"owned", "unknown", "n/a"}:
             return text
+
+    if _has_target_plus_marker(raw) or _has_target_plus_marker(item):
+        raise ValueError("Target Plus product is missing exact seller identity")
     return "Target"
+
+
+def _has_target_plus_marker(value: Any, *, depth: int = 0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = _clean_key(key)
+            if key_text in {
+                "is_target_plus",
+                "target_plus",
+                "target_plus_item",
+                "target_plus_partner",
+                "is_marketplace",
+            } and _optional_bool(child) is True:
+                return True
+            if "target_plus" in key_text and _optional_bool(child) is not False:
+                return True
+            if _has_target_plus_marker(child, depth=depth + 1):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_has_target_plus_marker(child, depth=depth + 1) for child in value)
+    if isinstance(value, str):
+        normalized = value.casefold().replace("™", "")
+        return "target plus" in normalized or "target_plus" in normalized
+    return False
 
 
 def _promotion_text(raw: dict[str, Any]) -> str:
@@ -435,6 +499,7 @@ def _promotion_text(raw: dict[str, Any]) -> str:
             text = _clean_text(price.get(key))
             if text:
                 messages.append(text)
+
     for collection_key in ("promotions", "circle_offers", "offers"):
         collection = raw.get(collection_key) or []
         if isinstance(collection, dict):
@@ -452,24 +517,120 @@ def _promotion_text(raw: dict[str, Any]) -> str:
 
 def _variant_attributes(raw: dict[str, Any], item: dict[str, Any]) -> dict[str, str]:
     attrs: dict[str, str] = {}
-    sources = [raw.get("variation"), raw.get("variation_attributes"), item.get("variation")]
+    sources = (
+        raw.get("variation"),
+        raw.get("variation_attributes"),
+        item.get("variation"),
+    )
     for source in sources:
         if isinstance(source, dict):
             for key, value in source.items():
-                text = _clean_text(value.get("value") if isinstance(value, dict) else value)
+                text = _clean_text(
+                    value.get("value") if isinstance(value, dict) else value
+                )
                 if text:
                     attrs[_clean_key(key)] = text
         elif isinstance(source, list):
             for entry in source:
                 if not isinstance(entry, dict):
                     continue
-                key = _clean_key(entry.get("name") or entry.get("type") or entry.get("key"))
+                key = _clean_key(
+                    entry.get("name") or entry.get("type") or entry.get("key")
+                )
                 value = _clean_text(
-                    entry.get("value") or entry.get("display_value") or entry.get("label")
+                    entry.get("value")
+                    or entry.get("display_value")
+                    or entry.get("label")
                 )
                 if key and value:
                     attrs[key] = value
     return attrs
+
+
+def _shipping_state(value: Any) -> tuple[bool | None, tuple[str, ...]]:
+    options = _normalize_object_rows(value)
+    if not options and isinstance(value, dict):
+        options = [value]
+    states: list[bool] = []
+    labels: list[str] = []
+    for option in options:
+        status = _clean_text(option.get("availability_status"))
+        available = _availability_bool(status)
+        if available is not None:
+            states.append(available)
+        if status:
+            labels.append(f"shipping:{status}")
+    return _aggregate_availability(states), tuple(dict.fromkeys(labels))
+
+
+def _select_store_options(
+    options: list[dict[str, Any]],
+    *,
+    expected_store_id: str,
+) -> list[dict[str, Any]]:
+    if not options:
+        return []
+    if expected_store_id:
+        return [option for option in options if _store_id(option) == expected_store_id]
+
+    selected = [
+        option
+        for option in options
+        if _first_optional_bool(
+            option.get("is_current_store"),
+            option.get("is_selected_store"),
+            option.get("selected"),
+        )
+        is True
+    ]
+    if selected:
+        return selected
+    return options if len(options) == 1 else []
+
+
+def _store_id(option: dict[str, Any]) -> str:
+    candidates = (
+        option.get("store_id"),
+        option.get("location_id"),
+        _path(option, "store", "store_id"),
+        _path(option, "store", "id"),
+        _path(option, "location", "id"),
+    )
+    for value in candidates:
+        text = _clean_text(value)
+        if text.isdigit():
+            return text
+    return ""
+
+
+def _normalize_summary_rows(value: Any) -> list[dict[str, Any]] | None:
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    if isinstance(value, dict):
+        for key in ("products", "items", "summaries"):
+            rows = value.get(key)
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+        rows = [row for row in value.values() if isinstance(row, dict)]
+        return rows or None
+    return None
+
+
+def _normalize_object_rows(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [row for row in value if isinstance(row, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def _aggregate_availability(states: Iterable[bool]) -> bool | None:
+    values = list(states)
+    if any(values):
+        return True
+    if values:
+        return False
+    return None
 
 
 def _safe_target_url(value: Any, *, expected_tcin: str) -> str:
@@ -507,7 +668,7 @@ def _safe_https_url(value: Any) -> bool:
 
 
 def _availability_bool(value: Any) -> bool | None:
-    text = _clean_text(value).lower().replace("_", " ")
+    text = _clean_text(value).casefold().replace("_", " ")
     if not text:
         return None
     if any(token in text for token in ("out of stock", "unavailable", "not sold")):
@@ -517,12 +678,20 @@ def _availability_bool(value: Any) -> bool | None:
     return None
 
 
+def _first_optional_bool(*values: Any) -> bool | None:
+    for value in values:
+        parsed = _optional_bool(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _optional_bool(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
         return bool(value)
-    text = _clean_text(value).lower()
+    text = _clean_text(value).casefold()
     if text in {"true", "yes", "1", "available"}:
         return True
     if text in {"false", "no", "0", "unavailable"}:
@@ -587,7 +756,7 @@ def _local_name(value: str) -> str:
 
 
 def _clean_key(value: Any) -> str:
-    return "_".join(_clean_text(value).lower().replace("-", " ").split())
+    return "_".join(_clean_text(value).casefold().replace("-", " ").split())
 
 
 def _clean_text(value: Any) -> str:

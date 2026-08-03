@@ -1,0 +1,71 @@
+name: Apply eBay watcher hardening
+
+on:
+  push:
+    branches:
+      - feature/ebay-big-ticket-watcher
+    paths:
+      - tools/ebay_hardening.part*.b64
+      - .github/workflows/apply-ebay-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out watcher branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/ebay-big-ticket-watcher
+          fetch-depth: 0
+
+      - name: Verify and expand hardening payload
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import hashlib
+          import io
+          import tarfile
+
+          parts = sorted(Path("tools").glob("ebay_hardening.part*.b64"))
+          if len(parts) != 3:
+              raise SystemExit(f"expected 3 payload parts, found {len(parts)}")
+          encoded = "".join(path.read_text(encoding="utf-8").strip() for path in parts)
+          payload = base64.b64decode(encoded, validate=True)
+          digest = hashlib.sha256(payload).hexdigest()
+          expected = "18443305961d5fd6c53d1f6ae17842b9480cc1f4ff22264ea825fbf780295adb"
+          if digest != expected:
+              raise SystemExit(f"payload checksum mismatch: {digest}")
+
+          root = Path.cwd().resolve()
+          with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+              for member in archive.getmembers():
+                  target = (root / member.name).resolve()
+                  if root not in target.parents and target != root:
+                      raise SystemExit(f"unsafe archive path: {member.name}")
+              archive.extractall(root)
+          PY
+
+      - name: Commit atomic hardening
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            sniperplug/ebay_watcher/models.py \
+            sniperplug/ebay_watcher/config.py \
+            sniperplug/ebay_watcher/parser.py \
+            sniperplug/ebay_watcher/client.py \
+            sniperplug/ebay_watcher/storage.py \
+            sniperplug/ebay_watcher/service.py \
+            sniperplug/services/ebay_watcher_health.py \
+            sniperplug/ebay_watcher/app.py \
+            docs/EBAY_WATCHER.md \
+            tests/test_ebay_watcher.py
+          git diff --cached --check
+          git commit -m "Harden eBay watcher budgets and proof gates"
+          git push origin HEAD:feature/ebay-big-ticket-watcher

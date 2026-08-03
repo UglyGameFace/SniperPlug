@@ -1,47 +1,49 @@
 # Active Task
 
 ## Status
-Complete — HP big-ticket price-error fast lane implemented, validated, and ready for deployment.
+In progress — build a standalone eBay watcher for big-ticket and highly sought-after products, with verified customizable extreme-drop alerts.
 
 ## Scope
-Keep the standalone HP watcher architecture, but make its urgent alert path focus exclusively on expensive products with extreme, independently verified markdowns. Default policy: HP reference/current value of at least **$200** and a verified discount of at least **69%**.
+Add an always-on eBay worker that uses the official eBay Browse API for listing discovery and exact listing data, stores its own observation history, recognizes listing condition, prioritizes big-ticket and high-demand products, and publishes verified candidates through SniperPlug's existing shared retailer-event outbox and Discord delivery controls.
+
+Default policy:
+- Minimum verified discount: **69%**
+- Big-ticket reference/value floor: **$200**
+- Highly sought-after items may qualify below $200 when explicitly matched by configured demand rules.
+- Fixed-price listings are enabled by default; auctions remain opt-in until auction-reference logic is independently proven.
 
 ## Root cause and execution-path findings
-- The first HP watcher prioritized existing markdowns and used one general due queue.
-- Enough ordinary sale products could delay a full-price expensive item that suddenly dropped 69%+.
-- A server-level discount threshold alone could still allow cheap accessories with large percentages.
-- Expensive products need protected polling capacity before the drop occurs, using their current/MSRP/prior exact value to classify them.
+- eBay does not provide a ready-made price-drop watcher; Browse API provides current structured listing data while SniperPlug must retain historical prices and prove the drop.
+- Search results include condition, seller, price, buying options, product identifiers, item aspects, and shipping data, but an eBay marketing/original price is not consistently available or sufficient proof by itself.
+- A broad "scan all eBay" loop is impossible under ordinary Browse API call limits; watches must be query/category/GTIN/ePID/seller based and scheduled fairly.
+- eBay Feed/Hourly Snapshot can later widen coverage, but production access is restricted and cannot be required for the first working watcher.
+- The current verified-retailer fanout is HP-only, so eBay events require retailer-neutral routing and an eBay-specific deal card/post gate without weakening HP behavior.
 
-## Changes
-- Added `HPPriceErrorWatcherService` on top of the proven sitemap, identity, structured-price, history, and outbox implementation.
-- Reserve up to 75% of each offer batch for known due big-ticket products; unused capacity immediately fills from unclassified and background products.
-- Default watcher cycle is 10 seconds with an 80-offer structured batch.
-- Known big-ticket products are rescheduled every 45 seconds.
-- Cheap products are returned to the slower background schedule even when they have a large percentage markdown.
-- Only $200+ reference/value products at 69%+ off can publish HP events.
-- Alert-worthy observations still require the independent cache-busted exact-product confirmation.
-- Added candidate proof attributes identifying the price-error lane and policy floors.
-- Added configurable environment values:
-  - `HP_BIG_TICKET_MIN_REFERENCE_PRICE=200`
-  - `HP_PRICE_ERROR_MIN_DISCOUNT_PERCENT=69`
-  - `HP_BIG_TICKET_OFFER_INTERVAL_SECONDS=45`
-- Restored the canonical `/autoscan_health` exact-verification queue label required by the established command-surface regression.
+## Planned changes
+- Add bounded eBay OAuth/Browse API client with application-token caching and retry/backoff.
+- Add durable eBay watch, listing, observation, and health tables.
+- Add default high-demand watch seeds plus configurable keyword/category/GTIN/ePID/seller rules.
+- Normalize eBay condition IDs/names into SniperPlug conditions and fail closed when condition is unclear or excluded.
+- Build exact listing fingerprints using item ID, product identifiers, aspects, quantity, seller, and condition.
+- Detect listing price drops from SniperPlug's own prior observations and separately identify newly listed below-market candidates only when a trusted comparable baseline exists.
+- Prioritize big-ticket and sought-after queues while preserving fair background coverage and API budgets.
+- Publish verified 69%+ candidates through the existing retailer outbox with duplicate-safe event keys.
+- Add eBay card/public fanout support and health visibility.
+- Add a separate Discloud worker entrypoint/config sharing SniperPlug's Turso database and requiring no Discord token.
 
-## Validation
-- Python compilation passed.
-- SniperPlug and standalone watcher import smoke checks passed.
-- Targeted big-ticket qualification, protected-claim, scheduling, history, and configuration tests passed.
-- Complete pytest suite passed.
-- Pull request is mergeable with zero commits behind `main`.
-- Review-thread inspection found no unresolved findings.
-- Final changed-file inspection found no temporary, backup, or applicator files.
+## Validation required
+- Compile all changed Python files.
+- Run import smoke checks for SniperPlug and the standalone eBay watcher.
+- Run targeted OAuth/client, parser, condition, fingerprint, scheduling, history, qualification, and fanout tests.
+- Run the complete pytest suite.
+- Inspect conflicts, review threads, temporary files, duplicate logic, and obsolete retailer-specific branches before merge.
 
 ## Cleanup status
-Complete.
+Not started.
 
 ## Blockers
-None.
+- Live production monitoring requires eBay Production Client ID/Client Secret and Buy API approval. The implementation must remain testable with fixtures and Sandbox-compatible OAuth behavior.
 
 ## Backlog
-- Deploy/redeploy the separate Discloud HP watcher using the same Turso credentials as SniperPlug.
-- Measure live catalog size and effective big-ticket sweep latency from `/autoscan_health` before changing the bounded defaults.
+- Add Feed API/Hourly Snapshot ingestion after eBay grants production feed access.
+- Consider auction-ending alerts only after a separate comparable-price and bid-state policy is validated.

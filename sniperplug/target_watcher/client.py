@@ -39,27 +39,40 @@ class TargetRedSkyClient:
     def __init__(self, settings: TargetWatcherSettings):
         self.settings = settings
         self._session: aiohttp.ClientSession | None = None
+        self._sitemap_session: aiohttp.ClientSession | None = None
         self._semaphore = asyncio.Semaphore(settings.request_concurrency)
 
     async def __aenter__(self) -> "TargetRedSkyClient":
         timeout = aiohttp.ClientTimeout(total=self.settings.request_timeout_seconds)
+        headers = {
+            "User-Agent": self.settings.user_agent,
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://www.target.com",
+            "Referer": "https://www.target.com/",
+        }
         self._session = aiohttp.ClientSession(
             timeout=timeout,
-            headers={
-                "User-Agent": self.settings.user_agent,
-                "Accept-Language": "en-US,en;q=0.9",
-                "Origin": "https://www.target.com",
-                "Referer": "https://www.target.com/",
-            },
+            headers=headers,
             raise_for_status=False,
             auto_decompress=True,
+        )
+        # Sitemap requests must preserve wire bytes so the compressed and
+        # expanded safety limits remain two distinct, enforceable boundaries.
+        self._sitemap_session = aiohttp.ClientSession(
+            timeout=timeout,
+            headers=headers,
+            raise_for_status=False,
+            auto_decompress=False,
         )
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        if self._session is not None:
-            await self._session.close()
-            self._session = None
+        sessions = (self._session, self._sitemap_session)
+        self._session = None
+        self._sitemap_session = None
+        for session in sessions:
+            if session is not None:
+                await session.close()
 
     async def fetch_sitemap(
         self,
@@ -76,7 +89,12 @@ class TargetRedSkyClient:
             headers["If-None-Match"] = etag
         if last_modified:
             headers["If-Modified-Since"] = last_modified
-        response = await self._request(url, headers=headers, attempts=attempts)
+        response = await self._request(
+            url,
+            headers=headers,
+            attempts=attempts,
+            raw_wire_bytes=True,
+        )
         async with response:
             if response.status == 304:
                 return TargetBinaryDocument(
@@ -241,8 +259,9 @@ class TargetRedSkyClient:
         *,
         headers: dict[str, str] | None,
         attempts: int,
+        raw_wire_bytes: bool = False,
     ) -> aiohttp.ClientResponse:
-        session = self._session
+        session = self._sitemap_session if raw_wire_bytes else self._session
         if session is None:
             raise RuntimeError(
                 "TargetRedSkyClient must be used as an async context manager"

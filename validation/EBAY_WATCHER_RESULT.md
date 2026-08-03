@@ -1,7 +1,7 @@
 # eBay watcher validation result
 
-- Recorded at: `2026-08-03T01:59:34.993720+00:00`
-- Validated commit: `aeed8581496af677aefb593af556084e5ef4d744`
+- Recorded at: `2026-08-03T02:00:23.900526+00:00`
+- Validated commit: `0d3502502648489133b1f078459e51e6055b5331`
 
 ## Status
 - Install requirements: **PASS**
@@ -109,14 +109,14 @@ Successfully installed aiohappyeyeballs-2.7.1 aiohttp-3.14.3 aiosignal-1.4.0 aio
 ## Targeted eBay watcher tests output
 
 ```text
-..........                                                               [100%]
+...........                                                              [100%]
 =============================== warnings summary ===============================
 ../../../../../opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages/discord/player.py:30
   /opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-10 passed, 1 warning in 0.33s
+11 passed, 1 warning in 0.34s
 ```
 
 ## Complete pytest regression suite output
@@ -134,12 +134,12 @@ Successfully installed aiohappyeyeballs-2.7.1 aiohttp-3.14.3 aiosignal-1.4.0 aio
 ........................................................................ [ 77%]
 ........................................................................ [ 84%]
 ........................................................................ [ 92%]
-....................................................................     [100%]
+.....................................................................    [100%]
 =============================== warnings summary ===============================
 ../../../../../opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages/discord/player.py:30
   /opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages/discord/player.py:30: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-932 passed, 1 warning in 7.40s
+933 passed, 1 warning in 7.77s
 ```

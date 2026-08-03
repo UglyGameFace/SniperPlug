@@ -7,6 +7,7 @@ The Target watcher is a separate process that discovers Target product pages fro
 ```env
 TURSO_DATABASE_URL=the_same_value_used_by_SniperPlug
 TURSO_AUTH_TOKEN=the_same_value_used_by_SniperPlug
+TARGET_REDSKY_API_KEY=the_current_Target_web_key
 TARGET_STORE_ID=1956
 TARGET_ZIP=06604
 TARGET_STATE=CT
@@ -14,13 +15,9 @@ TARGET_LATITUDE=41.1865
 TARGET_LONGITUDE=-73.1952
 ```
 
+`TARGET_REDSKY_API_KEY` is intentionally not committed to the repository. Store it as a Discloud environment secret and update it whenever Target rotates the web key. The watcher refuses to start when the secret is missing.
+
 The default location above is Bridgeport, Connecticut. Change all five location values together when the watcher should represent a different store and ZIP.
-
-The RedSky key can be overridden without code changes:
-
-```env
-TARGET_REDSKY_API_KEY=the_current_Target_web_key
-```
 
 Optional exact TCIN seeds are useful before sitemap coverage has completed:
 
@@ -30,7 +27,7 @@ TARGET_WATCH_TCINS=91234567,92345678
 
 ## Discloud
 
-Create a separate app from the repository using `discloud.target-watcher.config`. Do not give this process a Discord token. Give it the same Turso credentials as the main SniperPlug app.
+Create a separate app from the repository using `discloud.target-watcher.config`. Do not give this process a Discord token. Give it the same Turso credentials as the main SniperPlug app and add the required Target RedSky key as a secret.
 
 ```bash
 cp discloud.target-watcher.config discloud.config
@@ -40,14 +37,21 @@ discloud up
 ## Default safety policy
 
 - Official Target PDP sitemap discovery only.
+- Sitemap wire bytes are read without transparent decompression, capped by `TARGET_SITEMAP_MAX_COMPRESSED_BYTES`, then gzip-expanded inside the bounded parser with `TARGET_SITEMAP_MAX_EXPANDED_BYTES`.
 - Exact numeric TCIN identity required.
 - Positive structured current price required.
 - Target regular price or retained exact Target history is the only reference.
-- Shipping, pickup, or add-to-cart availability must be positively verified.
+- Target Plus products require an explicit marketplace seller identity.
+- Pickup and Drive Up proof is accepted only for the configured Target store; nearby-store inventory is ignored.
+- Shipping, configured-store pickup, or add-to-cart availability must be positively verified.
 - Every alert-capable observation is re-fetched with a cache-busting exact TCIN request.
 - The confirmation must agree on TCIN, current price, regular price, seller, and fulfillment state.
 - HTTP rejection, rate limiting, malformed JSON, schema drift, missing fulfillment, or disagreement blocks the event.
 - No proxy rotation, CAPTCHA bypass, challenge bypass, or fake-account automation is implemented.
+
+## Durable work leases
+
+Sitemap and product polling use token-checked database leases stored in the shared Turso database. This prevents two Target watcher instances from polling the same row simultaneously. Leases expire automatically after a crash, and a stale worker cannot complete or overwrite work after another process has reclaimed it.
 
 ## Default polling policy
 
@@ -60,6 +64,8 @@ TARGET_MARKDOWN_OFFER_INTERVAL_SECONDS=90
 TARGET_BIG_TICKET_MIN_REFERENCE_PRICE=200
 TARGET_PRICE_ERROR_MIN_DISCOUNT_PERCENT=69
 TARGET_BIG_TICKET_OFFER_INTERVAL_SECONDS=45
+TARGET_SITEMAP_MAX_COMPRESSED_BYTES=26214400
+TARGET_SITEMAP_MAX_EXPANDED_BYTES=104857600
 ```
 
 Products with a trusted reference of at least $200 and an independently confirmed markdown of at least 69% use the protected fast interval. Other verified markdowns remain eligible for each server's normal threshold and category filters.
@@ -68,8 +74,8 @@ Products with a trusted reference of at least $200 and an independently confirme
 
 ```text
 Target PDP sitemap
-    -> exact TCIN catalog
-    -> RedSky product + fulfillment
+    -> leased exact TCIN catalog work
+    -> RedSky product + exact-store fulfillment
     -> independent confirmation
     -> verified_retailer_events outbox
     -> SniperPlug fanout

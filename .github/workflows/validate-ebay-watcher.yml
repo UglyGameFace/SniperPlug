@@ -6,10 +6,6 @@ on:
       - feature/ebay-big-ticket-watcher
     paths:
       - .github/workflows/validate-ebay-watcher.yml
-      - sniperplug/**
-      - tests/**
-      - ebay_watcher_main.py
-      - requirements.txt
 
 permissions:
   contents: write

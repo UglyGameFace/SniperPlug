@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from sniperplug.hp_watcher.config import HPWatcherSettings
-from sniperplug.hp_watcher.service import HPWatcherService
+from sniperplug.hp_watcher.price_error_service import HPPriceErrorWatcherService
 from sniperplug.storage.db import Database
 
 
@@ -24,13 +24,18 @@ async def run(settings: HPWatcherSettings | None = None) -> None:
     try:
         await db.init()
         log.info(
-            "Standalone HP watcher starting backend=%s sitemap_batch=%s page_batch=%s offer_batch=%s",
+            "Standalone HP price-error watcher starting backend=%s sitemap_batch=%s "
+            "page_batch=%s offer_batch=%s big_ticket_floor=$%.2f discount_floor=%s%% "
+            "big_ticket_interval_s=%s",
             getattr(db, "backend", "unknown"),
             resolved.sitemap_batch_size,
             resolved.product_page_batch_size,
             resolved.offer_batch_size,
+            resolved.big_ticket_min_reference_price,
+            resolved.price_error_min_discount_percent,
+            resolved.big_ticket_offer_interval_seconds,
         )
-        await HPWatcherService(db, resolved).run_forever()
+        await HPPriceErrorWatcherService(db, resolved).run_forever()
     finally:
         await db.close()
 

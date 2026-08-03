@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 
@@ -9,7 +9,6 @@ import aiosqlite
 
 from sniperplug.services.target_locations import (
     CATALOG_TABLE,
-    LOCATION_TABLE,
     ensure_target_location_tables,
     get_guild_target_location,
     list_unique_active_target_locations,
@@ -120,9 +119,9 @@ def test_target_fanout_requires_exact_saved_store_and_zip() -> None:
 def test_one_catalog_slice_is_staged_once_for_a_shared_location() -> None:
     async def run() -> None:
         db, conn = await _database()
-        now = datetime(2026, 8, 3, 1, 45, tzinfo=timezone.utc)
         await save_guild_target_location(db, guild_id=1, **LOCATION)
         await save_guild_target_location(db, guild_id=2, **LOCATION)
+        now = datetime.now(timezone.utc) + timedelta(seconds=5)
         seeds = [
             TargetProductSeed(
                 tcin=f"9123456{index}",

@@ -5,7 +5,7 @@ import logging
 
 from sniperplug.storage.db import Database
 from sniperplug.target_watcher.config import TargetWatcherSettings
-from sniperplug.target_watcher.service import TargetWatcherService
+from sniperplug.target_watcher.production_service import ProductionTargetWatcherService
 
 
 log = logging.getLogger("sniperplug.target_watcher")
@@ -25,7 +25,7 @@ async def run(settings: TargetWatcherSettings | None = None) -> None:
         log.info(
             "Standalone Target watcher starting backend=%s store=%s zip=%s "
             "sitemap_batch=%s product_batch=%s big_ticket_floor=$%.2f "
-            "price_error_floor=%s%%",
+            "price_error_floor=%s%% leased_work=yes",
             getattr(db, "backend", "unknown"),
             resolved.store_id,
             resolved.zip_code,
@@ -34,7 +34,7 @@ async def run(settings: TargetWatcherSettings | None = None) -> None:
             resolved.big_ticket_min_reference_price,
             resolved.price_error_min_discount_percent,
         )
-        await TargetWatcherService(db, resolved).run_forever()
+        await ProductionTargetWatcherService(db, resolved).run_forever()
     finally:
         await db.close()
 

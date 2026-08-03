@@ -21,6 +21,7 @@ from sniperplug.services.deal_threshold_settings import get_starting_deal_percen
 from sniperplug.services.hp_watcher_health import load_hp_watcher_health
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.setup_self_heal import repair_public_alert_setup
+from sniperplug.services.target_locations import get_guild_target_location
 from sniperplug.services.target_watcher_health import load_target_watcher_health
 from sniperplug.services.walmart_catalog_coverage import catalog_route_pool
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
@@ -125,6 +126,8 @@ async def build_global_autoscan_health_embed(
     queue_health = await load_walmart_exact_queue_health(db)
     hp_health = await load_hp_watcher_health(db)
     target_health = await load_target_watcher_health(db)
+    target_location = await get_guild_target_location(db, int(guild_id))
+    target_location_ready = bool(target_location and target_location.enabled)
     latest_report = await latest_autoscan_report(
         db,
         guild_id=int(guild_id),
@@ -151,6 +154,7 @@ async def build_global_autoscan_health_embed(
     target_delivery_ready = (
         base_delivery_ready
         and "target" in selected_retailers
+        and target_location_ready
         and target_health.ok
     )
     delivery_ready = (
@@ -163,8 +167,7 @@ async def build_global_autoscan_health_embed(
     embed = discord.Embed(
         title="🩺 Global Autoscan Health",
         description=(
-            "Walmart discovery runs once inside SniperPlug. HP Store and Target discovery run in their own watcher processes. "
-            "All three feed exact-verified deals through this server's shared delivery controls."
+            "Walmart discovery runs once inside SniperPlug. HP Store runs separately. Target rotates the shared catalog across unique stores selected by servers and users."
         ),
         color=discord.Color.green() if delivery_ready else discord.Color.orange(),
     )
@@ -176,10 +179,27 @@ async def build_global_autoscan_health_embed(
             f"Walmart enabled: **{'yes' if 'walmart' in retailers else 'no'}**\n"
             f"HP Store enabled: **{'yes' if 'hp' in retailers else 'no'}**\n"
             f"Target enabled: **{'yes' if 'target' in retailers else 'no'}**\n"
+            f"Target location: **{'saved' if target_location_ready else 'not configured'}**\n"
             f"Minimum exact markdown: **{threshold}%+**"
         ),
         inline=False,
     )
+    if target_location_ready and target_location is not None:
+        embed.add_field(
+            name="This server's Target store",
+            value=(
+                f"**{target_location.store_name}**\n"
+                f"{target_location.address_line}, {target_location.city}, {target_location.state} {target_location.postal_code}\n"
+                f"Store `{target_location.store_id}` • alert ZIP `{target_location.zip_code}`"
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="This server's Target store",
+            value="Not configured. Run `/target_location` before enabling local Target delivery.",
+            inline=False,
+        )
     embed.add_field(name="Channel", value=channel_status, inline=False)
     embed.add_field(name="Setup repair", value=repair.discord_line(), inline=False)
     embed.add_field(
@@ -195,7 +215,7 @@ async def build_global_autoscan_health_embed(
         value=(
             f"Walmart configured routes: **{len(routes)}**\n"
             f"{global_state.summary_line(total_routes=len(routes))}\n"
-            "A durable cursor advances in order and resumes after restarts. Per-server interval settings no longer control discovery."
+            "Target keeps one global TCIN catalog and advances bounded per-location cursors instead of copying the entire catalog for every server."
         ),
         inline=False,
     )
@@ -224,7 +244,7 @@ async def build_global_autoscan_health_embed(
             f"\nLast error: `{trim_field(target_health.last_error, 350)}`"
         )
     embed.add_field(
-        name="Target standalone watcher",
+        name="Target multi-location watcher",
         value=trim_field(target_health_detail, 1024),
         inline=False,
     )
@@ -236,8 +256,7 @@ async def build_global_autoscan_health_embed(
     embed.add_field(
         name="What commands are actually needed",
         value=(
-            "Normal automatic coverage needs no manual command. `/discover` is optional for an immediate Walmart sweep, "
-            "and `/autoscan_now` is an owner diagnostic—not any of the background engines."
+            "Automatic Walmart/HP coverage needs no manual scan. Target additionally needs `/target_location` once per server. `/discover` remains optional."
         ),
         inline=False,
     )
@@ -245,8 +264,15 @@ async def build_global_autoscan_health_embed(
         embed.add_field(
             name="Next action",
             value=(
-                "Run `/setup_sniperplug_here` in the exact channel that should receive deals, then reopen this panel. "
-                "The global scanners keep running even when one server's delivery setup needs repair."
+                "Run `/setup_sniperplug_here` in the exact channel that should receive deals, then reopen this panel."
+            ),
+            inline=False,
+        )
+    elif "target" in selected_retailers and not target_location_ready:
+        embed.add_field(
+            name="Next action",
+            value=(
+                "Run `/target_location` and choose the exact local Target store. Target delivery is blocked until that is saved."
             ),
             inline=False,
         )
@@ -254,8 +280,7 @@ async def build_global_autoscan_health_embed(
         embed.add_field(
             name="Next action",
             value=(
-                "This server's delivery is configured, but the HP watcher is not reporting healthy. "
-                "Check the separate HP watcher deployment and confirm it uses the same Turso database as SniperPlug."
+                "This server's delivery is configured, but the HP watcher is not reporting healthy. Check its separate deployment."
             ),
             inline=False,
         )
@@ -263,8 +288,7 @@ async def build_global_autoscan_health_embed(
         embed.add_field(
             name="Next action",
             value=(
-                "This server's delivery is configured, but the Target watcher is not reporting healthy. "
-                "Check the separate Target watcher deployment and confirm it uses the same Turso database as SniperPlug."
+                "This server's Target location is configured, but the Target watcher is not reporting healthy. Check the Target deployment and shared Turso database."
             ),
             inline=False,
         )

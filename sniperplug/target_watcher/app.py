@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from sniperplug.storage.db import Database
+from sniperplug.storage.process_database import create_runtime_database
 from sniperplug.target_watcher.config import TargetWatcherSettings
 from sniperplug.target_watcher.production_service import ProductionTargetWatcherService
 
@@ -18,7 +18,7 @@ async def run(settings: TargetWatcherSettings | None = None) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    db = Database(resolved.database_path)
+    db = create_runtime_database(resolved.database_path)
     await db.connect()
     try:
         await db.init()
@@ -26,7 +26,8 @@ async def run(settings: TargetWatcherSettings | None = None) -> None:
             "Standalone Target watcher starting backend=%s "
             "sitemap_batch=%s offer_batch=%s locations_per_cycle=%s "
             "products_per_location=%s big_ticket_floor=$%.2f "
-            "price_error_floor=%s%% leased_work=yes multitenant_locations=yes",
+            "price_error_floor=%s%% leased_work=yes multitenant_locations=yes "
+            "process_isolated_turso=true",
             getattr(db, "backend", "unknown"),
             resolved.sitemap_batch_size,
             resolved.product_batch_size,

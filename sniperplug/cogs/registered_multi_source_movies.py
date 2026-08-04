@@ -90,9 +90,17 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
             )
 
         source_state = await self.store.get_source_state(ATOM_SOURCE_KEY)
+        failure_summary = " | ".join(errors)
         if attempted == 0:
-            # Every source is cooling down. Preserve cache and let the poll loop
-            # continue quietly instead of manufacturing repeated failures.
+            if manual_refresh:
+                # A person explicitly asked for a refresh. Explain the active
+                # access cooldowns instead of pretending a live scan succeeded.
+                raise RuntimeError(
+                    "All official movie-ticket sources are cooling down: "
+                    + failure_summary
+                )
+            # Every source is cooling down. Preserve cache and let automatic
+            # polling continue quietly instead of manufacturing tracebacks.
             return MovieScanOutcome(
                 modified=False,
                 active_count=len(all_active),
@@ -100,7 +108,6 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
                 source_state=source_state,
             )
 
-        failure_summary = " | ".join(errors)
         if target_guild_id is None:
             # Automatic monitoring is a cache-preserving condition watch. A total
             # upstream outage is degraded health, not an application traceback.

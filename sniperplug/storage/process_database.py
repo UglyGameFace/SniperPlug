@@ -14,12 +14,16 @@ from sniperplug.storage.libsql_embedded_replica import (
     DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS,
     EmbeddedReplicaLibsqlProcessConnection,
 )
-from sniperplug.storage.libsql_process import LibsqlProcessConnection
+from sniperplug.storage.libsql_process import (
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    LibsqlProcessConnection,
+)
 
 
 log = logging.getLogger("sniperplug")
 MAX_EXACT_JSON_INTEGER = 2**53 - 1
 DEFAULT_TURSO_OPERATION_TIMEOUT_SECONDS = 90.0
+EMBEDDED_REPLICA_ENABLED_ENV = "TURSO_EMBEDDED_REPLICA_ENABLED"
 
 
 def libsql_safe_parameter(value: Any) -> Any:
@@ -67,18 +71,27 @@ class SnowflakeSafeLibsqlProcessConnection(
     _SnowflakeSafeParameters,
     LibsqlProcessConnection,
 ):
-    """Local/in-memory process connection retained for tests and non-Turso use."""
+    """Process-isolated direct Turso connection with exact snowflake transport."""
 
 
 class SnowflakeSafeEmbeddedReplicaConnection(
     _SnowflakeSafeParameters,
     EmbeddedReplicaLibsqlProcessConnection,
 ):
-    """Production Turso connection with local replica reads and exact IDs."""
+    """Optional local embedded replica with exact snowflake transport."""
 
 
 class ProcessIsolatedDatabase(Database):
-    """Use a child-process embedded replica for Turso production traffic."""
+    """Use a child process for every Turso native-driver operation.
+
+    The proven direct remote process is the production default. Python embedded
+    replicas remain available only behind ``TURSO_EMBEDDED_REPLICA_ENABLED=true``
+    because the experimental native driver can terminate during replica startup
+    before Python can report an exception. Even when explicitly enabled, replica
+    startup is only an optimization: any Python exception, startup EOF, timeout,
+    or child-process exit falls back in the parent to the direct remote process
+    before Discord login continues.
+    """
 
     async def connect(self) -> None:
         turso_url = (
@@ -108,54 +121,104 @@ class ProcessIsolatedDatabase(Database):
             "TURSO_OPERATION_TIMEOUT_SECONDS",
             DEFAULT_TURSO_OPERATION_TIMEOUT_SECONDS,
         )
-        startup_timeout = _positive_float_env(
-            "TURSO_REPLICA_STARTUP_TIMEOUT_SECONDS",
-            DEFAULT_REPLICA_STARTUP_TIMEOUT_SECONDS,
+        process_startup_timeout = _positive_float_env(
+            "TURSO_PROCESS_STARTUP_TIMEOUT_SECONDS",
+            DEFAULT_STARTUP_TIMEOUT_SECONDS,
         )
-        sync_interval = _positive_float_env(
-            "TURSO_REPLICA_SYNC_INTERVAL_SECONDS",
-            DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS,
+        replica_requested = _boolean_env(
+            EMBEDDED_REPLICA_ENABLED_ENV,
+            default=False,
         )
-        replica_path = _replica_path_for(self.path)
-        connection = await SnowflakeSafeEmbeddedReplicaConnection.open(
-            database=replica_path,
-            sync_url=turso_url,
-            auth_token=turso_token,
-            sync_interval_seconds=sync_interval,
-            startup_timeout_seconds=startup_timeout,
-            operation_timeout_seconds=operation_timeout,
-        )
+
+        connection: SnowflakeSafeLibsqlProcessConnection | SnowflakeSafeEmbeddedReplicaConnection
+        replica_mode = "remote-process"
+        replica_startup_error = "none"
+        sync_interval = float(DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS)
+
+        if replica_requested:
+            startup_timeout = _positive_float_env(
+                "TURSO_REPLICA_STARTUP_TIMEOUT_SECONDS",
+                DEFAULT_REPLICA_STARTUP_TIMEOUT_SECONDS,
+            )
+            sync_interval = _positive_float_env(
+                "TURSO_REPLICA_SYNC_INTERVAL_SECONDS",
+                DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS,
+            )
+            replica_path = _replica_path_for(self.path)
+            try:
+                connection = await SnowflakeSafeEmbeddedReplicaConnection.open(
+                    database=replica_path,
+                    sync_url=turso_url,
+                    auth_token=turso_token,
+                    sync_interval_seconds=sync_interval,
+                    startup_timeout_seconds=startup_timeout,
+                    operation_timeout_seconds=operation_timeout,
+                )
+                replica_mode = connection.replica_mode
+            except Exception as exc:
+                replica_startup_error = type(exc).__name__
+                log.error(
+                    "Turso embedded replica startup failed safely "
+                    "error_type=%s parent_remote_fallback=true; continuing with "
+                    "the proven process-isolated remote connection",
+                    replica_startup_error,
+                    exc_info=True,
+                )
+                connection = await SnowflakeSafeLibsqlProcessConnection.open(
+                    database=turso_url,
+                    auth_token=turso_token,
+                    startup_timeout_seconds=process_startup_timeout,
+                    operation_timeout_seconds=operation_timeout,
+                )
+                replica_mode = (
+                    f"remote-process-fallback:{replica_startup_error}"
+                )
+        else:
+            connection = await SnowflakeSafeLibsqlProcessConnection.open(
+                database=turso_url,
+                auth_token=turso_token,
+                startup_timeout_seconds=process_startup_timeout,
+                operation_timeout_seconds=operation_timeout,
+            )
+
         self.conn = connection
         self.backend = "turso-process-isolated"
-        self.replica_mode = connection.replica_mode
+        self.replica_mode = replica_mode
         identity = connection.identity
         try:
             driver_version = importlib.metadata.version("libsql")
         except importlib.metadata.PackageNotFoundError:
             driver_version = "unknown"
-        embedded = connection.replica_mode == "embedded-replica"
+
+        embedded = replica_mode == "embedded-replica"
+        worker_generation = int(getattr(connection, "worker_generation", 1) or 1)
         log.info(
             "Turso native driver isolated process=true worker_pid=%s "
             "parent_pid=%s native_libsql_in_gateway_process=false "
             "large_integer_text_transport=true transaction_replay=false "
-            "embedded_replica_reads=%s replica_mode=%s sync_interval_s=%.1f "
-            "worker_generation=%s bounded_queue_pressure=true "
+            "embedded_replica_requested=%s embedded_replica_reads=%s "
+            "replica_mode=%s replica_startup_error=%s sync_interval_s=%.1f "
+            "worker_generation=%s safe_remote_default=true "
+            "parent_startup_fallback=true bounded_queue_pressure=true "
             "no_op_cleanup_skips_write=true driver_version=%s "
             "operation_timeout_s=%.1f",
             identity.pid if identity else "unknown",
             identity.parent_pid if identity else os.getpid(),
+            str(replica_requested).lower(),
             str(embedded).lower(),
-            connection.replica_mode,
+            replica_mode,
+            replica_startup_error,
             sync_interval,
-            connection.worker_generation,
+            worker_generation,
             driver_version,
             operation_timeout,
         )
-        if not embedded:
-            log.error(
-                "Turso embedded replica unavailable; running in explicit "
-                "remote-only fallback mode replica_mode=%s",
-                connection.replica_mode,
+
+        if replica_requested and not embedded:
+            log.warning(
+                "Turso embedded replica is unavailable; canonical runtime stayed "
+                "online through parent-level remote fallback replica_mode=%s",
+                replica_mode,
             )
 
 
@@ -175,6 +238,19 @@ def _replica_path_for(database_path: str) -> str:
         path = source.with_name(f"{source.stem}.turso-replica{suffix}")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path.as_posix()
+
+
+def _boolean_env(name: str, *, default: bool) -> bool:
+    raw = str(os.getenv(name, "") or "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(
+        f"{name} must be one of true/false, 1/0, yes/no, or on/off"
+    )
 
 
 def _positive_float_env(name: str, default: float) -> float:

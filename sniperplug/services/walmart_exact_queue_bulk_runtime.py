@@ -21,17 +21,18 @@ from sniperplug.services.walmart_exact_queue_runtime import (
     ExactQueueRuntimeResult,
     _fetch_exact_candidate_off_loop,
     _identity_error_bucket,
-    maintain_terminal_identity_rows,
+)
+from sniperplug.services.walmart_exact_runtime_schema import (
+    ensure_exact_runtime_schema_once,
+    maintain_terminal_identity_rows_bounded,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
     _classify_exact_candidate,
     _pending_total,
-    ensure_walmart_exact_verification_queue,
     maybe_prune_walmart_exact_verification_queue,
 )
 from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
 from sniperplug.services.walmart_global_offer_memory import (
-    ensure_global_offer_memory_table,
     maybe_prune_global_offer_memory,
 )
 
@@ -55,14 +56,18 @@ async def process_actionable_walmart_exact_queue_batch(
     Large 24/4 drain batches are reserved for first-time/retry pressure or a
     true total-backlog emergency. Scheduled rechecks alone remain normal 6/2
     maintenance so they cannot starve fresh catalog discovery.
+
+    Exact queue and offer-memory schema initialization is cached per live
+    database connection. Terminal identity maintenance is bounded to a
+    fifteen-minute cadence because terminal rows are already excluded from
+    ordinary claims immediately.
     """
 
     if db is None or provider is None or limit <= 0:
         return ExactQueueRuntimeResult()
 
-    maintenance = await maintain_terminal_identity_rows(db)
-    await ensure_walmart_exact_verification_queue(db)
-    await ensure_global_offer_memory_table(db)
+    await ensure_exact_runtime_schema_once(db)
+    maintenance = await maintain_terminal_identity_rows_bounded(db)
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
     await maybe_prune_walmart_exact_verification_queue(conn, now=now)

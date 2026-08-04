@@ -19,8 +19,10 @@ class ProviderRegistry:
 
         Production startup explicitly clears the registry before wiring providers.
         ``replace=True`` remains available for tests and controlled runtime reloads.
-        Walmart candidates receive the retailer-wide product metadata extractor
-        and one request-level priority wrapper before any scan path can see them.
+        Walmart candidates receive the retailer-wide product metadata extractor.
+        The request-priority wrapper is applied only to SniperPlug's real cached
+        Walmart runtime, never to arbitrary test/plugin providers that merely use
+        the normalized key ``walmart``.
         """
         key = str(provider.provider_key or "").strip().lower()
         if not key:
@@ -30,7 +32,12 @@ class ProviderRegistry:
         if key == "walmart":
             install_walmart_product_metadata(provider)
             if not isinstance(provider, CoordinatedWalmartProvider):
-                provider = CoordinatedWalmartProvider(provider)
+                # Local import avoids widening the registry's import graph while
+                # precisely identifying the production provider construction.
+                from sniperplug.providers.cached_walmart import CachedWalmartProvider
+
+                if isinstance(provider, CachedWalmartProvider):
+                    provider = CoordinatedWalmartProvider(provider)
         self.providers[key] = provider
 
     def clear(self) -> None:

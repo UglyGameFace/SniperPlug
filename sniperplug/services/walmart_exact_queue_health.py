@@ -9,12 +9,22 @@ from sniperplug.services.walmart_exact_verification_queue import QUEUE_RETENTION
 
 QUEUE_TABLE = "walmart_exact_detail_queue"
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
+INITIAL_WORK_STATUSES = ("pending", "retry", "failed", "verifying")
+RECHECK_STATUSES = (
+    "verified_markdown",
+    "verified_under_threshold",
+    "verified_no_reference",
+    "verified_reference",
+    "not_buyable",
+)
 
 
 @dataclass(frozen=True)
 class WalmartExactQueueHealth:
     total: int = 0
     due_now: int = 0
+    initial_due_now: int = 0
+    recheck_due_now: int = 0
     delayed_retries: int = 0
     identity_blocked: int = 0
     verified: int = 0
@@ -26,7 +36,8 @@ class WalmartExactQueueHealth:
     def summary_line(self) -> str:
         return (
             "queue health: "
-            f"total **{self.total}** • actionable due now **{self.due_now}** • "
+            f"total **{self.total}** • actionable due now **{self.due_now}** "
+            f"(new/retry **{self.initial_due_now}** • scheduled rechecks **{self.recheck_due_now}**) • "
             f"delayed transient retries **{self.delayed_retries}** • "
             f"identity unavailable / safely blocked **{self.identity_blocked}** (terminal) • "
             f"verified **{self.verified}** • actively verifying **{self.verifying}** • "
@@ -36,13 +47,13 @@ class WalmartExactQueueHealth:
 
 
 async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
-    """Return queue state using the same retention window as the worker.
+    """Return queue state using the same retention and lease rules as the worker.
 
-    ``due_now`` counts actionable rows only. Terminal seller/offer identity
-    failures remain visible in their own bucket but never inflate backlog or
-    catalog backpressure after their fail-closed verification attempt.
-    ``verifying`` counts only rows with an active lease, keeping it disjoint
-    from expired verification rows that correctly return to ``due_now``.
+    ``due_now`` includes both first-time/retry work and scheduled exact rechecks.
+    The split makes queue growth diagnosable without weakening backpressure.
+    Terminal identity failures stay fail-closed and are never actionable.
+    ``verifying`` counts only actively leased rows; expired leases return to the
+    appropriate due bucket.
     """
 
     if db is None:
@@ -67,6 +78,24 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                      AND next_attempt_at <= ?
                      AND (lease_until IS NULL OR lease_until < ?)
                     THEN 1 ELSE 0 END) AS due_now,
+                SUM(CASE
+                    WHEN is_recent = 1
+                     AND status IN ('pending', 'retry', 'failed', 'verifying')
+                     AND next_attempt_at <= ?
+                     AND (lease_until IS NULL OR lease_until < ?)
+                    THEN 1 ELSE 0 END) AS initial_due_now,
+                SUM(CASE
+                    WHEN is_recent = 1
+                     AND status IN (
+                         'verified_markdown',
+                         'verified_under_threshold',
+                         'verified_no_reference',
+                         'verified_reference',
+                         'not_buyable'
+                     )
+                     AND next_attempt_at <= ?
+                     AND (lease_until IS NULL OR lease_until < ?)
+                    THEN 1 ELSE 0 END) AS recheck_due_now,
                 SUM(CASE
                     WHEN is_recent = 1
                      AND status IN ('retry', 'failed')
@@ -95,7 +124,17 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 SUM(CASE WHEN is_recent = 0 THEN 1 ELSE 0 END) AS stale
             FROM queue_state
             """,
-            (discovery_cutoff, now_iso, now_iso, now_iso, now_iso),
+            (
+                discovery_cutoff,
+                now_iso,
+                now_iso,
+                now_iso,
+                now_iso,
+                now_iso,
+                now_iso,
+                now_iso,
+                now_iso,
+            ),
         )
         row = await cursor.fetchone()
     except Exception:
@@ -104,13 +143,15 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     return WalmartExactQueueHealth(
         total=_as_int(_row_get(row, "total", 0)),
         due_now=_as_int(_row_get(row, "due_now", 1)),
-        delayed_retries=_as_int(_row_get(row, "delayed_retries", 2)),
-        identity_blocked=_as_int(_row_get(row, "identity_blocked", 3)),
-        verified=_as_int(_row_get(row, "verified", 4)),
-        verifying=_as_int(_row_get(row, "verifying", 5)),
-        pending=_as_int(_row_get(row, "pending", 6)),
-        unavailable=_as_int(_row_get(row, "unavailable", 7)),
-        stale=_as_int(_row_get(row, "stale", 8)),
+        initial_due_now=_as_int(_row_get(row, "initial_due_now", 2)),
+        recheck_due_now=_as_int(_row_get(row, "recheck_due_now", 3)),
+        delayed_retries=_as_int(_row_get(row, "delayed_retries", 4)),
+        identity_blocked=_as_int(_row_get(row, "identity_blocked", 5)),
+        verified=_as_int(_row_get(row, "verified", 6)),
+        verifying=_as_int(_row_get(row, "verifying", 7)),
+        pending=_as_int(_row_get(row, "pending", 8)),
+        unavailable=_as_int(_row_get(row, "unavailable", 9)),
+        stale=_as_int(_row_get(row, "stale", 10)),
     )
 
 

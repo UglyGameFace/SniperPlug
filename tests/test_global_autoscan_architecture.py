@@ -130,6 +130,8 @@ def test_backpressure_does_not_subtract_terminal_blocks_twice() -> None:
     production_shape = WalmartExactQueueHealth(
         total=11372,
         due_now=2818,
+        initial_due_now=172,
+        recheck_due_now=2646,
         delayed_retries=69,
         identity_blocked=7591,
         verified=2632,
@@ -167,6 +169,8 @@ class _QueueHealthCursor:
         return {
             "total": 10,
             "due_now": 3,
+            "initial_due_now": 1,
+            "recheck_due_now": 2,
             "delayed_retries": 1,
             "identity_blocked": 2,
             "verified": 2,
@@ -201,12 +205,15 @@ def test_health_counts_only_actively_leased_verifying_rows() -> None:
 
     health = asyncio.run(load_walmart_exact_queue_health(_QueueHealthDatabase(conn)))
 
+    assert health.initial_due_now == 1
+    assert health.recheck_due_now == 2
     assert health.verifying == 1
     assert "status = 'verifying'" in conn.sql
     assert "AND lease_until IS NOT NULL" in conn.sql
     assert "AND lease_until >= ?" in conn.sql
-    assert len(conn.params) == 5
-    assert conn.params[1] == conn.params[2] == conn.params[3] == conn.params[4]
+    assert "scheduled rechecks" in health.summary_line()
+    assert len(conn.params) == 9
+    assert all(value == conn.params[1] for value in conn.params[1:])
 
 
 def test_global_state_is_durable_and_not_wall_clock_rotation() -> None:

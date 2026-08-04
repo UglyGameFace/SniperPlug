@@ -4,8 +4,7 @@ from pathlib import Path
 
 from sniperplug.storage.libsql_embedded_replica import (
     EmbeddedReplicaLibsqlProcessConnection,
-    _read_mode_marker,
-    _write_mode_marker,
+    _connection_mode,
 )
 from sniperplug.storage.libsql_process import LibsqlProcessConnection
 from sniperplug.storage.process_database import (
@@ -18,6 +17,9 @@ from sniperplug.storage.process_database import (
 ROOT = Path(__file__).resolve().parents[1]
 REPLICA_RUNTIME = (
     ROOT / "sniperplug/storage/libsql_embedded_replica.py"
+).read_text(encoding="utf-8")
+WORKER_RUNTIME = (
+    ROOT / "sniperplug/storage/libsql_process.py"
 ).read_text(encoding="utf-8")
 PROCESS_DATABASE = (
     ROOT / "sniperplug/storage/process_database.py"
@@ -46,13 +48,12 @@ def test_replica_path_env_override_is_respected(monkeypatch, tmp_path) -> None:
     assert override.parent.exists()
 
 
-def test_mode_marker_round_trip_never_contains_credentials(tmp_path) -> None:
-    marker = tmp_path / "runtime-mode"
-
-    _write_mode_marker(marker.as_posix(), "embedded-replica")
-
-    assert _read_mode_marker(marker.as_posix()) == "embedded-replica"
-    assert "token" not in marker.read_text(encoding="utf-8").lower()
+def test_connection_mode_comes_from_worker_response() -> None:
+    assert _connection_mode({"connection_mode": "embedded-replica"}) == "embedded-replica"
+    assert _connection_mode({"connection_mode": "remote-fallback:RuntimeError"}) == (
+        "remote-fallback:RuntimeError"
+    )
+    assert _connection_mode({}) == "unknown"
 
 
 def test_local_process_test_class_remains_distinct_from_production_replica() -> None:
@@ -64,17 +65,34 @@ def test_local_process_test_class_remains_distinct_from_production_replica() -> 
     assert SnowflakeSafeLibsqlProcessConnection is not SnowflakeSafeEmbeddedReplicaConnection
 
 
-def test_embedded_replica_uses_supported_libsql_connection_options() -> None:
+def test_embedded_replica_uses_explicit_supported_worker_options() -> None:
+    for fragment in (
+        '"sync_url": self.sync_url',
+        '"sync_interval": self.sync_interval_seconds',
+        '"initial_sync": True',
+        '"allow_remote_fallback": True',
+        "target=_libsql_worker_main",
+    ):
+        assert fragment in REPLICA_RUNTIME
+
     for fragment in (
         "sync_url=sync_url",
-        "sync_interval=max(1.0, float(sync_interval_seconds))",
+        "sync_interval=sync_interval",
         "offline=False",
         "auth_token=auth_token",
         "sync()",
-        '"embedded-replica"',
-        '"remote-fallback:',
+        'connection_mode = "embedded-replica"',
+        'f"remote-fallback:{type(replica_error).__name__}"',
     ):
-        assert fragment in REPLICA_RUNTIME
+        assert fragment in WORKER_RUNTIME
+
+
+def test_replica_runtime_never_monkeypatches_libsql() -> None:
+    assert "libsql.connect =" not in REPLICA_RUNTIME
+    assert "original_connect" not in REPLICA_RUNTIME
+    assert "monkeypatch" not in REPLICA_RUNTIME.lower()
+    assert "connection_options" in REPLICA_RUNTIME
+    assert 'response["connection_mode"]' in WORKER_RUNTIME
 
 
 def test_production_runtime_logs_mode_and_worker_generation() -> None:
@@ -89,4 +107,6 @@ def test_production_runtime_logs_mode_and_worker_generation() -> None:
     assert "TURSO_REPLICA_SYNC_INTERVAL_SECONDS" in PROCESS_DATABASE
     assert "TURSO_REPLICA_STARTUP_TIMEOUT_SECONDS" in PROCESS_DATABASE
     assert "TURSO_REPLICA_PATH" in PROCESS_DATABASE
-    assert "TURSO_AUTH_TOKEN" not in REPLICA_RUNTIME.split("log.")[-1]
+    assert "auth_token" not in " ".join(
+        line for line in REPLICA_RUNTIME.splitlines() if "log." in line
+    )

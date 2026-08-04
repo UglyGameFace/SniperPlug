@@ -110,6 +110,9 @@ def test_production_worker_uses_fresh_work_policy() -> None:
     assert "bounded_claim_steps=true" in RUNNER
     assert "scheduled_rechecks_never_drain=true" in RUNNER
     assert "atomic_exact_claim=true" not in RUNNER
-    assert "catalog_backpressure_reason(queue_health)" in RUNNER
-    assert "should_use_drain_mode(health_before)" in BULK_RUNTIME
+    assert "load_walmart_exact_queue_pressure" in RUNNER
+    assert "catalog_backpressure_reason(queue_pressure)" in RUNNER
+    assert "background_full_queue_scans=false" in RUNNER
+    assert "load_walmart_exact_queue_pressure" in BULK_RUNTIME
+    assert "should_use_drain_mode(pressure_before)" in BULK_RUNTIME
     assert "DRAIN_ACTIONABLE_THRESHOLD" not in BULK_RUNTIME

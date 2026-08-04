@@ -34,7 +34,7 @@ from sniperplug.services.walmart_global_deal_fanout import (
 from sniperplug.services.walmart_exact_queue_health import (
     load_walmart_exact_queue_health,
 )
-from sniperplug.services.walmart_exact_queue_runtime import (
+from sniperplug.services.walmart_exact_queue_bulk_runtime import (
     process_actionable_walmart_exact_queue_batch,
 )
 
@@ -85,7 +85,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "global_catalog_interval_s=%s exact_queue_batch=%s "
             "exact_queue_interval_s=%s global_exact_fanout=true personal_dm_alerts=true "
             "external_verified_event_fanout=true terminal_identity_quarantine=true "
-            "exact_parse_off_event_loop=true",
+            "exact_parse_off_event_loop=true bulk_exact_persistence=true",
             platform.python_version(),
             sys.platform,
             DEFAULT_ROUTES_PER_BATCH,

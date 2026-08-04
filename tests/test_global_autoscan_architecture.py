@@ -148,24 +148,24 @@ def test_backpressure_does_not_subtract_terminal_blocks_twice() -> None:
     assert "terminal identity blocks excluded **7591**" in reason
 
 
-def test_backpressure_counts_active_verification_without_double_counting_pending() -> None:
-    below_limit = WalmartExactQueueHealth(
-        due_now=0,
-        initial_due_now=0,
-        recheck_due_now=0,
-        pending=440,
-        verifying=11,
-    )
-    at_limit = WalmartExactQueueHealth(
+def test_backpressure_requires_unclaimed_fresh_rows_not_ambiguous_leases() -> None:
+    ambiguous_leases = WalmartExactQueueHealth(
         due_now=1,
         initial_due_now=1,
         recheck_due_now=0,
         pending=440,
         verifying=11,
     )
+    actual_fresh_limit = WalmartExactQueueHealth(
+        due_now=12,
+        initial_due_now=12,
+        recheck_due_now=0,
+        pending=440,
+        verifying=11,
+    )
 
-    assert catalog_backpressure_reason(below_limit) is None
-    assert catalog_backpressure_reason(at_limit) is not None
+    assert catalog_backpressure_reason(ambiguous_leases) is None
+    assert catalog_backpressure_reason(actual_fresh_limit) is not None
 
 
 class _QueueHealthCursor:

@@ -36,79 +36,114 @@ async def claim_due_rows_batched(
     now: datetime,
     limit: int,
 ) -> list[_QueueClaim]:
-    """Atomically select and lease one ordered exact-queue slice.
+    """Select an ordered slice, then lease only those rows with one small update.
 
-    One UPDATE ... RETURNING replaces the former SELECT, UPDATE, verification
-    SELECT, and commit sequence. The lease token still guards every final write,
-    but Turso only has to execute one remote statement before the commit.
+    The former MATERIALIZED CTE plus UPDATE ... RETURNING scanned and rewrote the
+    remote Turso queue in one native libSQL call. With roughly 12k rows and a
+    large scheduled-recheck backlog, that statement took 48-66 seconds and
+    starved Discord's heartbeat even though it ran through ``asyncio.to_thread``.
+
+    Two bounded statements are intentionally safer here:
+
+    1. an indexed SELECT returns at most ``limit`` candidate snapshots;
+    2. a guarded UPDATE leases only those item IDs and RETURNING confirms which
+       rows this process actually acquired.
+
+    A shared lease token still protects all final writes. If another process
+    races between the two statements, the UPDATE guards and returned IDs prevent
+    this worker from processing rows it did not lease.
     """
 
-    now_iso = now.astimezone(timezone.utc).isoformat()
+    now_utc = now.astimezone(timezone.utc)
+    now_iso = now_utc.isoformat()
     discovery_cutoff = (
-        now.astimezone(timezone.utc) - timedelta(days=QUEUE_RETENTION_DAYS)
+        now_utc - timedelta(days=QUEUE_RETENTION_DAYS)
     ).isoformat()
     bounded_limit = max(1, int(limit))
     batch_token = uuid.uuid4().hex
     lease_until = (
-        now.astimezone(timezone.utc) + timedelta(seconds=QUEUE_LEASE_SECONDS)
+        now_utc + timedelta(seconds=QUEUE_LEASE_SECONDS)
     ).isoformat()
 
-    cursor = await conn.execute(
+    select_cursor = await conn.execute(
         f"""
-        WITH due(item_id) AS MATERIALIZED (
-            SELECT item_id
-            FROM {QUEUE_TABLE}
-            WHERE next_attempt_at <= ?
-              AND last_seen_at >= ?
-              AND status NOT IN ('incomplete_identity', 'identity_mismatch')
-              AND (lease_until IS NULL OR lease_until < ?)
-            ORDER BY
-                CASE status
-                    WHEN 'pending' THEN 0
-                    WHEN 'retry' THEN 1
-                    WHEN 'failed' THEN 2
-                    WHEN 'verifying' THEN 3
-                    WHEN 'verified_markdown' THEN 4
-                    WHEN 'verified_under_threshold' THEN 5
-                    WHEN 'verified_no_reference' THEN 6
-                    WHEN 'verified_reference' THEN 7
-                    WHEN 'not_buyable' THEN 8
-                    ELSE 9
-                END,
-                priority_score DESC,
-                last_seen_at DESC
-            LIMIT ?
-        )
-        UPDATE {QUEUE_TABLE}
-        SET lease_token = ?, lease_until = ?, status = 'verifying'
-        WHERE item_id IN (SELECT item_id FROM due)
-          AND last_seen_at >= ?
-          AND status NOT IN ('incomplete_identity', 'identity_mismatch')
-          AND (lease_until IS NULL OR lease_until < ?)
-        RETURNING
+        SELECT
             item_id, title, product_url, image_url,
             apparent_current_cents, apparent_reference_cents,
             route_hint, attempt_count
+        FROM {QUEUE_TABLE}
+        WHERE next_attempt_at <= ?
+          AND last_seen_at >= ?
+          AND status NOT IN ('incomplete_identity', 'identity_mismatch')
+          AND (lease_until IS NULL OR lease_until < ?)
+        ORDER BY
+            CASE status
+                WHEN 'pending' THEN 0
+                WHEN 'retry' THEN 1
+                WHEN 'failed' THEN 2
+                WHEN 'verifying' THEN 3
+                WHEN 'verified_markdown' THEN 4
+                WHEN 'verified_under_threshold' THEN 5
+                WHEN 'verified_no_reference' THEN 6
+                WHEN 'verified_reference' THEN 7
+                WHEN 'not_buyable' THEN 8
+                ELSE 9
+            END,
+            priority_score DESC,
+            last_seen_at DESC
+        LIMIT ?
+        """,
+        (now_iso, discovery_cutoff, now_iso, bounded_limit),
+    )
+    selected_rows = await select_cursor.fetchall()
+    if not selected_rows:
+        return []
+
+    selected_by_id: dict[str, Any] = {}
+    selected_order: list[str] = []
+    for row in selected_rows:
+        item_id = str(_row_get(row, "item_id", index=0) or "").strip()
+        if not item_id or item_id in selected_by_id:
+            continue
+        selected_by_id[item_id] = row
+        selected_order.append(item_id)
+
+    if not selected_order:
+        return []
+
+    placeholders = ", ".join("?" for _ in selected_order)
+    update_cursor = await conn.execute(
+        f"""
+        UPDATE {QUEUE_TABLE}
+        SET lease_token = ?, lease_until = ?, status = 'verifying'
+        WHERE item_id IN ({placeholders})
+          AND next_attempt_at <= ?
+          AND last_seen_at >= ?
+          AND status NOT IN ('incomplete_identity', 'identity_mismatch')
+          AND (lease_until IS NULL OR lease_until < ?)
+        RETURNING item_id
         """,
         (
-            now_iso,
-            discovery_cutoff,
-            now_iso,
-            bounded_limit,
             batch_token,
             lease_until,
+            *selected_order,
+            now_iso,
             discovery_cutoff,
             now_iso,
         ),
     )
-    rows = await cursor.fetchall()
+    leased_rows = await update_cursor.fetchall()
     await conn.commit()
 
+    leased_ids = {
+        str(_row_get(row, "item_id", index=0) or "").strip()
+        for row in leased_rows
+    }
     claims: list[_QueueClaim] = []
-    for row in rows:
-        item_id = str(_row_get(row, "item_id", index=0) or "").strip()
-        if not item_id:
+    for item_id in selected_order:
+        if item_id not in leased_ids:
             continue
+        row = selected_by_id[item_id]
         claims.append(
             _QueueClaim(
                 item_id=item_id,

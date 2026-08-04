@@ -35,6 +35,9 @@ from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
 from sniperplug.services.walmart_global_offer_memory import (
     maybe_prune_global_offer_memory,
 )
+from sniperplug.services.walmart_recheck_schedule_rearm import (
+    rearm_legacy_due_rechecks_bounded,
+)
 
 
 async def process_actionable_walmart_exact_queue_batch(
@@ -50,12 +53,14 @@ async def process_actionable_walmart_exact_queue_batch(
 
     Discovery, item identity, selected offer, seller, condition, fulfillment,
     current-price, and trusted-reference proof remain unchanged. Only the final
-    Turso persistence path is consolidated so a drain batch does not issue
-    dozens of serialized native libsql operations.
+    Turso persistence path is consolidated so a batch does not issue dozens of
+    serialized native libsql operations.
 
-    Large 24/4 drain batches are reserved for first-time/retry pressure or a
-    true total-backlog emergency. Scheduled rechecks alone remain normal 6/2
-    maintenance so they cannot starve fresh catalog discovery.
+    Large 24/4 drain batches are reserved strictly for substantial unclaimed
+    first-time/retry pressure. Scheduled rechecks never force drain mode. Existing
+    rows left on the old hourly schedule are repaired in bounded batches, and a
+    row is deferred only when its own verified timestamp proves the current
+    4/12/24-hour tier has not elapsed yet.
 
     Exact queue and offer-memory schema initialization is cached per live
     database connection. Terminal identity maintenance is bounded to a
@@ -71,6 +76,7 @@ async def process_actionable_walmart_exact_queue_batch(
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
     await maybe_prune_walmart_exact_verification_queue(conn, now=now)
+    await rearm_legacy_due_rechecks_bounded(conn, now=now)
 
     health_before = await load_walmart_exact_queue_health(db)
     drain_mode = should_use_drain_mode(health_before)

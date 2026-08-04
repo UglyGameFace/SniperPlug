@@ -9,8 +9,8 @@ FRESH_DRAIN_THRESHOLD = 48
 FRESH_DISCOVERY_PAUSE_THRESHOLD = 12
 TOTAL_DRAIN_EMERGENCY_THRESHOLD = 1_200
 TOTAL_DISCOVERY_EMERGENCY_THRESHOLD = 600
-# Compatibility export for older diagnostics/tests. Drain and discovery now use
-# separate thresholds so catalog intake can stop without increasing concurrency.
+# Compatibility export for diagnostics/tests. Split-aware production health no
+# longer uses total recheck backlog to force aggressive drain concurrency.
 TOTAL_EMERGENCY_THRESHOLD = TOTAL_DRAIN_EMERGENCY_THRESHOLD
 LEGACY_ACTIONABLE_THRESHOLD = 450
 
@@ -32,11 +32,17 @@ def should_use_drain_mode(
     emergency_total_threshold: int = TOTAL_DRAIN_EMERGENCY_THRESHOLD,
     legacy_threshold: int = LEGACY_ACTIONABLE_THRESHOLD,
 ) -> bool:
-    """Use 24/4 only for substantial fresh pressure or a true emergency.
+    """Use 24/4 only for substantial unclaimed first-time/retry pressure.
 
-    Discovery pauses before fresh work becomes severe, so ordinary recovery can
-    stay at the safer normal concurrency. Scheduled rechecks alone do not force
-    aggressive drain mode until the backlog is genuinely extreme.
+    Scheduled rechecks must never force aggressive concurrency. Production logs
+    proved that a large recheck-only backlog made the native Turso claim spend
+    48-66 seconds leasing 24 rows, starving Discord's heartbeat. The dedicated
+    worker is single-instance and non-overlapping, so actively leased rows also
+    do not represent additional fresh pressure for the next batch decision.
+
+    ``emergency_total_threshold`` remains in the signature for compatibility;
+    split-aware health intentionally ignores it. Catalog intake still pauses on
+    total pressure through ``catalog_backpressure_reason``.
     """
 
     due_now = max(0, int(getattr(health, "due_now", 0) or 0))
@@ -46,12 +52,7 @@ def should_use_drain_mode(
         return due_now + verifying >= max(1, int(legacy_threshold))
 
     fresh_due = max(0, int(getattr(health, "initial_due_now", 0) or 0))
-    fresh_pressure = fresh_due + verifying
-    total_pressure = due_now + verifying
-    return bool(
-        fresh_pressure >= max(1, int(fresh_threshold))
-        or total_pressure >= max(1, int(emergency_total_threshold))
-    )
+    return fresh_due >= max(1, int(fresh_threshold))
 
 
 def catalog_backpressure_reason(
@@ -63,10 +64,11 @@ def catalog_backpressure_reason(
 ) -> str | None:
     """Pause catalog intake before it can outrun the exact worker.
 
-    A small amount of fresh/retry work is normal. Once twelve fresh rows are due,
-    discovery yields until the exact worker catches up. Recheck-only maintenance
-    remains allowed below the 600-row safety ceiling, while a larger total queue
-    pauses intake to protect Discord responsiveness and database health.
+    A small amount of fresh/retry work is normal. Once twelve unclaimed fresh
+    rows are due, discovery yields until the exact worker catches up. Actively
+    verifying rows are not added to fresh pressure because health cannot tell
+    whether those leases came from fresh work or scheduled rechecks. Total
+    pressure still includes active leases for the emergency intake stop.
     """
 
     due_now = max(0, int(getattr(health, "due_now", 0) or 0))
@@ -90,17 +92,16 @@ def catalog_backpressure_reason(
 
     fresh_due = max(0, int(getattr(health, "initial_due_now", 0) or 0))
     recheck_due = max(0, int(getattr(health, "recheck_due_now", 0) or 0))
-    fresh_pressure = fresh_due + verifying
     fresh_limit_value = max(1, int(fresh_limit))
     emergency_limit_value = max(
         fresh_limit_value,
         int(emergency_total_limit),
     )
 
-    if fresh_pressure >= fresh_limit_value:
+    if fresh_due >= fresh_limit_value:
         return (
             "fresh exact-detail backpressure active: "
-            f"fresh/retry pressure **{fresh_pressure}/{fresh_limit_value}** • "
+            f"fresh/retry pressure **{fresh_due}/{fresh_limit_value}** • "
             f"new/retry due **{fresh_due}** • scheduled rechecks **{recheck_due}** • "
             f"verifying **{verifying}** • terminal identity blocks excluded "
             f"**{identity_blocked}**"

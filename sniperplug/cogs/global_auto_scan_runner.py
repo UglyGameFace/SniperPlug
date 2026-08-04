@@ -92,7 +92,8 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "external_verified_event_fanout=true terminal_identity_quarantine=true "
             "exact_parse_off_event_loop=true bulk_exact_persistence=true "
             "fresh_work_priority=true bulk_fanout=true "
-            "catalog_discovery_only=true atomic_exact_claim=true",
+            "catalog_discovery_only=true bounded_claim_steps=true "
+            "scheduled_rechecks_never_drain=true",
             platform.python_version(),
             sys.platform,
             GLOBAL_DISCOVERY_ROUTES_PER_BATCH,

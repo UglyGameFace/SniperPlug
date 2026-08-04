@@ -8,6 +8,7 @@ import pytest
 
 from sniperplug.storage.libsql_process import (
     LibsqlProcessConnection,
+    _normalize_rowcount,
     _split_sql_script,
 )
 from sniperplug.storage.process_database import (
@@ -68,6 +69,14 @@ async def test_process_connection_rejects_requests_after_close() -> None:
 
     with pytest.raises(RuntimeError, match="closed"):
         await conn.execute("SELECT 1")
+
+
+def test_rowcount_normalization_preserves_zero() -> None:
+    assert _normalize_rowcount(0) == 0
+    assert _normalize_rowcount("0") == 0
+    assert _normalize_rowcount(3) == 3
+    assert _normalize_rowcount(None) == -1
+    assert _normalize_rowcount("not-a-number") == -1
 
 
 def test_large_integer_parameters_are_decimal_text_not_floats() -> None:

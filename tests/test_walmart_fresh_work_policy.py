@@ -56,18 +56,18 @@ def test_fresh_work_pauses_catalog_before_aggressive_drain() -> None:
     assert should_use_drain_mode(drain_health) is True
 
 
-def test_total_backlog_pauses_catalog_before_forcing_drain() -> None:
+def test_total_recheck_backlog_pauses_catalog_but_never_forces_drain() -> None:
     pause_health = WalmartExactQueueHealth(
         due_now=TOTAL_DISCOVERY_EMERGENCY_THRESHOLD,
         initial_due_now=0,
         recheck_due_now=TOTAL_DISCOVERY_EMERGENCY_THRESHOLD,
         verifying=0,
     )
-    drain_health = WalmartExactQueueHealth(
-        due_now=TOTAL_DRAIN_EMERGENCY_THRESHOLD,
+    extreme_health = WalmartExactQueueHealth(
+        due_now=TOTAL_DRAIN_EMERGENCY_THRESHOLD * 2,
         initial_due_now=0,
-        recheck_due_now=TOTAL_DRAIN_EMERGENCY_THRESHOLD,
-        verifying=0,
+        recheck_due_now=TOTAL_DRAIN_EMERGENCY_THRESHOLD * 2,
+        verifying=24,
     )
 
     reason = catalog_backpressure_reason(pause_health)
@@ -75,7 +75,22 @@ def test_total_backlog_pauses_catalog_before_forcing_drain() -> None:
     assert "emergency" in reason
     assert str(TOTAL_DISCOVERY_EMERGENCY_THRESHOLD) in reason
     assert should_use_drain_mode(pause_health) is False
-    assert should_use_drain_mode(drain_health) is True
+    assert should_use_drain_mode(extreme_health) is False
+
+
+def test_active_recheck_leases_are_not_misclassified_as_fresh_pressure() -> None:
+    health = WalmartExactQueueHealth(
+        due_now=1_500,
+        initial_due_now=1,
+        recheck_due_now=1_499,
+        verifying=24,
+    )
+
+    reason = catalog_backpressure_reason(health)
+    assert reason is not None
+    assert "emergency" in reason
+    assert "fresh/retry pressure" not in reason
+    assert should_use_drain_mode(health) is False
 
 
 def test_legacy_unsplit_health_keeps_conservative_behavior() -> None:

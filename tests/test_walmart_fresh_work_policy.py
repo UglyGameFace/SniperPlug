@@ -107,7 +107,9 @@ def test_production_worker_uses_fresh_work_policy() -> None:
     assert "walmart_fresh_work_policy" in RUNNER
     assert "fresh_work_priority=true" in RUNNER
     assert "catalog_discovery_only=true" in RUNNER
-    assert "atomic_exact_claim=true" in RUNNER
+    assert "bounded_claim_steps=true" in RUNNER
+    assert "scheduled_rechecks_never_drain=true" in RUNNER
+    assert "atomic_exact_claim=true" not in RUNNER
     assert "catalog_backpressure_reason(queue_health)" in RUNNER
     assert "should_use_drain_mode(health_before)" in BULK_RUNTIME
     assert "DRAIN_ACTIONABLE_THRESHOLD" not in BULK_RUNTIME

@@ -11,10 +11,24 @@ ROOT = Path(__file__).resolve().parents[1]
 BULK_RUNTIME = (
     ROOT / "sniperplug/services/walmart_exact_queue_bulk_runtime.py"
 ).read_text(encoding="utf-8")
+DRAIN = (
+    ROOT / "sniperplug/services/walmart_exact_queue_drain.py"
+).read_text(encoding="utf-8")
 
 
 class FakeConnection:
-    pass
+    def __init__(self) -> None:
+        self.execute_count = 0
+        self.commit_count = 0
+        self.sql: list[str] = []
+
+    async def execute(self, sql, params=()):
+        self.execute_count += 1
+        self.sql.append(str(sql))
+        return None
+
+    async def commit(self) -> None:
+        self.commit_count += 1
 
 
 class FakeDatabase:
@@ -46,13 +60,24 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
             ensure_offer,
         )
 
-        first = FakeDatabase(FakeConnection())
-        second = FakeDatabase(FakeConnection())
+        first_conn = FakeConnection()
+        second_conn = FakeConnection()
+        first = FakeDatabase(first_conn)
+        second = FakeDatabase(second_conn)
         await runtime_schema.ensure_exact_runtime_schema_once(first)
         await runtime_schema.ensure_exact_runtime_schema_once(first)
         await runtime_schema.ensure_exact_runtime_schema_once(second)
 
         assert calls == {"queue": 2, "offer": 2}
+        assert first_conn.execute_count == 1
+        assert first_conn.commit_count == 1
+        assert second_conn.execute_count == 1
+        assert second_conn.commit_count == 1
+        assert runtime_schema.CLAIM_ORDER_INDEX in first_conn.sql[0]
+        assert "CASE status" in first_conn.sql[0]
+        assert "priority_score DESC" in first_conn.sql[0]
+        assert "last_seen_at DESC" in first_conn.sql[0]
+        assert "WHERE status NOT IN" in first_conn.sql[0]
 
     asyncio.run(run())
 
@@ -96,6 +121,20 @@ def test_terminal_identity_maintenance_is_bounded(monkeypatch) -> None:
         assert calls == {"queue": 1, "offer": 1, "maintenance": 1}
 
     asyncio.run(run())
+
+
+def test_claim_query_order_matches_claim_order_index() -> None:
+    for fragment in (
+        "CASE status",
+        "WHEN 'pending' THEN 0",
+        "WHEN 'verified_markdown' THEN 4",
+        "priority_score DESC",
+        "last_seen_at DESC",
+    ):
+        assert fragment in DRAIN
+        assert fragment in (
+            ROOT / "sniperplug/services/walmart_exact_runtime_schema.py"
+        ).read_text(encoding="utf-8")
 
 
 def test_bulk_runtime_uses_cached_schema_and_bounded_maintenance() -> None:

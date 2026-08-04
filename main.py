@@ -1,7 +1,5 @@
-import asyncio
-
-from sniperplug.bot import run
+from sniperplug.process_runtime import run
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    run()

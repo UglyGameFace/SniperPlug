@@ -305,11 +305,61 @@ class _FatalWorkerError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
+def _libsql_worker_main(
+    pipe: Any,
+    database: str,
+    auth_token: str,
+    connection_options: dict[str, Any] | None = None,
+) -> None:
     connection: Any | None = None
+    options = dict(connection_options or {})
+    sync_url = str(options.get("sync_url") or "").strip()
+    sync_interval = max(1.0, float(options.get("sync_interval") or 10.0))
+    allow_remote_fallback = bool(options.get("allow_remote_fallback"))
+    fallback_database = str(options.get("fallback_database") or sync_url).strip()
+    connection_mode = "direct"
 
     def connect() -> Any:
+        nonlocal connection_mode
         import libsql
+
+        if sync_url:
+            try:
+                replica = libsql.connect(
+                    database=database,
+                    isolation_level="DEFERRED",
+                    sync_url=sync_url,
+                    sync_interval=sync_interval,
+                    offline=False,
+                    auth_token=auth_token,
+                )
+                sync = getattr(replica, "sync", None)
+                if bool(options.get("initial_sync", True)) and callable(sync):
+                    sync()
+                connection_mode = "embedded-replica"
+                return replica
+            except Exception as replica_error:
+                if not allow_remote_fallback or not fallback_database:
+                    raise RuntimeError(
+                        "Embedded replica initialization failed: "
+                        f"{type(replica_error).__name__}"
+                    ) from replica_error
+                try:
+                    fallback = libsql.connect(
+                        database=fallback_database,
+                        isolation_level="DEFERRED",
+                        auth_token=auth_token,
+                    )
+                except Exception as remote_error:
+                    raise RuntimeError(
+                        "Embedded replica and remote Turso fallback both failed: "
+                        f"replica={type(replica_error).__name__}; "
+                        f"remote={type(remote_error).__name__}"
+                    ) from remote_error
+                connection_mode = (
+                    f"remote-fallback:{type(replica_error).__name__}"
+                )
+                return fallback
 
         kwargs: dict[str, Any] = {
             "database": database,
@@ -317,6 +367,7 @@ def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
         }
         if auth_token:
             kwargs["auth_token"] = auth_token
+        connection_mode = "direct"
         return libsql.connect(**kwargs)
 
     def reconnect() -> Any:
@@ -335,6 +386,7 @@ def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
                 "ok": True,
                 "pid": os.getpid(),
                 "parent_pid": os.getppid(),
+                "connection_mode": connection_mode,
             }
         )
     except BaseException as exc:
@@ -346,6 +398,7 @@ def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
                     "pid": os.getpid(),
                     "error_type": type(exc).__name__,
                     "error": str(exc),
+                    "connection_mode": connection_mode,
                 }
             )
         except Exception:
@@ -402,14 +455,18 @@ def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
                 elif operation == "close":
                     _close_sync(connection)
                     connection = None
-                    response = {"id": request_id, "ok": True}
-                    response["elapsed_seconds"] = max(
-                        0.0,
-                        time.monotonic() - started,
-                    )
+                    response = {
+                        "id": request_id,
+                        "ok": True,
+                        "connection_mode": connection_mode,
+                        "elapsed_seconds": max(
+                            0.0,
+                            time.monotonic() - started,
+                        ),
+                    }
                     pipe.send(response)
                     break
-                elif operation == "test_sleep" and database == ":memory:":
+                elif operation == "test_sleep" and database == ":memory:" and not sync_url:
                     time.sleep(max(0.0, min(5.0, float(payload.get("seconds") or 0.0))))
                     response = {"id": request_id, "ok": True}
                 else:
@@ -420,6 +477,7 @@ def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
             except BaseException as exc:
                 response = _error_response(request_id, exc, fatal=False)
 
+            response["connection_mode"] = connection_mode
             response["elapsed_seconds"] = max(0.0, time.monotonic() - started)
             try:
                 pipe.send(response)

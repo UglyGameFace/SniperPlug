@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from sniperplug.services.walmart_global_catalog_autoscan import (
-    GlobalCatalogClaim,
-    catalog_backpressure_reason,
-)
+from sniperplug.services.walmart_global_catalog_autoscan import GlobalCatalogClaim
+from sniperplug.services.walmart_fresh_work_policy import catalog_backpressure_reason
 from sniperplug.services.walmart_exact_queue_health import (
     WalmartExactQueueHealth,
     load_walmart_exact_queue_health,
@@ -152,14 +150,18 @@ def test_backpressure_does_not_subtract_terminal_blocks_twice() -> None:
 
 def test_backpressure_counts_active_verification_without_double_counting_pending() -> None:
     below_limit = WalmartExactQueueHealth(
-        due_now=440,
+        due_now=0,
+        initial_due_now=0,
+        recheck_due_now=0,
         pending=440,
-        verifying=9,
+        verifying=11,
     )
     at_limit = WalmartExactQueueHealth(
-        due_now=440,
+        due_now=1,
+        initial_due_now=1,
+        recheck_due_now=0,
         pending=440,
-        verifying=10,
+        verifying=11,
     )
 
     assert catalog_backpressure_reason(below_limit) is None

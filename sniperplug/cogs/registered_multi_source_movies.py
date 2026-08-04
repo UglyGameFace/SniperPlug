@@ -18,6 +18,7 @@ from sniperplug.services.movie_ticket_snowflake_store import SnowflakeSafeMovieT
 log = logging.getLogger("sniperplug.movie_tickets.multi_source")
 SOURCE_BACKOFF_SECONDS = (120, 300, 900, 1800)
 SOURCE_ACCESS_BLOCK_BACKOFF_SECONDS = 6 * 60 * 60
+TOTAL_FAILURE_LOG_INTERVAL_SECONDS = 15 * 60
 
 
 class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
@@ -33,6 +34,7 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
         self._source_failure_counts: dict[str, int] = {}
         self._source_retry_after: dict[str, float] = {}
         self._source_access_blocked: set[str] = set()
+        self._last_total_failure_log_monotonic = 0.0
 
     async def _scan_official_source(self, *, target_guild_id: int | None = None) -> MovieScanOutcome:
         outcomes: list[MovieScanOutcome] = []
@@ -87,10 +89,10 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
                 source_state=outcomes[0].source_state,
             )
 
+        source_state = await self.store.get_source_state(ATOM_SOURCE_KEY)
         if attempted == 0:
             # Every source is cooling down. Preserve cache and let the poll loop
             # continue quietly instead of manufacturing repeated failures.
-            source_state = await self.store.get_source_state(ATOM_SOURCE_KEY)
             return MovieScanOutcome(
                 modified=False,
                 active_count=len(all_active),
@@ -98,7 +100,30 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
                 source_state=source_state,
             )
 
-        raise RuntimeError("All official movie-ticket sources failed: " + " | ".join(errors))
+        failure_summary = " | ".join(errors)
+        if target_guild_id is None:
+            # Automatic monitoring is a cache-preserving condition watch. A total
+            # upstream outage is degraded health, not an application traceback.
+            now = time.monotonic()
+            if (
+                now - self._last_total_failure_log_monotonic
+                >= TOTAL_FAILURE_LOG_INTERVAL_SECONDS
+            ):
+                log.warning(
+                    "All official movie-ticket sources are temporarily unavailable; "
+                    "preserved verified cache and entered backoff detail=%s",
+                    failure_summary,
+                )
+                self._last_total_failure_log_monotonic = now
+            return MovieScanOutcome(
+                modified=False,
+                active_count=len(all_active),
+                delivered_count=0,
+                source_state=source_state,
+            )
+
+        # Explicit guild refreshes still surface the complete upstream reason.
+        raise RuntimeError("All official movie-ticket sources failed: " + failure_summary)
 
     def _source_backoff_remaining(self, source_key: str) -> int:
         retry_after = float(self._source_retry_after.get(source_key, 0.0) or 0.0)

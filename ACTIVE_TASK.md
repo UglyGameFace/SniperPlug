@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-Active — the Walmart queue-drain patch is code-complete and validated; live Discloud deployment and runtime proof remain.
+Active — Walmart alerts and queue draining are working live, but the existing Discloud app is still running Python 3.14.6 instead of the repository-pinned Python 3.11 runtime, and native Turso claim calls continue to stall Discord's event loop.
 
 ## Scope
 Restore reliable Walmart background alerts without weakening exact item, seller, offer, current-price, original-price, duplicate, category, or per-server threshold proof.
@@ -9,16 +9,20 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 ## Production findings
 - The 420 Lobby is correctly enrolled in live fanout with exact guild ID `1514374173517152418`.
 - PR #202 fixed the original backpressure arithmetic and is deployed.
-- Production now logs `Global Walmart catalog discovery paused by exact-detail backpressure active` above the 450-row limit.
-- Catalog route advancement stopped as intended, so discovery no longer floods the queue.
-- The queue remained near 2,800 due rows while successful six-item batches ran.
-- The due total mixed first-time/retry work with scheduled verified-product rechecks.
-- Global verification classifies products at the 10% discovery floor; every `verified_markdown` was scheduled again after one hour, including 10–49% sales that cannot meet the server's 50% public threshold.
-- The old row claim path used one ordered SELECT plus an UPDATE and verification SELECT for every claimed row, multiplying Turso operations.
-- Production still reported 2–15 second event-loop stalls during exact queue work, although search and exact payload parsing were already off-loop.
-- The unrelated Atom/Fandango/Gofobo traceback was classified as a safely handled movie-ticket source outage.
+- Production logs `Global Walmart catalog discovery paused by exact-detail backpressure active` above the 450-row limit.
+- Catalog route advancement is paused, so discovery no longer floods the queue.
+- PR #203 is deployed and drain mode is active at 24 claims / concurrency 4.
+- The due queue fell from 2,683 to 2,503 during the sampled live run.
+- `new/retry due` is normally zero; the remaining queue is scheduled rechecks.
+- Exact-deal fanout delivered a guild post and multiple DMs with zero public/DM errors.
+- Claim, fetch, and store timings are now visible. Walmart fetches take roughly 10–15 seconds off-loop; store work is usually 1–4 seconds.
+- The Turso claim stage is highly variable and reached 29.45 seconds during an event-loop-stall cluster.
+- Event-loop lag still reaches roughly 13–17 seconds during exact queue work.
+- The only captured traceback is the unrelated Atom/Fandango/Gofobo movie-ticket watcher failing safely.
+- Runtime identity still reports Python 3.14.6 even though root `discloud.config` pins `VERSION=3.11`.
+- Discloud commit updated application code but did not rebuild the existing application's language runtime.
 
-## Changes
+## Completed changes
 - Added bounded drain mode: 24 claims with concurrency 4 only while actionable due is at least 450; normal mode remains 6/2.
 - Replaced per-row queue leasing with one ordered SELECT, one guarded batch UPDATE, and one verification SELECT.
 - Preserved pending/retry priority ahead of scheduled rechecks.
@@ -30,7 +34,7 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 - Added claim, fetch, and store timing to each queue batch log.
 - Added production-shaped regression coverage for batch leasing, terminal exclusion, health splitting, drain mode, exact proof, and tiered rechecks.
 
-## Validation
+## Validation completed
 - Python compilation passed.
 - Import smoke check passed.
 - Python Check passed.
@@ -40,21 +44,18 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 - Recheck-cadence regressions cover 50%+, 30–49%, 10–29%, no-reference, under-threshold, and unavailable products.
 - Health regression separates first-time/retry due work from scheduled rechecks.
 - Terminal identity exclusion and exact-candidate off-loop tests remain passing.
-- Changed-file inspection found no temporary, backup, or duplicate implementation files.
-- Branch is current with `main`, mergeable, and has no unresolved review threads.
+- Live queue drain, backpressure, guild fanout, and DM fanout are confirmed.
 
-## Live definition of done
-- Deploy the merged update to Discloud app `1779293887444`.
-- Backpressure remains active while total due exceeds 450.
-- Queue logs show `mode drain` and `batch/concurrency 24/4`.
-- `new/retry due` reaches zero or remains near zero while scheduled rechecks trend downward.
-- Catalog discovery resumes only after pressure falls below the safe limit.
-- Exact-deal fanout continues during the drain.
-- No sustained Discord websocket-behind warning occurs.
-- Batch timing identifies and removes any remaining multi-second blocking stage.
+## Remaining live definition of done
+- Recreate or otherwise rebuild the Discloud application under Python 3.11 without losing environment secrets or the rollback path.
+- Runtime identity reports Python 3.11.x.
+- Drain mode and exact-deal fanout continue under the rebuilt runtime.
+- Claim timings no longer produce sustained event-loop stalls or Discord websocket-behind warnings.
+- Queue continues trending downward and catalog discovery resumes only below the safe pressure limit.
 
 ## Blockers
-Live validation cannot be completed until the validated patch is merged and redeployed.
+- Discloud's existing-app commit path updates code but has left the application on Python 3.14.6.
+- A safe runtime migration requires preserving the current app as rollback and confirming the local or backed-up environment configuration before uploading a replacement app.
 
 ## Backlog
 - Improve the separate movie-ticket source availability behavior after the Walmart alert task is fully closed.

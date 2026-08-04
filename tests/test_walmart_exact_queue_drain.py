@@ -95,7 +95,7 @@ def exact_payload(item_id: str, *, current: float = 20.0, reference: float = 100
     }
 
 
-def test_batch_claim_uses_three_remote_operations_and_excludes_terminal_rows() -> None:
+def test_batch_claim_uses_one_atomic_remote_statement_and_excludes_terminal_rows() -> None:
     async def run() -> None:
         inner = await aiosqlite.connect(":memory:")
         await ensure_walmart_exact_verification_queue(FakeDatabase(inner))
@@ -119,9 +119,9 @@ def test_batch_claim_uses_three_remote_operations_and_excludes_terminal_rows() -
         conn = CountingConnection(inner)
         claims = await claim_due_rows_batched(conn, now=now, limit=10)
 
-        assert [claim.item_id for claim in claims] == ["100001", "100002"]
+        assert {claim.item_id for claim in claims} == {"100001", "100002"}
         assert len({claim.lease_token for claim in claims}) == 1
-        assert conn.execute_count == 3
+        assert conn.execute_count == 1
         assert conn.commit_count == 1
 
         cursor = await inner.execute(
@@ -136,11 +136,11 @@ def test_batch_claim_uses_three_remote_operations_and_excludes_terminal_rows() -
     asyncio.run(run())
 
 
-def test_recheck_cadence_prioritizes_public_alert_candidates() -> None:
-    assert tiered_recheck_delay("verified_markdown", 69) == timedelta(hours=1)
-    assert tiered_recheck_delay("verified_markdown", 40) == timedelta(hours=6)
-    assert tiered_recheck_delay("verified_markdown", 20) == timedelta(hours=12)
-    assert tiered_recheck_delay("verified_no_reference", 0) == timedelta(hours=12)
+def test_recheck_cadence_prioritizes_public_alert_candidates_sustainably() -> None:
+    assert tiered_recheck_delay("verified_markdown", 69) == timedelta(hours=4)
+    assert tiered_recheck_delay("verified_markdown", 40) == timedelta(hours=12)
+    assert tiered_recheck_delay("verified_markdown", 20) == timedelta(hours=24)
+    assert tiered_recheck_delay("verified_no_reference", 0) == timedelta(hours=24)
     assert tiered_recheck_delay("verified_under_threshold", 0) == timedelta(hours=24)
     assert tiered_recheck_delay("not_buyable", 0) == timedelta(hours=24)
 

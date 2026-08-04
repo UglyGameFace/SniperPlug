@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import multiprocessing
-import os
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +22,9 @@ class EmbeddedReplicaLibsqlProcessConnection(LibsqlProcessConnection):
 
     The native Python driver remains outside Discord's gateway process. Reads are
     served from the local replica while libSQL forwards writes to the Turso
-    primary and synchronizes remote changes on a bounded interval. If the local
-    replica cannot initialize, the child falls back to the existing remote-only
-    connection and records that degraded mode explicitly instead of hiding it.
+    primary and synchronizes remote changes on a bounded interval. The existing
+    transaction-safe worker accepts explicit connection options; no library
+    function is replaced or patched at runtime.
     """
 
     def __init__(
@@ -51,7 +49,6 @@ class EmbeddedReplicaLibsqlProcessConnection(LibsqlProcessConnection):
         self.sync_interval_seconds = max(1.0, float(sync_interval_seconds))
         self.replica_mode = "unknown"
         self.worker_generation = 0
-        self._mode_marker_path = f"{self.database}.runtime-mode"
 
     @classmethod
     async def open(
@@ -90,15 +87,20 @@ class EmbeddedReplicaLibsqlProcessConnection(LibsqlProcessConnection):
         replica = Path(self.database)
         replica.parent.mkdir(parents=True, exist_ok=True)
         parent_pipe, child_pipe = self._context.Pipe(duplex=True)
+        connection_options = {
+            "sync_url": self.sync_url,
+            "sync_interval": self.sync_interval_seconds,
+            "initial_sync": True,
+            "allow_remote_fallback": True,
+            "fallback_database": self.sync_url,
+        }
         process = self._context.Process(
-            target=_embedded_replica_worker_main,
+            target=_libsql_worker_main,
             args=(
                 child_pipe,
                 self.database,
-                self.sync_url,
                 self.auth_token,
-                self.sync_interval_seconds,
-                self._mode_marker_path,
+                connection_options,
             ),
             name="sniperplug-libsql-replica-worker",
             daemon=True,
@@ -112,7 +114,7 @@ class EmbeddedReplicaLibsqlProcessConnection(LibsqlProcessConnection):
         previous_pid = self.identity.pid if self.identity else None
         super()._set_identity(ready)
         self.worker_generation += 1
-        self.replica_mode = _read_mode_marker(self._mode_marker_path)
+        self.replica_mode = _connection_mode(ready)
         fields = (
             self.worker_generation,
             self.identity.pid if self.identity else "unknown",
@@ -133,74 +135,21 @@ class EmbeddedReplicaLibsqlProcessConnection(LibsqlProcessConnection):
                 *fields,
             )
 
-
-def _embedded_replica_worker_main(
-    pipe: Any,
-    replica_path: str,
-    sync_url: str,
-    auth_token: str,
-    sync_interval_seconds: float,
-    mode_marker_path: str,
-) -> None:
-    """Inject embedded-replica connection settings into the proven worker loop."""
-
-    import libsql
-
-    original_connect = libsql.connect
-
-    def replica_connect(*_args: Any, **kwargs: Any) -> Any:
-        isolation_level = kwargs.get("isolation_level", "DEFERRED")
-        try:
-            connection = original_connect(
-                database=replica_path,
-                isolation_level=isolation_level,
-                sync_url=sync_url,
-                sync_interval=max(1.0, float(sync_interval_seconds)),
-                offline=False,
-                auth_token=auth_token,
+    async def _request(self, operation: str, **payload: Any) -> dict[str, Any]:
+        response = await super()._request(operation, **payload)
+        mode = _connection_mode(response)
+        if mode != "unknown" and mode != self.replica_mode:
+            previous = self.replica_mode
+            self.replica_mode = mode
+            log.warning(
+                "Turso database connection mode changed worker_pid=%s "
+                "previous_mode=%s replica_mode=%s",
+                self.identity.pid if self.identity else "unknown",
+                previous,
+                mode,
             )
-            sync = getattr(connection, "sync", None)
-            if callable(sync):
-                sync()
-            _write_mode_marker(mode_marker_path, "embedded-replica")
-            return connection
-        except BaseException as replica_error:
-            try:
-                connection = original_connect(
-                    database=sync_url,
-                    isolation_level=isolation_level,
-                    auth_token=auth_token,
-                )
-            except BaseException as remote_error:
-                raise RuntimeError(
-                    "Embedded replica and remote Turso fallback both failed: "
-                    f"replica={type(replica_error).__name__}; "
-                    f"remote={type(remote_error).__name__}"
-                ) from remote_error
-            _write_mode_marker(
-                mode_marker_path,
-                f"remote-fallback:{type(replica_error).__name__}",
-            )
-            return connection
-
-    libsql.connect = replica_connect
-    try:
-        _libsql_worker_main(pipe, replica_path, auth_token)
-    finally:
-        libsql.connect = original_connect
+        return response
 
 
-def _write_mode_marker(path: str, mode: str) -> None:
-    try:
-        marker = Path(path)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(str(mode or "unknown"), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _read_mode_marker(path: str) -> str:
-    try:
-        return Path(path).read_text(encoding="utf-8").strip() or "unknown"
-    except Exception:
-        return "unknown"
+def _connection_mode(response: dict[str, Any]) -> str:
+    return str(response.get("connection_mode") or "unknown").strip() or "unknown"

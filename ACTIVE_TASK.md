@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-Active — the Walmart alert recovery code is deployed and the production bot has been cut over successfully to a fresh Python 3.11.15 Discloud application. Final live validation of queue drain rate, Turso claim timing, Discord event-loop lag, and fanout continuity remains.
+Active — the production bot is healthy on Python 3.11.15, but live proof showed the exact queue still caused Discord heartbeat stalls. PR #204 is merged with bounded bulk Turso persistence and now needs deployment plus post-deploy lag validation.
 
 ## Scope
 Restore reliable Walmart background alerts without weakening exact item, seller, offer, current-price, original-price, duplicate, category, or per-server threshold proof.
@@ -9,24 +9,19 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 ## Production findings
 - The 420 Lobby is correctly enrolled in live fanout with exact guild ID `1514374173517152418`.
 - PR #202 fixed the original backpressure arithmetic and is deployed.
-- Production logs `Global Walmart catalog discovery paused by exact-detail backpressure active` above the 450-row limit.
-- Catalog route advancement is paused, so discovery no longer floods the queue.
-- PR #203 is deployed and drain mode is active at 24 claims / concurrency 4.
-- The due queue fell from 2,683 to 2,503 during the sampled Python 3.14 run.
-- `new/retry due` was normally zero; the remaining queue was scheduled rechecks.
-- Exact-deal fanout delivered a guild post and multiple DMs with zero public/DM errors.
-- Claim, fetch, and store timings are visible. Walmart fetches took roughly 10–15 seconds off-loop; store work was usually 1–4 seconds.
-- On the old Python 3.14.6 runtime, the Turso claim stage was highly variable and reached 29.45 seconds during an event-loop-stall cluster.
-- Event-loop lag on the old runtime reached roughly 13–17 seconds during exact queue work.
-- The only captured traceback was the unrelated Atom/Fandango/Gofobo movie-ticket watcher failing safely.
-- Existing-app commits updated application code but did not rebuild the old application's Python runtime.
-- A fresh replacement application was created and first failed because a normal CLI upload omitted the hidden root `.env`.
-- The original application's Discloud backup contained the production `.env`; it was recovered locally without exposing values.
-- A clean staging directory was built from tracked files plus an explicit root `.env`.
-- The Discloud CLI preflight archive was verified to contain root `main.py`, `discloud.config`, `requirements.txt`, and `.env`, with the archived `.env` matching the recovered production file.
-- The staged replacement commit succeeded using explicit globs `"**"` and `".env"`.
+- PR #203 added bounded 24/4 drain mode, batch queue leasing, tiered rechecks, and stage timings.
 - Replacement app `1785806676351` is live on Python 3.11.15, connected to Turso, logged into Discord, and reports the correct eligible fanout guilds.
 - Old app `1779293887444` remains stopped as rollback.
+- On Python 3.11, eight sampled drain cycles reduced actionable due from 1,338 to 1,029, a drop of 309 rows.
+- Every sampled cycle remained in drain mode at 24 claims / concurrency 4.
+- `new/retry due` remained zero; the remaining actionable work was scheduled rechecks.
+- Catalog discovery remained correctly paused above the 450-row pressure limit.
+- No queue/fanout batch failures were captured in the sample.
+- Python 3.11 did not remove the event-loop problem: 40 lag warnings were captured with a maximum of 30.61 seconds.
+- Discord logged `heartbeat blocked for more than 10 seconds` during exact queue work.
+- The blocked-loop traceback showed Discord attempting to write its heartbeat after the process had already been starved; it confirmed the symptom rather than identifying a Python-level queue frame.
+- The exact worker's persistence stage previously issued one queue update plus multiple offer-memory SELECT/INSERT/UPDATE operations per candidate, exceeding roughly 70 serialized Turso/libsql calls in a 24-item cycle.
+- One sampled pre-fix store phase reached 22.39 seconds; claim phases reached 19.29 seconds on Python 3.11.
 
 ## Completed changes
 - Added bounded drain mode: 24 claims with concurrency 4 only while actionable due is at least 450; normal mode remains 6/2.
@@ -38,37 +33,38 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 - Changed no-reference rechecks to twelve hours and under-threshold/unavailable rechecks to twenty-four hours.
 - Split health output into `new/retry due` and `scheduled rechecks due` while preserving total actionable backpressure.
 - Added claim, fetch, and store timing to each queue batch log.
-- Added production-shaped regression coverage for batch leasing, terminal exclusion, health splitting, drain mode, exact proof, and tiered rechecks.
 - Rebuilt production under the repository-pinned Python 3.11 runtime while preserving a stopped rollback application.
+- PR #204 added a separate bulk persistence runtime used only by the global production worker.
+- PR #204 consolidates all claimed queue outcomes into one guarded queue UPDATE.
+- PR #204 consolidates offer-memory persistence into one SELECT and one guarded UPSERT.
+- Exact item, seller, selected offer, variant, condition, fulfillment, trusted-reference, retry, terminal quarantine, and tiered recheck rules remain unchanged.
+- The prior runtime remains in the repository for rollback and comparison.
 
 ## Validation completed
 - Python compilation passed.
 - Import smoke check passed.
 - Python Check passed.
-- Full repository suite passed: 962 tests.
-- Batched claim regression proves three queue operations regardless of rows claimed.
-- Drain-mode regression proves bounded 24/4 escalation behavior.
-- Recheck-cadence regressions cover 50%+, 30–49%, 10–29%, no-reference, under-threshold, and unavailable products.
-- Health regression separates first-time/retry due work from scheduled rechecks.
-- Terminal identity exclusion and exact-candidate off-loop tests remain passing.
-- Live queue drain, backpressure, guild fanout, and DM fanout were confirmed on the old runtime.
-- Replacement runtime identity is confirmed as Python 3.11.15.
-- Replacement Turso connection is confirmed.
-- Replacement Discord login is confirmed.
-- Replacement fanout enrollment includes guild `1514374173517152418`.
-- Final app state is replacement online and rollback offline.
+- Full repository suite passed: 965 tests, 1 unrelated discord.py audioop deprecation warning.
+- A 24-item bulk persistence regression proves exactly three SQL statements before commit: one queue UPDATE, one offer-memory SELECT, and one offer-memory UPSERT.
+- Failure persistence regression proves retry updates preserve prior exact snapshot fields.
+- Offer-memory regression proves learning, stable-reference confirmation, and `new_low` behavior remain intact.
+- Existing batch leasing, terminal exclusion, health splitting, drain mode, exact proof, and tiered recheck tests remain passing.
+- PR #204 merged as commit `623c83c4d3811b2c1548e718871efd4f712d9cfc`.
 
 ## Remaining live definition of done
-- Observe multiple exact-verification cycles on Python 3.11 showing `mode drain` and `batch/concurrency 24/4` while due exceeds 450.
-- Confirm `new/retry due` remains near zero and scheduled rechecks continue trending downward.
-- Confirm claim timings no longer produce sustained event-loop stalls or Discord websocket-behind warnings.
+- Deploy merged commit `623c83c4d3811b2c1548e718871efd4f712d9cfc` to replacement app `1785806676351` without starting rollback app `1779293887444`.
+- Confirm startup reports Python 3.11.15 and `bulk_exact_persistence=true`.
+- Observe multiple 24/4 drain cycles while actionable due remains above 450.
+- Confirm queue and offer-memory persistence continue with no batch failures.
+- Compare claim/store timings and event-loop warnings against the pre-fix Python 3.11 maximum of 30.61 seconds.
+- Confirm no repeated Discord heartbeat-blocked warnings under exact queue work.
 - Confirm exact-deal fanout continues with zero public/DM errors.
 - Confirm catalog discovery remains paused above 450 and resumes only below the safe pressure limit.
-- Keep the old app stopped until the Python 3.11 runtime has enough production evidence for rollback retirement.
+- Keep the old app stopped until enough post-fix production evidence exists for rollback retirement.
 
 ## Blockers
-- No deployment blocker remains.
-- Final closure depends on post-cutover production evidence from the Python 3.11 workload.
+- No code or CI blocker remains.
+- Final closure depends on deploying PR #204 and collecting post-deploy production evidence.
 
 ## Backlog
 - Improve the separate movie-ticket source availability behavior after the Walmart alert task is fully closed.

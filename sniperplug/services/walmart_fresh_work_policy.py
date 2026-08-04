@@ -122,5 +122,5 @@ def fresh_work_policy_summary(health: Any) -> str:
         "fresh-work policy: "
         f"new/retry={max(0, int(getattr(health, 'initial_due_now', 0) or 0))} "
         f"rechecks={max(0, int(getattr(health, 'recheck_due_now', 0) or 0))} "
-        f"verifying={max(0, int(getattr(health, 'verifying', 0) or 0)}"
+        f"verifying={max(0, int(getattr(health, 'verifying', 0) or 0))}"
     )

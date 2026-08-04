@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from sniperplug.services.walmart_global_catalog_autoscan import (
     GlobalCatalogClaim,
     catalog_backpressure_reason,
 )
-from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHealth
+from sniperplug.services.walmart_exact_queue_health import (
+    WalmartExactQueueHealth,
+    load_walmart_exact_queue_health,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,7 +116,7 @@ def test_backpressure_ignores_terminal_identity_blocks() -> None:
     )
     actionable_backlog = WalmartExactQueueHealth(
         total=1000,
-        due_now=100,
+        due_now=440,
         identity_blocked=0,
         pending=400,
         verifying=10,
@@ -120,6 +124,89 @@ def test_backpressure_ignores_terminal_identity_blocks() -> None:
 
     assert catalog_backpressure_reason(only_identity_blocks) is None
     assert catalog_backpressure_reason(actionable_backlog) is not None
+
+
+def test_backpressure_does_not_subtract_terminal_blocks_twice() -> None:
+    production_shape = WalmartExactQueueHealth(
+        total=11372,
+        due_now=2818,
+        delayed_retries=69,
+        identity_blocked=7591,
+        verified=2632,
+        verifying=0,
+        pending=0,
+        unavailable=1054,
+        stale=0,
+    )
+
+    reason = catalog_backpressure_reason(production_shape)
+
+    assert reason is not None
+    assert "2818/450" in reason
+    assert "terminal identity blocks excluded **7591**" in reason
+
+
+def test_backpressure_counts_active_verification_without_double_counting_pending() -> None:
+    below_limit = WalmartExactQueueHealth(
+        due_now=440,
+        pending=440,
+        verifying=9,
+    )
+    at_limit = WalmartExactQueueHealth(
+        due_now=440,
+        pending=440,
+        verifying=10,
+    )
+
+    assert catalog_backpressure_reason(below_limit) is None
+    assert catalog_backpressure_reason(at_limit) is not None
+
+
+class _QueueHealthCursor:
+    async def fetchone(self):
+        return {
+            "total": 10,
+            "due_now": 3,
+            "delayed_retries": 1,
+            "identity_blocked": 2,
+            "verified": 2,
+            "verifying": 1,
+            "pending": 2,
+            "unavailable": 1,
+            "stale": 0,
+        }
+
+
+class _QueueHealthConnection:
+    def __init__(self) -> None:
+        self.sql = ""
+        self.params: tuple[str, ...] = ()
+
+    async def execute(self, sql, params):
+        self.sql = str(sql)
+        self.params = tuple(params)
+        return _QueueHealthCursor()
+
+
+class _QueueHealthDatabase:
+    def __init__(self, conn: _QueueHealthConnection) -> None:
+        self.conn = conn
+
+    def require_conn(self):
+        return self.conn
+
+
+def test_health_counts_only_actively_leased_verifying_rows() -> None:
+    conn = _QueueHealthConnection()
+
+    health = asyncio.run(load_walmart_exact_queue_health(_QueueHealthDatabase(conn)))
+
+    assert health.verifying == 1
+    assert "status = 'verifying'" in conn.sql
+    assert "AND lease_until IS NOT NULL" in conn.sql
+    assert "AND lease_until >= ?" in conn.sql
+    assert len(conn.params) == 5
+    assert conn.params[1] == conn.params[2] == conn.params[3] == conn.params[4]
 
 
 def test_global_state_is_durable_and_not_wall_clock_rotation() -> None:

@@ -21,8 +21,11 @@ from sniperplug.services.deal_threshold_settings import (
     normalize_starting_deal_percent,
 )
 from sniperplug.services.low_price_scout import scout_low_price_leads
+from sniperplug.services.walmart_autoscan_offloop import (
+    enrich_walmart_exact_prices_off_event_loop,
+    run_walmart_autoscan_scan_off_event_loop,
+)
 from sniperplug.services.walmart_exact_price_enrichment import (
-    enrich_walmart_exact_prices,
     exact_detail_verified_candidates,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
@@ -125,6 +128,8 @@ async def collect_verified_discount_cards_with_observed_memory(
     one globally deduplicated exact-detail queue. The first 24 are verified in
     the foreground; overflow candidates are verified by the background worker
     and can re-enter later scans through a fresh compact exact-detail snapshot.
+    Walmart search parsing and foreground exact-detail proof merging run on
+    dedicated worker event loops so Discord gateway heartbeats remain responsive.
     """
 
     preset = preset or hunt.ALL_VERIFIED_PRESET
@@ -163,7 +168,7 @@ async def collect_verified_discount_cards_with_observed_memory(
         async with semaphore:
             searches_attempted += 1
             await asyncio.sleep(0)
-            return query, await deal_scanner.run_walmart_scan(
+            return query, await run_walmart_autoscan_scan_off_event_loop(
                 query,
                 page,
                 hunt.RESULTS_PER_PAGE,
@@ -254,7 +259,7 @@ async def collect_verified_discount_cards_with_observed_memory(
                 f"{type(error).__name__}"
             )
 
-    exact_prices = await enrich_walmart_exact_prices(
+    exact_prices = await enrich_walmart_exact_prices_off_event_loop(
         deduped_candidates,
         provider=provider_registry.get("walmart"),
         limit=AUTOSCAN_EXACT_DETAIL_LIMIT,

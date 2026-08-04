@@ -38,6 +38,9 @@ from sniperplug.services.walmart_exact_queue_health import (
 from sniperplug.services.walmart_exact_queue_bulk_runtime import (
     process_actionable_walmart_exact_queue_batch,
 )
+from sniperplug.services.walmart_request_coordinator import (
+    walmart_request_coordinator,
+)
 
 
 GLOBAL_RECONCILIATION_MINUTES = 30
@@ -51,25 +54,29 @@ GLOBAL_FANOUT_EVENT_LIMIT = 20
 GLOBAL_EXACT_QUEUE_BATCH_SIZE = 8
 GLOBAL_EXACT_QUEUE_CONCURRENCY = 2
 GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS = 20
+MIN_WORKER_YIELD_SECONDS = 1.0
 
 
 class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
-    """Global retailer discovery plus per-destination exact-deal fanout.
+    """Global discovery plus exact-priority per-destination deal fanout.
 
-    Walmart catalog work only discovers and queues item IDs. One dedicated exact
-    worker owns item, offer, seller, variant, condition, fulfillment, current
-    price, trusted reference-price verification, and durable fanout. This keeps
-    catalog search from starving the exact queue or Discord gateway.
+    Catalog work discovers and queues item IDs. The exact worker owns item,
+    selected offer, seller, variant, fulfillment, current-price, and trusted
+    reference-price verification. Individual Walmart HTTP calls are coordinated
+    by priority; no catalog/manual job may own the provider for its whole run.
     """
 
     def __init__(self, bot):
         super().__init__(bot)
         self._walmart_catalog_discovery_task: asyncio.Task | None = None
         self._last_backpressure_log_monotonic = 0.0
+        self._catalog_active = False
+        self._exact_active = False
+        self._reconciliation_active = False
 
     async def cog_load(self) -> None:
-        # Do not start the inherited per-guild scheduled route loop. Its manual
-        # command methods and exact safety gates remain inherited and active.
+        # The inherited per-guild scheduled route loop is intentionally not
+        # started. Its manual command methods and exact safety gates remain.
         self.global_reconciliation_loop.start()
         self._event_loop_watchdog_task = asyncio.create_task(
             self._event_loop_watchdog(),
@@ -93,7 +100,9 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "exact_parse_off_event_loop=true bulk_exact_persistence=true "
             "fresh_work_priority=true bulk_fanout=true "
             "catalog_discovery_only=true bounded_claim_steps=true "
-            "scheduled_rechecks_never_drain=true",
+            "scheduled_rechecks_never_drain=true "
+            "request_level_provider_priority=true fixed_rate_exact_worker=true "
+            "catalog_cannot_own_exact_worker=true",
             platform.python_version(),
             sys.platform,
             GLOBAL_DISCOVERY_ROUTES_PER_BATCH,
@@ -120,6 +129,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
     @tasks.loop(minutes=GLOBAL_RECONCILIATION_MINUTES)
     async def global_reconciliation_loop(self) -> None:
         await self.bot.wait_until_ready()
+        self._reconciliation_active = True
 
         try:
             self._runtime_phase = "setup_reconciliation"
@@ -170,7 +180,12 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                 self.bot,
                 event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
             )
-            if fanout.new_events or fanout.events_processed or fanout.public_posts or fanout.dm_sent:
+            if (
+                fanout.new_events
+                or fanout.events_processed
+                or fanout.public_posts
+                or fanout.dm_sent
+            ):
                 legacy.log.info(fanout.summary_line())
             await self._fanout_external_verified_events()
         except asyncio.CancelledError:
@@ -179,6 +194,8 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             legacy.log.exception(
                 "Global exact-deal reconciliation/fanout failed safely"
             )
+        finally:
+            self._reconciliation_active = False
 
     @global_reconciliation_loop.before_loop
     async def before_global_reconciliation_loop(self) -> None:
@@ -189,6 +206,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
         await asyncio.sleep(GLOBAL_DISCOVERY_INITIAL_DELAY_SECONDS)
         try:
             while True:
+                cycle_started = time.monotonic()
                 if self._any_foreground_walmart_scan_busy():
                     await asyncio.sleep(GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS)
                     continue
@@ -228,6 +246,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         await asyncio.sleep(GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS)
                         continue
 
+                    self._catalog_active = True
                     self._runtime_phase = (
                         "global_catalog_discovery:"
                         f"routes={claim.start_index + 1}-"
@@ -246,13 +265,12 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
                     )
                     started = time.monotonic()
-                    async with resilient._WALMART_PROVIDER_OPERATION_LOCK:
-                        result = await discover_walmart_catalog_candidates(
-                            requested_by="global_catalog_autoscan",
-                            preset=preset,
-                            db=self.bot.db,
-                            min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
-                        )
+                    result = await discover_walmart_catalog_candidates(
+                        requested_by="global_catalog_autoscan",
+                        preset=preset,
+                        db=self.bot.db,
+                        min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
+                    )
 
                     completed = await complete_catalog_claim(self.bot.db, claim)
                     if not completed:
@@ -275,14 +293,16 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     )
                     self._log_global_result_notes(result.warnings)
 
-                    # Fanout is cheap when no exact worker event is pending and
-                    # allows a completed exact event to post without waiting for
-                    # the next queue cycle.
                     fanout = await fanout_recent_exact_walmart_deals(
                         self.bot,
                         event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
                     )
-                    if fanout.new_events or fanout.events_processed or fanout.public_posts or fanout.dm_sent:
+                    if (
+                        fanout.new_events
+                        or fanout.events_processed
+                        or fanout.public_posts
+                        or fanout.dm_sent
+                    ):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()
                 except asyncio.CancelledError:
@@ -303,9 +323,13 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         "Global Walmart catalog batch failed safely; durable cursor was not advanced"
                     )
                 finally:
+                    self._catalog_active = False
                     self._runtime_phase = "idle"
 
-                await asyncio.sleep(GLOBAL_DISCOVERY_INTERVAL_SECONDS)
+                await _sleep_fixed_rate(
+                    cycle_started,
+                    GLOBAL_DISCOVERY_INTERVAL_SECONDS,
+                )
         except asyncio.CancelledError:
             return
 
@@ -314,20 +338,17 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
         await asyncio.sleep(resilient.WALMART_QUEUE_INITIAL_DELAY_SECONDS)
         try:
             while True:
-                if self._any_foreground_walmart_scan_busy():
-                    await asyncio.sleep(resilient.WALMART_QUEUE_BUSY_RETRY_SECONDS)
-                    continue
-
+                cycle_started = time.monotonic()
                 try:
+                    self._exact_active = True
                     self._runtime_phase = "exact_verification_queue"
-                    async with resilient._WALMART_PROVIDER_OPERATION_LOCK:
-                        result = await process_actionable_walmart_exact_queue_batch(
-                            self.bot.db,
-                            provider=provider_registry.get("walmart"),
-                            limit=GLOBAL_EXACT_QUEUE_BATCH_SIZE,
-                            concurrency=GLOBAL_EXACT_QUEUE_CONCURRENCY,
-                            min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
-                        )
+                    result = await process_actionable_walmart_exact_queue_batch(
+                        self.bot.db,
+                        provider=provider_registry.get("walmart"),
+                        limit=GLOBAL_EXACT_QUEUE_BATCH_SIZE,
+                        concurrency=GLOBAL_EXACT_QUEUE_CONCURRENCY,
+                        min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
+                    )
                     now = time.monotonic()
                     health_due = (
                         now - self._last_queue_health_log_monotonic
@@ -351,7 +372,12 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         self.bot,
                         event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
                     )
-                    if fanout.new_events or fanout.events_processed or fanout.public_posts or fanout.dm_sent:
+                    if (
+                        fanout.new_events
+                        or fanout.events_processed
+                        or fanout.public_posts
+                        or fanout.dm_sent
+                    ):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()
                 except asyncio.CancelledError:
@@ -361,9 +387,42 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         "Walmart exact-detail queue/fanout batch failed safely; queued rows remain retryable"
                     )
                 finally:
+                    self._exact_active = False
                     self._runtime_phase = "idle"
 
-                await asyncio.sleep(GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS)
+                await _sleep_fixed_rate(
+                    cycle_started,
+                    GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS,
+                )
+        except asyncio.CancelledError:
+            return
+
+    async def _event_loop_watchdog(self) -> None:
+        expected = time.monotonic() + resilient.EVENT_LOOP_WATCHDOG_INTERVAL_SECONDS
+        try:
+            while True:
+                await asyncio.sleep(resilient.EVENT_LOOP_WATCHDOG_INTERVAL_SECONDS)
+                now = time.monotonic()
+                lag = max(0.0, now - expected)
+                expected = now + resilient.EVENT_LOOP_WATCHDOG_INTERVAL_SECONDS
+                if lag >= resilient.EVENT_LOOP_LAG_WARNING_SECONDS:
+                    active: list[str] = []
+                    if self._exact_active:
+                        active.append("exact")
+                    if self._catalog_active:
+                        active.append("catalog")
+                    if self._reconciliation_active:
+                        active.append("reconciliation")
+                    request_state = walmart_request_coordinator.snapshot()
+                    legacy.log.warning(
+                        "Event loop lag detected lag_s=%.2f threshold_s=%.2f "
+                        "phase=%s active_workers=%s walmart_requests=%s",
+                        lag,
+                        resilient.EVENT_LOOP_LAG_WARNING_SECONDS,
+                        self._runtime_phase,
+                        ",".join(active) or "none",
+                        request_state,
+                    )
         except asyncio.CancelledError:
             return
 
@@ -392,3 +451,12 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     "Global Walmart catalog note detail=%s",
                     detail,
                 )
+
+
+async def _sleep_fixed_rate(started: float, interval_seconds: float) -> None:
+    elapsed = max(0.0, time.monotonic() - float(started))
+    delay = max(
+        MIN_WORKER_YIELD_SECONDS,
+        float(interval_seconds) - elapsed,
+    )
+    await asyncio.sleep(delay)

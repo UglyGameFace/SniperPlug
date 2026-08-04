@@ -129,19 +129,20 @@ class ProcessIsolatedDatabase(Database):
             EMBEDDED_REPLICA_ENABLED_ENV,
             default=False,
         )
-        sync_interval = _positive_float_env(
-            "TURSO_REPLICA_SYNC_INTERVAL_SECONDS",
-            DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS,
-        )
 
         connection: SnowflakeSafeLibsqlProcessConnection | SnowflakeSafeEmbeddedReplicaConnection
         replica_mode = "remote-process"
         replica_startup_error = "none"
+        sync_interval = float(DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS)
 
         if replica_requested:
             startup_timeout = _positive_float_env(
                 "TURSO_REPLICA_STARTUP_TIMEOUT_SECONDS",
                 DEFAULT_REPLICA_STARTUP_TIMEOUT_SECONDS,
+            )
+            sync_interval = _positive_float_env(
+                "TURSO_REPLICA_SYNC_INTERVAL_SECONDS",
+                DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS,
             )
             replica_path = _replica_path_for(self.path)
             try:

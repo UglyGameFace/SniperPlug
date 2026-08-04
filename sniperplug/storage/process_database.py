@@ -14,6 +14,7 @@ from sniperplug.storage.libsql_embedded_replica import (
     DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS,
     EmbeddedReplicaLibsqlProcessConnection,
 )
+from sniperplug.storage.libsql_process import LibsqlProcessConnection
 
 
 log = logging.getLogger("sniperplug")
@@ -50,9 +51,7 @@ def libsql_safe_parameter(value: Any) -> Any:
     return value
 
 
-class SnowflakeSafeEmbeddedReplicaConnection(
-    EmbeddedReplicaLibsqlProcessConnection
-):
+class _SnowflakeSafeParameters:
     async def execute(
         self,
         sql: str,
@@ -64,9 +63,18 @@ class SnowflakeSafeEmbeddedReplicaConnection(
         return await super().execute(sql, safe_params)
 
 
-# Compatibility alias retained for imports and tests written before embedded
-# replicas became the production transport.
-SnowflakeSafeLibsqlProcessConnection = SnowflakeSafeEmbeddedReplicaConnection
+class SnowflakeSafeLibsqlProcessConnection(
+    _SnowflakeSafeParameters,
+    LibsqlProcessConnection,
+):
+    """Local/in-memory process connection retained for tests and non-Turso use."""
+
+
+class SnowflakeSafeEmbeddedReplicaConnection(
+    _SnowflakeSafeParameters,
+    EmbeddedReplicaLibsqlProcessConnection,
+):
+    """Production Turso connection with local replica reads and exact IDs."""
 
 
 class ProcessIsolatedDatabase(Database):
@@ -131,7 +139,9 @@ class ProcessIsolatedDatabase(Database):
             "parent_pid=%s native_libsql_in_gateway_process=false "
             "large_integer_text_transport=true transaction_replay=false "
             "embedded_replica_reads=%s replica_mode=%s sync_interval_s=%.1f "
-            "worker_generation=%s driver_version=%s operation_timeout_s=%.1f",
+            "worker_generation=%s bounded_queue_pressure=true "
+            "no_op_cleanup_skips_write=true driver_version=%s "
+            "operation_timeout_s=%.1f",
             identity.pid if identity else "unknown",
             identity.parent_pid if identity else os.getpid(),
             str(embedded).lower(),

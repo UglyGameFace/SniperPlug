@@ -5,10 +5,15 @@ import importlib.util
 import logging
 import math
 import os
+from pathlib import Path
 from typing import Any
 
 from sniperplug.storage.db import Database
-from sniperplug.storage.libsql_process import LibsqlProcessConnection
+from sniperplug.storage.libsql_embedded_replica import (
+    DEFAULT_REPLICA_STARTUP_TIMEOUT_SECONDS,
+    DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS,
+    EmbeddedReplicaLibsqlProcessConnection,
+)
 
 
 log = logging.getLogger("sniperplug")
@@ -45,7 +50,9 @@ def libsql_safe_parameter(value: Any) -> Any:
     return value
 
 
-class SnowflakeSafeLibsqlProcessConnection(LibsqlProcessConnection):
+class SnowflakeSafeEmbeddedReplicaConnection(
+    EmbeddedReplicaLibsqlProcessConnection
+):
     async def execute(
         self,
         sql: str,
@@ -57,8 +64,13 @@ class SnowflakeSafeLibsqlProcessConnection(LibsqlProcessConnection):
         return await super().execute(sql, safe_params)
 
 
+# Compatibility alias retained for imports and tests written before embedded
+# replicas became the production transport.
+SnowflakeSafeLibsqlProcessConnection = SnowflakeSafeEmbeddedReplicaConnection
+
+
 class ProcessIsolatedDatabase(Database):
-    """Use a child process for remote Turso while preserving Database methods."""
+    """Use a child-process embedded replica for Turso production traffic."""
 
     async def connect(self) -> None:
         turso_url = (
@@ -88,34 +100,71 @@ class ProcessIsolatedDatabase(Database):
             "TURSO_OPERATION_TIMEOUT_SECONDS",
             DEFAULT_TURSO_OPERATION_TIMEOUT_SECONDS,
         )
-        connection = await SnowflakeSafeLibsqlProcessConnection.open(
-            database=turso_url,
+        startup_timeout = _positive_float_env(
+            "TURSO_REPLICA_STARTUP_TIMEOUT_SECONDS",
+            DEFAULT_REPLICA_STARTUP_TIMEOUT_SECONDS,
+        )
+        sync_interval = _positive_float_env(
+            "TURSO_REPLICA_SYNC_INTERVAL_SECONDS",
+            DEFAULT_REPLICA_SYNC_INTERVAL_SECONDS,
+        )
+        replica_path = _replica_path_for(self.path)
+        connection = await SnowflakeSafeEmbeddedReplicaConnection.open(
+            database=replica_path,
+            sync_url=turso_url,
             auth_token=turso_token,
+            sync_interval_seconds=sync_interval,
+            startup_timeout_seconds=startup_timeout,
             operation_timeout_seconds=operation_timeout,
         )
         self.conn = connection
         self.backend = "turso-process-isolated"
+        self.replica_mode = connection.replica_mode
         identity = connection.identity
         try:
             driver_version = importlib.metadata.version("libsql")
         except importlib.metadata.PackageNotFoundError:
             driver_version = "unknown"
+        embedded = connection.replica_mode == "embedded-replica"
         log.info(
             "Turso native driver isolated process=true worker_pid=%s "
             "parent_pid=%s native_libsql_in_gateway_process=false "
             "large_integer_text_transport=true transaction_replay=false "
-            "driver_version=%s operation_timeout_s=%.1f",
+            "embedded_replica_reads=%s replica_mode=%s sync_interval_s=%.1f "
+            "worker_generation=%s driver_version=%s operation_timeout_s=%.1f",
             identity.pid if identity else "unknown",
             identity.parent_pid if identity else os.getpid(),
+            str(embedded).lower(),
+            connection.replica_mode,
+            sync_interval,
+            connection.worker_generation,
             driver_version,
             operation_timeout,
         )
+        if not embedded:
+            log.error(
+                "Turso embedded replica unavailable; running in explicit "
+                "remote-only fallback mode replica_mode=%s",
+                connection.replica_mode,
+            )
 
 
 def create_runtime_database(database_path: str) -> Database:
     """One database factory for the bot and every standalone watcher."""
 
     return ProcessIsolatedDatabase(database_path)
+
+
+def _replica_path_for(database_path: str) -> str:
+    configured = str(os.getenv("TURSO_REPLICA_PATH", "") or "").strip()
+    if configured:
+        path = Path(configured)
+    else:
+        source = Path(str(database_path or "./data/sniperplug.sqlite3"))
+        suffix = source.suffix or ".db"
+        path = source.with_name(f"{source.stem}.turso-replica{suffix}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path.as_posix()
 
 
 def _positive_float_env(name: str, default: float) -> float:

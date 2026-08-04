@@ -28,12 +28,13 @@ DM_STORE = (ROOT / "sniperplug/services/dm_deal_alerts.py").read_text(
 
 
 def test_global_runner_replaces_per_guild_scheduled_discovery() -> None:
-    assert "Do not start the inherited per-guild scheduled route loop" in RUNNER
     assert "self.global_reconciliation_loop.start()" in RUNNER
     assert "self.auto_scan_loop.start()" not in RUNNER
     assert "_walmart_global_catalog_worker" in RUNNER
     assert "global_catalog_autoscan" in RUNNER
     assert "per_guild_discovery=false" in RUNNER
+    assert "request_level_provider_priority=true" in RUNNER
+    assert "catalog_cannot_own_exact_worker=true" in RUNNER
 
 
 def test_global_cursor_advances_only_after_completed_discovery_enqueue() -> None:

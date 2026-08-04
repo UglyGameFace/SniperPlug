@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-Active — the production bot is healthy on Python 3.11.15, but live proof showed the exact queue still caused Discord heartbeat stalls. PR #204 is merged with bounded bulk Turso persistence and now needs deployment plus post-deploy lag validation.
+Active — PR #204 bulk persistence is deployed successfully on the Python 3.11.15 production app. Startup, Turso, Discord, fanout enrollment, and rollback isolation are confirmed. Final closure depends on several real 24/4 cycles proving the previous heartbeat stalls are gone or materially reduced.
 
 ## Scope
 Restore reliable Walmart background alerts without weakening exact item, seller, offer, current-price, original-price, duplicate, category, or per-server threshold proof.
@@ -12,16 +12,18 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 - PR #203 added bounded 24/4 drain mode, batch queue leasing, tiered rechecks, and stage timings.
 - Replacement app `1785806676351` is live on Python 3.11.15, connected to Turso, logged into Discord, and reports the correct eligible fanout guilds.
 - Old app `1779293887444` remains stopped as rollback.
-- On Python 3.11, eight sampled drain cycles reduced actionable due from 1,338 to 1,029, a drop of 309 rows.
-- Every sampled cycle remained in drain mode at 24 claims / concurrency 4.
+- Before PR #204, eight sampled Python 3.11 drain cycles reduced actionable due from 1,338 to 1,029, a drop of 309 rows.
+- Every sampled pre-PR #204 cycle remained in drain mode at 24 claims / concurrency 4.
 - `new/retry due` remained zero; the remaining actionable work was scheduled rechecks.
 - Catalog discovery remained correctly paused above the 450-row pressure limit.
-- No queue/fanout batch failures were captured in the sample.
-- Python 3.11 did not remove the event-loop problem: 40 lag warnings were captured with a maximum of 30.61 seconds.
+- No queue/fanout batch failures were captured in the pre-PR #204 sample.
+- Python 3.11 alone did not remove the event-loop problem: 40 lag warnings were captured with a maximum of 30.61 seconds.
 - Discord logged `heartbeat blocked for more than 10 seconds` during exact queue work.
 - The blocked-loop traceback showed Discord attempting to write its heartbeat after the process had already been starved; it confirmed the symptom rather than identifying a Python-level queue frame.
-- The exact worker's persistence stage previously issued one queue update plus multiple offer-memory SELECT/INSERT/UPDATE operations per candidate, exceeding roughly 70 serialized Turso/libsql calls in a 24-item cycle.
+- The old persistence stage issued one queue update plus multiple offer-memory SELECT/INSERT/UPDATE operations per candidate, exceeding roughly 70 serialized Turso/libsql calls in a 24-item cycle.
 - One sampled pre-fix store phase reached 22.39 seconds; claim phases reached 19.29 seconds on Python 3.11.
+- PR #204 deployed to app `1785806676351` at the startup beginning `2026-08-04T03:47:20Z`.
+- Post-deploy startup confirms `bulk_exact_persistence=true`, Python 3.11.15, Turso connected, Discord online, and eligible guild IDs `[1357215261001912320, 1514374173517152418]`.
 
 ## Completed changes
 - Added bounded drain mode: 24 claims with concurrency 4 only while actionable due is at least 450; normal mode remains 6/2.
@@ -39,6 +41,7 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 - PR #204 consolidates offer-memory persistence into one SELECT and one guarded UPSERT.
 - Exact item, seller, selected offer, variant, condition, fulfillment, trusted-reference, retry, terminal quarantine, and tiered recheck rules remain unchanged.
 - The prior runtime remains in the repository for rollback and comparison.
+- PR #204 was deployed through a clean tracked-file staging directory with an explicit root `.env`.
 
 ## Validation completed
 - Python compilation passed.
@@ -50,10 +53,15 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 - Offer-memory regression proves learning, stable-reference confirmation, and `new_low` behavior remain intact.
 - Existing batch leasing, terminal exclusion, health splitting, drain mode, exact proof, and tiered recheck tests remain passing.
 - PR #204 merged as commit `623c83c4d3811b2c1548e718871efd4f712d9cfc`.
+- Deployment commit succeeded through Discloud API 200.
+- Production startup confirms Python 3.11.15.
+- Production startup confirms `bulk_exact_persistence=true`.
+- Production startup confirms Turso connectivity.
+- Production startup confirms Discord login.
+- Production startup confirms The 420 Lobby remains in fanout enrollment.
+- Final app states are replacement online and rollback offline.
 
 ## Remaining live definition of done
-- Deploy merged commit `623c83c4d3811b2c1548e718871efd4f712d9cfc` to replacement app `1785806676351` without starting rollback app `1779293887444`.
-- Confirm startup reports Python 3.11.15 and `bulk_exact_persistence=true`.
 - Observe multiple 24/4 drain cycles while actionable due remains above 450.
 - Confirm queue and offer-memory persistence continue with no batch failures.
 - Compare claim/store timings and event-loop warnings against the pre-fix Python 3.11 maximum of 30.61 seconds.
@@ -63,8 +71,8 @@ Restore reliable Walmart background alerts without weakening exact item, seller,
 - Keep the old app stopped until enough post-fix production evidence exists for rollback retirement.
 
 ## Blockers
-- No code or CI blocker remains.
-- Final closure depends on deploying PR #204 and collecting post-deploy production evidence.
+- No code, CI, or deployment blocker remains.
+- Final closure depends only on post-deploy production evidence under real queue load.
 
 ## Backlog
 - Improve the separate movie-ticket source availability behavior after the Walmart alert task is fully closed.

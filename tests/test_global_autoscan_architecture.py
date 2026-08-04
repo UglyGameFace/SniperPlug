@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from sniperplug.services.walmart_global_catalog_autoscan import (
-    GlobalCatalogClaim,
-    catalog_backpressure_reason,
-)
+from sniperplug.services.walmart_global_catalog_autoscan import GlobalCatalogClaim
+from sniperplug.services.walmart_fresh_work_policy import catalog_backpressure_reason
 from sniperplug.services.walmart_exact_queue_health import (
     WalmartExactQueueHealth,
     load_walmart_exact_queue_health,
@@ -38,13 +36,15 @@ def test_global_runner_replaces_per_guild_scheduled_discovery() -> None:
     assert "per_guild_discovery=false" in RUNNER
 
 
-def test_global_cursor_advances_only_after_completed_batch() -> None:
+def test_global_cursor_advances_only_after_completed_discovery_enqueue() -> None:
     assert "claim_next_catalog_routes" in RUNNER
     assert "complete_catalog_claim" in RUNNER
     assert "release_catalog_claim" in RUNNER
-    assert RUNNER.index("collect_verified_discount_cards_with_observed_memory") < RUNNER.index(
+    assert RUNNER.index("discover_walmart_catalog_candidates") < RUNNER.index(
         "completed = await complete_catalog_claim"
     )
+    assert "foreground_exact_checks=0" in RUNNER
+    assert "catalog_discovery_only=true" in RUNNER
     assert "durable cursor was not advanced" in RUNNER
 
 
@@ -144,20 +144,24 @@ def test_backpressure_does_not_subtract_terminal_blocks_twice() -> None:
     reason = catalog_backpressure_reason(production_shape)
 
     assert reason is not None
-    assert "2818/450" in reason
+    assert "fresh/retry pressure **172/12**" in reason
     assert "terminal identity blocks excluded **7591**" in reason
 
 
 def test_backpressure_counts_active_verification_without_double_counting_pending() -> None:
     below_limit = WalmartExactQueueHealth(
-        due_now=440,
+        due_now=0,
+        initial_due_now=0,
+        recheck_due_now=0,
         pending=440,
-        verifying=9,
+        verifying=11,
     )
     at_limit = WalmartExactQueueHealth(
-        due_now=440,
+        due_now=1,
+        initial_due_now=1,
+        recheck_due_now=0,
         pending=440,
-        verifying=10,
+        verifying=11,
     )
 
     assert catalog_backpressure_reason(below_limit) is None

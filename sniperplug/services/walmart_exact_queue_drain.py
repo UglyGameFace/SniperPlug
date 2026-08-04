@@ -36,12 +36,11 @@ async def claim_due_rows_batched(
     now: datetime,
     limit: int,
 ) -> list[_QueueClaim]:
-    """Claim one ordered queue slice with three remote SQL operations.
+    """Atomically select and lease one ordered exact-queue slice.
 
-    The former implementation used one UPDATE and one verification SELECT per
-    row. On Turso that multiplied round trips and amplified event-loop stalls.
-    A single batch lease token remains safe because every final write is still
-    guarded by both item ID and lease token.
+    One UPDATE ... RETURNING replaces the former SELECT, UPDATE, verification
+    SELECT, and commit sequence. The lease token still guards every final write,
+    but Turso only has to execute one remote statement before the commit.
     """
 
     now_iso = now.astimezone(timezone.utc).isoformat()
@@ -49,86 +48,66 @@ async def claim_due_rows_batched(
         now.astimezone(timezone.utc) - timedelta(days=QUEUE_RETENTION_DAYS)
     ).isoformat()
     bounded_limit = max(1, int(limit))
-    cursor = await conn.execute(
-        f"""
-        SELECT
-            item_id, title, product_url, image_url,
-            apparent_current_cents, apparent_reference_cents,
-            route_hint, attempt_count
-        FROM {QUEUE_TABLE}
-        WHERE next_attempt_at <= ?
-          AND last_seen_at >= ?
-          AND status NOT IN ('incomplete_identity', 'identity_mismatch')
-          AND (lease_until IS NULL OR lease_until < ?)
-        ORDER BY
-            CASE status
-                WHEN 'pending' THEN 0
-                WHEN 'retry' THEN 1
-                WHEN 'failed' THEN 2
-                WHEN 'verifying' THEN 3
-                WHEN 'verified_markdown' THEN 4
-                WHEN 'verified_under_threshold' THEN 5
-                WHEN 'verified_no_reference' THEN 6
-                WHEN 'verified_reference' THEN 7
-                WHEN 'not_buyable' THEN 8
-                ELSE 9
-            END,
-            priority_score DESC,
-            last_seen_at DESC
-        LIMIT ?
-        """,
-        (now_iso, discovery_cutoff, now_iso, bounded_limit),
-    )
-    rows = await cursor.fetchall()
-    ordered_rows: list[tuple[str, Any]] = []
-    for row in rows:
-        item_id = str(_row_get(row, "item_id", index=0) or "").strip()
-        if item_id:
-            ordered_rows.append((item_id, row))
-    if not ordered_rows:
-        return []
-
     batch_token = uuid.uuid4().hex
     lease_until = (
         now.astimezone(timezone.utc) + timedelta(seconds=QUEUE_LEASE_SECONDS)
     ).isoformat()
-    item_ids = [item_id for item_id, _row in ordered_rows]
-    placeholders = ",".join("?" for _ in item_ids)
-    await conn.execute(
+
+    cursor = await conn.execute(
         f"""
+        WITH due(item_id) AS MATERIALIZED (
+            SELECT item_id
+            FROM {QUEUE_TABLE}
+            WHERE next_attempt_at <= ?
+              AND last_seen_at >= ?
+              AND status NOT IN ('incomplete_identity', 'identity_mismatch')
+              AND (lease_until IS NULL OR lease_until < ?)
+            ORDER BY
+                CASE status
+                    WHEN 'pending' THEN 0
+                    WHEN 'retry' THEN 1
+                    WHEN 'failed' THEN 2
+                    WHEN 'verifying' THEN 3
+                    WHEN 'verified_markdown' THEN 4
+                    WHEN 'verified_under_threshold' THEN 5
+                    WHEN 'verified_no_reference' THEN 6
+                    WHEN 'verified_reference' THEN 7
+                    WHEN 'not_buyable' THEN 8
+                    ELSE 9
+                END,
+                priority_score DESC,
+                last_seen_at DESC
+            LIMIT ?
+        )
         UPDATE {QUEUE_TABLE}
         SET lease_token = ?, lease_until = ?, status = 'verifying'
-        WHERE item_id IN ({placeholders})
+        WHERE item_id IN (SELECT item_id FROM due)
           AND last_seen_at >= ?
           AND status NOT IN ('incomplete_identity', 'identity_mismatch')
           AND (lease_until IS NULL OR lease_until < ?)
+        RETURNING
+            item_id, title, product_url, image_url,
+            apparent_current_cents, apparent_reference_cents,
+            route_hint, attempt_count
         """,
         (
+            now_iso,
+            discovery_cutoff,
+            now_iso,
+            bounded_limit,
             batch_token,
             lease_until,
-            *item_ids,
             discovery_cutoff,
             now_iso,
         ),
     )
-    verify = await conn.execute(
-        f"""
-        SELECT item_id
-        FROM {QUEUE_TABLE}
-        WHERE lease_token = ?
-          AND item_id IN ({placeholders})
-        """,
-        (batch_token, *item_ids),
-    )
-    claimed_ids = {
-        str(_row_get(row, "item_id", index=0) or "").strip()
-        for row in await verify.fetchall()
-    }
+    rows = await cursor.fetchall()
     await conn.commit()
 
     claims: list[_QueueClaim] = []
-    for item_id, row in ordered_rows:
-        if item_id not in claimed_ids:
+    for row in rows:
+        item_id = str(_row_get(row, "item_id", index=0) or "").strip()
+        if not item_id:
             continue
         claims.append(
             _QueueClaim(
@@ -225,17 +204,17 @@ async def store_exact_candidate_with_tiered_recheck(
 
 
 def tiered_recheck_delay(status: str, discount_percent: float) -> timedelta:
-    """Keep true alert candidates fresh without hourly polling every small sale."""
+    """Keep strong deals fresh without creating an impossible hourly queue."""
 
     discount = max(0.0, float(discount_percent or 0.0))
     if status == "verified_markdown":
         if discount >= PUBLIC_ALERT_RECHECK_PERCENT:
-            return timedelta(hours=1)
+            return timedelta(hours=4)
         if discount >= MID_TIER_RECHECK_PERCENT:
-            return timedelta(hours=6)
-        return timedelta(hours=12)
+            return timedelta(hours=12)
+        return timedelta(hours=24)
     if status == "verified_no_reference":
-        return timedelta(hours=12)
+        return timedelta(hours=24)
     if status == "verified_under_threshold":
         return timedelta(hours=24)
     if status == "not_buyable":

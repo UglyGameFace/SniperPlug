@@ -6,18 +6,17 @@ from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHeal
 
 
 FRESH_DRAIN_THRESHOLD = 48
-FRESH_DISCOVERY_PAUSE_THRESHOLD = 96
-TOTAL_EMERGENCY_THRESHOLD = 1_800
+FRESH_DISCOVERY_PAUSE_THRESHOLD = 12
+TOTAL_DRAIN_EMERGENCY_THRESHOLD = 1_200
+TOTAL_DISCOVERY_EMERGENCY_THRESHOLD = 600
+# Compatibility export for older diagnostics/tests. Drain and discovery now use
+# separate thresholds so catalog intake can stop without increasing concurrency.
+TOTAL_EMERGENCY_THRESHOLD = TOTAL_DRAIN_EMERGENCY_THRESHOLD
 LEGACY_ACTIONABLE_THRESHOLD = 450
 
 
 def queue_split_is_known(health: WalmartExactQueueHealth) -> bool:
-    """Return whether health exposes first-time/retry versus recheck counts.
-
-    Older or synthetic health snapshots may only populate ``due_now``. Those
-    snapshots retain the legacy conservative behavior instead of being treated
-    as recheck-only work.
-    """
+    """Return whether health exposes first-time/retry versus recheck counts."""
 
     return bool(
         int(getattr(health, "initial_due_now", 0) or 0)
@@ -30,15 +29,14 @@ def should_use_drain_mode(
     health: WalmartExactQueueHealth,
     *,
     fresh_threshold: int = FRESH_DRAIN_THRESHOLD,
-    emergency_total_threshold: int = TOTAL_EMERGENCY_THRESHOLD,
+    emergency_total_threshold: int = TOTAL_DRAIN_EMERGENCY_THRESHOLD,
     legacy_threshold: int = LEGACY_ACTIONABLE_THRESHOLD,
 ) -> bool:
-    """Reserve 24/4 drain mode for fresh/retry pressure or a true emergency.
+    """Use 24/4 only for substantial fresh pressure or a true emergency.
 
-    Scheduled exact-price rechecks are maintenance work. They must not by
-    themselves trigger large drain batches that compete with new catalog
-    discovery and Discord heartbeats. If a health snapshot does not expose the
-    lane split, preserve the prior fail-closed total-backlog behavior.
+    Discovery pauses before fresh work becomes severe, so ordinary recovery can
+    stay at the safer normal concurrency. Scheduled rechecks alone do not force
+    aggressive drain mode until the backlog is genuinely extreme.
     """
 
     due_now = max(0, int(getattr(health, "due_now", 0) or 0))
@@ -60,15 +58,15 @@ def catalog_backpressure_reason(
     health: WalmartExactQueueHealth,
     *,
     fresh_limit: int = FRESH_DISCOVERY_PAUSE_THRESHOLD,
-    emergency_total_limit: int = TOTAL_EMERGENCY_THRESHOLD,
+    emergency_total_limit: int = TOTAL_DISCOVERY_EMERGENCY_THRESHOLD,
     legacy_limit: int = LEGACY_ACTIONABLE_THRESHOLD,
 ) -> str | None:
-    """Pause discovery only for fresh-work pressure or a true total emergency.
+    """Pause catalog intake before it can outrun the exact worker.
 
-    Rechecks remain visible and continue in the background, but a few hundred
-    due rechecks no longer stop the catalog from finding newly listed or newly
-    discounted products. This prevents the 450-row pause/resume sawtooth where
-    old maintenance work starved fresh deal discovery.
+    A small amount of fresh/retry work is normal. Once twelve fresh rows are due,
+    discovery yields until the exact worker catches up. Recheck-only maintenance
+    remains allowed below the 600-row safety ceiling, while a larger total queue
+    pauses intake to protect Discord responsiveness and database health.
     """
 
     due_now = max(0, int(getattr(health, "due_now", 0) or 0))
@@ -93,7 +91,7 @@ def catalog_backpressure_reason(
     fresh_due = max(0, int(getattr(health, "initial_due_now", 0) or 0))
     recheck_due = max(0, int(getattr(health, "recheck_due_now", 0) or 0))
     fresh_pressure = fresh_due + verifying
-    fresh_limit_value = max(24, int(fresh_limit))
+    fresh_limit_value = max(1, int(fresh_limit))
     emergency_limit_value = max(
         fresh_limit_value,
         int(emergency_total_limit),
@@ -111,8 +109,7 @@ def catalog_backpressure_reason(
     if total_pressure >= emergency_limit_value:
         return (
             "exact-detail emergency backpressure active: "
-            f"actionable backlog **{total_pressure}/{legacy_limit}** • "
-            f"emergency total limit **{emergency_limit_value}** • "
+            f"actionable backlog **{total_pressure}/{emergency_limit_value}** • "
             f"new/retry due **{fresh_due}** • scheduled rechecks **{recheck_due}** • "
             f"verifying **{verifying}** • terminal identity blocks excluded "
             f"**{identity_blocked}**"

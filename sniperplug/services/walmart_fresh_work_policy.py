@@ -9,6 +9,9 @@ FRESH_DRAIN_THRESHOLD = 48
 FRESH_DISCOVERY_PAUSE_THRESHOLD = 12
 TOTAL_DRAIN_EMERGENCY_THRESHOLD = 1_200
 TOTAL_DISCOVERY_EMERGENCY_THRESHOLD = 600
+# Compatibility export for older diagnostics/tests. Drain and discovery now use
+# separate thresholds so catalog intake can stop without increasing concurrency.
+TOTAL_EMERGENCY_THRESHOLD = TOTAL_DRAIN_EMERGENCY_THRESHOLD
 LEGACY_ACTIONABLE_THRESHOLD = 450
 
 

@@ -29,7 +29,7 @@ class WalmartExactQueueHealth:
             f"total **{self.total}** • actionable due now **{self.due_now}** • "
             f"delayed transient retries **{self.delayed_retries}** • "
             f"identity unavailable / safely blocked **{self.identity_blocked}** (terminal) • "
-            f"verified **{self.verified}** • verifying **{self.verifying}** • "
+            f"verified **{self.verified}** • actively verifying **{self.verifying}** • "
             f"pending **{self.pending}** • unavailable **{self.unavailable}** • "
             f"stale/unclaimable **{self.stale}**"
         )
@@ -41,6 +41,8 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     ``due_now`` counts actionable rows only. Terminal seller/offer identity
     failures remain visible in their own bucket but never inflate backlog or
     catalog backpressure after their fail-closed verification attempt.
+    ``verifying`` counts only rows with an active lease, keeping it disjoint
+    from expired verification rows that correctly return to ``due_now``.
     """
 
     if db is None:
@@ -79,7 +81,10 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                      AND status LIKE 'verified_%'
                     THEN 1 ELSE 0 END) AS verified,
                 SUM(CASE
-                    WHEN is_recent = 1 AND status = 'verifying'
+                    WHEN is_recent = 1
+                     AND status = 'verifying'
+                     AND lease_until IS NOT NULL
+                     AND lease_until >= ?
                     THEN 1 ELSE 0 END) AS verifying,
                 SUM(CASE
                     WHEN is_recent = 1 AND status = 'pending'
@@ -90,7 +95,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 SUM(CASE WHEN is_recent = 0 THEN 1 ELSE 0 END) AS stale
             FROM queue_state
             """,
-            (discovery_cutoff, now_iso, now_iso, now_iso),
+            (discovery_cutoff, now_iso, now_iso, now_iso, now_iso),
         )
         row = await cursor.fetchone()
     except Exception:

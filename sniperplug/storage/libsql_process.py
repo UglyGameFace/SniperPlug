@@ -101,7 +101,7 @@ class LibsqlProcessConnection:
             rows=list(response.get("rows") or []),
             columns=list(response.get("columns") or []),
         )
-        cursor.rowcount = int(response.get("rowcount", -1) or -1)
+        cursor.rowcount = _normalize_rowcount(response.get("rowcount", -1))
         return cursor
 
     async def executescript(self, script: str) -> None:
@@ -533,11 +533,17 @@ def _consume_result(result: Any) -> tuple[list[str], list[Any], int]:
         raw_rows = list(getattr(result, "rows", None) or [])
     for row in raw_rows:
         rows.append(_normalize_row(row, columns))
-    try:
-        rowcount = int(getattr(result, "rowcount", -1))
-    except (TypeError, ValueError):
-        rowcount = -1
+    rowcount = _normalize_rowcount(getattr(result, "rowcount", -1))
     return columns, rows, rowcount
+
+
+def _normalize_rowcount(value: Any) -> int:
+    if value is None:
+        return -1
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return -1
 
 
 def _extract_columns(result: Any) -> list[str]:

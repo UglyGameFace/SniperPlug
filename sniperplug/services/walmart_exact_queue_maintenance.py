@@ -80,8 +80,7 @@ async def maybe_prune_walmart_exact_queue_bounded(
         stale_rows = await stale_cursor.fetchall()
         item_ids = _item_ids(stale_rows)
 
-        remaining = max(0, CLEANUP_BATCH_SIZE - len(item_ids))
-        if remaining:
+        if len(item_ids) < CLEANUP_BATCH_SIZE:
             overflow_cursor = await conn.execute(
                 f"""
                 SELECT item_id
@@ -92,11 +91,13 @@ async def maybe_prune_walmart_exact_queue_bounded(
                     last_seen_at DESC
                 LIMIT ? OFFSET ?
                 """,
-                (remaining, QUEUE_MAX_ROWS),
+                (CLEANUP_BATCH_SIZE, QUEUE_MAX_ROWS),
             )
             for item_id in _item_ids(await overflow_cursor.fetchall()):
                 if item_id not in item_ids:
                     item_ids.append(item_id)
+                if len(item_ids) >= CLEANUP_BATCH_SIZE:
+                    break
 
         if not item_ids:
             state.next_due_monotonic = (

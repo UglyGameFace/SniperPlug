@@ -61,6 +61,7 @@ def test_autoscan_provider_and_candidate_parser_run_on_worker_thread(monkeypatch
 
 def test_foreground_exact_enrichment_runs_on_worker_thread(monkeypatch) -> None:
     main_thread_id = threading.get_ident()
+    expected_provider = object()
     observed: dict[str, object] = {}
 
     async def fake_enrichment(candidates, **kwargs):
@@ -74,7 +75,7 @@ def test_foreground_exact_enrichment_runs_on_worker_thread(monkeypatch) -> None:
     result = asyncio.run(
         offloop.enrich_walmart_exact_prices_off_event_loop(
             [],
-            provider=object(),
+            provider=expected_provider,
             limit=24,
             concurrency=4,
             timeout_seconds=8.0,
@@ -85,7 +86,7 @@ def test_foreground_exact_enrichment_runs_on_worker_thread(monkeypatch) -> None:
     assert result.candidates == []
     assert observed["thread_id"] != main_thread_id
     assert observed["kwargs"] == {
-        "provider": observed["kwargs"]["provider"],
+        "provider": expected_provider,
         "limit": 24,
         "concurrency": 4,
         "timeout_seconds": 8.0,

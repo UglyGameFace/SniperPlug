@@ -14,17 +14,16 @@ from sniperplug.services.autoscan_live_guild_reconciliation import (
     list_live_public_alert_guilds,
     reconcile_live_public_alert_setups,
 )
-from sniperplug.services.autoscan_observed_price_memory import (
-    collect_verified_discount_cards_with_observed_memory,
-)
 from sniperplug.services.verified_retailer_event_fanout import (
     fanout_verified_retailer_events,
+)
+from sniperplug.services.walmart_catalog_discovery_only import (
+    discover_walmart_catalog_candidates,
 )
 from sniperplug.services.walmart_fresh_work_policy import (
     catalog_backpressure_reason,
 )
 from sniperplug.services.walmart_global_catalog_autoscan import (
-    DEFAULT_ROUTES_PER_BATCH,
     claim_next_catalog_routes,
     complete_catalog_claim,
     load_global_catalog_state,
@@ -46,17 +45,21 @@ GLOBAL_DISCOVERY_INITIAL_DELAY_SECONDS = 45
 GLOBAL_DISCOVERY_INTERVAL_SECONDS = 60
 GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS = 15
 GLOBAL_DISCOVERY_MIN_DISCOUNT = 10
+GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 2
 GLOBAL_BACKPRESSURE_LOG_INTERVAL_SECONDS = 5 * 60
 GLOBAL_FANOUT_EVENT_LIMIT = 20
+GLOBAL_EXACT_QUEUE_BATCH_SIZE = 8
+GLOBAL_EXACT_QUEUE_CONCURRENCY = 2
+GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS = 20
 
 
 class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
     """Global retailer discovery plus per-destination exact-deal fanout.
 
-    Walmart discovery and verification remain inside this bot. Standalone
-    retailer watchers, beginning with HP Store, publish exact candidates through
-    the shared durable event outbox. This bot alone owns Discord delivery,
-    thresholds, category preferences, duplicate guards, and DM subscriptions.
+    Walmart catalog work only discovers and queues item IDs. One dedicated exact
+    worker owns item, offer, seller, variant, condition, fulfillment, current
+    price, trusted reference-price verification, and durable fanout. This keeps
+    catalog search from starving the exact queue or Discord gateway.
     """
 
     def __init__(self, bot):
@@ -88,13 +91,14 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "exact_queue_interval_s=%s global_exact_fanout=true personal_dm_alerts=true "
             "external_verified_event_fanout=true terminal_identity_quarantine=true "
             "exact_parse_off_event_loop=true bulk_exact_persistence=true "
-            "fresh_work_priority=true bulk_fanout=true",
+            "fresh_work_priority=true bulk_fanout=true "
+            "catalog_discovery_only=true atomic_exact_claim=true",
             platform.python_version(),
             sys.platform,
-            DEFAULT_ROUTES_PER_BATCH,
+            GLOBAL_DISCOVERY_ROUTES_PER_BATCH,
             GLOBAL_DISCOVERY_INTERVAL_SECONDS,
-            resilient.WALMART_QUEUE_BATCH_SIZE,
-            resilient.WALMART_QUEUE_INTERVAL_SECONDS,
+            GLOBAL_EXACT_QUEUE_BATCH_SIZE,
+            GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS,
         )
 
     async def cog_unload(self) -> None:
@@ -217,7 +221,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                 try:
                     claim = await claim_next_catalog_routes(
                         self.bot.db,
-                        route_count=DEFAULT_ROUTES_PER_BATCH,
+                        route_count=GLOBAL_DISCOVERY_ROUTES_PER_BATCH,
                     )
                     if claim is None:
                         await asyncio.sleep(GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS)
@@ -234,20 +238,18 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         label="Global Walmart Catalog",
                         emoji="🌐",
                         description=(
-                            "Durable global route discovery. Search rows only "
-                            "discover item IDs; exact proof controls all alerts."
+                            "Durable global item-ID discovery. The dedicated "
+                            "exact worker verifies every alertable offer."
                         ),
                         queries=claim.queries,
                         min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
                     )
                     started = time.monotonic()
                     async with resilient._WALMART_PROVIDER_OPERATION_LOCK:
-                        result = await collect_verified_discount_cards_with_observed_memory(
+                        result = await discover_walmart_catalog_candidates(
                             requested_by="global_catalog_autoscan",
                             preset=preset,
                             db=self.bot.db,
-                            guild_id=None,
-                            use_price_memory=False,
                             min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
                         )
 
@@ -260,16 +262,21 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     elapsed = max(0.0, time.monotonic() - started)
                     legacy.log.info(
                         "Global Walmart catalog batch completed elapsed_s=%.1f %s • "
-                        "pages=%s returned_products=%s exact_cards=%s • %s",
+                        "pages=%s returned_products=%s unique_candidates=%s "
+                        "usable_item_ids=%s foreground_exact_checks=0 • %s",
                         elapsed,
                         claim.summary_line(),
                         result.pages_checked,
                         result.products_checked,
-                        result.total_verified_cards,
+                        result.unique_candidates,
+                        result.candidates_with_item_id,
                         state.summary_line(total_routes=claim.total_routes),
                     )
                     self._log_global_result_notes(result.warnings)
 
+                    # Fanout is cheap when no exact worker event is pending and
+                    # allows a completed exact event to post without waiting for
+                    # the next queue cycle.
                     fanout = await fanout_recent_exact_walmart_deals(
                         self.bot,
                         event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
@@ -316,8 +323,8 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         result = await process_actionable_walmart_exact_queue_batch(
                             self.bot.db,
                             provider=provider_registry.get("walmart"),
-                            limit=resilient.WALMART_QUEUE_BATCH_SIZE,
-                            concurrency=resilient.WALMART_QUEUE_CONCURRENCY,
+                            limit=GLOBAL_EXACT_QUEUE_BATCH_SIZE,
+                            concurrency=GLOBAL_EXACT_QUEUE_CONCURRENCY,
                             min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
                         )
                     now = time.monotonic()
@@ -355,7 +362,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                 finally:
                     self._runtime_phase = "idle"
 
-                await asyncio.sleep(resilient.WALMART_QUEUE_INTERVAL_SECONDS)
+                await asyncio.sleep(GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             return
 
@@ -377,8 +384,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                 marker in lowered
                 for marker in (
                     "exact-detail queue",
-                    "official walmart detail gate",
-                    "exact walmart detail price checks",
+                    "catalog discovery-only pass",
                 )
             ):
                 legacy.log.info(

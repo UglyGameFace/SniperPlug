@@ -104,7 +104,7 @@ def test_recent_runtime_modules_import() -> None:
     import sniperplug.services.error_logging  # noqa: F401
 
 
-def test_requirements_do_not_force_libsql_on_termux_arm64() -> None:
+def test_requirements_pin_libsql_without_forcing_it_on_termux_arm64() -> None:
     requirements = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8")
-    assert "aiosqlite" in requirements
-    assert 'libsql; platform_machine != "aarch64"' in requirements
+    assert "aiosqlite==0.22.1" in requirements
+    assert 'libsql==0.1.11; platform_machine != "aarch64"' in requirements

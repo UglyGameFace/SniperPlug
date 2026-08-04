@@ -13,6 +13,7 @@ from sniperplug.providers.base import (
     ProviderScanResult,
     ProviderStatus,
 )
+from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.coordinated_walmart import CoordinatedWalmartProvider
 from sniperplug.providers.registry import ProviderRegistry
 from sniperplug.services.walmart_request_coordinator import (
@@ -91,14 +92,25 @@ def test_exact_waiter_gets_next_slot_before_search_waiter() -> None:
     assert order == ["exact", "search"]
 
 
-def test_registry_wraps_walmart_once_and_preserves_exact_builder() -> None:
+def test_registry_preserves_generic_provider_identity() -> None:
+    registry = ProviderRegistry()
+    generic = FakeWalmartProvider()
+
+    registry.register(generic)
+
+    assert registry.get("WALMART") is generic
+
+
+def test_registry_wraps_real_cached_walmart_once_and_preserves_exact_builder() -> None:
     registry = ProviderRegistry()
     raw = FakeWalmartProvider()
+    cached = CachedWalmartProvider(db=object(), inner=raw)
 
-    registry.register(raw)
+    registry.register(cached)
     registered = registry.get("walmart")
 
     assert isinstance(registered, CoordinatedWalmartProvider)
+    assert registered.delegate is cached
     assert registered.inner is raw
     assert callable(registered.inner._candidate_from_item)
 

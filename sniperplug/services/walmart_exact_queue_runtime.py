@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -14,12 +15,17 @@ from sniperplug.services.walmart_exact_price_enrichment import (
     _positive_number,
     _trusted_reference,
 )
+from sniperplug.services.walmart_exact_queue_drain import (
+    claim_due_rows_batched,
+    store_exact_candidate_with_tiered_recheck,
+)
+from sniperplug.services.walmart_exact_queue_health import (
+    load_walmart_exact_queue_health,
+)
 from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     _classify_exact_candidate,
-    _claim_due_rows,
     _pending_total,
-    _store_exact_candidate,
     _store_failure,
     ensure_walmart_exact_verification_queue,
     maybe_prune_walmart_exact_verification_queue,
@@ -35,6 +41,9 @@ from sniperplug.services.walmart_global_offer_memory import (
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
 TERMINAL_IDENTITY_REPROBE_DAYS = 7
 TERMINAL_NEXT_ATTEMPT = "9999-12-31T23:59:59+00:00"
+DRAIN_ACTIONABLE_THRESHOLD = 450
+DRAIN_BATCH_SIZE = 24
+DRAIN_CONCURRENCY = 4
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,12 @@ class ExactQueueRuntimeResult:
     pending_total: int = 0
     terminal_quarantined: int = 0
     terminal_rearmed: int = 0
+    mode: str = "normal"
+    batch_size: int = 0
+    concurrency: int = 0
+    claim_seconds: float = 0.0
+    fetch_seconds: float = 0.0
+    store_seconds: float = 0.0
 
     def summary_line(self) -> str:
         identity_detail = (
@@ -65,8 +80,14 @@ class ExactQueueRuntimeResult:
             f"proof **{self.identity_missing_proof}** • "
             f"other **{self.identity_other}**"
         )
+        timing = (
+            f"claim **{self.claim_seconds:.2f}s** • "
+            f"fetch **{self.fetch_seconds:.2f}s** • "
+            f"store **{self.store_seconds:.2f}s**"
+        )
         return (
             "Walmart background exact verification: "
+            f"mode **{self.mode}** • batch/concurrency **{self.batch_size}/{self.concurrency}** • "
             f"claimed **{self.claimed}** • verified **{self.verified}** • "
             f"official was prices **{self.official_references}** • "
             f"markdowns **{self.markdowns}** • no reference **{self.no_reference}** • "
@@ -75,7 +96,7 @@ class ExactQueueRuntimeResult:
             f"({identity_detail}) • transient failures **{self.failed}** • "
             f"terminal rows quarantined **{self.terminal_quarantined}** • "
             f"weekly identity reprobes **{self.terminal_rearmed}** • "
-            f"actionable due **{self.pending_total}**"
+            f"actionable due **{self.pending_total}** • timings {timing}"
         )
 
 
@@ -172,15 +193,35 @@ async def process_actionable_walmart_exact_queue_batch(
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
     await maybe_prune_walmart_exact_verification_queue(conn, now=now)
-    claims = await _claim_due_rows(conn, now=now, limit=max(1, int(limit)))
+
+    health_before = await load_walmart_exact_queue_health(db)
+    drain_mode = int(health_before.due_now) >= DRAIN_ACTIONABLE_THRESHOLD
+    effective_limit = max(1, int(limit))
+    effective_concurrency = max(1, int(concurrency))
+    if drain_mode:
+        effective_limit = max(effective_limit, DRAIN_BATCH_SIZE)
+        effective_concurrency = max(effective_concurrency, DRAIN_CONCURRENCY)
+    mode = "drain" if drain_mode else "normal"
+
+    claim_started = time.monotonic()
+    claims = await claim_due_rows_batched(
+        conn,
+        now=now,
+        limit=effective_limit,
+    )
+    claim_seconds = max(0.0, time.monotonic() - claim_started)
     if not claims:
         return ExactQueueRuntimeResult(
             pending_total=await _pending_total(conn, now_iso=now.isoformat()),
             terminal_quarantined=maintenance.quarantined,
             terminal_rearmed=maintenance.rearmed,
+            mode=mode,
+            batch_size=effective_limit,
+            concurrency=effective_concurrency,
+            claim_seconds=claim_seconds,
         )
 
-    semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+    semaphore = asyncio.Semaphore(effective_concurrency)
 
     async def fetch(claim):
         async with semaphore:
@@ -190,7 +231,9 @@ async def process_actionable_walmart_exact_queue_batch(
                 timeout_seconds=timeout_seconds,
             )
 
+    fetch_started = time.monotonic()
     outcomes = await asyncio.gather(*(fetch(claim) for claim in claims))
+    fetch_seconds = max(0.0, time.monotonic() - fetch_started)
     counts = {
         "verified": 0,
         "official_references": 0,
@@ -207,6 +250,7 @@ async def process_actionable_walmart_exact_queue_batch(
         "failed": 0,
     }
 
+    store_started = time.monotonic()
     for claim, outcome in outcomes:
         candidate, status, error = outcome
         item_now = datetime.now(timezone.utc)
@@ -226,7 +270,7 @@ async def process_actionable_walmart_exact_queue_batch(
                 counts["failed"] += 1
             continue
 
-        await _store_exact_candidate(
+        await store_exact_candidate_with_tiered_recheck(
             conn,
             item_id=claim.item_id,
             candidate=candidate,
@@ -259,6 +303,7 @@ async def process_actionable_walmart_exact_queue_batch(
 
     await maybe_prune_global_offer_memory(conn, now=datetime.now(timezone.utc))
     await conn.commit()
+    store_seconds = max(0.0, time.monotonic() - store_started)
     pending_total = await _pending_total(
         conn,
         now_iso=datetime.now(timezone.utc).isoformat(),
@@ -268,6 +313,12 @@ async def process_actionable_walmart_exact_queue_batch(
         pending_total=pending_total,
         terminal_quarantined=maintenance.quarantined,
         terminal_rearmed=maintenance.rearmed,
+        mode=mode,
+        batch_size=effective_limit,
+        concurrency=effective_concurrency,
+        claim_seconds=claim_seconds,
+        fetch_seconds=fetch_seconds,
+        store_seconds=store_seconds,
         **counts,
     )
 

@@ -69,6 +69,10 @@ async def test_remote_process_is_safe_default(
     turso_environment,
 ) -> None:
     calls: list[dict] = []
+    # Replica-only settings must be completely inert while the feature is off.
+    monkeypatch.setenv("TURSO_REPLICA_SYNC_INTERVAL_SECONDS", "not-a-number")
+    monkeypatch.setenv("TURSO_REPLICA_STARTUP_TIMEOUT_SECONDS", "also-invalid")
+    monkeypatch.setenv("TURSO_REPLICA_PATH", "/path/that/must/not/be/touched")
 
     async def remote_open(cls, **kwargs):
         calls.append(dict(kwargs))

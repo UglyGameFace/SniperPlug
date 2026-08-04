@@ -80,16 +80,26 @@ def test_bulk_enqueue_uses_bounded_multirow_statements() -> None:
     asyncio.run(run())
 
 
-def test_queue_and_foreground_scans_share_one_provider_operation_lock() -> None:
-    runner = Path("sniperplug/cogs/resilient_auto_scan_runner.py").read_text(
+def test_global_runtime_uses_request_priority_not_whole_job_provider_lock() -> None:
+    global_runner = Path("sniperplug/cogs/global_auto_scan_runner.py").read_text(
         encoding="utf-8"
     )
+    registry = Path("sniperplug/providers/registry.py").read_text(
+        encoding="utf-8"
+    )
+    coordinator = Path(
+        "sniperplug/services/walmart_request_coordinator.py"
+    ).read_text(encoding="utf-8")
     autoscan = Path("sniperplug/services/autoscan_observed_price_memory.py").read_text(
         encoding="utf-8"
     )
 
-    assert "_WALMART_PROVIDER_OPERATION_LOCK = asyncio.Lock()" in runner
-    assert runner.count("async with _WALMART_PROVIDER_OPERATION_LOCK:") == 3
+    assert "_WALMART_PROVIDER_OPERATION_LOCK" not in global_runner
+    assert "request_level_provider_priority=true" in global_runner
+    assert "catalog_cannot_own_exact_worker=true" in global_runner
+    assert "CoordinatedWalmartProvider" in registry
+    assert "self._waiting_exact" in coordinator
+    assert "exact_has_priority" in coordinator
     assert "enqueue_walmart_exact_verification_candidates_bulk" in autoscan
     assert "foreground_item_ids" in autoscan
     assert "true overflow verified added" in autoscan

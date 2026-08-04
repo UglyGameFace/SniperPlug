@@ -1,12 +1,15 @@
-discord.py
-aiohttp>=3.9,<4
-aiosqlite
+# Versions below are the exact Python 3.11.15 set that passed the complete
+# production regression suite before the runtime stability pass. Do not allow a
+# Discloud rebuild to silently replace the Discord gateway or native DB driver.
+discord.py==2.7.1
+aiohttp==3.14.3
+aiosqlite==0.22.1
 # libsql is needed for Turso/Discloud production, but Termux reports aarch64 and
 # cannot build libsql's Rust wheel target cleanly. Keep local mobile tests usable
 # while leaving x86_64 production installs unchanged.
-# Production is deliberately pinned to Python 3.11 in discloud.config because
-# VERSION=latest previously selected Python 3.14 and the native driver panicked.
-libsql; platform_machine != "aarch64"
-python-dotenv
-cryptography
-pytest
+# Production remains pinned to Python 3.11 in discloud.config because Python 3.14
+# previously selected an unsupported native-driver path.
+libsql==0.1.11; platform_machine != "aarch64"
+python-dotenv==1.2.2
+cryptography==50.0.0
+pytest==9.1.1

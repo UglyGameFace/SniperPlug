@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import multiprocessing
 import os
+import sqlite3
 import threading
 import time
 import traceback
@@ -15,6 +17,8 @@ from sniperplug.storage.db import _LibsqlAsyncCursor
 
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 45.0
 DEFAULT_OPERATION_TIMEOUT_SECONDS = 90.0
+SLOW_OPERATION_WARNING_SECONDS = 2.0
+log = logging.getLogger("sniperplug.database")
 
 
 class LibsqlWorkerError(RuntimeError):
@@ -28,18 +32,17 @@ class LibsqlProcessIdentity:
 
 
 class LibsqlProcessConnection:
-    """Async DB-API facade backed by a dedicated native libSQL process.
+    """Async DB-API facade backed by one dedicated native libSQL process.
 
-    The official ``libsql`` Python remote driver exposes a synchronous API. A
-    thread wrapper prevents ordinary Python work from running on the event-loop
-    thread, but production showed that long native calls can still starve the
-    interpreter and Discord gateway. This adapter moves the native extension,
-    remote stream, result consumption, and commits into a separate process.
+    The parent event loop only waits on an OS pipe from a helper thread. One
+    worker owns one connection and serializes all operations, preserving the
+    existing transaction stream without letting native libSQL hold Discord's
+    interpreter or gateway heartbeat.
 
-    One worker owns one connection and executes requests serially, preserving
-    the same transaction and single-stream semantics as the previous adapter.
-    The parent event loop only waits on an operating-system pipe from a helper
-    thread, so a slow Turso statement cannot block Discord heartbeats.
+    Stream recovery is deliberately transaction-aware. Read-only operations may
+    reconnect and retry only when no transaction is active. Writes and commits
+    are never replayed on a new connection because doing so could silently lose
+    or duplicate part of an implicit transaction.
     """
 
     def __init__(
@@ -76,17 +79,12 @@ class LibsqlProcessConnection:
             startup_timeout_seconds=startup_timeout_seconds,
             operation_timeout_seconds=operation_timeout_seconds,
         )
-        instance._start_worker_sync()
         try:
-            ready = await asyncio.to_thread(instance._receive_startup_sync)
+            ready = await asyncio.to_thread(instance._start_and_receive_sync)
         except BaseException:
             instance._discard_worker_sync()
             raise
-
-        instance.identity = LibsqlProcessIdentity(
-            pid=int(ready.get("pid") or 0),
-            parent_pid=os.getpid(),
-        )
+        instance._set_identity(ready)
         return instance
 
     async def execute(
@@ -99,16 +97,21 @@ class LibsqlProcessConnection:
             sql=str(sql),
             params=None if params is None else tuple(params),
         )
-        return _LibsqlAsyncCursor(
+        cursor = _LibsqlAsyncCursor(
             rows=list(response.get("rows") or []),
             columns=list(response.get("columns") or []),
         )
+        cursor.rowcount = _normalize_rowcount(response.get("rowcount", -1))
+        return cursor
 
     async def executescript(self, script: str) -> None:
         await self._request("executescript", script=str(script))
 
     async def commit(self) -> None:
         await self._request("commit")
+
+    async def rollback(self) -> None:
+        await self._request("rollback")
 
     async def close(self) -> None:
         async with self._lock:
@@ -129,16 +132,33 @@ class LibsqlProcessConnection:
                 self._discard_worker_sync()
 
     async def _request(self, operation: str, **payload: Any) -> dict[str, Any]:
+        wait_started = time.monotonic()
         async with self._lock:
+            lock_wait = max(0.0, time.monotonic() - wait_started)
             if self._closed:
                 raise RuntimeError("Turso/libSQL process connection is closed.")
-            return await asyncio.to_thread(
+            response = await asyncio.to_thread(
                 self._request_sync,
                 operation,
                 payload,
                 self.operation_timeout_seconds,
                 True,
             )
+            remote_elapsed = max(0.0, float(response.get("elapsed_seconds") or 0.0))
+            if (
+                lock_wait >= SLOW_OPERATION_WARNING_SECONDS
+                or remote_elapsed >= SLOW_OPERATION_WARNING_SECONDS
+            ):
+                log.warning(
+                    "Slow isolated database operation operation=%s label=%s "
+                    "lock_wait_s=%.2f remote_s=%.2f worker_pid=%s",
+                    operation,
+                    _payload_label(operation, payload),
+                    lock_wait,
+                    remote_elapsed,
+                    self.identity.pid if self.identity else "unknown",
+                )
+            return response
 
     def _request_sync(
         self,
@@ -184,14 +204,21 @@ class LibsqlProcessConnection:
             self._discard_worker_sync()
             raise RuntimeError("Turso/libSQL worker returned an invalid response.")
         if not response.get("ok"):
+            fatal = bool(response.get("fatal"))
             error_type = str(response.get("error_type") or "RuntimeError")
             error_text = str(response.get("error") or "Unknown libSQL worker error")
             remote_trace = str(response.get("traceback") or "").strip()
             detail = f"{error_type}: {error_text}"
             if remote_trace:
                 detail += f"\nRemote worker traceback:\n{remote_trace}"
+            if fatal:
+                self._discard_worker_sync()
             raise LibsqlWorkerError(detail)
         return response
+
+    def _start_and_receive_sync(self) -> dict[str, Any]:
+        self._start_worker_sync()
+        return self._receive_startup_sync()
 
     def _start_worker_sync(self) -> None:
         if self._closed:
@@ -237,8 +264,10 @@ class LibsqlProcessConnection:
         process = self._process
         if process is not None and process.is_alive() and self._parent_pipe is not None:
             return
-        self._start_worker_sync()
-        ready = self._receive_startup_sync()
+        ready = self._start_and_receive_sync()
+        self._set_identity(ready)
+
+    def _set_identity(self, ready: dict[str, Any]) -> None:
         self.identity = LibsqlProcessIdentity(
             pid=int(ready.get("pid") or 0),
             parent_pid=os.getpid(),
@@ -267,6 +296,10 @@ class LibsqlProcessConnection:
                 pass
 
 
+class _FatalWorkerError(RuntimeError):
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Child process implementation
 # ---------------------------------------------------------------------------
@@ -278,34 +311,30 @@ def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
     def connect() -> Any:
         import libsql
 
+        kwargs: dict[str, Any] = {
+            "database": database,
+            "isolation_level": "DEFERRED",
+        }
         if auth_token:
-            return libsql.connect(database=database, auth_token=auth_token)
-        return libsql.connect(database=database)
+            kwargs["auth_token"] = auth_token
+        return libsql.connect(**kwargs)
 
     def reconnect() -> Any:
         nonlocal connection
         _close_sync(connection)
         connection = connect()
-        try:
-            connection.execute("PRAGMA foreign_keys=ON;")
-            connection.commit()
-        except Exception:
-            pass
+        _configure_connection(connection)
         return connection
 
     try:
         connection = connect()
-        try:
-            connection.execute("PRAGMA foreign_keys=ON;")
-            connection.commit()
-        except Exception:
-            pass
+        _configure_connection(connection)
         pipe.send(
             {
                 "type": "ready",
                 "ok": True,
                 "pid": os.getpid(),
-                "thread": threading.current_thread().name,
+                "parent_pid": os.getppid(),
             }
         )
     except BaseException as exc:
@@ -317,90 +346,87 @@ def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
                     "pid": os.getpid(),
                     "error_type": type(exc).__name__,
                     "error": str(exc),
-                    "traceback": traceback.format_exc(limit=20),
                 }
             )
-        finally:
-            try:
-                pipe.close()
-            except Exception:
-                pass
+        except Exception:
+            pass
+        _close_sync(connection)
+        pipe.close()
         return
 
     try:
         while True:
             try:
-                message = pipe.recv()
+                request = pipe.recv()
             except (EOFError, OSError):
                 break
-            if not isinstance(message, dict):
+            if not isinstance(request, dict):
                 continue
 
-            request_id = str(message.get("id") or "")
-            operation = str(message.get("operation") or "")
-            payload = message.get("payload")
-            if not isinstance(payload, dict):
-                payload = {}
-
+            request_id = str(request.get("id") or "")
+            operation = str(request.get("operation") or "")
+            payload = request.get("payload") or {}
             started = time.monotonic()
+            fatal = False
             try:
                 if operation == "execute":
                     sql = str(payload.get("sql") or "")
                     params = payload.get("params")
-                    result = _execute_with_reconnect(
-                        connection_getter=lambda: connection,
-                        reconnect=reconnect,
-                        sql=sql,
-                        params=params,
+                    result = _execute_transaction_safe(
+                        connection,
+                        sql,
+                        params,
+                        reconnect,
                     )
-                    columns, rows = _serialize_result(result)
+                    columns, rows, rowcount = _consume_result(result)
                     response = {
                         "id": request_id,
                         "ok": True,
                         "columns": columns,
                         "rows": rows,
+                        "rowcount": rowcount,
                     }
                 elif operation == "executescript":
-                    script = str(payload.get("script") or "")
-                    for statement in _split_sql_script(script):
-                        _execute_with_reconnect(
-                            connection_getter=lambda: connection,
-                            reconnect=reconnect,
-                            sql=statement,
-                            params=None,
-                        )
+                    _execute_script_transaction_safe(
+                        connection,
+                        str(payload.get("script") or ""),
+                        reconnect,
+                    )
                     response = {"id": request_id, "ok": True}
                 elif operation == "commit":
-                    _commit_with_reconnect(
-                        connection_getter=lambda: connection,
-                        reconnect=reconnect,
-                    )
+                    _commit_once(connection)
+                    response = {"id": request_id, "ok": True}
+                elif operation == "rollback":
+                    _rollback_once(connection)
                     response = {"id": request_id, "ok": True}
                 elif operation == "close":
                     _close_sync(connection)
+                    connection = None
                     response = {"id": request_id, "ok": True}
-                    response["elapsed_seconds"] = max(0.0, time.monotonic() - started)
+                    response["elapsed_seconds"] = max(
+                        0.0,
+                        time.monotonic() - started,
+                    )
                     pipe.send(response)
                     break
+                elif operation == "test_sleep" and database == ":memory:":
+                    time.sleep(max(0.0, min(5.0, float(payload.get("seconds") or 0.0))))
+                    response = {"id": request_id, "ok": True}
                 else:
                     raise ValueError(f"Unsupported libSQL worker operation: {operation}")
-
-                response["elapsed_seconds"] = max(0.0, time.monotonic() - started)
-                pipe.send(response)
+            except _FatalWorkerError as exc:
+                fatal = True
+                response = _error_response(request_id, exc, fatal=True)
             except BaseException as exc:
-                try:
-                    pipe.send(
-                        {
-                            "id": request_id,
-                            "ok": False,
-                            "error_type": type(exc).__name__,
-                            "error": str(exc),
-                            "traceback": traceback.format_exc(limit=30),
-                            "elapsed_seconds": max(0.0, time.monotonic() - started),
-                        }
-                    )
-                except Exception:
-                    break
+                response = _error_response(request_id, exc, fatal=False)
+
+            response["elapsed_seconds"] = max(0.0, time.monotonic() - started)
+            try:
+                pipe.send(response)
+            except (BrokenPipeError, EOFError, OSError):
+                break
+            if fatal:
+                break
     finally:
         _close_sync(connection)
         try:
@@ -409,106 +435,188 @@ def _libsql_worker_main(pipe: Any, database: str, auth_token: str) -> None:
             pass
 
 
-def _execute_with_reconnect(
-    *,
-    connection_getter: Any,
-    reconnect: Any,
+def _configure_connection(connection: Any) -> None:
+    try:
+        connection.execute("PRAGMA foreign_keys=ON;")
+        connection.commit()
+    except Exception:
+        pass
+
+
+def _execute_transaction_safe(
+    connection: Any,
     sql: str,
     params: Any,
+    reconnect,
 ) -> Any:
-    last_error: BaseException | None = None
-    for attempt in range(2):
-        connection = connection_getter()
-        try:
-            if params is None:
-                return connection.execute(sql)
-            return connection.execute(sql, tuple(params))
-        except BaseException as exc:
-            last_error = exc
-            if attempt or not _is_retryable_libsql_stream_error(exc):
-                raise
-            reconnect()
-    raise RuntimeError("libSQL execute failed without an exception") from last_error
-
-
-def _commit_with_reconnect(*, connection_getter: Any, reconnect: Any) -> None:
-    last_error: BaseException | None = None
-    for attempt in range(2):
-        connection = connection_getter()
-        try:
-            connection.commit()
-            return
-        except BaseException as exc:
-            last_error = exc
-            if attempt or not _is_retryable_libsql_stream_error(exc):
-                raise
-            reconnect()
-    raise RuntimeError("libSQL commit failed without an exception") from last_error
-
-
-def _serialize_result(result: Any) -> tuple[list[str], list[Any]]:
-    columns = _extract_columns(result)
     try:
-        raw_rows = list(result.fetchall()) if hasattr(result, "fetchall") else []
-    except Exception:
-        raw_rows = []
-
-    rows: list[Any] = []
-    for row in raw_rows:
-        if isinstance(row, dict):
-            rows.append({str(key): value for key, value in row.items()})
-            continue
-
-        keys = getattr(row, "keys", None)
-        if callable(keys):
+        return _execute_sync(connection, sql, params)
+    except Exception as exc:
+        transaction_active = _in_transaction(connection)
+        if (
+            _is_retryable_libsql_stream_error(exc)
+            and _is_read_only_sql(sql)
+            and not transaction_active
+        ):
+            replacement = reconnect()
+            return _execute_sync(replacement, sql, params)
+        if transaction_active or _is_retryable_libsql_stream_error(exc):
             try:
-                rows.append({str(key): row[key] for key in keys()})
-                continue
+                connection.rollback()
             except Exception:
                 pass
+            raise _FatalWorkerError(
+                "libSQL operation failed inside or near a transaction; "
+                "the worker was discarded instead of replaying writes: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        raise
 
-        if columns:
-            try:
-                rows.append(
-                    {
-                        columns[index]: row[index]
-                        for index in range(min(len(columns), len(row)))
-                    }
-                )
-                continue
-            except Exception:
-                pass
 
+def _execute_script_transaction_safe(
+    connection: Any,
+    script: str,
+    reconnect,
+) -> None:
+    for statement in _split_sql_script(script):
         try:
-            rows.append(tuple(row))
+            _execute_transaction_safe(connection, statement, None, reconnect)
+        except BaseException:
+            if _in_transaction(connection):
+                try:
+                    connection.rollback()
+                except Exception as rollback_error:
+                    raise _FatalWorkerError(
+                        "SQL script failed and rollback also failed: "
+                        f"{type(rollback_error).__name__}: {rollback_error}"
+                    ) from rollback_error
+            raise
+
+
+def _commit_once(connection: Any) -> None:
+    try:
+        connection.commit()
+    except Exception as exc:
+        raise _FatalWorkerError(
+            "libSQL commit outcome is unknown; commit was not replayed on a new "
+            f"connection: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _rollback_once(connection: Any) -> None:
+    try:
+        connection.rollback()
+    except Exception as exc:
+        raise _FatalWorkerError(
+            f"libSQL rollback failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _execute_sync(connection: Any, sql: str, params: Any) -> Any:
+    if params is None:
+        return connection.execute(sql)
+    return connection.execute(sql, tuple(params))
+
+
+def _consume_result(result: Any) -> tuple[list[str], list[Any], int]:
+    if result is None:
+        return [], [], -1
+    columns = _extract_columns(result)
+    rows: list[Any] = []
+    fetchall = getattr(result, "fetchall", None)
+    if callable(fetchall):
+        try:
+            raw_rows = list(fetchall())
         except Exception:
-            rows.append(row)
-    return columns, rows
+            raw_rows = []
+    else:
+        raw_rows = list(getattr(result, "rows", None) or [])
+    for row in raw_rows:
+        rows.append(_normalize_row(row, columns))
+    rowcount = _normalize_rowcount(getattr(result, "rowcount", -1))
+    return columns, rows, rowcount
+
+
+def _normalize_rowcount(value: Any) -> int:
+    if value is None:
+        return -1
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return -1
 
 
 def _extract_columns(result: Any) -> list[str]:
-    if result is None:
-        return []
     description = getattr(result, "description", None)
     if description:
-        columns: list[str] = []
-        for item in description:
-            if isinstance(item, (tuple, list)) and item:
-                columns.append(str(item[0]))
-            else:
-                columns.append(str(getattr(item, "name", item)))
-        return columns
-
+        return [
+            str(item[0] if isinstance(item, (tuple, list)) and item else getattr(item, "name", item))
+            for item in description
+        ]
     columns = getattr(result, "columns", None)
     if callable(columns):
         columns = columns()
+    return [str(column) for column in columns] if columns else []
+
+
+def _normalize_row(row: Any, columns: list[str]) -> Any:
+    if isinstance(row, dict):
+        return row
+    keys = getattr(row, "keys", None)
+    if callable(keys):
+        try:
+            return {str(key): row[key] for key in keys()}
+        except Exception:
+            pass
     if columns:
-        return [str(column) for column in columns]
-    return []
+        try:
+            return {
+                columns[index]: row[index]
+                for index in range(min(len(columns), len(row)))
+            }
+        except Exception:
+            pass
+    try:
+        return tuple(row)
+    except TypeError:
+        return row
 
 
-def _split_sql_script(script: str) -> list[str]:
-    return [statement.strip() for statement in script.split(";") if statement.strip()]
+def _split_sql_script(script: str) -> tuple[str, ...]:
+    """Split SQL with SQLite's parser, preserving triggers and quoted `;`."""
+
+    statements: list[str] = []
+    buffer: list[str] = []
+    for char in str(script or ""):
+        buffer.append(char)
+        if char != ";":
+            continue
+        candidate = "".join(buffer).strip()
+        if candidate and sqlite3.complete_statement(candidate):
+            statements.append(candidate)
+            buffer = []
+    remainder = "".join(buffer).strip()
+    if remainder:
+        statements.append(remainder)
+    return tuple(statements)
+
+
+def _is_read_only_sql(sql: str) -> bool:
+    cleaned = str(sql or "").lstrip()
+    while cleaned.startswith("--"):
+        newline = cleaned.find("\n")
+        if newline < 0:
+            return True
+        cleaned = cleaned[newline + 1 :].lstrip()
+    token = cleaned.split(None, 1)[0].upper() if cleaned else ""
+    return token in {"SELECT", "EXPLAIN"}
+
+
+def _in_transaction(connection: Any) -> bool:
+    try:
+        return bool(getattr(connection, "in_transaction"))
+    except Exception:
+        return False
 
 
 def _is_retryable_libsql_stream_error(exc: BaseException) -> bool:
@@ -528,6 +636,27 @@ def _is_retryable_libsql_stream_error(exc: BaseException) -> bool:
         "none value",
     )
     return "hrana" in text and any(term in text for term in retry_terms)
+
+
+def _error_response(request_id: str, exc: BaseException, *, fatal: bool) -> dict[str, Any]:
+    return {
+        "id": request_id,
+        "ok": False,
+        "fatal": bool(fatal),
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "traceback": "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )[-8000:],
+    }
+
+
+def _payload_label(operation: str, payload: dict[str, Any]) -> str:
+    if operation != "execute":
+        return operation
+    sql = " ".join(str(payload.get("sql") or "").split())
+    tokens = sql.split()
+    return " ".join(tokens[:4])[:120] or "empty-sql"
 
 
 def _close_sync(connection: Any | None) -> None:

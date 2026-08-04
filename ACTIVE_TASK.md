@@ -1,80 +1,53 @@
 # Active Task
 
 ## Status
-Active — PR #204 bulk persistence is deployed successfully on the Python 3.11.15 production app. Startup, Turso, Discord, fanout enrollment, and rollback isolation are confirmed. Final closure depends on several real 24/4 cycles proving the previous heartbeat stalls are gone or materially reduced.
+Active — canonical SniperPlug app `1779293887444` is online on Python 3.11.15. Duplicate app `1785806676351` is offline and must remain offline. PR #210 process-isolated native libSQL is deployed and production claims fell from 12–29 seconds to 0.63–1.44 seconds in the first verified window.
 
 ## Scope
-Restore reliable Walmart background alerts without weakening exact item, seller, offer, current-price, original-price, duplicate, category, or per-server threshold proof.
+Complete one consolidated runtime-stability pass without weakening exact Walmart item, seller, selected-offer, variant, condition, fulfillment, current-price, trusted original-price, duplicate, category, or per-server threshold proof.
 
-## Production findings
-- The 420 Lobby is correctly enrolled in live fanout with exact guild ID `1514374173517152418`.
-- PR #202 fixed the original backpressure arithmetic and is deployed.
-- PR #203 added bounded 24/4 drain mode, batch queue leasing, tiered rechecks, and stage timings.
-- Replacement app `1785806676351` is live on Python 3.11.15, connected to Turso, logged into Discord, and reports the correct eligible fanout guilds.
-- Old app `1779293887444` remains stopped as rollback.
-- Before PR #204, eight sampled Python 3.11 drain cycles reduced actionable due from 1,338 to 1,029, a drop of 309 rows.
-- Every sampled pre-PR #204 cycle remained in drain mode at 24 claims / concurrency 4.
-- `new/retry due` remained zero; the remaining actionable work was scheduled rechecks.
-- Catalog discovery remained correctly paused above the 450-row pressure limit.
-- No queue/fanout batch failures were captured in the pre-PR #204 sample.
-- Python 3.11 alone did not remove the event-loop problem: 40 lag warnings were captured with a maximum of 30.61 seconds.
-- Discord logged `heartbeat blocked for more than 10 seconds` during exact queue work.
-- The blocked-loop traceback showed Discord attempting to write its heartbeat after the process had already been starved; it confirmed the symptom rather than identifying a Python-level queue frame.
-- The old persistence stage issued one queue update plus multiple offer-memory SELECT/INSERT/UPDATE operations per candidate, exceeding roughly 70 serialized Turso/libsql calls in a 24-item cycle.
-- One sampled pre-fix store phase reached 22.39 seconds; claim phases reached 19.29 seconds on Python 3.11.
-- PR #204 deployed to app `1785806676351` at the startup beginning `2026-08-04T03:47:20Z`.
-- Post-deploy startup confirms `bulk_exact_persistence=true`, Python 3.11.15, Turso connected, Discord online, and eligible guild IDs `[1357215261001912320, 1514374173517152418]`.
+## Confirmed production state
+- Canonical app: `1779293887444` — online.
+- Duplicate app: `1785806676351` — offline.
+- Python: 3.11.15.
+- Main bot PID and native libSQL worker PID are different.
+- Startup confirms `native_libsql_in_gateway_process=false` and exact large-integer text transport.
+- PR #208 separated catalog discovery from exact verification.
+- PR #209 stopped scheduled rechecks from triggering aggressive 24/4 drain mode and repaired legacy hourly schedules.
+- PR #210 moved the synchronous native libSQL driver into a dedicated child process.
+- The first post-PR #210 sample contained no new event-loop, heartbeat, or gateway failure line.
+- Exact claim timings in that sample were 0.63s, 1.29s, 0.79s, and 1.44s.
 
-## Completed changes
-- Added bounded drain mode: 24 claims with concurrency 4 only while actionable due is at least 450; normal mode remains 6/2.
-- Replaced per-row queue leasing with one ordered SELECT, one guarded batch UPDATE, and one verification SELECT.
-- Preserved pending/retry priority ahead of scheduled rechecks.
-- Kept terminal identity failures excluded and fail-closed.
-- Kept 50%+ verified markdowns on a one-hour recheck.
-- Changed 30–49% markdown rechecks to six hours and 10–29% markdown rechecks to twelve hours.
-- Changed no-reference rechecks to twelve hours and under-threshold/unavailable rechecks to twenty-four hours.
-- Split health output into `new/retry due` and `scheduled rechecks due` while preserving total actionable backpressure.
-- Added claim, fetch, and store timing to each queue batch log.
-- Rebuilt production under the repository-pinned Python 3.11 runtime while preserving a stopped rollback application.
-- PR #204 added a separate bulk persistence runtime used only by the global production worker.
-- PR #204 consolidates all claimed queue outcomes into one guarded queue UPDATE.
-- PR #204 consolidates offer-memory persistence into one SELECT and one guarded UPSERT.
-- Exact item, seller, selected offer, variant, condition, fulfillment, trusted-reference, retry, terminal quarantine, and tiered recheck rules remain unchanged.
-- The prior runtime remains in the repository for rollback and comparison.
-- PR #204 was deployed through a clean tracked-file staging directory with an explicit root `.env`.
+## Consolidated stability findings
+- The previous whole-job Walmart provider lock can let a slow catalog or manual discovery job delay the exact worker for minutes even though the database no longer blocks Discord.
+- Native libSQL recovery must never replay writes or retry a failed commit on a new connection because the original implicit transaction cannot follow that connection.
+- SQL scripts require SQLite-aware statement splitting so triggers and quoted semicolons remain intact while errors still propagate.
+- HP and Target standalone workers must use the same process-isolated, snowflake-safe database factory as the bot. The eBay watcher must use that factory before PR #200 can be considered ready.
+- The bot must close the child database worker during graceful Discord shutdown.
+- Production-critical dependency versions must be pinned to the versions proven by Python 3.11 CI.
+- A simultaneous outage of all movie-ticket sources is degraded upstream health, not an application traceback every poll.
 
-## Validation completed
-- Python compilation passed.
-- Import smoke check passed.
-- Python Check passed.
-- Full repository suite passed: 965 tests, 1 unrelated discord.py audioop deprecation warning.
-- A 24-item bulk persistence regression proves exactly three SQL statements before commit: one queue UPDATE, one offer-memory SELECT, and one offer-memory UPSERT.
-- Failure persistence regression proves retry updates preserve prior exact snapshot fields.
-- Offer-memory regression proves learning, stable-reference confirmation, and `new_low` behavior remain intact.
-- Existing batch leasing, terminal exclusion, health splitting, drain mode, exact proof, and tiered recheck tests remain passing.
-- PR #204 merged as commit `623c83c4d3811b2c1548e718871efd4f712d9cfc`.
-- Deployment commit succeeded through Discloud API 200.
-- Production startup confirms Python 3.11.15.
-- Production startup confirms `bulk_exact_persistence=true`.
-- Production startup confirms Turso connectivity.
-- Production startup confirms Discord login.
-- Production startup confirms The 420 Lobby remains in fanout enrollment.
-- Final app states are replacement online and rollback offline.
+## Current branch
+`fix/full-runtime-stability-pass`
 
-## Remaining live definition of done
-- Observe multiple 24/4 drain cycles while actionable due remains above 450.
-- Confirm queue and offer-memory persistence continue with no batch failures.
-- Compare claim/store timings and event-loop warnings against the pre-fix Python 3.11 maximum of 30.61 seconds.
-- Confirm no repeated Discord heartbeat-blocked warnings under exact queue work.
-- Confirm exact-deal fanout continues with zero public/DM errors.
-- Confirm catalog discovery remains paused above 450 and resumes only below the safe pressure limit.
-- Keep the old app stopped until enough post-fix production evidence exists for rollback retirement.
+This branch is intentionally isolated from production until all of the following pass:
+- Complete Python 3.11 test suite.
+- Complete Python 3.12 test suite and import smoke check.
+- `pip check` on both CI paths.
+- Child-process row and exact snowflake round trips.
+- Worker death and operation-timeout recovery.
+- Proof that slow child work does not starve the parent event loop.
+- Proof that write/commit failures are not replayed across connections.
+- Trigger and quoted-semicolon SQL script tests.
+- Exact-priority Walmart request scheduling under catalog pressure.
+- Automatic movie-source total-outage cache preservation without traceback spam.
+- Static proof that the bot, HP watcher, and Target watcher share one production database factory.
 
-## Blockers
-- No code, CI, or deployment blocker remains.
-- Final closure depends only on post-deploy production evidence under real queue load.
+## Deployment boundary
+- Do not modify or deploy the duplicate app.
+- Do not merge PR #200 during this stability pass.
+- Do not lower alert thresholds or relax exact verification gates.
+- Do not merge the stability branch until all CI checks pass and the final diff is reviewed as one unit.
 
-## Backlog
-- Improve the separate movie-ticket source availability behavior after the Walmart alert task is fully closed.
-- Review optional PyNaCl/davey voice dependencies separately; they do not affect Walmart alerts.
-- Delete the stopped Python 3.14 rollback app and obsolete deployment branches only after final runtime validation.
+## Follow-up after stability
+Rebase PR #200 onto the stable main branch, replace its standalone database construction with the shared process-isolated factory, rerun its targeted and full suites, and keep live eBay deployment blocked on production eBay credentials and Buy API approval.

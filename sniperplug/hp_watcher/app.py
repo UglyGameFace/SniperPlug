@@ -5,7 +5,7 @@ import logging
 
 from sniperplug.hp_watcher.config import HPWatcherSettings
 from sniperplug.hp_watcher.price_error_service import HPPriceErrorWatcherService
-from sniperplug.storage.db import Database
+from sniperplug.storage.process_database import create_runtime_database
 
 
 log = logging.getLogger("sniperplug.hp_watcher")
@@ -19,14 +19,14 @@ async def run(settings: HPWatcherSettings | None = None) -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    db = Database(resolved.database_path)
+    db = create_runtime_database(resolved.database_path)
     await db.connect()
     try:
         await db.init()
         log.info(
             "Standalone HP price-error watcher starting backend=%s sitemap_batch=%s "
             "page_batch=%s offer_batch=%s big_ticket_floor=$%.2f discount_floor=%s%% "
-            "big_ticket_interval_s=%s",
+            "big_ticket_interval_s=%s process_isolated_turso=true",
             getattr(db, "backend", "unknown"),
             resolved.sitemap_batch_size,
             resolved.product_page_batch_size,

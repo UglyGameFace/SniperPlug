@@ -38,13 +38,15 @@ def test_global_runner_replaces_per_guild_scheduled_discovery() -> None:
     assert "per_guild_discovery=false" in RUNNER
 
 
-def test_global_cursor_advances_only_after_completed_batch() -> None:
+def test_global_cursor_advances_only_after_completed_discovery_enqueue() -> None:
     assert "claim_next_catalog_routes" in RUNNER
     assert "complete_catalog_claim" in RUNNER
     assert "release_catalog_claim" in RUNNER
-    assert RUNNER.index("collect_verified_discount_cards_with_observed_memory") < RUNNER.index(
+    assert RUNNER.index("discover_walmart_catalog_candidates") < RUNNER.index(
         "completed = await complete_catalog_claim"
     )
+    assert "foreground_exact_checks=0" in RUNNER
+    assert "catalog_discovery_only=true" in RUNNER
     assert "durable cursor was not advanced" in RUNNER
 
 
@@ -144,7 +146,7 @@ def test_backpressure_does_not_subtract_terminal_blocks_twice() -> None:
     reason = catalog_backpressure_reason(production_shape)
 
     assert reason is not None
-    assert "2818/450" in reason
+    assert "fresh/retry pressure **172/12**" in reason
     assert "terminal identity blocks excluded **7591**" in reason
 
 

@@ -6,7 +6,7 @@ from sniperplug.services.error_logging import (
     configure_runtime_logging,
     install_global_exception_hooks,
 )
-from sniperplug.storage.process_database import ProcessIsolatedDatabase
+from sniperplug.storage.process_database import create_runtime_database
 
 
 class ProcessIsolatedSniperPlugBot(SniperPlugBot):
@@ -14,10 +14,20 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
 
     def __init__(self, settings: Settings):
         super().__init__(settings)
-        # The base constructor does not connect, so replacing the database here
-        # creates no abandoned connection and leaves every inherited service on
-        # the same Database API.
-        self.db = ProcessIsolatedDatabase(settings.database_path)
+        # The base constructor does not connect, so replacement here creates no
+        # abandoned connection and keeps every inherited service on one API.
+        self.db = create_runtime_database(settings.database_path)
+        self._runtime_database_closed = False
+
+    async def close(self) -> None:
+        """Unload Discord services first, then stop the DB worker exactly once."""
+
+        try:
+            await super().close()
+        finally:
+            if not self._runtime_database_closed:
+                self._runtime_database_closed = True
+                await self.db.close()
 
 
 def run() -> None:

@@ -11,8 +11,11 @@ from sniperplug.services.walmart_exact_queue_bulk_persistence import (
     persist_exact_queue_outcomes_bulk,
 )
 from sniperplug.services.walmart_exact_queue_drain import claim_due_rows_batched
-from sniperplug.services.walmart_exact_queue_health import (
-    load_walmart_exact_queue_health,
+from sniperplug.services.walmart_exact_queue_maintenance import (
+    maybe_prune_walmart_exact_queue_bounded,
+)
+from sniperplug.services.walmart_exact_queue_pressure import (
+    load_walmart_exact_queue_pressure,
 )
 from sniperplug.services.walmart_exact_queue_runtime import (
     DRAIN_BATCH_SIZE,
@@ -28,8 +31,6 @@ from sniperplug.services.walmart_exact_runtime_schema import (
 )
 from sniperplug.services.walmart_exact_verification_queue import (
     _classify_exact_candidate,
-    _pending_total,
-    maybe_prune_walmart_exact_verification_queue,
 )
 from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
 from sniperplug.services.walmart_global_offer_memory import (
@@ -65,7 +66,8 @@ async def process_actionable_walmart_exact_queue_batch(
     Exact queue and offer-memory schema initialization is cached per live
     database connection. Terminal identity maintenance is bounded to a
     fifteen-minute cadence because terminal rows are already excluded from
-    ordinary claims immediately.
+    ordinary claims immediately. Scheduling decisions use a bounded pressure
+    snapshot rather than a full-table owner-health scan on every cycle.
     """
 
     if db is None or provider is None or limit <= 0:
@@ -75,11 +77,11 @@ async def process_actionable_walmart_exact_queue_batch(
     maintenance = await maintain_terminal_identity_rows_bounded(db)
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
-    await maybe_prune_walmart_exact_verification_queue(conn, now=now)
+    await maybe_prune_walmart_exact_queue_bounded(conn, now=now)
     await rearm_legacy_due_rechecks_bounded(conn, now=now)
 
-    health_before = await load_walmart_exact_queue_health(db)
-    drain_mode = should_use_drain_mode(health_before)
+    pressure_before = await load_walmart_exact_queue_pressure(db)
+    drain_mode = should_use_drain_mode(pressure_before)
     effective_limit = max(1, int(limit))
     effective_concurrency = max(1, int(concurrency))
     if drain_mode:
@@ -96,7 +98,7 @@ async def process_actionable_walmart_exact_queue_batch(
     claim_seconds = max(0.0, time.monotonic() - claim_started)
     if not claims:
         return ExactQueueRuntimeResult(
-            pending_total=await _pending_total(conn, now_iso=now.isoformat()),
+            pending_total=pressure_before.due_now,
             terminal_quarantined=maintenance.quarantined,
             terminal_rearmed=maintenance.rearmed,
             mode=mode,
@@ -189,13 +191,10 @@ async def process_actionable_walmart_exact_queue_batch(
     )
     await conn.commit()
     store_seconds = max(0.0, time.monotonic() - store_started)
-    pending_total = await _pending_total(
-        conn,
-        now_iso=datetime.now(timezone.utc).isoformat(),
-    )
+    pressure_after = await load_walmart_exact_queue_pressure(db)
     return ExactQueueRuntimeResult(
         claimed=len(claims),
-        pending_total=pending_total,
+        pending_total=pressure_after.due_now,
         terminal_quarantined=maintenance.quarantined,
         terminal_rearmed=maintenance.rearmed,
         mode=mode,

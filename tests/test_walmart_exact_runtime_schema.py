@@ -69,15 +69,20 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
         await runtime_schema.ensure_exact_runtime_schema_once(second)
 
         assert calls == {"queue": 2, "offer": 2}
-        assert first_conn.execute_count == 1
+        assert first_conn.execute_count == 2
         assert first_conn.commit_count == 1
-        assert second_conn.execute_count == 1
+        assert second_conn.execute_count == 2
         assert second_conn.commit_count == 1
-        assert runtime_schema.CLAIM_ORDER_INDEX in first_conn.sql[0]
-        assert "CASE status" in first_conn.sql[0]
-        assert "priority_score DESC" in first_conn.sql[0]
-        assert "last_seen_at DESC" in first_conn.sql[0]
-        assert "WHERE status NOT IN" in first_conn.sql[0]
+        claim_sql, pressure_sql = first_conn.sql
+        assert runtime_schema.CLAIM_ORDER_INDEX in claim_sql
+        assert "CASE status" in claim_sql
+        assert "priority_score DESC" in claim_sql
+        assert "last_seen_at DESC" in claim_sql
+        assert "WHERE status NOT IN" in claim_sql
+        assert runtime_schema.STATUS_DUE_INDEX in pressure_sql
+        assert "status," in pressure_sql
+        assert "next_attempt_at" in pressure_sql
+        assert "lease_until" in pressure_sql
 
     asyncio.run(run())
 
@@ -143,3 +148,5 @@ def test_bulk_runtime_uses_cached_schema_and_bounded_maintenance() -> None:
     assert "ensure_walmart_exact_verification_queue(db)" not in BULK_RUNTIME
     assert "ensure_global_offer_memory_table(db)" not in BULK_RUNTIME
     assert "maintain_terminal_identity_rows(db)" not in BULK_RUNTIME
+    assert "maybe_prune_walmart_exact_queue_bounded" in BULK_RUNTIME
+    assert "load_walmart_exact_queue_pressure" in BULK_RUNTIME

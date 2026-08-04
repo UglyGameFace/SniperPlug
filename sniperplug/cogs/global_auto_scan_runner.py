@@ -32,8 +32,9 @@ from sniperplug.services.walmart_global_catalog_autoscan import (
 from sniperplug.services.walmart_global_deal_fanout_bulk import (
     fanout_recent_exact_walmart_deals,
 )
-from sniperplug.services.walmart_exact_queue_health import (
-    load_walmart_exact_queue_health,
+from sniperplug.services.walmart_exact_queue_pressure import (
+    bounded_pressure_summary,
+    load_walmart_exact_queue_pressure,
 )
 from sniperplug.services.walmart_exact_queue_bulk_runtime import (
     process_actionable_walmart_exact_queue_batch,
@@ -102,7 +103,8 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "catalog_discovery_only=true bounded_claim_steps=true "
             "scheduled_rechecks_never_drain=true "
             "request_level_provider_priority=true fixed_rate_exact_worker=true "
-            "catalog_cannot_own_exact_worker=true",
+            "catalog_cannot_own_exact_worker=true bounded_queue_pressure=true "
+            "background_full_queue_scans=false",
             platform.python_version(),
             sys.platform,
             GLOBAL_DISCOVERY_ROUTES_PER_BATCH,
@@ -220,8 +222,8 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     await asyncio.sleep(5 * 60)
                     continue
 
-                queue_health = await load_walmart_exact_queue_health(self.bot.db)
-                backpressure = catalog_backpressure_reason(queue_health)
+                queue_pressure = await load_walmart_exact_queue_pressure(self.bot.db)
+                backpressure = catalog_backpressure_reason(queue_pressure)
                 if backpressure:
                     now = time.monotonic()
                     if (
@@ -354,19 +356,25 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         now - self._last_queue_health_log_monotonic
                         >= resilient.WALMART_QUEUE_HEALTH_LOG_INTERVAL_SECONDS
                     )
-                    if (
-                        result.claimed
-                        or result.terminal_quarantined
-                        or result.terminal_rearmed
+                    should_log = (
+                        bool(result.claimed)
+                        or bool(result.terminal_quarantined)
+                        or bool(result.terminal_rearmed)
                         or health_due
-                    ):
-                        health = await load_walmart_exact_queue_health(self.bot.db)
-                        legacy.log.info(
-                            "%s • %s",
-                            result.summary_line(),
-                            health.summary_line(),
-                        )
-                        self._last_queue_health_log_monotonic = now
+                    )
+                    if should_log:
+                        if health_due:
+                            pressure = await load_walmart_exact_queue_pressure(
+                                self.bot.db
+                            )
+                            legacy.log.info(
+                                "%s • %s",
+                                result.summary_line(),
+                                bounded_pressure_summary(pressure),
+                            )
+                            self._last_queue_health_log_monotonic = now
+                        else:
+                            legacy.log.info(result.summary_line())
 
                     fanout = await fanout_recent_exact_walmart_deals(
                         self.bot,

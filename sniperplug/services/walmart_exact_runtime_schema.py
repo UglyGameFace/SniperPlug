@@ -21,6 +21,7 @@ from sniperplug.services.walmart_global_offer_memory import (
 
 TERMINAL_MAINTENANCE_INTERVAL_SECONDS = 15 * 60
 CLAIM_ORDER_INDEX = f"idx_{QUEUE_TABLE}_claim_order"
+STATUS_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_due"
 _STATE_ATTR = "_sniperplug_walmart_exact_runtime_state"
 _FALLBACK_STATES: dict[int, "_RuntimeState"] = {}
 
@@ -58,17 +59,16 @@ def _lock(state: _RuntimeState, name: str) -> asyncio.Lock:
 
 
 async def ensure_exact_runtime_schema_once(db: Any) -> None:
-    """Initialize exact runtime schema and its claim-order index once.
+    """Initialize exact runtime schema and its claim/pressure indexes once.
 
-    The production exact worker runs every minute. Reissuing all CREATE TABLE,
-    CREATE INDEX, and COMMIT operations on every cycle creates avoidable remote
-    Turso traffic and competes with queue claims and catalog writes. A newly
-    connected database still performs the complete idempotent initialization.
+    The production exact worker runs frequently. Reissuing all CREATE TABLE,
+    CREATE INDEX, and COMMIT operations on every cycle creates avoidable Turso
+    traffic and competes with queue claims and catalog writes. A newly connected
+    database still performs the complete idempotent initialization.
 
-    The ordinary due index starts with ``next_attempt_at`` while the worker must
-    preserve status priority, score, and recency. The dedicated partial
-    expression index matches that ORDER BY exactly and excludes terminal rows,
-    allowing an eight-row claim to stop early instead of sorting the queue.
+    The claim-order expression index preserves exact work priority. The separate
+    status/due index serves bounded scheduler pressure reads without scanning the
+    complete queue or sorting thousands of terminal rows.
     """
 
     conn = db.require_conn()
@@ -102,6 +102,18 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
                 lease_until
             )
             WHERE status NOT IN ('incomplete_identity', 'identity_mismatch')
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS {STATUS_DUE_INDEX}
+            ON {QUEUE_TABLE} (
+                status,
+                next_attempt_at,
+                last_seen_at,
+                lease_until,
+                priority_score DESC
+            )
             """
         )
         await conn.commit()

@@ -190,7 +190,11 @@ def test_runtime_enters_bounded_drain_mode(monkeypatch) -> None:
             source_label="global:test",
         )
         payloads = {
-            candidate.product_id: exact_payload(candidate.product_id)
+            candidate.product_id: exact_payload(
+                candidate.product_id,
+                current=80.0,
+                reference=100.0,
+            )
             for candidate in candidates
         }
         provider = FakeDetailProvider(payloads)

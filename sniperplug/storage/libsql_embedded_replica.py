@@ -25,6 +25,11 @@ class EmbeddedReplicaLibsqlProcessConnection(LibsqlProcessConnection):
     primary and synchronizes remote changes on a bounded interval. The existing
     transaction-safe worker accepts explicit connection options; no library
     function is replaced or patched at runtime.
+
+    Embedded-replica startup is optional. A native abort can close the startup
+    pipe before Python sends a structured error, so this subclass converts that
+    raw EOF into a diagnostic containing the child PID and exit code. The parent
+    database factory can then fall back to the proven remote process safely.
     """
 
     def __init__(
@@ -109,6 +114,23 @@ class EmbeddedReplicaLibsqlProcessConnection(LibsqlProcessConnection):
         child_pipe.close()
         self._parent_pipe = parent_pipe
         self._process = process
+
+    def _receive_startup_sync(self) -> dict[str, Any]:
+        try:
+            return super()._receive_startup_sync()
+        except (BrokenPipeError, EOFError, OSError) as exc:
+            process = self._process
+            pid = process.pid if process is not None else "unknown"
+            if process is not None:
+                try:
+                    process.join(timeout=0.5)
+                except Exception:
+                    pass
+            exit_code = process.exitcode if process is not None else "unknown"
+            raise RuntimeError(
+                "Turso embedded-replica worker exited before its startup "
+                f"response pid={pid} exitcode={exit_code}"
+            ) from exc
 
     def _set_identity(self, ready: dict[str, Any]) -> None:
         previous_pid = self.identity.pid if self.identity else None

@@ -18,14 +18,13 @@ async def load_walmart_exact_queue_pressure(
     *,
     cap: int = DEFAULT_PRESSURE_CAP,
 ) -> WalmartExactQueueHealth:
-    """Load only bounded counts needed by scheduling and per-cycle logs.
+    """Load only bounded counts needed by scheduling and background logs.
 
-    The full health query intentionally scans the complete queue to produce every
-    owner-facing diagnostic. It is appropriate at a low cadence, not before and
-    after every exact cycle. This snapshot stops after ``cap`` matching rows in
-    each actionable lane, which is enough to make every drain/backpressure
-    decision while preventing remote-only fallback mode from monopolizing the
-    serialized database worker.
+    The complete owner-health query intentionally scans the queue to report every
+    long-lived status. It is not appropriate before and after every exact cycle.
+    This snapshot stops after ``cap`` matching rows in each actionable lane,
+    which is enough for every drain/backpressure decision while protecting the
+    serialized database worker even when production enters remote-only fallback.
     """
 
     if db is None:
@@ -100,6 +99,18 @@ async def load_walmart_exact_queue_pressure(
         initial_due_now=fresh,
         recheck_due_now=rechecks,
         verifying=verifying,
+    )
+
+
+def bounded_pressure_summary(health: WalmartExactQueueHealth) -> str:
+    """Describe only values actually measured by the bounded snapshot."""
+
+    return (
+        "bounded queue pressure: "
+        f"actionable due **{max(0, int(health.due_now or 0))}** "
+        f"(new/retry **{max(0, int(health.initial_due_now or 0))}** • "
+        f"scheduled rechecks **{max(0, int(health.recheck_due_now or 0))}**) • "
+        f"actively verifying **{max(0, int(health.verifying or 0))}**"
     )
 
 

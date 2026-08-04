@@ -35,9 +35,11 @@ class CountingConnection:
         self.inner = inner
         self.execute_count = 0
         self.commit_count = 0
+        self.sql: list[str] = []
 
     async def execute(self, sql, params=()):
         self.execute_count += 1
+        self.sql.append(str(sql))
         return await self.inner.execute(sql, params)
 
     async def commit(self):
@@ -95,34 +97,39 @@ def exact_payload(item_id: str, *, current: float = 20.0, reference: float = 100
     }
 
 
-def test_batch_claim_uses_one_atomic_remote_statement_and_excludes_terminal_rows() -> None:
+def test_batch_claim_uses_bounded_select_and_guarded_lease_update() -> None:
     async def run() -> None:
         inner = await aiosqlite.connect(":memory:")
         await ensure_walmart_exact_verification_queue(FakeDatabase(inner))
         now = datetime.now(timezone.utc)
         due = (now - timedelta(minutes=1)).isoformat()
-        for item_id, status in (
-            ("100001", "pending"),
-            ("100002", "verified_markdown"),
-            ("100003", "incomplete_identity"),
+        for item_id, status, priority in (
+            ("100001", "pending", 10),
+            ("100002", "verified_markdown", 999),
+            ("100003", "incomplete_identity", 9999),
         ):
             await inner.execute(
                 f"""
                 INSERT INTO {QUEUE_TABLE} (
-                    item_id, first_seen_at, last_seen_at, status, next_attempt_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    item_id, priority_score, first_seen_at, last_seen_at,
+                    status, next_attempt_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (item_id, now.isoformat(), now.isoformat(), status, due),
+                (item_id, priority, now.isoformat(), now.isoformat(), status, due),
             )
         await inner.commit()
 
         conn = CountingConnection(inner)
         claims = await claim_due_rows_batched(conn, now=now, limit=10)
 
-        assert {claim.item_id for claim in claims} == {"100001", "100002"}
+        assert [claim.item_id for claim in claims] == ["100001", "100002"]
         assert len({claim.lease_token for claim in claims}) == 1
-        assert conn.execute_count == 1
+        assert conn.execute_count == 2
         assert conn.commit_count == 1
+        assert "MATERIALIZED" not in "\n".join(conn.sql)
+        assert conn.sql[0].lstrip().startswith("SELECT")
+        assert "UPDATE" in conn.sql[1]
+        assert "RETURNING item_id" in conn.sql[1]
 
         cursor = await inner.execute(
             f"SELECT item_id, status, lease_token FROM {QUEUE_TABLE} ORDER BY item_id"

@@ -8,6 +8,9 @@ import aiohttp
 import pytest
 
 from sniperplug.cogs import registered_multi_source_movies as runtime
+from sniperplug.services.fandango_movie_offers import FANDANGO_SOURCE_KEY
+from sniperplug.services.gofobo_screenings import GOFOBO_SOURCE_KEY
+from sniperplug.services.movie_ticket_drops import ATOM_SOURCE_KEY
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,6 +111,25 @@ def test_manual_total_outage_still_surfaces_complete_reason() -> None:
     asyncio.run(run())
 
 
+def test_manual_refresh_explains_when_every_source_is_hard_blocked(monkeypatch) -> None:
+    async def run() -> None:
+        cog = make_cog()
+        now = 1000.0
+        monkeypatch.setattr(runtime.time, "monotonic", lambda: now)
+        source_keys = (ATOM_SOURCE_KEY, FANDANGO_SOURCE_KEY, GOFOBO_SOURCE_KEY)
+        cog._source_access_blocked.update(source_keys)
+        for source_key in source_keys:
+            cog._source_retry_after[source_key] = now + 3600
+
+        with pytest.raises(
+            RuntimeError,
+            match="All official movie-ticket sources are cooling down",
+        ):
+            await cog._scan_official_source(target_guild_id=123)
+
+    asyncio.run(run())
+
+
 def test_registered_runtime_overrides_scan_with_cached_backoff_lane() -> None:
     assert "async def _scan_official_source" in REGISTERED
     assert "SOURCE_BACKOFF_SECONDS = (120, 300, 900, 1800)" in REGISTERED
@@ -115,6 +137,7 @@ def test_registered_runtime_overrides_scan_with_cached_backoff_lane() -> None:
     assert "TOTAL_FAILURE_LOG_INTERVAL_SECONDS = 15 * 60" in REGISTERED
     assert "preserved verified cache and continued other sources" in REGISTERED
     assert "All official movie-ticket sources are temporarily unavailable" in REGISTERED
+    assert "All official movie-ticket sources are cooling down" in REGISTERED
     assert "if attempted == 0" in REGISTERED
     assert "manual_refresh = target_guild_id is not None" in REGISTERED
     assert "hard_blocked = source_key in self._source_access_blocked" in REGISTERED

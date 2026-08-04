@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 
 from sniperplug.storage.libsql_embedded_replica import (
     EmbeddedReplicaLibsqlProcessConnection,
     _connection_mode,
 )
-from sniperplug.storage.libsql_process import LibsqlProcessConnection
+from sniperplug.storage.libsql_process import (
+    LibsqlProcessConnection,
+    _libsql_worker_main,
+)
 from sniperplug.storage.process_database import (
     SnowflakeSafeEmbeddedReplicaConnection,
     SnowflakeSafeLibsqlProcessConnection,
@@ -24,6 +29,68 @@ WORKER_RUNTIME = (
 PROCESS_DATABASE = (
     ROOT / "sniperplug/storage/process_database.py"
 ).read_text(encoding="utf-8")
+
+
+class FakeConnection:
+    def __init__(self) -> None:
+        self.sync_count = 0
+        self.execute_calls: list[str] = []
+        self.commit_count = 0
+        self.closed = False
+        self.in_transaction = False
+
+    def sync(self) -> None:
+        self.sync_count += 1
+
+    def execute(self, sql, _params=()):
+        self.execute_calls.append(str(sql))
+        return None
+
+    def commit(self) -> None:
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        self.in_transaction = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakePipe:
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self.requests = [
+            {"id": "close-1", "operation": "close", "payload": {}},
+        ]
+        self.closed = False
+
+    def send(self, payload) -> None:
+        self.sent.append(dict(payload))
+
+    def recv(self):
+        return self.requests.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def fake_libsql_module(*, fail_replica: bool = False):
+    module = ModuleType("libsql")
+    calls: list[dict] = []
+    connections: list[FakeConnection] = []
+
+    def connect(**kwargs):
+        calls.append(dict(kwargs))
+        if fail_replica and "sync_url" in kwargs:
+            raise RuntimeError("replica unavailable")
+        connection = FakeConnection()
+        connections.append(connection)
+        return connection
+
+    module.connect = connect
+    module.calls = calls
+    module.connections = connections
+    return module
 
 
 def test_replica_path_is_separate_from_local_fallback_database(
@@ -63,6 +130,71 @@ def test_local_process_test_class_remains_distinct_from_production_replica() -> 
         EmbeddedReplicaLibsqlProcessConnection,
     )
     assert SnowflakeSafeLibsqlProcessConnection is not SnowflakeSafeEmbeddedReplicaConnection
+
+
+def test_worker_opens_and_syncs_embedded_replica(monkeypatch) -> None:
+    fake_libsql = fake_libsql_module()
+    monkeypatch.setitem(sys.modules, "libsql", fake_libsql)
+    pipe = FakePipe()
+
+    _libsql_worker_main(
+        pipe,
+        "/data/sniperplug-replica.db",
+        "test-token",
+        {
+            "sync_url": "libsql://primary.example",
+            "sync_interval": 10.0,
+            "initial_sync": True,
+            "allow_remote_fallback": True,
+            "fallback_database": "libsql://primary.example",
+        },
+    )
+
+    assert len(fake_libsql.calls) == 1
+    call = fake_libsql.calls[0]
+    assert call == {
+        "database": "/data/sniperplug-replica.db",
+        "isolation_level": "DEFERRED",
+        "sync_url": "libsql://primary.example",
+        "sync_interval": 10.0,
+        "offline": False,
+        "auth_token": "test-token",
+    }
+    assert fake_libsql.connections[0].sync_count == 1
+    assert pipe.sent[0]["type"] == "ready"
+    assert pipe.sent[0]["connection_mode"] == "embedded-replica"
+    assert pipe.sent[-1]["id"] == "close-1"
+    assert pipe.sent[-1]["connection_mode"] == "embedded-replica"
+    assert pipe.closed is True
+
+
+def test_worker_falls_back_to_remote_and_reports_degraded_mode(monkeypatch) -> None:
+    fake_libsql = fake_libsql_module(fail_replica=True)
+    monkeypatch.setitem(sys.modules, "libsql", fake_libsql)
+    pipe = FakePipe()
+
+    _libsql_worker_main(
+        pipe,
+        "/data/sniperplug-replica.db",
+        "test-token",
+        {
+            "sync_url": "libsql://primary.example",
+            "sync_interval": 10.0,
+            "initial_sync": True,
+            "allow_remote_fallback": True,
+            "fallback_database": "libsql://primary.example",
+        },
+    )
+
+    assert len(fake_libsql.calls) == 2
+    assert "sync_url" in fake_libsql.calls[0]
+    assert fake_libsql.calls[1] == {
+        "database": "libsql://primary.example",
+        "isolation_level": "DEFERRED",
+        "auth_token": "test-token",
+    }
+    assert pipe.sent[0]["connection_mode"] == "remote-fallback:RuntimeError"
+    assert pipe.sent[-1]["connection_mode"] == "remote-fallback:RuntimeError"
 
 
 def test_embedded_replica_uses_explicit_supported_worker_options() -> None:

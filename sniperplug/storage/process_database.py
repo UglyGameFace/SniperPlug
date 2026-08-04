@@ -3,12 +3,45 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+from typing import Any
 
 from sniperplug.storage.db import Database
 from sniperplug.storage.libsql_process import LibsqlProcessConnection
 
 
 log = logging.getLogger("sniperplug")
+MAX_EXACT_JSON_INTEGER = 2**53 - 1
+
+
+def libsql_safe_parameter(value: Any) -> Any:
+    """Transport large integers as decimal text so Hrana cannot round them.
+
+    Discord snowflakes fit SQLite's signed 64-bit INTEGER range but exceed the
+    exact integer range of an IEEE-754 double. ``libsql 0.1.11`` silently rounds
+    such bound integer parameters. SQLite's INTEGER affinity converts an exact
+    decimal string to int64 without losing digits, so this is safe for inserts,
+    updates, and comparisons while ordinary counters remain numeric parameters.
+    """
+
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and abs(value) > MAX_EXACT_JSON_INTEGER
+    ):
+        return str(value)
+    return value
+
+
+class SnowflakeSafeLibsqlProcessConnection(LibsqlProcessConnection):
+    async def execute(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | list[Any] | None = None,
+    ):
+        safe_params = None
+        if params is not None:
+            safe_params = tuple(libsql_safe_parameter(value) for value in params)
+        return await super().execute(sql, safe_params)
 
 
 class ProcessIsolatedDatabase(Database):
@@ -38,7 +71,7 @@ class ProcessIsolatedDatabase(Database):
                 "'libsql' is not installed."
             )
 
-        connection = await LibsqlProcessConnection.open(
+        connection = await SnowflakeSafeLibsqlProcessConnection.open(
             database=turso_url,
             auth_token=turso_token,
         )
@@ -47,7 +80,8 @@ class ProcessIsolatedDatabase(Database):
         identity = connection.identity
         log.info(
             "Turso native driver isolated process=true worker_pid=%s "
-            "parent_pid=%s native_libsql_in_gateway_process=false",
+            "parent_pid=%s native_libsql_in_gateway_process=false "
+            "large_integer_text_transport=true",
             identity.pid if identity else "unknown",
             identity.parent_pid if identity else os.getpid(),
         )

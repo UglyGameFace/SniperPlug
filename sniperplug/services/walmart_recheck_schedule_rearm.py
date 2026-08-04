@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sniperplug.services.walmart_exact_queue_drain import tiered_recheck_delay
@@ -85,7 +85,7 @@ async def rearm_legacy_due_rechecks_bounded(
     now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     now_iso = now_utc.isoformat()
     discovery_cutoff = (
-        now_utc - __import__("datetime").timedelta(days=QUEUE_RETENTION_DAYS)
+        now_utc - timedelta(days=QUEUE_RETENTION_DAYS)
     ).isoformat()
     bounded_limit = max(1, min(250, int(limit)))
     placeholders = ", ".join("?" for _ in RECHECK_STATUSES)
@@ -141,7 +141,7 @@ async def rearm_legacy_due_rechecks_bounded(
     for item_id, target_iso in targets:
         params.extend((item_id, target_iso))
     params.extend(item_id for item_id, _ in targets)
-    params.append(now_iso)
+    params.extend((now_iso, now_iso))
 
     update_cursor = await conn.execute(
         f"""
@@ -152,7 +152,7 @@ async def rearm_legacy_due_rechecks_bounded(
           AND (lease_until IS NULL OR lease_until < ?)
         RETURNING item_id
         """,
-        (*params, now_iso),
+        tuple(params),
     )
     updated_rows = await update_cursor.fetchall()
     await conn.commit()

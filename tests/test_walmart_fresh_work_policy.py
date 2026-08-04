@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHealth
+from sniperplug.services.walmart_fresh_work_policy import (
+    FRESH_DISCOVERY_PAUSE_THRESHOLD,
+    FRESH_DRAIN_THRESHOLD,
+    TOTAL_EMERGENCY_THRESHOLD,
+    catalog_backpressure_reason,
+    should_use_drain_mode,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER = (ROOT / "sniperplug/cogs/global_auto_scan_runner.py").read_text(
+    encoding="utf-8"
+)
+BULK_RUNTIME = (
+    ROOT / "sniperplug/services/walmart_exact_queue_bulk_runtime.py"
+).read_text(encoding="utf-8")
+
+
+def test_recheck_only_backlog_does_not_starve_fresh_discovery() -> None:
+    health = WalmartExactQueueHealth(
+        due_now=451,
+        initial_due_now=0,
+        recheck_due_now=451,
+        verifying=0,
+    )
+
+    assert catalog_backpressure_reason(health) is None
+    assert should_use_drain_mode(health) is False
+
+
+def test_fresh_work_triggers_bounded_drain_before_catalog_pause() -> None:
+    drain_health = WalmartExactQueueHealth(
+        due_now=FRESH_DRAIN_THRESHOLD,
+        initial_due_now=FRESH_DRAIN_THRESHOLD,
+        recheck_due_now=0,
+        verifying=0,
+    )
+    pause_health = WalmartExactQueueHealth(
+        due_now=FRESH_DISCOVERY_PAUSE_THRESHOLD,
+        initial_due_now=FRESH_DISCOVERY_PAUSE_THRESHOLD,
+        recheck_due_now=0,
+        verifying=0,
+    )
+
+    assert should_use_drain_mode(drain_health) is True
+    reason = catalog_backpressure_reason(pause_health)
+    assert reason is not None
+    assert "fresh/retry pressure" in reason
+    assert "scheduled rechecks **0**" in reason
+
+
+def test_total_backlog_still_has_an_emergency_fail_safe() -> None:
+    health = WalmartExactQueueHealth(
+        due_now=TOTAL_EMERGENCY_THRESHOLD,
+        initial_due_now=0,
+        recheck_due_now=TOTAL_EMERGENCY_THRESHOLD,
+        verifying=0,
+    )
+
+    assert should_use_drain_mode(health) is True
+    reason = catalog_backpressure_reason(health)
+    assert reason is not None
+    assert "emergency" in reason
+    assert str(TOTAL_EMERGENCY_THRESHOLD) in reason
+
+
+def test_legacy_unsplit_health_keeps_conservative_behavior() -> None:
+    below = WalmartExactQueueHealth(due_now=449)
+    at_limit = WalmartExactQueueHealth(due_now=450)
+
+    assert should_use_drain_mode(below) is False
+    assert catalog_backpressure_reason(below) is None
+    assert should_use_drain_mode(at_limit) is True
+    assert catalog_backpressure_reason(at_limit) is not None
+
+
+def test_production_worker_uses_fresh_work_policy() -> None:
+    assert "walmart_fresh_work_policy" in RUNNER
+    assert "fresh_work_priority=true" in RUNNER
+    assert "catalog_backpressure_reason(queue_health)" in RUNNER
+    assert "should_use_drain_mode(health_before)" in BULK_RUNTIME
+    assert "DRAIN_ACTIONABLE_THRESHOLD" not in BULK_RUNTIME

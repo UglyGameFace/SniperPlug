@@ -15,7 +15,6 @@ from sniperplug.services.walmart_exact_queue_health import (
     load_walmart_exact_queue_health,
 )
 from sniperplug.services.walmart_exact_queue_runtime import (
-    DRAIN_ACTIONABLE_THRESHOLD,
     DRAIN_BATCH_SIZE,
     DRAIN_CONCURRENCY,
     TERMINAL_IDENTITY_STATUSES,
@@ -30,6 +29,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
     ensure_walmart_exact_verification_queue,
     maybe_prune_walmart_exact_verification_queue,
 )
+from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
 from sniperplug.services.walmart_global_offer_memory import (
     ensure_global_offer_memory_table,
     maybe_prune_global_offer_memory,
@@ -51,6 +51,10 @@ async def process_actionable_walmart_exact_queue_batch(
     current-price, and trusted-reference proof remain unchanged. Only the final
     Turso persistence path is consolidated so a drain batch does not issue
     dozens of serialized native libsql operations.
+
+    Large 24/4 drain batches are reserved for first-time/retry pressure or a
+    true total-backlog emergency. Scheduled rechecks alone remain normal 6/2
+    maintenance so they cannot starve fresh catalog discovery.
     """
 
     if db is None or provider is None or limit <= 0:
@@ -64,7 +68,7 @@ async def process_actionable_walmart_exact_queue_batch(
     await maybe_prune_walmart_exact_verification_queue(conn, now=now)
 
     health_before = await load_walmart_exact_queue_health(db)
-    drain_mode = int(health_before.due_now) >= DRAIN_ACTIONABLE_THRESHOLD
+    drain_mode = should_use_drain_mode(health_before)
     effective_limit = max(1, int(limit))
     effective_concurrency = max(1, int(concurrency))
     if drain_mode:

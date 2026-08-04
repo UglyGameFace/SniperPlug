@@ -20,9 +20,11 @@ from sniperplug.services.autoscan_observed_price_memory import (
 from sniperplug.services.verified_retailer_event_fanout import (
     fanout_verified_retailer_events,
 )
+from sniperplug.services.walmart_fresh_work_policy import (
+    catalog_backpressure_reason,
+)
 from sniperplug.services.walmart_global_catalog_autoscan import (
     DEFAULT_ROUTES_PER_BATCH,
-    catalog_backpressure_reason,
     claim_next_catalog_routes,
     complete_catalog_claim,
     load_global_catalog_state,
@@ -85,7 +87,8 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "global_catalog_interval_s=%s exact_queue_batch=%s "
             "exact_queue_interval_s=%s global_exact_fanout=true personal_dm_alerts=true "
             "external_verified_event_fanout=true terminal_identity_quarantine=true "
-            "exact_parse_off_event_loop=true bulk_exact_persistence=true",
+            "exact_parse_off_event_loop=true bulk_exact_persistence=true "
+            "fresh_work_priority=true",
             platform.python_version(),
             sys.platform,
             DEFAULT_ROUTES_PER_BATCH,

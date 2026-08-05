@@ -6,11 +6,13 @@ from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
     DmDealMatchDecision,
     card_search_text,
-    card_title,
     smart_requirements,
     walmart_cash_cents,
 )
-from sniperplug.services.opportunity_watchlist import category_for_title
+from sniperplug.services.dm_personal_categories import (
+    category_key_for_card,
+    split_exclude_terms,
+)
 
 
 def match_dm_deal(
@@ -24,16 +26,21 @@ def match_dm_deal(
     or dollar-savings floor. Strict API-proven Walmart Cash may soften only the
     adaptive markdown add-on by five points, never the user's own floor and
     never below a real 20% markdown.
+
+    Personal category mutes are intentionally delivery-only. They suppress a
+    category from one subscriber's DMs without deleting the deal, muting the
+    server feed, or changing what another subscriber can receive.
     """
 
     pref = preference.normalized()
     if not pref.enabled:
         return DmDealMatchDecision(False, "DM alerts are disabled")
 
-    title = card_title(card)
     search_text = card_search_text(card)
-    category = category_for_title(title)
-    category_key = category.key if category is not None else "uncategorized"
+    category_key = category_key_for_card(card)
+    keyword_excludes, muted_categories = split_exclude_terms(
+        pref.exclude_keywords
+    )
 
     current_cents = _money_to_cents(
         getattr(card, "api_current_price", None)
@@ -63,6 +70,12 @@ def match_dm_deal(
             "exact markdown is not positive",
             category_key,
         )
+    if category_key in muted_categories:
+        return DmDealMatchDecision(
+            False,
+            "category is muted in your personal DMs",
+            category_key,
+        )
     if pref.max_price_cents is not None and current_cents > pref.max_price_cents:
         return DmDealMatchDecision(False, "price is above your maximum", category_key)
     if pref.walmart_cash_only and cash_cents <= 0:
@@ -84,9 +97,7 @@ def match_dm_deal(
             "none of your required keywords matched",
             category_key,
         )
-    if pref.exclude_keywords and any(
-        term in search_text for term in pref.exclude_keywords
-    ):
+    if keyword_excludes and any(term in search_text for term in keyword_excludes):
         return DmDealMatchDecision(
             False,
             "an excluded keyword matched",

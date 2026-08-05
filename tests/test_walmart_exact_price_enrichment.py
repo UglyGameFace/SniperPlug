@@ -99,7 +99,7 @@ def test_exact_detail_refreshes_same_item_current_and_was_price() -> None:
     assert exact.api_reference_path == "item.wasPrice"
     assert exact.variant_attributes["exactDetailPriceProof"] == "yes"
     assert exact.variant_attributes["exactDetailItemId"] == "123456"
-    assert exact.variant_attributes["exactDetailReferenceSource"] == "wasPrice"
+    assert exact.variant_attributes["exactDetailReferenceSource"] == "item.wasPrice"
     assert exact.variant_attributes["exactDetailReferenceStatus"] == "trusted"
     assert exact.variant_attributes["referencePriceTrusted"] == "yes"
     assert exact.variant_attributes["finderSourceQuery"] == "monitor clearance"

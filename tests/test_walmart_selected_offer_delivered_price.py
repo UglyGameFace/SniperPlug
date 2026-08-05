@@ -60,8 +60,13 @@ def test_selected_offer_price_and_shipping_override_other_seller_minimum() -> No
     assert candidate.api_current_price == 35.00
     assert candidate.api_discount_percent == 65.00
     assert candidate.variant_attributes["alternateSellerMinPrice"] == "3.50"
-    assert candidate.variant_attributes["selectedOfferPublicPriceStatus"] == "verified_delivered"
-    assert candidate.variant_attributes["currentPriceSource"].endswith("shippingCost")
+    assert (
+        candidate.variant_attributes["selectedOfferPublicPriceStatus"]
+        == "verified_delivered"
+    )
+    assert candidate.variant_attributes["currentPriceSource"].endswith(
+        "shippingCost"
+    )
 
 
 def test_explicit_free_shipping_keeps_selected_offer_item_price() -> None:
@@ -114,11 +119,21 @@ def test_unknown_marketplace_shipping_fails_closed() -> None:
     assert candidate.current_price is None
     assert candidate.api_current_price is None
     assert candidate.api_discount_percent is None
-    assert candidate.variant_attributes["selectedOfferPublicPriceStatus"] == "blocked_shipping_unknown"
-    assert any("shipping cost was not returned" in signal for signal in candidate.signals)
+    assert candidate.variant_attributes.get("deliveredPrice") in {None, ""}
+    assert (
+        candidate.variant_attributes["selectedOfferPublicPriceStatus"]
+        == "blocked_shipping_unknown"
+    )
+    assert any(
+        "shipping cost was not returned" in signal
+        for signal in candidate.signals
+    )
 
     cards = build_walmart_cards(
-        ProviderScanResult(provider_key="walmart", candidates=(candidate,)),
+        ProviderScanResult(
+            provider_key="walmart",
+            candidates=(candidate,),
+        ),
         min_discount=50,
         alerts_only=False,
     )
@@ -141,7 +156,10 @@ def test_page_minimum_without_selected_offer_is_context_only() -> None:
     assert candidate.current_price is None
     assert candidate.api_current_price is None
     assert candidate.variant_attributes["alternateSellerMinPrice"] == "5.00"
-    assert candidate.variant_attributes["selectedOfferPublicPriceStatus"] == "blocked_alternate_min_price"
+    assert (
+        candidate.variant_attributes["selectedOfferPublicPriceStatus"]
+        == "blocked_alternate_min_price"
+    )
 
 
 def test_walmart_owned_offer_without_shipping_claims_checkout_dependent_not_free() -> None:
@@ -160,10 +178,14 @@ def test_walmart_owned_offer_without_shipping_claims_checkout_dependent_not_free
     assert candidate.seller_name == "Walmart"
     assert candidate.current_price == 18.00
     assert candidate.item_price == 18.00
-    assert candidate.delivered_price == 18.00
+    assert candidate.delivered_price is None
     assert candidate.shipping_cost is None
     assert candidate.shipping_status == "checkout_dependent"
-    assert candidate.variant_attributes["selectedOfferPublicPriceStatus"] == "item_price_shipping_checkout_dependent"
+    assert candidate.variant_attributes.get("deliveredPrice") in {None, ""}
+    assert (
+        candidate.variant_attributes["selectedOfferPublicPriceStatus"]
+        == "item_price_shipping_checkout_dependent"
+    )
 
 
 def test_exact_marketplace_offer_with_unknown_shipping_is_not_verified_for_public_use() -> None:
@@ -209,13 +231,19 @@ def test_exact_marketplace_offer_with_unknown_shipping_is_not_verified_for_publi
             }
 
     result = asyncio.run(
-        enrich_walmart_exact_prices([original], provider=DetailProvider(), limit=1)
+        enrich_walmart_exact_prices(
+            [original],
+            provider=DetailProvider(),
+            limit=1,
+        )
     )
 
     exact = result.candidates[0]
     assert exact.selected_offer_id == "offer-exact"
     assert exact.seller_name == "Exact Seller"
     assert exact.current_price is None
+    assert exact.delivered_price is None
+    assert exact.variant_attributes.get("deliveredPrice") in {None, ""}
     assert exact_detail_verified_candidates(result.candidates) == []
 
 
@@ -252,7 +280,10 @@ def test_marketplace_comp_extractor_keeps_selected_and_alternate_prices_separate
     attrs = marketplace_comp_from_item(
         {
             "minPrice": 4.00,
-            "bestMarketplacePrice": {"price": 75.00, "sellerName": "Other Seller"},
+            "bestMarketplacePrice": {
+                "price": 75.00,
+                "sellerName": "Other Seller",
+            },
             "selectedOffer": {
                 "offerId": "selected",
                 "sellerName": "Selected Seller",

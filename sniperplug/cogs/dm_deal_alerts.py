@@ -6,6 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.cogs.dm_deal_preferences_view import DmDealPreferencesView
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
     delete_dm_deal_alert_preference,
@@ -15,17 +16,21 @@ from sniperplug.services.dm_deal_alerts import (
 )
 from sniperplug.services.dm_personal_categories import (
     category_label,
+    compose_exclude_terms,
     flip_settings,
+    muted_category_preferences,
+    normalize_personal_categories,
     split_category_preferences,
     split_exclude_terms,
-    update_category_mutes,
     update_favorite_categories,
     update_flip_settings,
+    update_muted_categories,
 )
 
 
 ACTION_CHOICES = [
-    app_commands.Choice(name="Enable or update alerts", value="enable"),
+    app_commands.Choice(name="Open personalization menu", value="menu"),
+    app_commands.Choice(name="Enable or update with typed options", value="enable"),
     app_commands.Choice(name="Show my settings", value="status"),
     app_commands.Choice(name="Send a test DM", value="test"),
     app_commands.Choice(name="Pause alerts", value="disable"),
@@ -48,7 +53,7 @@ class DmDealAlertsCog(commands.Cog):
         description="Set personal exact-verified deal alerts in your DMs.",
     )
     @app_commands.describe(
-        action="Enable, inspect, test, pause, or delete your personal alerts.",
+        action="Open the menu, inspect, test, pause, or update your personal alerts.",
         mode="Smart adapts quality rules to price; All and Custom use hard filters.",
         min_discount="Lowest exact Walmart markdown percentage you want.",
         max_price="Do not DM products above this current price, including flips.",
@@ -84,7 +89,7 @@ class DmDealAlertsCog(commands.Cog):
         mute_categories: app_commands.Range[str, 1, 300] | None = None,
         unmute_categories: app_commands.Range[str, 1, 300] | None = None,
         flip_alerts: bool | None = None,
-        flip_min_profit: app_commands.Range[float, 10.0, 10000.0] | None = None,
+        flip_min_profit: app_commands.Range[float, 10.0, 100000.0] | None = None,
         walmart_cash_only: bool | None = None,
         daily_cap: app_commands.Range[int, 1, 100] | None = None,
     ) -> None:
@@ -101,6 +106,19 @@ class DmDealAlertsCog(commands.Cog):
             return
 
         preference = await get_dm_deal_alert_preference(self.bot.db, user_id)
+
+        if selected_action == "menu":
+            view = DmDealPreferencesView(
+                bot=self.bot,
+                user_id=user_id,
+                preference=preference,
+            )
+            await interaction.followup.send(
+                embed=view.build_embed(),
+                view=view,
+                ephemeral=True,
+            )
+            return
 
         if selected_action == "status":
             await interaction.followup.send(
@@ -147,21 +165,33 @@ class DmDealAlertsCog(commands.Cog):
             )
             return
 
-        updated_excludes = update_category_mutes(
-            preference.exclude_keywords,
-            add=mute_categories,
-            remove=unmute_categories,
-            replacement_keywords=(
-                normalize_terms(exclude)
-                if exclude is not None
-                else None
-            ),
+        keyword_excludes, legacy_muted = split_exclude_terms(
+            preference.exclude_keywords
+        )
+        stored_muted = muted_category_preferences(preference.categories)
+        updated_muted = list(dict.fromkeys((*legacy_muted, *stored_muted)))
+        updated_muted.extend(normalize_personal_categories(mute_categories))
+        remove_muted = set(normalize_personal_categories(unmute_categories))
+        updated_muted = [
+            category
+            for category in dict.fromkeys(updated_muted)
+            if category not in remove_muted
+        ]
+
+        updated_excludes = compose_exclude_terms(
+            normalize_terms(exclude)
+            if exclude is not None
+            else keyword_excludes
         )
         updated_categories = update_favorite_categories(
             preference.categories,
             add=favorite_categories,
             remove=unfavorite_categories,
             replacement_selected=categories,
+        )
+        updated_categories = update_muted_categories(
+            updated_categories,
+            replacement=updated_muted,
         )
         updated_categories = update_flip_settings(
             updated_categories,
@@ -263,9 +293,11 @@ def build_dm_settings_embed(
     title: str = "🔔 Personal deal DM settings",
 ) -> discord.Embed:
     normalized = preference.normalized()
-    keyword_excludes, muted_categories = split_exclude_terms(
+    keyword_excludes, legacy_muted = split_exclude_terms(
         normalized.exclude_keywords
     )
+    stored_muted = muted_category_preferences(normalized.categories)
+    muted_categories = tuple(dict.fromkeys((*legacy_muted, *stored_muted)))
     selected_categories, favorite_categories = split_category_preferences(
         normalized.categories
     )
@@ -313,12 +345,19 @@ def build_dm_settings_embed(
         color=discord.Color.green() if normalized.enabled else discord.Color.orange(),
     )
     embed.add_field(
+        name="Open the complete menu",
+        value=(
+            "Run `/dm_deals action:Open personalization menu` for the paginated, searchable "
+            "catalog. Every current category is included, and future categories appear automatically."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="Favorites and mutes are personal",
         value=(
             "Favorites get a small Smart-mode priority boost but do **not** hide other great deals. "
             "Muted categories disappear from normal **personal** DMs only. Public alerts and every "
-            "other subscriber remain unchanged. Example: `favorite_categories:tech,gaming,pc` and "
-            "`mute_categories:baby`."
+            "other subscriber remain unchanged."
         ),
         inline=False,
     )
@@ -334,21 +373,11 @@ def build_dm_settings_embed(
         inline=False,
     )
     embed.add_field(
-        name="How Smart mode works",
-        value=(
-            "Smart mode adapts percentage and dollar-savings requirements to the item's price. "
-            "A favorite category may soften only Smart's additional requirement; it never goes "
-            "below your explicit markdown, score, or dollar-savings minimum and never replaces "
-            "exact current/was-price proof."
-        ),
-        inline=False,
-    )
-    embed.add_field(
         name="Built-in safety",
         value=(
             "Only exact-item, exact-offer, buyable Walmart deals with trusted current and was prices enter this stream. "
-            "Maximum price and excluded words remain hard limits even for flips. Each exact offer/price is deduplicated "
-            "per user, and your daily cap prevents DM floods."
+            "Flip Override crosses category boundaries only; explicit floors, maximum price, required/excluded words, "
+            "dedupe, and the daily cap remain hard."
         ),
         inline=False,
     )
@@ -379,6 +408,6 @@ def build_enabled_dm_embed(preference: DmDealAlertPreference) -> discord.Embed:
         title="✅ SniperPlug personal deal alerts are ready",
     )
     embed.set_footer(
-        text="Use /dm_deals action:Show my settings or action:Pause alerts at any time."
+        text="Use /dm_deals action:Open personalization menu or action:Pause alerts at any time."
     )
     return embed

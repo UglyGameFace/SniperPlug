@@ -41,21 +41,28 @@ def _card(
 def _flip_preference(
     *,
     max_price_cents: int | None = None,
-    exclude_keywords: tuple[str, ...] = ("category:baby_kids",),
+    exclude_keywords: tuple[str, ...] = (),
+    keywords: tuple[str, ...] = (),
     minimum_profit_cents: int = 5_000,
+    min_discount: int = 35,
+    min_score: int = 78,
+    min_savings_cents: int = 0,
 ) -> DmDealAlertPreference:
     return DmDealAlertPreference(
         user_id=1,
         enabled=True,
         mode="smart",
-        min_discount=35,
-        min_score=78,
+        min_discount=min_discount,
+        min_score=min_score,
+        min_savings_cents=min_savings_cents,
         max_price_cents=max_price_cents,
         categories=(
             "favorite:gpus",
+            "muted:baby_kids",
             "flip:enabled",
             f"flip_profit:{minimum_profit_cents}",
         ),
+        keywords=keywords,
         exclude_keywords=exclude_keywords,
     )
 
@@ -112,9 +119,7 @@ def test_flip_override_respects_hard_maximum_price() -> None:
 
 def test_flip_override_respects_explicit_excluded_words() -> None:
     decision = match_dm_deal(
-        _flip_preference(
-            exclude_keywords=("category:baby_kids", "refurbished"),
-        ),
+        _flip_preference(exclude_keywords=("refurbished",)),
         _card(
             "Refurbished Graco Baby Stroller Travel System",
             current=50.0,
@@ -126,6 +131,50 @@ def test_flip_override_respects_explicit_excluded_words() -> None:
 
     assert decision.matched is False
     assert decision.reason == "an excluded keyword matched"
+
+
+def test_flip_override_respects_required_keywords() -> None:
+    decision = match_dm_deal(
+        _flip_preference(keywords=("electronics",)),
+        _card(
+            "Graco Baby Stroller Travel System",
+            current=50.0,
+            reference=300.0,
+            discount=83.3,
+            score=125,
+        ),
+    )
+
+    assert decision.matched is False
+    assert decision.reason == "none of your required keywords matched"
+
+
+def test_flip_override_respects_explicit_score_and_savings_floors() -> None:
+    low_score = match_dm_deal(
+        _flip_preference(min_score=140),
+        _card(
+            "Graco Baby Stroller Travel System",
+            current=50.0,
+            reference=300.0,
+            discount=83.3,
+            score=125,
+        ),
+    )
+    low_savings = match_dm_deal(
+        _flip_preference(min_savings_cents=30_000),
+        _card(
+            "Graco Baby Stroller Travel System",
+            current=50.0,
+            reference=300.0,
+            discount=83.3,
+            score=125,
+        ),
+    )
+
+    assert low_score.matched is False
+    assert low_score.reason == "score 125 is below the required 140"
+    assert low_savings.matched is False
+    assert "below the required $300.00" in low_savings.reason
 
 
 def test_exact_recent_ebay_sold_comps_can_confirm_any_category() -> None:
@@ -210,7 +259,7 @@ def test_mismatched_or_stale_ebay_comps_cannot_override_mute() -> None:
 
 def test_flip_settings_preserve_favorites_and_hard_allowlist() -> None:
     categories = update_flip_settings(
-        ("apple", "favorite:gpus"),
+        ("apple", "favorite:gpus", "muted:baby_kids"),
         enabled=True,
         minimum_profit_cents=7_500,
     )
@@ -219,6 +268,7 @@ def test_flip_settings_preserve_favorites_and_hard_allowlist() -> None:
 
     assert selected == ("apple",)
     assert favorites == ("gpus",)
+    assert "muted:baby_kids" in categories
     assert enabled is True
     assert minimum_profit == 7_500
 
@@ -227,6 +277,7 @@ def test_flip_settings_preserve_favorites_and_hard_allowlist() -> None:
     enabled, minimum_profit = flip_settings(disabled)
     assert selected == ("apple",)
     assert favorites == ("gpus",)
+    assert "muted:baby_kids" in disabled
     assert enabled is False
     assert minimum_profit == 7_500
 

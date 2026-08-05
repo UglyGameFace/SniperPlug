@@ -1,61 +1,50 @@
 # Active Task
 
 ## Status
-Implementation complete and merge-ready on PR #220 (`fix/walmart-delivered-offer-price`). No production deployment has occurred; production behavior remains unclaimed until the merged `main` branch is deployed to the canonical Discloud app and confirmed in live logs/cards.
+Active — production logs after PRs #218–#220 show the former full queue `COUNT(*)` is gone, but the global Walmart fanout cursor query is now serializing the remote Turso worker for 7–20 seconds per poll. Work is isolated on `fix/walmart-fanout-cursor-read`; no new deployment has occurred.
 
 ## Scope
-Bind Walmart current-price, reference-price, seller, offer, fulfillment, condition, and shipping proof to one selected offer. Use the payable delivered total for qualification whenever mandatory shipping is explicitly known. Alternate-seller and unit-price values remain context only and never participate in selected-offer deal math.
+Eliminate the repeated slow read that scans verified Walmart queue snapshots for global public/DM fanout, without delaying verified deal delivery, skipping events, weakening exact-offer proof, or changing per-server thresholds.
 
-## Root causes confirmed
-- Broad item-level `minPrice` could represent a different seller while seller/offer identity was resolved separately.
-- Shipping had no first-class item-price, shipping-cost, delivered-price, or proof state in candidates/deals.
-- Third-party marketplace identity could be complete while mandatory shipping remained unknown.
-- A page-level `wasPrice` could be compared with a nested selected offer belonging to another seller.
-- Generic price dictionaries could contain unit pricing such as `$0.12/oz` rather than the full offer price.
-- Truthy display fallbacks could discard valid `$0.00` price evidence.
+## Production evidence
+- The old `SELECT COUNT(*) FROM walmart_exact_detail_queue` warning no longer appears.
+- `SELECT queue.item_id, queue.verified_at, queue.snapshot_json` repeatedly takes about 7–20 seconds remotely.
+- Unrelated operations then wait behind the single process-isolated Turso connection for comparable durations.
+- Exact verification still works, but affected cycles report claim/store times as high as 16.50s/21.54s.
+- The slow query runs after the 20-second exact worker and after the 60-second catalog worker, including empty fanout polls.
 
-## Implemented changes
-- Normalize one atomic offer from `selectedOffer`, `buyBoxOffer`, `primaryOffer`, `offer`, or the root Walmart buy-box payload.
-- Bind selected seller name/ID, offer ID, condition, fulfillment, item price, shipping state/cost, delivered total, and same-offer reference price.
-- Keep `minPrice` and `bestMarketplacePrice` as explicitly labeled other-seller/flip context only.
-- Use selected-offer item price plus mandatory shipping as Walmart `current_price` / `api_current_price` and discount input.
-- Fail closed for third-party marketplace offers when shipping is not returned; no alertable current price or discount survives.
-- Preserve Walmart-owned item prices with `checkout_dependent` shipping rather than falsely claiming free or delivered shipping.
-- Reject measurement-unit price structures while accepting currency-shaped amount structures.
-- Block page-level reference prices when a nested selected offer has no same-offer reference; retain the page value only as non-discount context.
-- Carry item price, shipping, delivered total, proof sources, payable-price status, seller, and offer identity into normalized deals and Walmart cards.
-- Preserve valid `$0.00` item/delivered evidence with explicit `is not None` rendering.
-- Avoid assigning unverified delivered totals to non-Walmart candidates.
-- Preserve existing positional dataclass constructor compatibility by appending the new fields.
+## Root cause findings
+- `_ingest_verified_queue_events_bulk()` selects large `snapshot_json` values while locating the next cursor page.
+- Its joined `OR` watermark predicate does not match the queue's existing indexes.
+- The existing verified index is `(verified_at, exact_discount_bps DESC)`; fanout filters by `status = 'verified_markdown'` and orders by `(verified_at, item_id)`.
+- The process-isolated driver fully consumes and serializes every query result inside the worker, so an inefficient scan/large-row read blocks every other database operation.
 
-## Validation
-- Python 3.11 full suite: **1,101 passed**, one upstream `audioop` deprecation warning.
-- Python 3.12 Python Check: passed.
-- Import smoke check: passed.
-- `pip check`: passed.
-- `compileall` across app, tests, and entry points: passed.
-- Targeted regressions cover paid shipping, explicit free shipping, unknown marketplace shipping, alternate seller minimums, same-offer reference proof, cross-offer reference blocking, seller switching, exact-detail replacement, unit-price rejection, currency-unit acceptance, zero-value evidence, card rendering, and non-Walmart delivery semantics.
-- Qodo review findings for non-Walmart delivered totals, unit-price parsing, and zero-value rendering are resolved and outdated.
-- Final changed-file inspection contains only implementation, active-task documentation, and targeted regression files; temporary probe files were removed.
+## Intended implementation
+- Add a fanout-specific partial cursor index matching verified-markdown filtering and `(verified_at, item_id)` ordering.
+- Load the single watermark row separately.
+- Use a row-value cursor comparison rather than a joined `OR` predicate.
+- Select only lightweight cursor keys first; fetch `snapshot_json` only for the bounded selected keys.
+- Preserve deterministic cursor advancement even if a row changes between the key and snapshot reads.
+- Keep durable event insertion, leases, duplicate suppression, public thresholds, DM matching, and exact verification unchanged.
 
-## Cleanup and conflict inspection
-- No duplicate or temporary implementation remains.
-- Existing exact item, seller, offer, variant, condition, fulfillment, duplicate, queue, and per-server threshold gates remain intact.
-- No threshold was lowered and no identity/shipping proof was weakened.
-- PR #200 remains isolated and unmerged.
-- Duplicate Discloud app `1785806676351` remains outside this task and must stay offline.
+## Definition of done
+- Query-plan regression proves the cursor-key read uses the fanout index and does not scan snapshot payloads.
+- Functional tests cover empty polls, multiple rows sharing one timestamp, bounded ordering, changed/missing rows between phases, event insertion, and watermark advancement.
+- Existing global fanout, queue, catalog, exact-worker, public-post, and DM tests pass.
+- Full Python tests, Python Check, import smoke, dependency check, and compilation pass.
+- Review/conflict inspection finds no unresolved correctness or compatibility issue.
+- Temporary, redundant, or conflicting code is removed before merge.
+- Production is not claimed until merged `main` is deployed to canonical Discloud app `1779293887444` and live logs show the old snapshot query no longer causing multi-second remote/lock waits.
 
 ## Current branch
-`fix/walmart-delivered-offer-price`
+`fix/walmart-fanout-cursor-read`
 
 ## Deployment boundary
-After merge, deploy only the canonical SniperPlug Discloud app and verify:
-- cards show selected seller, item price, shipping, and delivered total;
-- other-seller minimums are labeled context only;
-- unknown marketplace shipping is blocked rather than shown as free/$0;
-- discount thresholds use the delivered total and same-offer reference;
-- no new errors or seller/offer mismatches appear in exact-verification logs.
+- Canonical app: `1779293887444`.
+- Duplicate app `1785806676351` is being deleted and must never be targeted.
+- Do not merge PR #200 during this task.
+- Do not lower alert thresholds or weaken exact item/seller/offer/variant/shipping/reference proof.
 
 ## Backlog
-- Deploy merged `main` to the canonical Discloud app and verify PRs #218, #219, and #220 in production.
-- Rebase and finish PR #200 only after the production stability/accuracy pass closes.
+- Audit repeated schema `CREATE TABLE/INDEX IF NOT EXISTS` calls only after this active fanout query task is complete; most current delays are downstream lock waits, but any remaining redundant DDL should be addressed separately.
+- Verify PR #220 seller/shipping card output against live Walmart payloads after database contention is resolved.

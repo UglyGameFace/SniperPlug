@@ -96,7 +96,7 @@ def test_exact_detail_refreshes_same_item_current_and_was_price() -> None:
     assert exact.api_current_price == 79.99
     assert exact.typical_price == 149.99
     assert exact.api_reference_price == 149.99
-    assert exact.api_reference_path == "wasPrice"
+    assert exact.api_reference_path == "item.wasPrice"
     assert exact.variant_attributes["exactDetailPriceProof"] == "yes"
     assert exact.variant_attributes["exactDetailItemId"] == "123456"
     assert exact.variant_attributes["exactDetailReferenceSource"] == "wasPrice"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from math import ceil
 from typing import Any
 
 import discord
@@ -72,6 +71,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.search_query = ""
         self.page_index = 0
         self.saved = False
+        self.dirty = False
         self._rebuild_items()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -154,7 +154,11 @@ class DmDealPreferencesView(discord.ui.View):
             inline=False,
         )
         embed.set_footer(
-            text="Selections are drafts until you press Save. Search never removes categories."
+            text=(
+                "Unsaved changes are only drafts. Press Save changes before closing."
+                if self.dirty
+                else "All displayed settings are saved. Keep editing or press Close."
+            )
         )
         return embed
 
@@ -278,22 +282,27 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(profit)
 
         save = discord.ui.Button(
-            label="Save",
+            label="Save changes" if self.dirty else "Saved",
             emoji="✅",
             style=discord.ButtonStyle.success,
             row=3,
+            disabled=not self.dirty,
         )
         save.callback = self._save
         self.add_item(save)
 
-        cancel = discord.ui.Button(
-            label="Cancel",
+        close = discord.ui.Button(
+            label="Discard & close" if self.dirty else "Close",
             emoji="✖️",
-            style=discord.ButtonStyle.danger,
+            style=(
+                discord.ButtonStyle.danger
+                if self.dirty
+                else discord.ButtonStyle.secondary
+            ),
             row=3,
         )
-        cancel.callback = self._cancel
-        self.add_item(cancel)
+        close.callback = self._close
+        self.add_item(close)
 
     async def _refresh(self, interaction: discord.Interaction, *, status: str = "") -> None:
         self._rebuild_items()
@@ -320,14 +329,22 @@ class DmDealPreferencesView(discord.ui.View):
         await self._refresh(interaction, status="✅ Showing the complete category catalog again.")
 
     async def _clear_current_tab(self, interaction: discord.Interaction) -> None:
-        self._active_set().clear()
+        active = self._active_set()
+        if active:
+            active.clear()
+            self.dirty = True
         await self._refresh(
             interaction,
-            status=f"🧹 Cleared the draft {TAB_LABELS[self.tab]} selection.",
+            status=(
+                f"🧹 Cleared the draft {TAB_LABELS[self.tab]} selection."
+                if self.dirty
+                else f"{TAB_LABELS[self.tab]} is already empty."
+            ),
         )
 
     async def _toggle_flip(self, interaction: discord.Interaction) -> None:
         self.flip_enabled = not self.flip_enabled
+        self.dirty = True
         await self._refresh(
             interaction,
             status=(
@@ -361,19 +378,31 @@ class DmDealPreferencesView(discord.ui.View):
         saved = await save_dm_deal_alert_preference(self.bot.db, updated)
         self.preference = saved
         self.saved = True
-        for item in self.children:
-            item.disabled = True
+        self.dirty = False
+        self._rebuild_items()
         await interaction.response.edit_message(
-            embed=self.build_embed(status="✅ Your personal DM menu was saved."),
+            embed=self.build_embed(
+                status=(
+                    "✅ Your personal DM settings were saved. "
+                    "The menu is still open—keep editing or press Close."
+                )
+            ),
             view=self,
         )
-        self.stop()
 
-    async def _cancel(self, interaction: discord.Interaction) -> None:
+    async def _close(self, interaction: discord.Interaction) -> None:
+        discarded = self.dirty
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(
-            embed=self.build_embed(status="No changes were saved."),
+            embed=self.build_embed(
+                status=(
+                    "🗑️ Menu closed. Unsaved draft changes were discarded; "
+                    "your last saved settings remain active."
+                    if discarded
+                    else "✅ Menu closed. Your saved settings remain active."
+                )
+            ),
             view=self,
         )
         self.stop()
@@ -467,20 +496,32 @@ class _CategoryPageSelect(discord.ui.Select):
         page_keys = {category.key for category in self.owner._current_page()}
         selected = {value for value in self.values if value != "__none__"}
         active = self.owner._active_set()
+        before = set(active)
         active.difference_update(page_keys)
         active.update(selected)
 
         # A category cannot be both favorite and muted in the saved personal UI.
         if self.owner.tab == TAB_FAVORITES:
+            opposite_before = set(self.owner.muted_categories)
             self.owner.muted_categories.difference_update(selected)
+            opposite_changed = opposite_before != self.owner.muted_categories
         elif self.owner.tab == TAB_MUTED:
+            opposite_before = set(self.owner.favorite_categories)
             self.owner.favorite_categories.difference_update(selected)
+            opposite_changed = opposite_before != self.owner.favorite_categories
+        else:
+            opposite_changed = False
+
+        if before != active or opposite_changed:
+            self.owner.dirty = True
 
         await self.owner._refresh(
             interaction,
             status=(
                 f"Draft updated: {len(selected)} selected on this page. "
-                "Press Save when finished."
+                "Press Save changes when finished."
+                if self.owner.dirty
+                else "Nothing changed on this page."
             ),
         )
 
@@ -540,11 +581,17 @@ class _FlipProfitModal(discord.ui.Modal, title="Flip Override minimum profit"):
                 ephemeral=True,
             )
             return
-        self.owner.flip_min_profit_cents = int(round(dollars * 100))
+        new_value = int(round(dollars * 100))
+        if new_value != self.owner.flip_min_profit_cents:
+            self.owner.flip_min_profit_cents = new_value
+            self.owner.dirty = True
         await self.owner._refresh(
             interaction,
             status=(
                 "📈 Draft Flip Override minimum set to "
-                f"**${self.owner.flip_min_profit_cents / 100:,.2f}**."
+                f"**${self.owner.flip_min_profit_cents / 100:,.2f}**. "
+                "Press Save changes when finished."
+                if self.owner.dirty
+                else "That profit minimum is already selected."
             ),
         )

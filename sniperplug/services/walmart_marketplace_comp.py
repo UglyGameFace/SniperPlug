@@ -16,6 +16,21 @@ MARKETPLACE_COMP_SOURCES = {
     "best_marketplace_price.price",
     "best_marketplace_price",
 }
+_UNIT_PRICE_SOURCE_TOKENS = (
+    "unitprice",
+    "priceperunit",
+    "priceper",
+    "unitcost",
+    "perunit",
+)
+_CURRENCY_UNIT_TOKENS = {
+    "$",
+    "usd",
+    "usdollar",
+    "usdollars",
+    "dollar",
+    "dollars",
+}
 
 
 @dataclass(frozen=True)
@@ -63,7 +78,8 @@ def marketplace_comp_from_item(item: dict[str, Any]) -> dict[str, str]:
         price = money_from_value(
             best_marketplace.get("price")
             or best_marketplace.get("amount")
-            or best_marketplace.get("value")
+            or best_marketplace.get("value"),
+            source="bestMarketplacePrice.price",
         )
         if price is not None and price > 0:
             attrs.update(
@@ -429,7 +445,7 @@ def first_money(
     *candidates: tuple[str, Any],
 ) -> tuple[str, float] | None:
     for source, value in candidates:
-        parsed = money_from_value(value)
+        parsed = money_from_value(value, source=source)
         if parsed is not None and parsed > 0:
             return source, parsed
     return None
@@ -439,13 +455,15 @@ def first_money_allow_zero(
     *candidates: tuple[str, Any],
 ) -> tuple[str, float] | None:
     for source, value in candidates:
-        parsed = money_from_value(value)
+        parsed = money_from_value(value, source=source)
         if parsed is not None and parsed >= 0:
             return source, parsed
     return None
 
 
-def money_from_value(value: Any) -> float | None:
+def money_from_value(value: Any, *, source: str = "") -> float | None:
+    if _looks_like_unit_price(source, value):
+        return None
     if isinstance(value, dict):
         for key in (
             "price",
@@ -461,6 +479,39 @@ def money_from_value(value: Any) -> float | None:
                 return parsed
         return None
     return float_or_none(value)
+
+
+def _looks_like_unit_price(source: str, value: Any) -> bool:
+    normalized_source = "".join(
+        character
+        for character in str(source or "").lower()
+        if character.isalnum()
+    )
+    if any(token in normalized_source for token in _UNIT_PRICE_SOURCE_TOKENS):
+        return True
+    if not isinstance(value, dict):
+        return False
+
+    normalized_keys = {
+        "".join(character for character in str(key).lower() if character.isalnum())
+        for key in value
+    }
+    if any(token in normalized_keys for token in _UNIT_PRICE_SOURCE_TOKENS):
+        return True
+
+    unit_value = None
+    for key in ("unit", "unitOfMeasure", "uom", "measure", "measurement"):
+        if value.get(key) not in (None, ""):
+            unit_value = value.get(key)
+            break
+    if unit_value is None:
+        return False
+    normalized_unit = "".join(
+        character
+        for character in str(unit_value).lower()
+        if character.isalnum() or character == "$"
+    )
+    return bool(normalized_unit and normalized_unit not in _CURRENCY_UNIT_TOKENS)
 
 
 def nested(value: Any, *path: str) -> Any:

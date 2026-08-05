@@ -133,11 +133,19 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, proo
 def price_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> list[str]:
     attrs = deal.variant_attributes or {}
     lines: list[str] = []
-    item_price = deal.item_price or float_or_none(attrs.get("itemPrice"))
+    item_price = (
+        deal.item_price
+        if deal.item_price is not None
+        else float_or_none(attrs.get("itemPrice"))
+    )
     shipping_cost = deal.shipping_cost
     if shipping_cost is None:
         shipping_cost = float_or_none(attrs.get("shippingCost"))
-    delivered = deal.delivered_price or float_or_none(attrs.get("deliveredPrice"))
+    delivered = (
+        deal.delivered_price
+        if deal.delivered_price is not None
+        else float_or_none(attrs.get("deliveredPrice"))
+    )
     shipping_status = str(deal.shipping_status or attrs.get("shippingStatus") or "").strip().lower()
 
     if item_price is not None:
@@ -286,11 +294,19 @@ def offer_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
 def fulfillment_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
     attrs = deal.variant_attributes or {}
     add_to_cart = "yes" if candidate.can_add_to_cart is True else "no/unknown" if candidate.can_add_to_cart is False else None
-    item_price = deal.item_price or float_or_none(attrs.get("itemPrice"))
+    item_price = (
+        deal.item_price
+        if deal.item_price is not None
+        else float_or_none(attrs.get("itemPrice"))
+    )
     shipping_cost = deal.shipping_cost
     if shipping_cost is None:
         shipping_cost = float_or_none(attrs.get("shippingCost"))
-    delivered = deal.delivered_price or float_or_none(attrs.get("deliveredPrice"))
+    delivered = (
+        deal.delivered_price
+        if deal.delivered_price is not None
+        else float_or_none(attrs.get("deliveredPrice"))
+    )
     shipping_status = deal.shipping_status or attrs.get("shippingStatus")
     shipping_display = "free" if shipping_status == "free" else money(shipping_cost) if shipping_cost is not None else shipping_status
     lines = [

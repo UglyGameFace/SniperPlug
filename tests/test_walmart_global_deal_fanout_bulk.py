@@ -16,7 +16,16 @@ BULK_SOURCE = (
 
 
 class FakeConnection:
-    pass
+    def __init__(self) -> None:
+        self.execute_calls: list[str] = []
+        self.commit_calls = 0
+
+    async def execute(self, sql, params=()):
+        self.execute_calls.append(" ".join(str(sql).split()))
+        return None
+
+    async def commit(self) -> None:
+        self.commit_calls += 1
 
 
 class FakeDatabase:
@@ -40,10 +49,15 @@ def test_fanout_schema_initializes_once_per_connection(monkeypatch) -> None:
             "ensure_global_deal_event_tables",
             ensure,
         )
-        db = FakeDatabase(FakeConnection())
+        conn = FakeConnection()
+        db = FakeDatabase(conn)
         await bulk.ensure_global_deal_event_tables_once(db)
         await bulk.ensure_global_deal_event_tables_once(db)
+
         assert calls == 1
+        assert len(conn.execute_calls) == 1
+        assert bulk.FANOUT_CURSOR_INDEX in conn.execute_calls[0]
+        assert conn.commit_calls == 1
 
     asyncio.run(run())
 

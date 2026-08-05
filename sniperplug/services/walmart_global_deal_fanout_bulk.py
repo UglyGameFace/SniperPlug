@@ -35,6 +35,24 @@ from sniperplug.services.walmart_exact_verification_queue import (
 
 
 FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+FANOUT_CURSOR_INDEX = f"idx_{QUEUE_TABLE}_fanout_cursor"
+FANOUT_CURSOR_INDEX_SQL = f"""
+CREATE INDEX IF NOT EXISTS {FANOUT_CURSOR_INDEX}
+ON {QUEUE_TABLE} (verified_at, item_id)
+WHERE status = 'verified_markdown'
+  AND verified_at IS NOT NULL
+  AND snapshot_json <> ''
+"""
+FANOUT_CURSOR_KEYS_SQL = f"""
+SELECT item_id, verified_at
+FROM {QUEUE_TABLE} INDEXED BY {FANOUT_CURSOR_INDEX}
+WHERE status = 'verified_markdown'
+  AND verified_at IS NOT NULL
+  AND snapshot_json <> ''
+  AND (verified_at, item_id) > (?, ?)
+ORDER BY verified_at ASC, item_id ASC
+LIMIT ?
+"""
 _STATE_ATTR = "_sniperplug_walmart_fanout_bulk_state"
 _FALLBACK_STATES: dict[int, "_FanoutRuntimeState"] = {}
 log = logging.getLogger("sniperplug.autoscan.fanout")
@@ -104,6 +122,12 @@ class _ClaimedEvent:
     card: Any
 
 
+@dataclass(frozen=True)
+class _CursorKey:
+    item_id: str
+    verified_at: str
+
+
 def _state_for(conn: Any) -> _FanoutRuntimeState:
     state = getattr(conn, _STATE_ATTR, None)
     if isinstance(state, _FanoutRuntimeState):
@@ -127,12 +151,7 @@ def _lock(state: _FanoutRuntimeState, name: str) -> asyncio.Lock:
 
 
 async def ensure_global_deal_event_tables_once(db: Any) -> None:
-    """Initialize the durable fanout schema once per live connection.
-
-    The legacy fanout reissued CREATE TABLE/INDEX plus retention cleanup and a
-    commit on every catalog and exact-worker pass. Turso serializes those calls,
-    so repeated idempotent DDL competed with fresh queue claims and Discord.
-    """
+    """Initialize durable fanout schema and its queue cursor index once."""
 
     conn = db.require_conn()
     state = _state_for(conn)
@@ -140,6 +159,8 @@ async def ensure_global_deal_event_tables_once(db: Any) -> None:
         async with _lock(state, "schema_lock"):
             if not state.schema_ready:
                 await legacy.ensure_global_deal_event_tables(db)
+                await conn.execute(FANOUT_CURSOR_INDEX_SQL)
+                await conn.commit()
                 state.schema_ready = True
                 state.next_cleanup_monotonic = (
                     time.monotonic() + FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS
@@ -394,44 +415,23 @@ async def _ingest_verified_queue_events_bulk(
     limit: int,
 ) -> _IngestResult:
     conn = db.require_conn()
-    cursor = await conn.execute(
-        f"""
-        SELECT queue.item_id, queue.verified_at, queue.snapshot_json
-        FROM {QUEUE_TABLE} AS queue
-        JOIN {legacy.STATE_TABLE} AS state
-          ON state.state_key = ?
-        WHERE queue.verified_at IS NOT NULL
-          AND queue.snapshot_json <> ''
-          AND queue.status = 'verified_markdown'
-          AND (
-              queue.verified_at > state.last_verified_at
-              OR (
-                  queue.verified_at = state.last_verified_at
-                  AND queue.item_id > state.last_item_id
-              )
-          )
-        ORDER BY queue.verified_at ASC, queue.item_id ASC
-        LIMIT ?
-        """,
-        (legacy.STATE_KEY, max(1, int(limit))),
+    last_verified_at, last_item_id = await _load_fanout_watermark(conn)
+    keys = await _select_verified_queue_cursor_keys(
+        conn,
+        last_verified_at=last_verified_at,
+        last_item_id=last_item_id,
+        limit=limit,
     )
-    rows = await cursor.fetchall()
-    if not rows:
+    if not keys:
         return _IngestResult()
 
+    rows = await _load_cursor_snapshots(conn, keys)
     loaded = 0
     exact_cards = 0
-    final_verified_at = ""
-    final_item_id = ""
     now_iso = datetime.now(timezone.utc).isoformat()
     event_rows: dict[str, tuple[str, str, str, str]] = {}
 
-    for row in rows:
-        item_id = str(legacy._row_get(row, "item_id", 0) or "")
-        verified_at = str(legacy._row_get(row, "verified_at", 1) or "")
-        snapshot_json = str(legacy._row_get(row, "snapshot_json", 2) or "")
-        final_verified_at = verified_at
-        final_item_id = item_id
+    for key, snapshot_json in rows:
         loaded += 1
         candidate = _candidate_from_snapshot(snapshot_json)
         card = legacy._exact_card_for_candidate(candidate)
@@ -444,7 +444,7 @@ async def _ingest_verified_queue_events_bulk(
             deal_key,
             snapshot_json,
             now_iso,
-            verified_at,
+            key.verified_at,
         )
 
     new_events = 0
@@ -465,6 +465,7 @@ async def _ingest_verified_queue_events_bulk(
         )
         new_events = len(await inserted.fetchall())
 
+    final_key = keys[-1]
     await conn.execute(
         f"""
         UPDATE {legacy.STATE_TABLE}
@@ -472,8 +473,8 @@ async def _ingest_verified_queue_events_bulk(
         WHERE state_key = ?
         """,
         (
-            final_verified_at,
-            final_item_id,
+            final_key.verified_at,
+            final_key.item_id,
             datetime.now(timezone.utc).isoformat(),
             legacy.STATE_KEY,
         ),
@@ -484,6 +485,95 @@ async def _ingest_verified_queue_events_bulk(
         exact_cards=exact_cards,
         new_events=new_events,
     )
+
+
+async def _load_fanout_watermark(conn: Any) -> tuple[str, str]:
+    cursor = await conn.execute(
+        f"""
+        SELECT last_verified_at, last_item_id
+        FROM {legacy.STATE_TABLE}
+        WHERE state_key = ?
+        """,
+        (legacy.STATE_KEY,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return "", ""
+    return (
+        str(legacy._row_get(row, "last_verified_at", 0) or ""),
+        str(legacy._row_get(row, "last_item_id", 1) or ""),
+    )
+
+
+async def _select_verified_queue_cursor_keys(
+    conn: Any,
+    *,
+    last_verified_at: str,
+    last_item_id: str,
+    limit: int,
+) -> list[_CursorKey]:
+    cursor = await conn.execute(
+        FANOUT_CURSOR_KEYS_SQL,
+        (
+            str(last_verified_at or ""),
+            str(last_item_id or ""),
+            max(1, int(limit)),
+        ),
+    )
+    rows = await cursor.fetchall()
+    keys: list[_CursorKey] = []
+    for row in rows:
+        item_id = str(legacy._row_get(row, "item_id", 0) or "")
+        verified_at = str(legacy._row_get(row, "verified_at", 1) or "")
+        if item_id and verified_at:
+            keys.append(_CursorKey(item_id=item_id, verified_at=verified_at))
+    return keys
+
+
+async def _load_cursor_snapshots(
+    conn: Any,
+    keys: list[_CursorKey],
+) -> list[tuple[_CursorKey, str]]:
+    if not keys:
+        return []
+
+    placeholders = ",".join("(?, ?, ?)" for _ in keys)
+    params: tuple[Any, ...] = tuple(
+        value
+        for ordinal, key in enumerate(keys)
+        for value in (key.item_id, key.verified_at, ordinal)
+    )
+    cursor = await conn.execute(
+        f"""
+        WITH picked(item_id, verified_at, ordinal) AS (
+            VALUES {placeholders}
+        )
+        SELECT picked.item_id, picked.verified_at, queue.snapshot_json
+        FROM picked
+        JOIN {QUEUE_TABLE} AS queue
+          ON queue.item_id = picked.item_id
+         AND queue.verified_at = picked.verified_at
+        WHERE queue.status = 'verified_markdown'
+          AND queue.snapshot_json <> ''
+        ORDER BY picked.ordinal ASC
+        """,
+        params,
+    )
+    rows = await cursor.fetchall()
+    loaded: list[tuple[_CursorKey, str]] = []
+    for row in rows:
+        item_id = str(legacy._row_get(row, "item_id", 0) or "")
+        verified_at = str(legacy._row_get(row, "verified_at", 1) or "")
+        snapshot_json = str(legacy._row_get(row, "snapshot_json", 2) or "")
+        if not item_id or not verified_at or not snapshot_json:
+            continue
+        loaded.append(
+            (
+                _CursorKey(item_id=item_id, verified_at=verified_at),
+                snapshot_json,
+            )
+        )
+    return loaded
 
 
 async def _claim_pending_events_bulk(

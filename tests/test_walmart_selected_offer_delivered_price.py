@@ -5,13 +5,18 @@ import asyncio
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
-from sniperplug.services.walmart_card_renderer import build_walmart_cards, price_lines
+from sniperplug.services.price_proof import verified_deal_value
+from sniperplug.services.walmart_card_renderer import (
+    build_walmart_cards,
+    price_lines,
+)
 from sniperplug.services.walmart_exact_price_enrichment import (
     enrich_walmart_exact_prices,
     exact_detail_verified_candidates,
 )
-from sniperplug.services.walmart_marketplace_comp import marketplace_comp_from_item
-from sniperplug.services.price_proof import verified_deal_value
+from sniperplug.services.walmart_marketplace_comp import (
+    marketplace_comp_from_item,
+)
 
 
 def provider() -> WalmartProvider:
@@ -28,12 +33,12 @@ def request() -> ProviderScanRequest:
     return ProviderScanRequest(source_key="walmart", query="test")
 
 
-def test_selected_offer_price_and_shipping_override_other_seller_minimum() -> None:
+def test_selected_offer_price_shipping_and_reference_override_other_sellers() -> None:
     item = {
         "itemId": 700001,
         "name": "Marketplace product",
         "minPrice": 3.50,
-        "wasPrice": 100.00,
+        "wasPrice": 999.00,
         "isMarketPlaceItem": True,
         "availableOnline": True,
         "selectedOffer": {
@@ -41,6 +46,7 @@ def test_selected_offer_price_and_shipping_override_other_seller_minimum() -> No
             "sellerId": "seller-a",
             "sellerName": "Seller A",
             "currentPrice": {"amount": 20.00},
+            "wasPrice": {"amount": 100.00},
             "shippingCost": {"amount": 15.00},
             "fulfillmentType": "SHIPPING",
             "condition": "New",
@@ -58,7 +64,15 @@ def test_selected_offer_price_and_shipping_override_other_seller_minimum() -> No
     assert candidate.delivered_price == 35.00
     assert candidate.current_price == 35.00
     assert candidate.api_current_price == 35.00
+    assert candidate.typical_price == 100.00
+    assert candidate.api_reference_price == 100.00
+    assert candidate.api_reference_path == "selectedOffer.wasPrice"
     assert candidate.api_discount_percent == 65.00
+    assert candidate.variant_attributes["trustedReferencePrice"] == "100.00"
+    assert (
+        candidate.variant_attributes["trustedReferenceSource"]
+        == "selectedOffer.wasPrice"
+    )
     assert candidate.variant_attributes["alternateSellerMinPrice"] == "3.50"
     assert (
         candidate.variant_attributes["selectedOfferPublicPriceStatus"]
@@ -69,16 +83,65 @@ def test_selected_offer_price_and_shipping_override_other_seller_minimum() -> No
     )
 
 
+def test_nested_offer_without_same_offer_reference_blocks_page_was_price() -> None:
+    item = {
+        "itemId": 700008,
+        "name": "Cross-offer reference product",
+        "wasPrice": 100.00,
+        "selectedOffer": {
+            "offerId": "offer-no-reference",
+            "sellerId": "seller-no-reference",
+            "sellerName": "Seller No Reference",
+            "currentPrice": 20.00,
+            "shippingCost": 10.00,
+            "isMarketPlaceItem": True,
+        },
+    }
+
+    candidate = provider()._candidate_from_item(item, request())
+
+    assert candidate is not None
+    assert candidate.current_price == 30.00
+    assert candidate.item_price == 20.00
+    assert candidate.shipping_cost == 10.00
+    assert candidate.typical_price is None
+    assert candidate.api_reference_price is None
+    assert candidate.api_reference_path is None
+    assert candidate.api_discount_percent is None
+    assert candidate.variant_attributes["referencePriceTrusted"] == "no"
+    assert candidate.variant_attributes["crossOfferReferenceBlocked"] == "yes"
+    assert (
+        candidate.variant_attributes["selectedOfferReferenceStatus"]
+        == "blocked_cross_offer_reference"
+    )
+    assert candidate.variant_attributes["referenceContextPrice"] == "100.00"
+    assert any(
+        "not proven for selected seller/offer" in signal
+        for signal in candidate.signals
+    )
+
+    cards = build_walmart_cards(
+        ProviderScanResult(
+            provider_key="walmart",
+            candidates=(candidate,),
+        ),
+        min_discount=50,
+        alerts_only=False,
+    )
+    assert cards == []
+
+
 def test_explicit_free_shipping_keeps_selected_offer_item_price() -> None:
     item = {
         "itemId": 700002,
         "name": "Free shipping marketplace product",
-        "wasPrice": 80.00,
+        "wasPrice": 999.00,
         "selectedOffer": {
             "offerId": "offer-free",
             "sellerId": "seller-free",
             "sellerName": "Free Ship Seller",
             "salePrice": 24.00,
+            "wasPrice": 80.00,
             "freeShipping": True,
             "isMarketPlaceItem": True,
         },
@@ -92,6 +155,8 @@ def test_explicit_free_shipping_keeps_selected_offer_item_price() -> None:
     assert candidate.shipping_cost == 0.00
     assert candidate.delivered_price == 24.00
     assert candidate.shipping_status == "free"
+    assert candidate.typical_price == 80.00
+    assert candidate.api_reference_path == "selectedOffer.wasPrice"
     assert candidate.api_discount_percent == 70.00
 
 
@@ -105,6 +170,7 @@ def test_unknown_marketplace_shipping_fails_closed() -> None:
             "sellerId": "seller-unknown",
             "sellerName": "Unknown Ship Seller",
             "currentPrice": 10.00,
+            "wasPrice": 100.00,
             "isMarketPlaceItem": True,
         },
     }
@@ -178,6 +244,8 @@ def test_walmart_owned_offer_without_shipping_claims_checkout_dependent_not_free
     assert candidate.seller_name == "Walmart"
     assert candidate.current_price == 18.00
     assert candidate.item_price == 18.00
+    assert candidate.typical_price == 60.00
+    assert candidate.api_reference_path == "item.wasPrice"
     assert candidate.delivered_price is None
     assert candidate.shipping_cost is None
     assert candidate.shipping_status == "checkout_dependent"
@@ -226,6 +294,7 @@ def test_exact_marketplace_offer_with_unknown_shipping_is_not_verified_for_publi
                     "sellerId": "seller-exact",
                     "sellerName": "Exact Seller",
                     "currentPrice": 5.00,
+                    "wasPrice": 100.00,
                     "isMarketPlaceItem": True,
                 },
             }
@@ -252,12 +321,13 @@ def test_card_displays_item_shipping_delivered_and_other_seller_context() -> Non
         "itemId": 700007,
         "name": "Rendered marketplace product",
         "minPrice": 9.00,
-        "wasPrice": 100.00,
+        "wasPrice": 999.00,
         "selectedOffer": {
             "offerId": "offer-rendered",
             "sellerId": "seller-rendered",
             "sellerName": "Rendered Seller",
             "currentPrice": 20.00,
+            "wasPrice": 100.00,
             "shippingPrice": 10.00,
             "isMarketPlaceItem": True,
         },
@@ -272,6 +342,7 @@ def test_card_displays_item_shipping_delivered_and_other_seller_context() -> Non
     assert "Selected-offer item price: **$20.00**" in rendered
     assert "Shipping: **$10.00**" in rendered
     assert "Delivered total used for deal math: **$30.00**" in rendered
+    assert "Was/typical: ~~$100.00~~" in rendered
     assert "Other-seller minimum: **$9.00**" in rendered
     assert "context only, not this selected offer" in rendered
 
@@ -280,6 +351,7 @@ def test_marketplace_comp_extractor_keeps_selected_and_alternate_prices_separate
     attrs = marketplace_comp_from_item(
         {
             "minPrice": 4.00,
+            "wasPrice": 999.00,
             "bestMarketplacePrice": {
                 "price": 75.00,
                 "sellerName": "Other Seller",
@@ -288,6 +360,7 @@ def test_marketplace_comp_extractor_keeps_selected_and_alternate_prices_separate
                 "offerId": "selected",
                 "sellerName": "Selected Seller",
                 "currentPrice": 30.00,
+                "wasPrice": 60.00,
                 "shippingCost": 8.00,
                 "isMarketPlaceItem": True,
             },
@@ -297,5 +370,7 @@ def test_marketplace_comp_extractor_keeps_selected_and_alternate_prices_separate
     assert attrs["selectedOfferItemPrice"] == "30.00"
     assert attrs["selectedOfferShippingCost"] == "8.00"
     assert attrs["selectedOfferDeliveredPrice"] == "38.00"
+    assert attrs["selectedOfferReferencePrice"] == "60.00"
+    assert attrs["selectedOfferReferenceSource"] == "selectedOffer.wasPrice"
     assert attrs["alternateSellerMinPrice"] == "4.00"
     assert attrs["marketplaceCompPrice"] == "75.00"

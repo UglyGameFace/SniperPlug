@@ -29,15 +29,6 @@ class SourceCandidate:
     typical_price: float | None = None
     image_url: str | None = None
 
-    # Selected-offer payable-price truth. `current_price` remains the number used
-    # by ranking and discount math; for Walmart it is normalized to delivered
-    # price when mandatory shipping is known.
-    item_price: float | None = None
-    shipping_cost: float | None = None
-    delivered_price: float | None = None
-    shipping_status: str | None = None
-    shipping_source: str | None = None
-
     # Public deal proof. These fields are intentionally separate from display
     # copy so public posting never guesses from embed wording such as MSRP.
     deal_lane: str | None = None
@@ -80,6 +71,15 @@ class SourceCandidate:
     first_seen_at: str = field(default_factory=utc_now_iso)
     last_checked_at: str = field(default_factory=utc_now_iso)
 
+    # Appended to preserve the positional constructor order of every pre-existing
+    # field. Walmart normalizes current_price to the payable delivered total only
+    # when mandatory shipping is explicitly known.
+    item_price: float | None = None
+    shipping_cost: float | None = None
+    delivered_price: float | None = None
+    shipping_status: str | None = None
+    shipping_source: str | None = None
+
     def __post_init__(self) -> None:
         self._apply_walmart_selected_offer_truth()
         asin = self.product_id if self.product_id_type == "asin" else None
@@ -109,7 +109,9 @@ class SourceCandidate:
         selected_item = _float_or_none(attrs.get("selectedOfferItemPrice"))
         selected_shipping = _float_or_none(attrs.get("selectedOfferShippingCost"))
         selected_delivered = _float_or_none(attrs.get("selectedOfferDeliveredPrice"))
-        shipping_status = str(attrs.get("selectedOfferShippingStatus") or self.shipping_status or "").strip().lower()
+        shipping_status = str(
+            attrs.get("selectedOfferShippingStatus") or self.shipping_status or ""
+        ).strip().lower()
         marketplace = str(
             attrs.get("selectedOfferMarketplace")
             or attrs.get("isMarketPlaceItem")
@@ -127,6 +129,11 @@ class SourceCandidate:
         if selected_seller:
             self.seller_name = selected_seller
             attrs["seller"] = selected_seller
+        elif marketplace in {"no", "false", "0"} and not self.seller_name:
+            self.seller_name = "Walmart"
+            attrs["seller"] = "Walmart"
+            attrs["selectedOfferSeller"] = "Walmart"
+            attrs["walmartSeller"] = "yes"
         if selected_seller_id:
             attrs["sellerId"] = selected_seller_id
         if selected_offer_id:
@@ -139,25 +146,44 @@ class SourceCandidate:
             self.api_condition = self.api_condition or selected_condition
             attrs["condition"] = selected_condition
 
-        current_source = str(attrs.get("currentPriceSource") or self.api_price_path or "").strip()
+        current_source = str(
+            attrs.get("currentPriceSource") or self.api_price_path or ""
+        ).strip()
         source_is_alternate_min = current_source in {"minPrice", "min_price"}
 
         if selected_item is not None and selected_item > 0:
             self.item_price = round(selected_item, 2)
-            if selected_delivered is not None and selected_delivered > 0 and shipping_status in {"free", "paid"}:
+            if (
+                selected_delivered is not None
+                and selected_delivered > 0
+                and shipping_status in {"free", "paid"}
+            ):
                 self.shipping_cost = round(max(selected_shipping or 0.0, 0.0), 2)
                 self.delivered_price = round(selected_delivered, 2)
                 self.shipping_status = shipping_status
-                self.shipping_source = str(attrs.get("selectedOfferShippingSource") or "").strip() or None
+                self.shipping_source = (
+                    str(attrs.get("selectedOfferShippingSource") or "").strip()
+                    or None
+                )
                 self.current_price = self.delivered_price
                 self.api_current_price = self.delivered_price
-                self.api_price_path = str(attrs.get("selectedOfferDeliveredPriceSource") or "").strip() or self.api_price_path
-                attrs["currentPriceSource"] = self.api_price_path or "selectedOfferDeliveredPrice"
+                self.api_price_path = (
+                    str(attrs.get("selectedOfferDeliveredPriceSource") or "").strip()
+                    or self.api_price_path
+                )
+                attrs["currentPriceSource"] = (
+                    self.api_price_path or "selectedOfferDeliveredPrice"
+                )
                 attrs["selectedOfferPublicPriceStatus"] = "verified_delivered"
             else:
+                self.shipping_cost = None
                 self.shipping_status = shipping_status or "unknown"
-                self.shipping_source = str(attrs.get("selectedOfferShippingSource") or "").strip() or None
+                self.shipping_source = (
+                    str(attrs.get("selectedOfferShippingSource") or "").strip()
+                    or None
+                )
                 self.delivered_price = None
+                _clear_payable_shipping_attrs(attrs)
                 if _is_third_party_marketplace(
                     marketplace=marketplace,
                     seller_name=self.seller_name,
@@ -166,7 +192,9 @@ class SourceCandidate:
                     self.current_price = None
                     self.api_current_price = None
                     self.api_discount_percent = None
-                    attrs["selectedOfferPublicPriceStatus"] = "blocked_shipping_unknown"
+                    attrs["selectedOfferPublicPriceStatus"] = (
+                        "blocked_shipping_unknown"
+                    )
                     _append_signal(
                         self.signals,
                         "Walmart selected marketplace offer blocked: shipping cost was not returned",
@@ -174,9 +202,10 @@ class SourceCandidate:
                 else:
                     self.current_price = self.item_price
                     self.api_current_price = self.item_price
-                    self.delivered_price = self.item_price
                     self.shipping_status = "checkout_dependent"
-                    attrs["selectedOfferPublicPriceStatus"] = "item_price_shipping_checkout_dependent"
+                    attrs["selectedOfferPublicPriceStatus"] = (
+                        "item_price_shipping_checkout_dependent"
+                    )
                     _append_signal(
                         self.signals,
                         "Walmart shipping not separately returned; item price may depend on order, location, or checkout",
@@ -187,8 +216,13 @@ class SourceCandidate:
             self.current_price = None
             self.api_current_price = None
             self.api_discount_percent = None
+            self.shipping_cost = None
             self.delivered_price = None
-            attrs["selectedOfferPublicPriceStatus"] = "blocked_alternate_min_price"
+            self.shipping_source = None
+            _clear_payable_shipping_attrs(attrs)
+            attrs["selectedOfferPublicPriceStatus"] = (
+                "blocked_alternate_min_price"
+            )
             _append_signal(
                 self.signals,
                 "Walmart alternate seller minimum price blocked from selected-offer deal math",
@@ -198,8 +232,12 @@ class SourceCandidate:
             self.item_price = self.item_price or fallback
             self.delivered_price = self.delivered_price or fallback
 
-        reference = _float_or_none(self.api_reference_price) or _float_or_none(self.typical_price)
-        payable = _float_or_none(self.api_current_price) or _float_or_none(self.current_price)
+        reference = _float_or_none(self.api_reference_price) or _float_or_none(
+            self.typical_price
+        )
+        payable = _float_or_none(self.api_current_price) or _float_or_none(
+            self.current_price
+        )
         self.api_discount_percent = _percent_off(payable, reference)
 
         if self.item_price is not None:
@@ -235,9 +273,13 @@ class SourceCandidate:
         elif self.shipping_cost is not None:
             availability_bits.append(f"Shipping: {money(self.shipping_cost)}")
         elif self.shipping_status:
-            availability_bits.append(f"Shipping: {self.shipping_status.replace('_', ' ')}")
+            availability_bits.append(
+                f"Shipping: {self.shipping_status.replace('_', ' ')}"
+            )
         if self.delivered_price is not None:
-            availability_bits.append(f"Delivered total: {money(self.delivered_price)}")
+            availability_bits.append(
+                f"Delivered total: {money(self.delivered_price)}"
+            )
         if self.is_business_offer:
             availability_bits.append("May require business account")
         if self.is_member_only:
@@ -258,8 +300,10 @@ class SourceCandidate:
             shipping_status=self.shipping_status,
             shipping_source=self.shipping_source,
             source=self.source_key,
-            sku=self.sku or (self.product_id if self.product_id_type == "sku" else None),
-            upc=self.upc or (self.product_id if self.product_id_type == "upc" else None),
+            sku=self.sku
+            or (self.product_id if self.product_id_type == "sku" else None),
+            upc=self.upc
+            or (self.product_id if self.product_id_type == "upc" else None),
             asin=self.product_id if self.product_id_type == "asin" else None,
             selected_offer_id=self.selected_offer_id,
             variant_label=self.variant_label,
@@ -273,7 +317,9 @@ class SourceCandidate:
             seller_name=self.seller_name,
             fulfillment_type=self.fulfillment_type,
             condition=self.condition,
-            availability_message="; ".join(availability_bits) if availability_bits else None,
+            availability_message="; ".join(availability_bits)
+            if availability_bits
+            else None,
         )
 
         structured_attrs = {
@@ -296,64 +342,123 @@ class SourceCandidate:
             if value is not None and value != "":
                 deal.variant_attributes.setdefault(key, str(value))
 
-        coupon_savings = _float_or_none(self.variant_attributes.get("couponSavings"))
-        if coupon_savings and coupon_savings > 0 and self.current_price is not None:
-            deal.pre_coupon_price = round(self.current_price + coupon_savings, 2)
+        coupon_savings = _float_or_none(
+            self.variant_attributes.get("couponSavings")
+        )
+        if (
+            coupon_savings
+            and coupon_savings > 0
+            and self.current_price is not None
+        ):
+            deal.pre_coupon_price = round(
+                self.current_price + coupon_savings, 2
+            )
             deal.coupon_savings = round(coupon_savings, 2)
-            deal.coupon_terms.append(f"Walmart coupon: {money(coupon_savings)}")
+            deal.coupon_terms.append(
+                f"Walmart coupon: {money(coupon_savings)}"
+            )
             deal.alert_tags.append("Walmart Coupon")
-            deal.verification_notes.append(f"Walmart coupon detected: {money(coupon_savings)}")
+            deal.verification_notes.append(
+                f"Walmart coupon detected: {money(coupon_savings)}"
+            )
 
-        walmart_cash = _float_or_none(self.variant_attributes.get("walmartCashSavings"))
+        walmart_cash = _float_or_none(
+            self.variant_attributes.get("walmartCashSavings")
+        )
         if walmart_cash and walmart_cash > 0:
-            deal.coupon_terms.append(f"Walmart Cash reward: {money(walmart_cash)}")
+            deal.coupon_terms.append(
+                f"Walmart Cash reward: {money(walmart_cash)}"
+            )
             deal.alert_tags.append("Walmart Cash")
-            deal.verification_notes.append(f"Walmart Cash detected: {money(walmart_cash)} reward/value")
+            deal.verification_notes.append(
+                f"Walmart Cash detected: {money(walmart_cash)} reward/value"
+            )
 
-        api_savings = _float_or_none(self.variant_attributes.get("apiSavingsAmount"))
-        api_promo_cap = _float_or_none(self.variant_attributes.get("apiPromotionSavingsCap"))
-        api_promo = str(self.variant_attributes.get("apiPromotionText") or "").strip()
-        api_kind = str(self.variant_attributes.get("apiValueKind") or "").strip()
+        api_savings = _float_or_none(
+            self.variant_attributes.get("apiSavingsAmount")
+        )
+        api_promo_cap = _float_or_none(
+            self.variant_attributes.get("apiPromotionSavingsCap")
+        )
+        api_promo = str(
+            self.variant_attributes.get("apiPromotionText") or ""
+        ).strip()
+        api_kind = str(
+            self.variant_attributes.get("apiValueKind") or ""
+        ).strip()
 
         if api_savings and api_savings > 0:
             deal.alert_tags.append("Walmart API Savings")
-            deal.verification_notes.append(f"Walmart API savings from payload: {money(api_savings)}")
+            deal.verification_notes.append(
+                f"Walmart API savings from payload: {money(api_savings)}"
+            )
         if api_promo_cap and api_promo_cap > 0:
             deal.alert_tags.append("Walmart API Promo")
-            deal.verification_notes.append(f"Walmart API promo savings cap: {money(api_promo_cap)}")
+            deal.verification_notes.append(
+                f"Walmart API promo savings cap: {money(api_promo_cap)}"
+            )
         if api_promo:
             deal.alert_tags.append("Walmart API Promo")
-            deal.verification_notes.append(f"Walmart API promo text: {api_promo[:180]}")
+            deal.verification_notes.append(
+                f"Walmart API promo text: {api_promo[:180]}"
+            )
         if api_kind:
-            deal.verification_notes.append(f"Walmart API value type: {api_kind}")
+            deal.verification_notes.append(
+                f"Walmart API value type: {api_kind}"
+            )
 
         deal.recalculate_prices()
 
         if self.variant_label:
-            deal.verification_notes.append(f"Selected option: {self.variant_label}")
+            deal.verification_notes.append(
+                f"Selected option: {self.variant_label}"
+            )
         if self.variant_attributes:
-            attrs = ", ".join(f"{key}: {value}" for key, value in self.variant_attributes.items())
+            attrs = ", ".join(
+                f"{key}: {value}"
+                for key, value in self.variant_attributes.items()
+            )
             deal.verification_notes.append(f"Variant attributes: {attrs}")
         if self.selected_offer_id:
-            deal.verification_notes.append(f"Selected offer ID: {self.selected_offer_id}")
+            deal.verification_notes.append(
+                f"Selected offer ID: {self.selected_offer_id}"
+            )
         if self.seller_name:
-            deal.verification_notes.append(f"Selected offer seller: {self.seller_name}")
+            deal.verification_notes.append(
+                f"Selected offer seller: {self.seller_name}"
+            )
         if self.item_price is not None:
-            deal.verification_notes.append(f"Selected offer item price: {money(self.item_price)}")
+            deal.verification_notes.append(
+                f"Selected offer item price: {money(self.item_price)}"
+            )
         if self.shipping_status == "free":
-            deal.verification_notes.append("Selected offer shipping: free (API proof)")
+            deal.verification_notes.append(
+                "Selected offer shipping: free (API proof)"
+            )
         elif self.shipping_cost is not None:
-            deal.verification_notes.append(f"Selected offer shipping: {money(self.shipping_cost)}")
+            deal.verification_notes.append(
+                f"Selected offer shipping: {money(self.shipping_cost)}"
+            )
         elif self.shipping_status:
-            deal.verification_notes.append(f"Selected offer shipping status: {self.shipping_status}")
+            deal.verification_notes.append(
+                f"Selected offer shipping status: {self.shipping_status}"
+            )
         if self.delivered_price is not None:
-            deal.verification_notes.append(f"Selected offer delivered total: {money(self.delivered_price)}")
+            deal.verification_notes.append(
+                f"Selected offer delivered total: {money(self.delivered_price)}"
+            )
         if self.fulfillment_type:
-            deal.verification_notes.append(f"Selected offer fulfillment: {self.fulfillment_type}")
+            deal.verification_notes.append(
+                f"Selected offer fulfillment: {self.fulfillment_type}"
+            )
         if self.condition:
-            deal.verification_notes.append(f"Selected offer condition: {self.condition}")
+            deal.verification_notes.append(
+                f"Selected offer condition: {self.condition}"
+            )
         if self.parent_title and self.parent_title != self.title:
-            deal.verification_notes.append(f"Parent listing title: {self.parent_title}")
+            deal.verification_notes.append(
+                f"Parent listing title: {self.parent_title}"
+            )
         if self.option_mismatch_warning:
             deal.risk_flags.append(self.option_mismatch_warning)
             deal.verification_notes.append(self.option_mismatch_warning)
@@ -373,14 +478,44 @@ class SourceCandidate:
         return deal
 
 
-def _is_third_party_marketplace(*, marketplace: str, seller_name: str | None, seller_id: str | None) -> bool:
+def _clear_payable_shipping_attrs(attrs: dict[str, str]) -> None:
+    """Override stale search-offer values during exact-detail merges."""
+
+    for key in (
+        "selectedOfferShippingCost",
+        "selectedOfferShippingSource",
+        "selectedOfferDeliveredPrice",
+        "shippingCost",
+        "shippingSource",
+        "deliveredPrice",
+    ):
+        attrs[key] = ""
+
+
+def _is_third_party_marketplace(
+    *,
+    marketplace: str,
+    seller_name: str | None,
+    seller_id: str | None,
+) -> bool:
     if marketplace in {"yes", "true", "1"}:
         return True
-    normalized_name = " ".join(str(seller_name or "").lower().split())
+    normalized_name = " ".join(
+        str(seller_name or "").lower().split()
+    )
     normalized_id = str(seller_id or "").strip().upper()
-    if normalized_name in {"walmart", "walmart.com", "walmart stores inc", "walmart stores, inc."}:
+    if normalized_name in {
+        "walmart",
+        "walmart.com",
+        "walmart stores inc",
+        "walmart stores, inc.",
+    }:
         return False
-    if normalized_id in {"0", "F55CDC31AB754BB68FE0B39041159D63", "WALMART"}:
+    if normalized_id in {
+        "0",
+        "F55CDC31AB754BB68FE0B39041159D63",
+        "WALMART",
+    }:
         return False
     return bool(normalized_name or normalized_id)
 
@@ -390,8 +525,16 @@ def _append_signal(signals: list[str], value: str) -> None:
         signals.append(value)
 
 
-def _percent_off(current: float | None, reference: float | None) -> float | None:
-    if current is None or reference is None or reference <= 0 or reference <= current:
+def _percent_off(
+    current: float | None,
+    reference: float | None,
+) -> float | None:
+    if (
+        current is None
+        or reference is None
+        or reference <= 0
+        or reference <= current
+    ):
         return None
     return round((reference - current) / reference * 100.0, 2)
 
@@ -400,7 +543,12 @@ def _float_or_none(value) -> float | None:
     if value is None or value == "":
         return None
     if isinstance(value, str):
-        value = value.replace("$", "").replace(",", "").strip().rstrip("%")
+        value = (
+            value.replace("$", "")
+            .replace(",", "")
+            .strip()
+            .rstrip("%")
+        )
     try:
         return float(value)
     except (TypeError, ValueError):

@@ -20,14 +20,6 @@ class NormalizedDeal:
     discount_percent: float | None = None
     savings_amount: float | None = None
 
-    # Selected-offer payable-price breakdown. For Walmart marketplace offers,
-    # current_price is the delivered total whenever shipping is verified.
-    item_price: float | None = None
-    shipping_cost: float | None = None
-    delivered_price: float | None = None
-    shipping_status: str | None = None
-    shipping_source: str | None = None
-
     pre_coupon_price: float | None = None
     coupon_savings: float | None = None
     coupon_percent: float | None = None
@@ -79,19 +71,39 @@ class NormalizedDeal:
     last_checked_at: str = field(default_factory=utc_now_iso)
     expires_at: str | None = None
 
+    # Appended to preserve the positional constructor order of every pre-existing
+    # field. For Walmart marketplace offers current_price is the delivered total
+    # only when shipping is explicitly verified.
+    item_price: float | None = None
+    shipping_cost: float | None = None
+    delivered_price: float | None = None
+    shipping_status: str | None = None
+    shipping_source: str | None = None
+
     def recalculate_prices(self) -> None:
         if self.current_price is not None and self.typical_price:
-            self.savings_amount = round(max(self.typical_price - self.current_price, 0), 2)
-            self.discount_percent = round((self.savings_amount / self.typical_price) * 100, 2)
+            self.savings_amount = round(
+                max(self.typical_price - self.current_price, 0), 2
+            )
+            self.discount_percent = round(
+                (self.savings_amount / self.typical_price) * 100, 2
+            )
 
         if self.pre_coupon_price is not None and self.current_price is not None:
-            self.coupon_savings = round(max(self.pre_coupon_price - self.current_price, 0), 2)
+            self.coupon_savings = round(
+                max(self.pre_coupon_price - self.current_price, 0), 2
+            )
             if self.pre_coupon_price > 0 and self.coupon_savings:
-                self.coupon_percent = round((self.coupon_savings / self.pre_coupon_price) * 100, 2)
+                self.coupon_percent = round(
+                    (self.coupon_savings / self.pre_coupon_price) * 100, 2
+                )
 
         if self.coupon_terms:
             lowered_terms = {term.lower() for term in self.coupon_terms}
-            self.coupon_stack_detected = len(self.coupon_terms) >= 2 or "subscribe and save" in lowered_terms
+            self.coupon_stack_detected = (
+                len(self.coupon_terms) >= 2
+                or "subscribe and save" in lowered_terms
+            )
 
     def to_dict(self) -> dict:
         return asdict(self)

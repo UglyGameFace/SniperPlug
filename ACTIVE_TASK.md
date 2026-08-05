@@ -1,62 +1,55 @@
 # Active Task
 
 ## Status
-Implementation complete and merge-ready on PR #221 (`fix/walmart-fanout-cursor-read`). Production remains unclaimed until merged `main` is deployed to canonical Discloud app `1779293887444` and verified in live logs.
+Active — PR #221 is deployed and its original fanout cursor scan is production-verified as removed. The next dominant Turso blocker is the Walmart catalog queue enqueue path; implementation is in progress on `fix/walmart-catalog-queue-write-amplification`.
 
 ## Scope
-Eliminate the repeated slow read that scans verified Walmart queue snapshots for global public/DM fanout, without delaying verified deal delivery, skipping events, weakening exact-offer proof, or changing per-server thresholds.
+Eliminate repeated Walmart catalog queue write amplification without dropping discovered item IDs, delaying new or changed candidates, weakening exact item/seller/offer/variant/shipping/reference proof, changing per-server thresholds, or breaking retry/recheck scheduling.
 
 ## Production evidence
-- The old `SELECT COUNT(*) FROM walmart_exact_detail_queue` warning no longer appears after PR #219.
-- `SELECT queue.item_id, queue.verified_at, queue.snapshot_json` repeatedly took about 7–20 seconds remotely.
-- Unrelated operations then waited behind the single process-isolated Turso connection for comparable durations.
-- Exact verification still worked, but affected cycles reported claim/store times as high as 16.50s/21.54s.
-- The slow query ran after the 20-second exact worker and after the 60-second catalog worker, including empty fanout polls.
+- The former `SELECT queue.item_id, queue.verified_at, queue.snapshot_json` warning is absent after PR #221.
+- The replacement fanout cursor-key read is fast: about 0.14-0.19 seconds remotely in the supplied log window.
+- Catalog batches repeatedly issue two or three `INSERT INTO walmart_exact_detail_queue` operations for 75-100 deduplicated candidates.
+- Those inserts took about 2.1-10.0 seconds remotely each; following commits took about 2.0-7.7 seconds.
+- Unrelated reads and exact claims then waited behind the serialized database worker.
+- Exact claim timing still spiked to 9.81s, 11.95s, and 18.80s while the actual fetch work remained much smaller.
+- Catalog batches stretched to roughly 22-40 seconds during the worst write windows.
 
 ## Root cause
-- `_ingest_verified_queue_events_bulk()` selected large `snapshot_json` values while locating the next cursor page.
-- Its joined `OR` watermark predicate did not match the queue's existing indexes.
-- The existing verified index was `(verified_at, exact_discount_bps DESC)`; fanout filters by `status = 'verified_markdown'` and orders by `(verified_at, item_id)`.
-- The process-isolated driver fully consumes and serializes every query result inside the worker, so an inefficient scan/large-row read blocked every other database operation.
+- Global catalog discovery runs every 60 seconds and calls `enqueue_walmart_exact_verification_candidates_bulk()`.
+- That function re-runs raw table/index initialization on every enqueue instead of sharing the exact worker's once-per-connection schema cache.
+- The enqueue batch is limited to 40 rows, so a normal 75-100 item pass still uses two or three remote UPSERT statements.
+- `ON CONFLICT DO UPDATE` rewrites every rediscovered row even when its discovery projection is unchanged and recent.
+- Each unnecessary update maintains multiple queue indexes and is followed by a separate remote commit on the one serialized Turso connection.
+- `discovered_count` is not read by production behavior; it is only maintained by the enqueue path and tests.
 
-## Implemented changes
-- Added a fanout-specific partial index on `(verified_at, item_id)` for nonempty exact `verified_markdown` snapshots.
-- Load the one-row fanout watermark separately.
-- Replaced the joined `OR` predicate with indexed row-value pagination: `(verified_at, item_id) > (?, ?)`.
-- Ordinary/empty polls select only lightweight cursor keys and never retrieve `snapshot_json`.
-- Snapshot JSON is fetched only for the bounded selected keys through a VALUES join.
-- Snapshot loading revalidates the exact `(item_id, verified_at)` version and preserves selected order.
-- The watermark advances to the final selected key even if a selected row changes between phases; a newer version remains eligible on the next pass.
-- Existing durable event insertion, leases, duplicate suppression, public thresholds, DM matching, and exact item/seller/offer/variant/shipping/reference gates remain unchanged.
-- Schema/index initialization remains cached once per live database connection.
+## Implementation plan
+- Reuse `ensure_exact_runtime_schema_once()` so catalog and exact workers share one schema initialization per live connection.
+- Load one bounded primary-key projection for the current item IDs before writing.
+- Persist only rows that are new, materially changed, stale enough to need a retention heartbeat, or require pending/retry/failed rearming.
+- Skip the write and commit entirely for recent unchanged rediscoveries.
+- Increase the conservative multi-row batch from 40 to 60 rows: 60 x 16 = 960 parameters, below SQLite's historical 999-variable ceiling.
+- Add enqueue telemetry for persisted rows, unchanged rows, and write-statement count.
+- Preserve immediate insertion of new IDs, meaningful discovery metadata updates, retry rearming, queue pressure reporting, retention cleanup, and exact-proof ownership.
 
-## Validation
-- Python 3.11 full suite: **1,107 passed**, one upstream `audioop` deprecation warning.
-- Python 3.12 Python Check: passed.
-- Import smoke check: passed.
-- `pip check`: passed.
-- `compileall` across app, tests, and entry points: passed.
-- Query-plan regression requires the partial cursor index and proves no temporary ordering B-tree is used.
-- Functional regressions cover empty polls, equal-timestamp ordering, bounded pagination, snapshot version changes, deterministic watermark advancement, event insertion, and one-time schema/index initialization.
-- Static regression prevents the original joined snapshot cursor query from returning.
-- Qodo's high-level assessment recommends the current partial-index/two-phase approach; no correctness review threads remain.
-
-## Cleanup and conflict inspection
-- Final diff contains only this task record, the fanout implementation, the upgraded existing schema-cache test, and focused cursor regressions.
-- No temporary or duplicate implementation files remain.
-- PR #221 is mergeable against current `main` and is not behind its base.
-- No threshold, identity, shipping, reference, duplicate, event lease, or DM preference behavior was weakened.
-- PR #200 remains isolated and unmerged.
+## Definition of Done
+- Targeted tests cover new-row batching, identical recent rediscovery no-op behavior, stale retention refresh, changed metadata/price persistence, retry rearming, source-label changes, and schema-cache wiring.
+- Full Python 3.11 suite passes.
+- Python 3.12 check, import smoke, `pip check`, and `compileall` pass.
+- Final diff contains no temporary, duplicate, or partially superseded enqueue implementation.
+- PR is reviewed, mergeable, and not behind `main`.
+- After merge and canonical Discloud deployment, production logs show ordinary catalog passes no longer issuing repeated multi-second queue inserts/commits for unchanged rows and exact claim/store lock waits materially fall.
 
 ## Current branch
-`fix/walmart-fanout-cursor-read`
+`fix/walmart-catalog-queue-write-amplification`
 
 ## Deployment boundary
 - Canonical app: `1779293887444`.
 - Duplicate app `1785806676351` must never be targeted.
-- Do not merge PR #200 during this task.
-- Production completion requires a post-deploy log window proving the former `SELECT queue.item_id, queue.verified_at, queue.snapshot_json` multi-second query and its lock-wait cascade are gone.
+- PR #200 remains isolated and unmerged.
+- Do not claim production completion until live logs verify write suppression and reduced lock waits.
 
 ## Backlog
-- Audit remaining repeated schema `CREATE TABLE/INDEX IF NOT EXISTS` calls after this task closes. Most observed delays were downstream lock waits behind fanout, but any remaining redundant DDL should be addressed separately.
+- Investigate remaining isolated multi-second `WITH picked AS` fanout/event claims only after catalog queue write amplification is resolved.
+- Audit unrelated repeated `CREATE TABLE/INDEX IF NOT EXISTS` paths after this active task closes.
 - Verify PR #220 seller/shipping card output against live Walmart payloads after database contention is resolved.

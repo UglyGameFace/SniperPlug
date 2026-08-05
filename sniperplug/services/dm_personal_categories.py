@@ -67,6 +67,16 @@ _STRUCTURED_CATEGORY_KEYS = (
     "productClass",
     "shelfName",
 )
+_TRUSTED_BABY_CATEGORY_KEYS = frozenset(
+    {
+        "category",
+        "productCategory",
+        "productType",
+        "department",
+        "productClass",
+        "shelfName",
+    }
+)
 
 _STRONG_BABY_TERMS = (
     "infant",
@@ -90,6 +100,15 @@ _BABY_APPAREL_RE = re.compile(
     r"\bbaby\s+(?:boys?|girls?|clothes?|clothing|apparel|outfits?|sets?|"
     r"dresses?|shirts?|pants?|pajamas?|sleepwear|shoes?|socks?|hats?|jackets?)\b"
     r"|\b(?:boys?|girls?)\s+baby\b",
+    re.IGNORECASE,
+)
+_BABY_CATEGORY_VALUE_RE = re.compile(
+    r"(?:^|[>/|])\s*"
+    r"(?:baby(?:\s*(?:&|and)\s*(?:kids?|toddlers?))?|"
+    r"infants?|newborns?|toddlers?)"
+    r"(?:\s+(?:clothes?|clothing|apparel|gear|feeding|nursery|care|health|"
+    r"products?|essentials|furniture|travel|safety|diapers?|toys?))?"
+    r"\s*(?:$|[>/|])",
     re.IGNORECASE,
 )
 
@@ -362,11 +381,14 @@ def update_flip_settings(
 
 def category_key_for_card(card: Any) -> str:
     title = _card_title(card)
-    structured = " ".join(_structured_category_values(card))
+    structured_pairs = _structured_category_pairs(card)
+    structured = " ".join(value for _key, value in structured_pairs)
     combined = " ".join(part for part in (title, structured) if part).lower()
 
-    structured_lower = structured.lower()
-    if any(term in structured_lower for term in ("baby", "infant", "newborn", "toddler")):
+    if any(
+        _is_trusted_baby_category(key, value)
+        for key, value in structured_pairs
+    ):
         return "baby_kids"
     if any(term in combined for term in _STRONG_BABY_TERMS):
         return "baby_kids"
@@ -384,6 +406,13 @@ def category_label(category_key: str) -> str:
     return _CATEGORY_LABELS.get(key, key.replace("_", " ").title())
 
 
+def _is_trusted_baby_category(key: str, value: str) -> bool:
+    if key not in _TRUSTED_BABY_CATEGORY_KEYS:
+        return False
+    normalized = " ".join(str(value or "").strip().split())
+    return bool(_BABY_CATEGORY_VALUE_RE.search(normalized))
+
+
 def _card_title(card: Any) -> str:
     label = str(getattr(card, "label", "") or "").strip()
     if label:
@@ -392,8 +421,8 @@ def _card_title(card: Any) -> str:
     return str(getattr(embed, "title", "") or "").strip()
 
 
-def _structured_category_values(card: Any) -> tuple[str, ...]:
-    values: list[str] = []
+def _structured_category_pairs(card: Any) -> tuple[tuple[str, str], ...]:
+    values: list[tuple[str, str]] = []
     for source in (
         getattr(card, "variant_attributes", None),
         getattr(getattr(card, "candidate", None), "variant_attributes", None),
@@ -404,7 +433,7 @@ def _structured_category_values(card: Any) -> tuple[str, ...]:
         for key in _STRUCTURED_CATEGORY_KEYS:
             value = source.get(key)
             if value not in (None, ""):
-                values.append(str(value))
+                values.append((key, str(value)))
     return tuple(values)
 
 

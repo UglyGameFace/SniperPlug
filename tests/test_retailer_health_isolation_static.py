@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -19,7 +20,7 @@ def test_unfinished_hp_cannot_make_walmart_report_not_ready() -> None:
     assert "target_delivery_ready =" in AUTOSCAN_HEALTH
     assert "One unhealthy retailer does not silently disable another retailer" in AUTOSCAN_HEALTH
     assert "This does not block Walmart" in AUTOSCAN_HEALTH
-    assert "delivery_ready = (" not in AUTOSCAN_HEALTH
+    assert re.search(r"^\s+delivery_ready\s*=", AUTOSCAN_HEALTH, re.MULTILINE) is None
 
 
 def test_global_walmart_health_no_longer_depends_on_legacy_per_guild_report() -> None:

@@ -9,23 +9,33 @@ from sniperplug.services.dm_deal_alerts import DmDealAlertPreference
 from sniperplug.services.dm_deal_matching import match_dm_deal
 from sniperplug.services.dm_personal_categories import (
     category_key_for_card,
+    split_category_preferences,
     split_exclude_terms,
     update_category_mutes,
+    update_favorite_categories,
 )
 
 
-def _card(title: str, *, attrs: dict | None = None):
+def _card(
+    title: str,
+    *,
+    current: float = 40.0,
+    reference: float = 100.0,
+    discount: float = 60.0,
+    score: int = 120,
+    attrs: dict | None = None,
+):
     return SimpleNamespace(
         label=title,
         url="https://www.walmart.com/ip/123",
-        embed=discord.Embed(title=f"🔥 60% OFF • {title}"),
-        api_current_price=40.0,
-        current_price=40.0,
-        api_reference_price=100.0,
-        typical_price=100.0,
-        api_discount_percent=60.0,
-        discount=60.0,
-        score=120,
+        embed=discord.Embed(title=f"🔥 {discount:.0f}% OFF • {title}"),
+        api_current_price=current,
+        current_price=current,
+        api_reference_price=reference,
+        typical_price=reference,
+        api_discount_percent=discount,
+        discount=discount,
+        score=score,
         variant_attributes=dict(attrs or {}),
     )
 
@@ -85,15 +95,114 @@ def test_mute_and_unmute_preserve_normal_excluded_words() -> None:
     assert categories == ()
 
 
-def test_settings_show_human_category_label_not_storage_token() -> None:
+def test_favorite_categories_do_not_become_a_hard_allowlist() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
+        mode="all",
+        min_discount=30,
+        min_score=50,
+        categories=("favorite:gpus",),
+    )
+
+    decision = match_dm_deal(
+        preference,
+        _card("Apple AirPods Pro 2nd Gen"),
+    )
+
+    assert decision.matched is True
+    assert decision.category_key == "apple"
+
+
+def test_favorite_tech_gets_small_smart_priority_without_weakening_proof() -> None:
+    card = _card(
+        "NVIDIA RTX 5070 GPU",
+        current=100.0,
+        reference=145.0,
+        discount=31.0,
+        score=120,
+    )
+    normal = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        mode="smart",
+        min_discount=20,
+        min_score=70,
+    )
+    favorite = DmDealAlertPreference(
+        user_id=2,
+        enabled=True,
+        mode="smart",
+        min_discount=20,
+        min_score=70,
+        categories=("favorite:gpus",),
+    )
+
+    normal_decision = match_dm_deal(normal, card)
+    favorite_decision = match_dm_deal(favorite, card)
+
+    assert normal_decision.matched is False
+    assert normal_decision.required_discount == 35
+    assert favorite_decision.matched is True
+    assert favorite_decision.required_discount == 30
+    assert "favorite-category priority" in favorite_decision.reason
+
+
+def test_favorite_never_lowers_explicit_user_floor() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        mode="smart",
+        min_discount=40,
+        min_score=70,
+        categories=("favorite:gpus",),
+    )
+    decision = match_dm_deal(
+        preference,
+        _card(
+            "NVIDIA RTX 5070 GPU",
+            current=100.0,
+            reference=145.0,
+            discount=31.0,
+        ),
+    )
+
+    assert decision.matched is False
+    assert decision.required_discount == 40
+
+
+def test_favorite_updates_preserve_optional_hard_allowlist() -> None:
+    updated = update_favorite_categories(
+        ("apple",),
+        add="pc, gaming",
+    )
+    selected, favorites = split_category_preferences(updated)
+
+    assert selected == ("apple",)
+    assert "gpus" in favorites
+    assert "cpus" in favorites
+    assert "brand_direct_electronics" in favorites
+
+    restored = update_favorite_categories(updated, remove="pc")
+    selected, favorites = split_category_preferences(restored)
+    assert selected == ("apple",)
+    assert "gpus" not in favorites
+    assert "brand_direct_electronics" in favorites
+
+
+def test_settings_show_human_labels_not_storage_tokens() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        categories=("favorite:gpus", "favorite:smart_home"),
         exclude_keywords=("category:baby_kids", "refurbished"),
     )
     embed = build_dm_settings_embed(preference)
     description = embed.description or ""
 
+    assert "Allowed categories: **all categories**" in description
+    assert "Favorite DM categories: **Graphics Cards, Smart Home / Security**" in description
     assert "Muted DM categories: **Baby / Kids**" in description
     assert "Exclude words: **refurbished**" in description
     assert "category:baby_kids" not in description
+    assert "favorite:gpus" not in description

@@ -15,10 +15,12 @@ from sniperplug.services.dm_deal_alerts import (
 )
 from sniperplug.services.dm_personal_categories import (
     category_label,
+    flip_settings,
     split_category_preferences,
     split_exclude_terms,
     update_category_mutes,
     update_favorite_categories,
+    update_flip_settings,
 )
 
 
@@ -49,16 +51,18 @@ class DmDealAlertsCog(commands.Cog):
         action="Enable, inspect, test, pause, or delete your personal alerts.",
         mode="Smart adapts quality rules to price; All and Custom use hard filters.",
         min_discount="Lowest exact Walmart markdown percentage you want.",
-        max_price="Do not DM products above this current price.",
+        max_price="Do not DM products above this current price, including flips.",
         min_score="Minimum Sniper score from 0 to 250.",
         min_savings="Minimum exact dollar savings from Walmart's was price.",
         categories="Optional hard allowlist. Leave empty to keep all categories eligible.",
         favorite_categories="Prioritize interests without excluding other great deals: tech, gaming, PC, smart home.",
         unfavorite_categories="Remove categories from your personal favorites.",
-        keywords="Comma list of words that must match at least one product detail.",
-        exclude="Comma list of words that always block a product from your DMs.",
-        mute_categories="Hide categories only from your DMs, such as baby, toys, pets, or beauty.",
+        keywords="Comma list of words that must match normal-interest alerts.",
+        exclude="Comma list of words that always block a product, including flips.",
+        mute_categories="Hide categories from normal DMs, such as baby, toys, pets, or beauty.",
         unmute_categories="Restore personally muted categories, such as baby or toys.",
+        flip_alerts="Allow exceptional price-error/resell alerts across category mutes.",
+        flip_min_profit="Minimum conservative estimated net profit for a flip alert.",
         walmart_cash_only="Only alert when strict Walmart API Cash proof is attached.",
         daily_cap="Maximum personal deal DMs per UTC day.",
     )
@@ -79,6 +83,8 @@ class DmDealAlertsCog(commands.Cog):
         exclude: app_commands.Range[str, 1, 300] | None = None,
         mute_categories: app_commands.Range[str, 1, 300] | None = None,
         unmute_categories: app_commands.Range[str, 1, 300] | None = None,
+        flip_alerts: bool | None = None,
+        flip_min_profit: app_commands.Range[float, 10.0, 10000.0] | None = None,
         walmart_cash_only: bool | None = None,
         daily_cap: app_commands.Range[int, 1, 100] | None = None,
     ) -> None:
@@ -156,6 +162,15 @@ class DmDealAlertsCog(commands.Cog):
             add=favorite_categories,
             remove=unfavorite_categories,
             replacement_selected=categories,
+        )
+        updated_categories = update_flip_settings(
+            updated_categories,
+            enabled=flip_alerts,
+            minimum_profit_cents=(
+                int(round(float(flip_min_profit) * 100))
+                if flip_min_profit is not None
+                else None
+            ),
         )
 
         updated = replace(
@@ -254,6 +269,7 @@ def build_dm_settings_embed(
     selected_categories, favorite_categories = split_category_preferences(
         normalized.categories
     )
+    flip_enabled, flip_min_profit_cents = flip_settings(normalized.categories)
 
     muted_text = (
         ", ".join(category_label(category) for category in muted_categories)
@@ -277,6 +293,14 @@ def build_dm_settings_embed(
         if line.startswith("Categories:"):
             summary.append(f"Allowed categories: **{selected_text}**")
             summary.append(f"Favorite DM categories: **{favorite_text}**")
+            summary.append(
+                "Price-error / flip override: "
+                f"**{'enabled' if flip_enabled else 'disabled'}**"
+            )
+            summary.append(
+                "Minimum estimated flip profit: "
+                f"**${flip_min_profit_cents / 100:,.2f}**"
+            )
         elif line.startswith("Exclude:"):
             summary.append(f"Exclude words: **{keyword_text}**")
             summary.append(f"Muted DM categories: **{muted_text}**")
@@ -292,9 +316,20 @@ def build_dm_settings_embed(
         name="Favorites and mutes are personal",
         value=(
             "Favorites get a small Smart-mode priority boost but do **not** hide other great deals. "
-            "Muted categories disappear only from **your** DMs. Public alerts and every other "
-            "subscriber remain unchanged. Example: `favorite_categories:tech,gaming,pc` and "
+            "Muted categories disappear from normal **personal** DMs only. Public alerts and every "
+            "other subscriber remain unchanged. Example: `favorite_categories:tech,gaming,pc` and "
             "`mute_categories:baby`."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Price-error / flip override",
+        value=(
+            "When enabled, a significant cross-category price error may break through a category mute. "
+            "Without recent sold comps, SniperPlug uses a strict conservative resale haircut, fee reserve, "
+            "shipping reserve, minimum ROI, and your profit floor—and labels it **estimated**. When exact "
+            "recent eBay sold evidence is connected, the alert shows sold count, median sold price, and "
+            "estimated net profit. Active eBay listing prices never count as sold proof."
         ),
         inline=False,
     )
@@ -312,7 +347,8 @@ def build_dm_settings_embed(
         name="Built-in safety",
         value=(
             "Only exact-item, exact-offer, buyable Walmart deals with trusted current and was prices enter this stream. "
-            "Each exact offer/price is deduplicated per user, and your daily cap prevents DM floods."
+            "Maximum price and excluded words remain hard limits even for flips. Each exact offer/price is deduplicated "
+            "per user, and your daily cap prevents DM floods."
         ),
         inline=False,
     )

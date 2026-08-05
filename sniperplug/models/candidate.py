@@ -107,10 +107,16 @@ class SourceCandidate:
 
         attrs = dict(self.variant_attributes or {})
         selected_item = _float_or_none(attrs.get("selectedOfferItemPrice"))
-        selected_shipping = _float_or_none(attrs.get("selectedOfferShippingCost"))
-        selected_delivered = _float_or_none(attrs.get("selectedOfferDeliveredPrice"))
+        selected_shipping = _float_or_none(
+            attrs.get("selectedOfferShippingCost")
+        )
+        selected_delivered = _float_or_none(
+            attrs.get("selectedOfferDeliveredPrice")
+        )
         shipping_status = str(
-            attrs.get("selectedOfferShippingStatus") or self.shipping_status or ""
+            attrs.get("selectedOfferShippingStatus")
+            or self.shipping_status
+            or ""
         ).strip().lower()
         marketplace = str(
             attrs.get("selectedOfferMarketplace")
@@ -120,11 +126,21 @@ class SourceCandidate:
             or ""
         ).strip().lower()
 
-        selected_seller = str(attrs.get("selectedOfferSeller") or "").strip()
-        selected_seller_id = str(attrs.get("selectedOfferSellerId") or "").strip()
-        selected_offer_id = str(attrs.get("selectedOfferId") or "").strip()
-        selected_fulfillment = str(attrs.get("selectedOfferFulfillment") or "").strip()
-        selected_condition = str(attrs.get("selectedOfferCondition") or "").strip()
+        selected_seller = str(
+            attrs.get("selectedOfferSeller") or ""
+        ).strip()
+        selected_seller_id = str(
+            attrs.get("selectedOfferSellerId") or ""
+        ).strip()
+        selected_offer_id = str(
+            attrs.get("selectedOfferId") or ""
+        ).strip()
+        selected_fulfillment = str(
+            attrs.get("selectedOfferFulfillment") or ""
+        ).strip()
+        selected_condition = str(
+            attrs.get("selectedOfferCondition") or ""
+        ).strip()
 
         if selected_seller:
             self.seller_name = selected_seller
@@ -146,6 +162,8 @@ class SourceCandidate:
             self.api_condition = self.api_condition or selected_condition
             attrs["condition"] = selected_condition
 
+        self._apply_walmart_selected_reference_truth(attrs)
+
         current_source = str(
             attrs.get("currentPriceSource") or self.api_price_path or ""
         ).strip()
@@ -158,28 +176,38 @@ class SourceCandidate:
                 and selected_delivered > 0
                 and shipping_status in {"free", "paid"}
             ):
-                self.shipping_cost = round(max(selected_shipping or 0.0, 0.0), 2)
+                self.shipping_cost = round(
+                    max(selected_shipping or 0.0, 0.0), 2
+                )
                 self.delivered_price = round(selected_delivered, 2)
                 self.shipping_status = shipping_status
                 self.shipping_source = (
-                    str(attrs.get("selectedOfferShippingSource") or "").strip()
+                    str(
+                        attrs.get("selectedOfferShippingSource") or ""
+                    ).strip()
                     or None
                 )
                 self.current_price = self.delivered_price
                 self.api_current_price = self.delivered_price
                 self.api_price_path = (
-                    str(attrs.get("selectedOfferDeliveredPriceSource") or "").strip()
+                    str(
+                        attrs.get("selectedOfferDeliveredPriceSource") or ""
+                    ).strip()
                     or self.api_price_path
                 )
                 attrs["currentPriceSource"] = (
                     self.api_price_path or "selectedOfferDeliveredPrice"
                 )
-                attrs["selectedOfferPublicPriceStatus"] = "verified_delivered"
+                attrs["selectedOfferPublicPriceStatus"] = (
+                    "verified_delivered"
+                )
             else:
                 self.shipping_cost = None
                 self.shipping_status = shipping_status or "unknown"
                 self.shipping_source = (
-                    str(attrs.get("selectedOfferShippingSource") or "").strip()
+                    str(
+                        attrs.get("selectedOfferShippingSource") or ""
+                    ).strip()
                     or None
                 )
                 self.delivered_price = None
@@ -251,6 +279,75 @@ class SourceCandidate:
         if self.shipping_source:
             attrs["shippingSource"] = self.shipping_source
         self.variant_attributes = attrs
+
+    def _apply_walmart_selected_reference_truth(
+        self,
+        attrs: dict[str, str],
+    ) -> None:
+        """Bind reference proof to the same selected-offer node as price."""
+
+        node_source = str(
+            attrs.get("selectedOfferNodeSource") or "item"
+        ).strip()
+        selected_reference = _float_or_none(
+            attrs.get("selectedOfferReferencePrice")
+        )
+        selected_reference_source = str(
+            attrs.get("selectedOfferReferenceSource") or ""
+        ).strip()
+        existing_reference = _float_or_none(
+            self.api_reference_price
+        ) or _float_or_none(self.typical_price)
+        existing_source = str(
+            attrs.get("trustedReferenceSource")
+            or self.api_reference_path
+            or ""
+        ).strip()
+
+        if selected_reference is not None and selected_reference > 0:
+            self.typical_price = round(selected_reference, 2)
+            self.api_reference_price = round(selected_reference, 2)
+            self.api_reference_path = (
+                selected_reference_source or self.api_reference_path
+            )
+            attrs["referencePriceTrusted"] = "yes"
+            attrs["trustedReferencePrice"] = (
+                f"{selected_reference:.2f}"
+            )
+            attrs["trustedReferenceSource"] = (
+                selected_reference_source
+                or "selected offer reference field"
+            )
+            attrs["selectedOfferReferenceStatus"] = "verified_same_offer"
+            attrs.pop("crossOfferReferenceBlocked", None)
+            return
+
+        if node_source == "item" or existing_reference is None:
+            return
+
+        # A nested selected offer is a distinct seller/offer surface. A root
+        # wasPrice may belong to another offer, so retain it only as context.
+        attrs.setdefault(
+            "referenceContextPrice",
+            f"{existing_reference:.2f}",
+        )
+        if existing_source:
+            attrs.setdefault("referenceContextSource", existing_source)
+        attrs["referencePriceTrusted"] = "no"
+        attrs["trustedReferencePrice"] = ""
+        attrs["trustedReferenceSource"] = ""
+        attrs["selectedOfferReferenceStatus"] = (
+            "blocked_cross_offer_reference"
+        )
+        attrs["crossOfferReferenceBlocked"] = "yes"
+        self.typical_price = None
+        self.api_reference_price = None
+        self.api_reference_path = None
+        self.api_discount_percent = None
+        _append_signal(
+            self.signals,
+            "Walmart page-level reference blocked: not proven for selected seller/offer",
+        )
 
     def to_normalized_deal(self) -> NormalizedDeal:
         availability_bits: list[str] = []

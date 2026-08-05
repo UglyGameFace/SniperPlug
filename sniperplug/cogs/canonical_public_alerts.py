@@ -9,10 +9,6 @@ from sniperplug.cogs.public_alerts import (
     DealCategoryDashboardView,
     public_alert_channel_status,
 )
-from sniperplug.services.autoscan_history import (
-    format_latest_report_line,
-    latest_autoscan_report,
-)
 from sniperplug.services.autoscan_live_guild_reconciliation import (
     scheduler_membership_for_guild,
 )
@@ -24,6 +20,7 @@ from sniperplug.services.setup_self_heal import repair_public_alert_setup
 from sniperplug.services.target_locations import get_guild_target_location
 from sniperplug.services.target_watcher_health import load_target_watcher_health
 from sniperplug.services.walmart_catalog_coverage import catalog_route_pool
+from sniperplug.services.walmart_delivery_health import load_walmart_delivery_health
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
 from sniperplug.services.walmart_global_catalog_autoscan import load_global_catalog_state
 
@@ -110,77 +107,103 @@ async def build_global_autoscan_health_embed(
     guild_id: int,
 ) -> discord.Embed:
     db = bot.db
-    repair = await repair_public_alert_setup(db, bot, int(guild_id))
+    guild_id = int(guild_id)
+    repair = await repair_public_alert_setup(db, bot, guild_id)
     config = (
         repair.config
         if repair.config is not None
-        else await get_public_alert_config(db, int(guild_id))
+        else await get_public_alert_config(db, guild_id)
     )
-    threshold = await get_starting_deal_percent(db, int(guild_id))
+    threshold = await get_starting_deal_percent(db, guild_id)
+    category_preferences = await get_category_preferences(db, guild_id)
     enrolled, enrollment_reason = await scheduler_membership_for_guild(
         db,
         bot,
-        int(guild_id),
+        guild_id,
     )
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
     hp_health = await load_hp_watcher_health(db)
     target_health = await load_target_watcher_health(db)
-    target_location = await get_guild_target_location(db, int(guild_id))
+    target_location = await get_guild_target_location(db, guild_id)
     target_location_ready = bool(target_location and target_location.enabled)
-    latest_report = await latest_autoscan_report(
+    delivery_health = await load_walmart_delivery_health(
         db,
-        guild_id=int(guild_id),
-        retailer="walmart",
-        scan_key="autoscan:walmart_discovery",
+        guild_id=guild_id,
+        threshold=int(threshold),
+        category_preferences=category_preferences,
     )
     channel_status = public_alert_channel_status(
         bot,
-        int(guild_id),
+        guild_id,
         config.get("channel_id"),
     )
     routes = catalog_route_pool()
     retailers = set(config.get("retailers") or ())
     selected_retailers = retailers.intersection({"walmart", "hp", "target"})
 
-    base_delivery_ready = (
+    public_route_ready = (
         bool(config.get("enabled"))
         and channel_status.startswith("✅")
-        and enrolled
         and not repair.human_action_required
     )
-    walmart_delivery_ready = base_delivery_ready and "walmart" in selected_retailers
-    hp_delivery_ready = base_delivery_ready and "hp" in selected_retailers and hp_health.ok
+    walmart_delivery_ready = (
+        public_route_ready
+        and "walmart" in selected_retailers
+        and enrolled
+    )
+    hp_delivery_ready = (
+        public_route_ready
+        and "hp" in selected_retailers
+        and hp_health.ok
+    )
     target_delivery_ready = (
-        base_delivery_ready
+        public_route_ready
         and "target" in selected_retailers
         and target_location_ready
         and target_health.ok
     )
-    delivery_ready = (
-        base_delivery_ready
-        and bool(selected_retailers)
-        and ("walmart" not in selected_retailers or walmart_delivery_ready)
-        and ("hp" not in selected_retailers or hp_delivery_ready)
-        and ("target" not in selected_retailers or target_delivery_ready)
-    )
+
+    readiness = {
+        "walmart": walmart_delivery_ready,
+        "hp": hp_delivery_ready,
+        "target": target_delivery_ready,
+    }
+    selected_ready = [
+        readiness[retailer]
+        for retailer in selected_retailers
+        if retailer in readiness
+    ]
+    any_selected_ready = bool(selected_ready and any(selected_ready))
+    all_selected_ready = bool(selected_ready and all(selected_ready))
+
+    if all_selected_ready and not delivery_health.has_delivery_problem:
+        color = discord.Color.green()
+    elif any_selected_ready:
+        color = discord.Color.orange()
+    else:
+        color = discord.Color.red()
+
     embed = discord.Embed(
         title="🩺 Global Autoscan Health",
         description=(
-            "Walmart discovery runs once inside SniperPlug. HP Store runs separately. Target rotates the shared catalog across unique stores selected by servers and users."
+            "Walmart discovery and exact verification run inside SniperPlug. "
+            "HP Store and Target have independent watcher health. One unhealthy "
+            "retailer does not silently disable another retailer."
         ),
-        color=discord.Color.green() if delivery_ready else discord.Color.orange(),
+        color=color,
     )
     embed.add_field(
-        name="This server's delivery",
+        name="This server's delivery routes",
         value=(
-            f"Ready: **{'yes' if delivery_ready else 'no'}**\n"
-            f"Public alerts: **{'on' if config.get('enabled') else 'off'}**\n"
-            f"Walmart enabled: **{'yes' if 'walmart' in retailers else 'no'}**\n"
-            f"HP Store enabled: **{'yes' if 'hp' in retailers else 'no'}**\n"
-            f"Target enabled: **{'yes' if 'target' in retailers else 'no'}**\n"
+            f"Public channel route: **{'ready' if public_route_ready else 'not ready'}**\n"
+            f"Walmart delivery: **{_retailer_status('walmart', selected_retailers, walmart_delivery_ready)}**\n"
+            f"HP Store delivery: **{_retailer_status('hp', selected_retailers, hp_delivery_ready)}**\n"
+            f"Target delivery: **{_retailer_status('target', selected_retailers, target_delivery_ready)}**\n"
             f"Target location: **{'saved' if target_location_ready else 'not configured'}**\n"
-            f"Minimum exact markdown: **{threshold}%+**"
+            f"Walmart public threshold: **{threshold}%+**\n"
+            "Global Walmart discovery starts at **10%** only to collect candidates; "
+            "that is not permission to post below this server's threshold."
         ),
         inline=False,
     )
@@ -189,7 +212,8 @@ async def build_global_autoscan_health_embed(
             name="This server's Target store",
             value=(
                 f"**{target_location.store_name}**\n"
-                f"{target_location.address_line}, {target_location.city}, {target_location.state} {target_location.postal_code}\n"
+                f"{target_location.address_line}, {target_location.city}, "
+                f"{target_location.state} {target_location.postal_code}\n"
                 f"Store `{target_location.store_id}` • alert ZIP `{target_location.zip_code}`"
             ),
             inline=False,
@@ -197,16 +221,27 @@ async def build_global_autoscan_health_embed(
     else:
         embed.add_field(
             name="This server's Target store",
-            value="Not configured. Run `/target_location` before enabling local Target delivery.",
+            value=(
+                "Not configured. Target remains off until `/target_location` "
+                "saves an exact local store."
+            ),
             inline=False,
         )
     embed.add_field(name="Channel", value=channel_status, inline=False)
     embed.add_field(name="Setup repair", value=repair.discord_line(), inline=False)
     embed.add_field(
-        name="Live fanout enrollment",
+        name="Walmart live fanout enrollment",
         value=(
             f"Enrolled: **{'yes' if enrolled else 'no'}**\n"
             f"{enrollment_reason}"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Walmart delivery audit — current rules",
+        value=trim_field(
+            delivery_health.summary_line(threshold=int(threshold)),
+            1024,
         ),
         inline=False,
     )
@@ -215,7 +250,8 @@ async def build_global_autoscan_health_embed(
         value=(
             f"Walmart configured routes: **{len(routes)}**\n"
             f"{global_state.summary_line(total_routes=len(routes))}\n"
-            "Target keeps one global TCIN catalog and advances bounded per-location cursors instead of copying the entire catalog for every server."
+            "Target keeps one global TCIN catalog and advances bounded per-location "
+            "cursors instead of copying the catalog for every server."
         ),
         inline=False,
     )
@@ -224,6 +260,7 @@ async def build_global_autoscan_health_embed(
         value=queue_health.summary_line(),
         inline=False,
     )
+
     hp_health_detail = hp_health.summary_line()
     if hp_health.last_successful_cycle_at:
         hp_health_detail += f"\nLast successful cycle: `{hp_health.last_successful_cycle_at}`"
@@ -234,6 +271,7 @@ async def build_global_autoscan_health_embed(
         value=trim_field(hp_health_detail, 1024),
         inline=False,
     )
+
     target_health_detail = target_health.summary_line()
     if target_health.last_successful_cycle_at:
         target_health_detail += (
@@ -248,51 +286,101 @@ async def build_global_autoscan_health_embed(
         value=trim_field(target_health_detail, 1024),
         inline=False,
     )
+
     embed.add_field(
-        name="Latest Walmart server decision",
-        value=trim_field(format_latest_report_line(latest_report), 1024),
-        inline=False,
-    )
-    embed.add_field(
-        name="What commands are actually needed",
+        name="What the result means",
         value=(
-            "Automatic Walmart/HP coverage needs no manual scan. Target additionally needs `/target_location` once per server. `/discover` remains optional."
+            "A running catalog or exact queue does not guarantee a public post. "
+            "A Walmart item posts only after exact item/offer/seller/variant proof, "
+            f"the server's **{threshold}%+** threshold, category rules, and duplicate "
+            "guards all pass. The audit above now shows which stage prevented delivery."
         ),
         inline=False,
     )
-    if not base_delivery_ready or not selected_retailers:
-        embed.add_field(
-            name="Next action",
-            value=(
-                "Run `/setup_sniperplug_here` in the exact channel that should receive deals, then reopen this panel."
-            ),
-            inline=False,
-        )
-    elif "target" in selected_retailers and not target_location_ready:
-        embed.add_field(
-            name="Next action",
-            value=(
-                "Run `/target_location` and choose the exact local Target store. Target delivery is blocked until that is saved."
-            ),
-            inline=False,
-        )
-    elif "hp" in selected_retailers and not hp_health.ok:
-        embed.add_field(
-            name="Next action",
-            value=(
-                "This server's delivery is configured, but the HP watcher is not reporting healthy. Check its separate deployment."
-            ),
-            inline=False,
-        )
-    elif "target" in selected_retailers and not target_health.ok:
-        embed.add_field(
-            name="Next action",
-            value=(
-                "This server's Target location is configured, but the Target watcher is not reporting healthy. Check the Target deployment and shared Turso database."
-            ),
-            inline=False,
-        )
+
+    next_action = _next_action(
+        selected_retailers=selected_retailers,
+        public_route_ready=public_route_ready,
+        walmart_delivery_ready=walmart_delivery_ready,
+        hp_delivery_ready=hp_delivery_ready,
+        target_delivery_ready=target_delivery_ready,
+        target_location_ready=target_location_ready,
+        delivery_health=delivery_health,
+        threshold=int(threshold),
+    )
+    if next_action:
+        embed.add_field(name="Next action", value=next_action, inline=False)
     return embed
+
+
+def _retailer_status(
+    retailer: str,
+    selected_retailers: set[str],
+    ready: bool,
+) -> str:
+    if retailer not in selected_retailers:
+        return "off"
+    return "ready" if ready else "not ready"
+
+
+def _next_action(
+    *,
+    selected_retailers: set[str],
+    public_route_ready: bool,
+    walmart_delivery_ready: bool,
+    hp_delivery_ready: bool,
+    target_delivery_ready: bool,
+    target_location_ready: bool,
+    delivery_health,
+    threshold: int,
+) -> str | None:
+    if not public_route_ready or not selected_retailers:
+        return (
+            "Run `/setup_sniperplug_here` in the exact channel that should receive "
+            "deals, then reopen this panel."
+        )
+    if "walmart" in selected_retailers and not walmart_delivery_ready:
+        return (
+            "Walmart is selected but is not enrolled in the live fanout set. "
+            "Run `/setup_sniperplug_here` once in the saved public channel."
+        )
+    if delivery_health.eligible_without_post:
+        return (
+            "The audit found an exact event that currently passes the server rules "
+            "without a durable public-post receipt. That is a real delivery-path "
+            "warning, not a threshold miss."
+        )
+    if delivery_health.events_with_errors:
+        return (
+            "The global fanout table contains a recent error. The event remains "
+            "visible in the audit instead of being reported as healthy."
+        )
+    if (
+        "target" in selected_retailers
+        and (not target_location_ready or not target_delivery_ready)
+    ):
+        return (
+            "Target needs `/target_location` plus a healthy Target watcher. "
+            "This does not block Walmart delivery."
+        )
+    if "hp" in selected_retailers and not hp_delivery_ready:
+        return (
+            "HP Store is enabled but its separate watcher is not healthy. "
+            "This does not block Walmart; repair the HP deployment or turn HP off."
+        )
+    if delivery_health.events_seen and not delivery_health.posted:
+        return (
+            "No Walmart repair is indicated by the current audit. Recent exact "
+            f"events were filtered by the **{threshold}%+** threshold, category, "
+            "proof, or duplicate guards shown above."
+        )
+    if delivery_health.events_seen == 0:
+        return (
+            "No new exact Walmart event reached fanout in the audit window. "
+            "The catalog can still be running normally; there was simply nothing "
+            f"new that reached the server's **{threshold}%+** public gate."
+        )
+    return None
 
 
 def trim_field(value: str, limit: int) -> str:

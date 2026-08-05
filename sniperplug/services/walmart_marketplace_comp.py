@@ -33,34 +33,194 @@ def is_marketplace_comp_source(source: str | None) -> bool:
 
 
 def marketplace_comp_from_item(item: dict[str, Any]) -> dict[str, str]:
-    """Extract Walmart API marketplace comp as flip context only.
+    """Extract alternate-seller context and atomic selected-offer price truth.
 
-    This is deliberately not a Walmart was/regular/reference price. It is a comp
-    candidate for manual flip research, so downstream code should never use it to
-    prove a markdown percentage.
+    `bestMarketplacePrice` and top-level `minPrice` are alternate-offer context,
+    never the selected buy-box price. Selected seller, offer ID, item price,
+    shipping, and delivered total are normalized from one selected-offer node so
+    downstream code cannot combine one seller's price with another seller's
+    identity.
     """
+    attrs = selected_offer_delivery_attributes(item)
+
     best_marketplace = item.get("bestMarketplacePrice") or item.get("best_marketplace_price")
-    if not isinstance(best_marketplace, dict):
-        return {}
+    if isinstance(best_marketplace, dict):
+        price = money_from_value(
+            best_marketplace.get("price")
+            or best_marketplace.get("amount")
+            or best_marketplace.get("value")
+        )
+        if price is not None and price > 0:
+            attrs.update(
+                {
+                    "marketplaceCompPrice": f"{price:.2f}",
+                    "marketplaceCompSource": "bestMarketplacePrice.price",
+                    "marketplaceCompNote": "Walmart API marketplace comp; not selected offer or was/regular price; use for flip research only",
+                }
+            )
+            seller = clean_string(
+                best_marketplace.get("sellerName")
+                or best_marketplace.get("seller")
+                or best_marketplace.get("sellerDisplayName")
+                or best_marketplace.get("sellerId")
+            )
+            if seller:
+                attrs["marketplaceCompSeller"] = seller
 
-    price = float_or_none(best_marketplace.get("price") or best_marketplace.get("amount") or best_marketplace.get("value"))
-    if price is None or price <= 0:
-        return {}
-
-    attrs = {
-        "marketplaceCompPrice": f"{price:.2f}",
-        "marketplaceCompSource": "bestMarketplacePrice.price",
-        "marketplaceCompNote": "Walmart API marketplace comp; not was/regular price; use for flip research only",
-    }
-    seller = clean_string(
-        best_marketplace.get("sellerName")
-        or best_marketplace.get("seller")
-        or best_marketplace.get("sellerDisplayName")
-        or best_marketplace.get("sellerId")
+    alternate_min = first_money(
+        ("minPrice", item.get("minPrice")),
+        ("min_price", item.get("min_price")),
     )
-    if seller:
-        attrs["marketplaceCompSeller"] = seller
+    if alternate_min is not None and alternate_min[1] > 0:
+        attrs["alternateSellerMinPrice"] = f"{alternate_min[1]:.2f}"
+        attrs["alternateSellerMinPriceSource"] = alternate_min[0]
+        attrs["alternateSellerMinPriceNote"] = "alternate seller context only; never selected-offer price proof"
+
     return attrs
+
+
+def selected_offer_delivery_attributes(item: dict[str, Any]) -> dict[str, str]:
+    node, node_path = selected_offer_node(item)
+    attrs: dict[str, str] = {"selectedOfferNodeSource": node_path}
+
+    seller_name = clean_string(
+        node.get("sellerName")
+        or node.get("sellerDisplayName")
+        or nested(node, "seller", "name")
+        or nested(node, "sellerInfo", "sellerName")
+        or nested(node, "sellerInfo", "name")
+        or item.get("sellerName")
+        or item.get("sellerDisplayName")
+        or nested(item, "seller", "name")
+        or nested(item, "sellerInfo", "sellerName")
+    )
+    seller_id = clean_string(
+        node.get("sellerId")
+        or node.get("sellerID")
+        or nested(node, "seller", "id")
+        or nested(node, "sellerInfo", "sellerId")
+        or item.get("sellerId")
+        or item.get("sellerID")
+        or nested(item, "seller", "id")
+        or nested(item, "sellerInfo", "sellerId")
+    )
+    offer_id = clean_string(
+        node.get("offerId")
+        or node.get("offerID")
+        or node.get("id")
+        or item.get("selectedOfferId")
+        or item.get("buyBoxOfferId")
+        or item.get("offerId")
+        or item.get("offerID")
+    )
+    fulfillment = clean_string(
+        node.get("fulfillmentType")
+        or node.get("fulfillment")
+        or node.get("fulfillmentBadge")
+        or nested(node, "fulfillmentSummary", "fulfillmentType")
+        or nested(node, "fulfillmentSummary", "fulfillment")
+        or item.get("fulfillmentType")
+        or item.get("fulfillment")
+        or item.get("fulfillmentBadge")
+    )
+    condition = clean_string(
+        node.get("conditionType")
+        or nested(node, "condition", "type")
+        or nested(node, "condition", "name")
+        or node.get("condition")
+        or item.get("conditionType")
+        or nested(item, "condition", "type")
+        or nested(item, "condition", "name")
+        or item.get("condition")
+    )
+
+    marketplace = first_bool(
+        node.get("isMarketPlaceItem"),
+        node.get("isMarketplaceItem"),
+        node.get("marketplace"),
+        item.get("isMarketPlaceItem"),
+        item.get("isMarketplaceItem"),
+        item.get("marketplace"),
+    )
+    if marketplace is None and seller_name and not seller_name_is_walmart(seller_name):
+        marketplace = True
+
+    item_price = first_money(
+        (f"{node_path}.salePrice", node.get("salePrice")),
+        (f"{node_path}.currentPrice", node.get("currentPrice")),
+        (f"{node_path}.priceInfo.currentPrice", nested(node, "priceInfo", "currentPrice")),
+        (f"{node_path}.price", node.get("price")),
+        ("salePrice", item.get("salePrice")),
+        ("currentPrice", item.get("currentPrice")),
+        ("priceInfo.currentPrice", nested(item, "priceInfo", "currentPrice")),
+        ("price", item.get("price")),
+    )
+    shipping = first_money_allow_zero(
+        (f"{node_path}.shippingPrice", node.get("shippingPrice")),
+        (f"{node_path}.shippingCost", node.get("shippingCost")),
+        (f"{node_path}.shippingFee", node.get("shippingFee")),
+        (f"{node_path}.priceInfo.shippingPrice", nested(node, "priceInfo", "shippingPrice")),
+        (f"{node_path}.shippingOption.price", nested(node, "shippingOption", "price")),
+        (f"{node_path}.shippingOption.cost", nested(node, "shippingOption", "cost")),
+        ("shippingPrice", item.get("shippingPrice")),
+        ("shippingCost", item.get("shippingCost")),
+        ("shippingFee", item.get("shippingFee")),
+        ("priceInfo.shippingPrice", nested(item, "priceInfo", "shippingPrice")),
+    )
+    explicit_free = first_bool(
+        node.get("freeShipping"),
+        node.get("isFreeShipping"),
+        node.get("shippingIsFree"),
+        nested(node, "shippingOption", "freeShipping"),
+        item.get("freeShipping"),
+        item.get("isFreeShipping"),
+        item.get("shippingIsFree"),
+    )
+
+    if seller_name:
+        attrs["selectedOfferSeller"] = seller_name
+    if seller_id:
+        attrs["selectedOfferSellerId"] = seller_id
+    if offer_id:
+        attrs["selectedOfferId"] = offer_id
+    if fulfillment:
+        attrs["selectedOfferFulfillment"] = fulfillment
+    if condition:
+        attrs["selectedOfferCondition"] = condition
+    if marketplace is not None:
+        attrs["selectedOfferMarketplace"] = "yes" if marketplace else "no"
+
+    if item_price is not None:
+        price_source, price = item_price
+        attrs["selectedOfferItemPrice"] = f"{price:.2f}"
+        attrs["selectedOfferItemPriceSource"] = price_source
+
+        if shipping is not None:
+            shipping_source, shipping_cost = shipping
+            attrs["selectedOfferShippingCost"] = f"{shipping_cost:.2f}"
+            attrs["selectedOfferShippingSource"] = shipping_source
+            attrs["selectedOfferShippingStatus"] = "free" if shipping_cost == 0 else "paid"
+            attrs["selectedOfferDeliveredPrice"] = f"{price + shipping_cost:.2f}"
+            attrs["selectedOfferDeliveredPriceSource"] = f"{price_source}+{shipping_source}"
+        elif explicit_free is True:
+            attrs["selectedOfferShippingCost"] = "0.00"
+            attrs["selectedOfferShippingSource"] = "explicit freeShipping flag"
+            attrs["selectedOfferShippingStatus"] = "free"
+            attrs["selectedOfferDeliveredPrice"] = f"{price:.2f}"
+            attrs["selectedOfferDeliveredPriceSource"] = f"{price_source}+freeShipping"
+        else:
+            attrs["selectedOfferShippingStatus"] = "unknown"
+            attrs["selectedOfferDeliveredPriceSource"] = "blocked: shipping not returned"
+
+    return attrs
+
+
+def selected_offer_node(item: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    for key in ("selectedOffer", "buyBoxOffer", "primaryOffer", "offer"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            return value, key
+    return item, "item"
 
 
 def marketplace_comp_from_attrs(attrs: dict[str, Any]) -> tuple[float | None, str | None, str | None, str | None]:
@@ -146,6 +306,58 @@ def comp_search_links(*, title: str, sku: str | None = None, upc: str | None = N
         f"[eBay active](https://www.ebay.com/sch/i.html?_nkw={query})",
         f"[Google Shopping](https://www.google.com/search?tbm=shop&q={title_query})",
     )
+
+
+def first_money(*candidates: tuple[str, Any]) -> tuple[str, float] | None:
+    for source, value in candidates:
+        parsed = money_from_value(value)
+        if parsed is not None and parsed > 0:
+            return source, parsed
+    return None
+
+
+def first_money_allow_zero(*candidates: tuple[str, Any]) -> tuple[str, float] | None:
+    for source, value in candidates:
+        parsed = money_from_value(value)
+        if parsed is not None and parsed >= 0:
+            return source, parsed
+    return None
+
+
+def money_from_value(value: Any) -> float | None:
+    if isinstance(value, dict):
+        for key in ("price", "amount", "value", "displayValue", "displayPrice", "currencyAmount", "currencyValue"):
+            parsed = float_or_none(value.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+    return float_or_none(value)
+
+
+def nested(value: Any, *path: str) -> Any:
+    current = value
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def first_bool(*values: Any) -> bool | None:
+    for value in values:
+        if isinstance(value, bool):
+            return value
+        text = str(value or "").strip().lower()
+        if text in {"true", "yes", "1", "y"}:
+            return True
+        if text in {"false", "no", "0", "n"}:
+            return False
+    return None
+
+
+def seller_name_is_walmart(value: str | None) -> bool:
+    normalized = " ".join(str(value or "").lower().split())
+    return normalized in {"walmart", "walmart.com", "walmart stores inc", "walmart stores, inc."}
 
 
 def float_or_none(value: Any) -> float | None:

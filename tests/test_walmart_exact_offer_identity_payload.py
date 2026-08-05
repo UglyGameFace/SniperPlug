@@ -111,7 +111,7 @@ def test_marketplace_detail_without_seller_fails_closed() -> None:
     assert exact_detail_verified_candidates(result.candidates) == []
 
 
-def test_marketplace_detail_with_explicit_seller_keeps_exact_offer_identity() -> None:
+def test_marketplace_identity_is_preserved_but_unknown_shipping_blocks_price() -> None:
     original = search_candidate("333333")
     provider = FakeDetailProvider(
         {
@@ -143,4 +143,51 @@ def test_marketplace_detail_with_explicit_seller_keeps_exact_offer_identity() ->
     assert identity is not None
     assert identity.offer_id == "offer-456"
     assert identity.seller_key == "id:seller-123"
+    assert exact.item_price == 39.99
+    assert exact.shipping_status == "unknown"
+    assert exact.current_price is None
+    assert exact.api_current_price is None
+    assert exact.delivered_price is None
+    assert exact.variant_attributes.get("deliveredPrice") in {None, ""}
+    assert exact.variant_attributes["selectedOfferPublicPriceStatus"] == "blocked_shipping_unknown"
+    assert exact_detail_verified_candidates(result.candidates) == []
+
+
+def test_marketplace_detail_with_explicit_free_shipping_is_payable_price_verified() -> None:
+    original = search_candidate("444444")
+    provider = FakeDetailProvider(
+        {
+            "444444": {
+                "itemId": 444444,
+                "name": "Marketplace item with free shipping",
+                "salePrice": 39.99,
+                "wasPrice": 79.99,
+                "isMarketPlaceItem": True,
+                "sellerName": "Exact Free Ship LLC",
+                "sellerId": "seller-free",
+                "offerId": "offer-free",
+                "freeShipping": True,
+                "availableOnline": True,
+            }
+        }
+    )
+
+    result = asyncio.run(
+        enrich_walmart_exact_prices([original], provider=provider, limit=1)
+    )
+
+    exact = result.candidates[0]
+    identity = exact_offer_identity(exact)
+    assert result.offer_identity_blocked == 0
+    assert exact.seller_name == "Exact Free Ship LLC"
+    assert exact.selected_offer_id == "offer-free"
+    assert exact.item_price == 39.99
+    assert exact.shipping_cost == 0.0
+    assert exact.shipping_status == "free"
+    assert exact.delivered_price == 39.99
+    assert exact.current_price == 39.99
+    assert exact.api_current_price == 39.99
+    assert identity is not None
+    assert identity.offer_id == "offer-free"
+    assert identity.seller_key == "id:seller-free"
     assert exact_detail_verified_candidates(result.candidates) == [exact]

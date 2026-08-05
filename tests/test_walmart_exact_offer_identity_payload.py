@@ -77,7 +77,13 @@ def test_non_marketplace_detail_without_seller_is_bound_to_walmart() -> None:
     assert exact.variant_attributes["walmartSeller"] == "yes"
     assert exact.variant_attributes["isMarketPlaceItem"] == "no"
     assert exact.variant_attributes["exactDetailSellerIdentityStatus"] == "verified"
-    assert exact.variant_attributes["exactDetailSellerIdentitySource"] == "isMarketPlaceItem=false"
+    # The candidate normalizer binds the inferred Walmart seller before the
+    # exact-identity pass, so that pass receives a verified candidate field.
+    assert (
+        exact.variant_attributes["exactDetailSellerIdentitySource"]
+        == "exact detail seller field"
+    )
+    assert exact.variant_attributes["selectedOfferMarketplace"] == "no"
     assert exact_offer_identity(exact) is not None
     assert exact_detail_verified_candidates(result.candidates) == [exact]
 
@@ -149,7 +155,10 @@ def test_marketplace_identity_is_preserved_but_unknown_shipping_blocks_price() -
     assert exact.api_current_price is None
     assert exact.delivered_price is None
     assert exact.variant_attributes.get("deliveredPrice") in {None, ""}
-    assert exact.variant_attributes["selectedOfferPublicPriceStatus"] == "blocked_shipping_unknown"
+    assert (
+        exact.variant_attributes["selectedOfferPublicPriceStatus"]
+        == "blocked_shipping_unknown"
+    )
     assert exact_detail_verified_candidates(result.candidates) == []
 
 

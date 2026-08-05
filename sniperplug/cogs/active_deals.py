@@ -123,10 +123,10 @@ class ActiveDealsCog(commands.Cog):
             sort=sort_key,
             public_quality_only=min_discount is None,
         )
-        await interaction.followup.send(
-            embed=build_active_deals_embed(interaction.guild_id, page_data),
-            view=build_active_deals_view(page_data),
-            ephemeral=True,
+        await send_active_deals_followup(
+            interaction,
+            interaction.guild_id,
+            page_data,
         )
 
     @app_commands.command(name="active_deals_cleanup", description="Mark deals stale when SniperPlug has not observed them again.")
@@ -275,6 +275,21 @@ class ActiveDealsPageView(discord.ui.View):
             embed=build_active_deals_embed(interaction.guild_id, page_data),
             view=build_active_deals_view(page_data),
         )
+
+
+async def send_active_deals_followup(
+    interaction: discord.Interaction,
+    guild_id: int,
+    page_data: ActiveDealPage,
+) -> None:
+    payload: dict[str, Any] = {
+        "embed": build_active_deals_embed(guild_id, page_data),
+        "ephemeral": True,
+    }
+    view = build_active_deals_view(page_data)
+    if view is not None:
+        payload["view"] = view
+    await interaction.followup.send(**payload)
 
 
 def build_active_deals_view(page_data: ActiveDealPage) -> ActiveDealsPageView | None:

@@ -72,6 +72,8 @@ def test_catalog_enqueue_uses_bounded_pressure_not_full_queue_count() -> None:
         )
 
         assert result.pending_total == 1
+        assert "actionable due (bounded) **1**" in result.summary_line()
+        assert "due/pending" not in result.summary_line()
         assert conn.full_queue_counts == 0
         assert conn.bounded_pressure_reads == 1
         await inner.close()

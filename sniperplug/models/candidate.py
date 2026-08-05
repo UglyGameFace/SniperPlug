@@ -101,8 +101,6 @@ class SourceCandidate:
         if str(self.retailer or "").strip().lower() != "walmart":
             if self.item_price is None:
                 self.item_price = _float_or_none(self.current_price)
-            if self.delivered_price is None:
-                self.delivered_price = _float_or_none(self.current_price)
             return
 
         attrs = dict(self.variant_attributes or {})

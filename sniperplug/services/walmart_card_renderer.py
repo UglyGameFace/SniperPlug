@@ -68,6 +68,10 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
         # Walmart Cash value even without a trusted was-price markdown.
         card.should_alert = decision.should_alert and (discount is not None or has_coupon_or_cash)
         card.current_price = deal.current_price
+        card.item_price = deal.item_price
+        card.shipping_cost = deal.shipping_cost
+        card.delivered_price = deal.delivered_price
+        card.shipping_status = deal.shipping_status
         card.selected_offer_id = deal.selected_offer_id or derived_variant_identity(
             variant_label=deal.variant_label,
             variant_attributes=deal.variant_attributes,
@@ -129,19 +133,56 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, proo
 def price_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> list[str]:
     attrs = deal.variant_attributes or {}
     lines: list[str] = []
+    item_price = (
+        deal.item_price
+        if deal.item_price is not None
+        else float_or_none(attrs.get("itemPrice"))
+    )
+    shipping_cost = deal.shipping_cost
+    if shipping_cost is None:
+        shipping_cost = float_or_none(attrs.get("shippingCost"))
+    delivered = (
+        deal.delivered_price
+        if deal.delivered_price is not None
+        else float_or_none(attrs.get("deliveredPrice"))
+    )
+    shipping_status = str(deal.shipping_status or attrs.get("shippingStatus") or "").strip().lower()
+
+    if item_price is not None:
+        item_source = attrs.get("selectedOfferItemPriceSource")
+        source_text = f" `{item_source}`" if item_source else ""
+        lines.append(f"• Selected-offer item price: **{money(item_price)}**{source_text}")
+    if shipping_status == "free":
+        source = deal.shipping_source or attrs.get("shippingSource") or attrs.get("selectedOfferShippingSource")
+        source_text = f" `{source}`" if source else ""
+        lines.append(f"• Shipping: **FREE**{source_text}")
+    elif shipping_cost is not None:
+        source = deal.shipping_source or attrs.get("shippingSource") or attrs.get("selectedOfferShippingSource")
+        source_text = f" `{source}`" if source else ""
+        lines.append(f"• Shipping: **{money(shipping_cost)}**{source_text}")
+    elif shipping_status:
+        lines.append(f"• Shipping: **{shipping_status.replace('_', ' ')}**")
+
     if deal.current_price is None:
-        lines.append("• Current price: **not returned by Walmart API**")
+        lines.append("• Payable price: **blocked — selected-offer shipping was not verified**")
     else:
-        current_source = api_signal(candidate.signals, "Walmart current price source") or attrs.get("currentPriceSource")
+        current_source = attrs.get("currentPriceSource") or api_signal(candidate.signals, "Walmart current price source")
         source_text = f" `{current_source}`" if current_source else ""
-        lines.append(f"• Current: **{money(deal.current_price)}**{source_text}")
+        label = "Delivered total used for deal math" if delivered is not None else "Current"
+        lines.append(f"• {label}: **{money(deal.current_price)}**{source_text}")
+
+    alternate_min = float_or_none(attrs.get("alternateSellerMinPrice"))
+    if alternate_min is not None:
+        alternate_source = attrs.get("alternateSellerMinPriceSource")
+        source_text = f" `{alternate_source}`" if alternate_source else ""
+        lines.append(f"• Other-seller minimum: **{money(alternate_min)}**{source_text} — context only, not this selected offer")
 
     if proof.discount_percent is not None and deal.typical_price:
         source = attrs.get("trustedReferenceSource") or api_signal(candidate.signals, "Walmart reference price source")
         source_text = f" `{source}`" if source else ""
         lines.append(f"• Was/typical: ~~{money(deal.typical_price)}~~{source_text}")
-        lines.append(f"• API-derived savings: **{money(proof.savings_amount)} ({proof.discount_percent:.0f}%)**")
-        lines.append("• Discount math status: **trusted Walmart reference used**")
+        lines.append(f"• Delivered-price savings: **{money(proof.savings_amount)} ({proof.discount_percent:.0f}%)**")
+        lines.append("• Discount math status: **trusted Walmart reference vs selected-offer payable total**")
     else:
         context_price = float_or_none(attrs.get("referenceContextPrice"))
         context_source = attrs.get("referenceContextSource")
@@ -171,6 +212,11 @@ def price_block(deal: NormalizedDeal, proof) -> str:
         product_url=deal.product_url,
         current_price=deal.current_price,
         typical_price=deal.typical_price,
+        item_price=deal.item_price,
+        shipping_cost=deal.shipping_cost,
+        delivered_price=deal.delivered_price,
+        shipping_status=deal.shipping_status,
+        shipping_source=deal.shipping_source,
         variant_attributes=attrs,
     )
     return "\n".join(price_lines(fake_candidate, deal, proof))
@@ -235,8 +281,9 @@ def offer_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
         maybe_line("Selected offer ID", deal.selected_offer_id),
         maybe_line("Seller", candidate.seller_name or deal.seller_name or attrs.get("seller")),
         maybe_line("Seller ID", attrs.get("sellerId")),
+        maybe_line("Selected-offer node", attrs.get("selectedOfferNodeSource")),
         maybe_line("Walmart seller", attrs.get("walmartSeller")),
-        maybe_line("Marketplace", attrs.get("marketplace")),
+        maybe_line("Marketplace", attrs.get("selectedOfferMarketplace") or attrs.get("marketplace")),
         maybe_line("Offer type", attrs.get("offerType")),
         maybe_line("Condition", candidate.condition or deal.condition or attrs.get("condition")),
         maybe_line("Max order qty", attrs.get("maxOrderQty")),
@@ -247,11 +294,31 @@ def offer_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
 def fulfillment_lines(candidate: SourceCandidate, deal: NormalizedDeal) -> list[str]:
     attrs = deal.variant_attributes or {}
     add_to_cart = "yes" if candidate.can_add_to_cart is True else "no/unknown" if candidate.can_add_to_cart is False else None
+    item_price = (
+        deal.item_price
+        if deal.item_price is not None
+        else float_or_none(attrs.get("itemPrice"))
+    )
+    shipping_cost = deal.shipping_cost
+    if shipping_cost is None:
+        shipping_cost = float_or_none(attrs.get("shippingCost"))
+    delivered = (
+        deal.delivered_price
+        if deal.delivered_price is not None
+        else float_or_none(attrs.get("deliveredPrice"))
+    )
+    shipping_status = deal.shipping_status or attrs.get("shippingStatus")
+    shipping_display = "free" if shipping_status == "free" else money(shipping_cost) if shipping_cost is not None else shipping_status
     lines = [
         maybe_line("Stock", candidate.stock_status),
         maybe_line("Add-to-cart", add_to_cart),
         maybe_line("Available online", attrs.get("availableOnline")),
         maybe_line("Fulfillment", candidate.fulfillment_type or deal.fulfillment_type or attrs.get("fulfillment")),
+        maybe_line("Selected item price", money(item_price) if item_price is not None else None),
+        maybe_line("Shipping", shipping_display),
+        maybe_line("Delivered total", money(delivered) if delivered is not None else None),
+        maybe_line("Shipping proof", deal.shipping_source or attrs.get("shippingSource") or attrs.get("selectedOfferShippingSource")),
+        maybe_line("Payable-price status", attrs.get("selectedOfferPublicPriceStatus")),
         maybe_line("Ship to store", attrs.get("shipToStore")),
         maybe_line("Free ship to store", attrs.get("freeShipToStore")),
         maybe_line("2-3 day shipping", attrs.get("twoThreeDayShipping")),
@@ -291,6 +358,9 @@ def evidence_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> l
     lines: list[str] = []
     for label, key in (
         ("Current price source", "currentPriceSource"),
+        ("Selected item-price source", "selectedOfferItemPriceSource"),
+        ("Selected shipping source", "selectedOfferShippingSource"),
+        ("Selected delivered-price source", "selectedOfferDeliveredPriceSource"),
         ("Trusted reference source", "trustedReferenceSource"),
         ("Reference context source", "referenceContextSource"),
     ):
@@ -305,10 +375,14 @@ def evidence_lines(candidate: SourceCandidate, deal: NormalizedDeal, proof) -> l
         "selected option",
         "Walmart coupon detected",
         "Walmart Cash detected",
+        "Walmart selected marketplace offer blocked",
+        "Walmart alternate seller minimum price blocked",
     ):
         found = api_signal(candidate.signals, prefix, keep_prefix=True)
         if found:
             lines.append(f"• {found}")
+    if attrs.get("alternateSellerMinPrice"):
+        lines.append("• Alternate seller minimum was retained as context only and did not participate in selected-offer math")
     if attrs.get("msrp"):
         lines.append(f"• MSRP returned: `{attrs['msrp']}` — not counted unless trusted reference rules pass")
     if proof.discount_percent is None and not lines:

@@ -1,72 +1,61 @@
 # Active Task
 
 ## Status
-Active — canonical SniperPlug app `1779293887444` is online on Python 3.11.15. Duplicate app `1785806676351` is offline and must remain offline. PR #210 process-isolated native libSQL is deployed and production claims fell from 12–29 seconds to 0.63–1.44 seconds in the first verified window. PRs #218 and #219 are merged into `main` but still require Discloud deployment and production verification before this task can close.
+Implementation complete and merge-ready on PR #220 (`fix/walmart-delivered-offer-price`). No production deployment has occurred; production behavior remains unclaimed until the merged `main` branch is deployed to the canonical Discloud app and confirmed in live logs/cards.
 
 ## Scope
-Complete one consolidated runtime-stability pass without weakening exact Walmart item, seller, selected-offer, variant, condition, fulfillment, current-price, trusted original-price, duplicate, category, or per-server threshold proof.
+Bind Walmart current-price, reference-price, seller, offer, fulfillment, condition, and shipping proof to one selected offer. Use the payable delivered total for qualification whenever mandatory shipping is explicitly known. Alternate-seller and unit-price values remain context only and never participate in selected-offer deal math.
 
-## Confirmed production state
-- Canonical app: `1779293887444` — online.
-- Duplicate app: `1785806676351` — offline.
-- Python: 3.11.15.
-- Main bot PID and native libSQL worker PID are different.
-- Startup confirms `native_libsql_in_gateway_process=false` and exact large-integer text transport.
-- PR #208 separated catalog discovery from exact verification.
-- PR #209 stopped scheduled rechecks from triggering aggressive 24/4 drain mode and repaired legacy hourly schedules.
-- PR #210 moved the synchronous native libSQL driver into a dedicated child process.
-- The first post-PR #210 sample contained no new event-loop, heartbeat, or gateway failure line.
-- Exact claim timings in that sample were 0.63s, 1.29s, 0.79s, and 1.44s.
-- PR #218 fixes `/active_deals` empty-result followups by omitting `view` when no Discord view exists.
-- PR #219 removes the catalog hot-path full `COUNT(*)` over `walmart_exact_detail_queue` and replaces it with bounded queue pressure.
+## Root causes confirmed
+- Broad item-level `minPrice` could represent a different seller while seller/offer identity was resolved separately.
+- Shipping had no first-class item-price, shipping-cost, delivered-price, or proof state in candidates/deals.
+- Third-party marketplace identity could be complete while mandatory shipping remained unknown.
+- A page-level `wasPrice` could be compared with a nested selected offer belonging to another seller.
+- Generic price dictionaries could contain unit pricing such as `$0.12/oz` rather than the full offer price.
+- Truthy display fallbacks could discard valid `$0.00` price evidence.
 
-## Consolidated stability findings
-- The previous whole-job Walmart provider lock can let a slow catalog or manual discovery job delay the exact worker for minutes even though the database no longer blocks Discord.
-- Native libSQL recovery must never replay writes or retry a failed commit on a new connection because the original implicit transaction cannot follow that connection.
-- SQL scripts require SQLite-aware statement splitting so triggers and quoted semicolons remain intact while errors still propagate.
-- HP and Target standalone workers must use the same process-isolated, snowflake-safe database factory as the bot. The eBay watcher must use that factory before PR #200 can be considered ready.
-- The bot must close the child database worker during graceful Discord shutdown.
-- Production-critical dependency versions must be pinned to the versions proven by Python 3.11 CI.
-- A simultaneous outage of all movie-ticket sources is degraded upstream health, not an application traceback every poll.
+## Implemented changes
+- Normalize one atomic offer from `selectedOffer`, `buyBoxOffer`, `primaryOffer`, `offer`, or the root Walmart buy-box payload.
+- Bind selected seller name/ID, offer ID, condition, fulfillment, item price, shipping state/cost, delivered total, and same-offer reference price.
+- Keep `minPrice` and `bestMarketplacePrice` as explicitly labeled other-seller/flip context only.
+- Use selected-offer item price plus mandatory shipping as Walmart `current_price` / `api_current_price` and discount input.
+- Fail closed for third-party marketplace offers when shipping is not returned; no alertable current price or discount survives.
+- Preserve Walmart-owned item prices with `checkout_dependent` shipping rather than falsely claiming free or delivered shipping.
+- Reject measurement-unit price structures while accepting currency-shaped amount structures.
+- Block page-level reference prices when a nested selected offer has no same-offer reference; retain the page value only as non-discount context.
+- Carry item price, shipping, delivered total, proof sources, payable-price status, seller, and offer identity into normalized deals and Walmart cards.
+- Preserve valid `$0.00` item/delivered evidence with explicit `is not None` rendering.
+- Avoid assigning unverified delivered totals to non-Walmart candidates.
+- Preserve existing positional dataclass constructor compatibility by appending the new fields.
+
+## Validation
+- Python 3.11 full suite: **1,101 passed**, one upstream `audioop` deprecation warning.
+- Python 3.12 Python Check: passed.
+- Import smoke check: passed.
+- `pip check`: passed.
+- `compileall` across app, tests, and entry points: passed.
+- Targeted regressions cover paid shipping, explicit free shipping, unknown marketplace shipping, alternate seller minimums, same-offer reference proof, cross-offer reference blocking, seller switching, exact-detail replacement, unit-price rejection, currency-unit acceptance, zero-value evidence, card rendering, and non-Walmart delivery semantics.
+- Qodo review findings for non-Walmart delivered totals, unit-price parsing, and zero-value rendering are resolved and outdated.
+- Final changed-file inspection contains only implementation, active-task documentation, and targeted regression files; temporary probe files were removed.
+
+## Cleanup and conflict inspection
+- No duplicate or temporary implementation remains.
+- Existing exact item, seller, offer, variant, condition, fulfillment, duplicate, queue, and per-server threshold gates remain intact.
+- No threshold was lowered and no identity/shipping proof was weakened.
+- PR #200 remains isolated and unmerged.
+- Duplicate Discloud app `1785806676351` remains outside this task and must stay offline.
 
 ## Current branch
-`fix/full-runtime-stability-pass`
-
-This branch is intentionally isolated from production until all of the following pass:
-- Complete Python 3.11 test suite.
-- Complete Python 3.12 test suite and import smoke check.
-- `pip check` on both CI paths.
-- Child-process row and exact snowflake round trips.
-- Worker death and operation-timeout recovery.
-- Proof that slow child work does not starve the parent event loop.
-- Proof that write/commit failures are not replayed across connections.
-- Trigger and quoted-semicolon SQL script tests.
-- Exact-priority Walmart request scheduling under catalog pressure.
-- Automatic movie-source total-outage cache preservation without traceback spam.
-- Static proof that the bot, HP watcher, and Target watcher share one production database factory.
-- Deploy current `main` to canonical Discloud app and verify `/active_deals` no longer crashes on empty results.
-- Verify catalog cycles no longer issue `SELECT COUNT(*) FROM walmart_exact_detail_queue` or create the former 10–25 second serialized lock cascade.
+`fix/walmart-delivered-offer-price`
 
 ## Deployment boundary
-- Do not modify or deploy the duplicate app.
-- Do not merge PR #200 during this stability pass.
-- Do not lower alert thresholds or relax exact verification gates.
-- Do not merge the stability branch until all CI checks pass and the final diff is reviewed as one unit.
+After merge, deploy only the canonical SniperPlug Discloud app and verify:
+- cards show selected seller, item price, shipping, and delivered total;
+- other-seller minimums are labeled context only;
+- unknown marketplace shipping is blocked rather than shown as free/$0;
+- discount thresholds use the delivered total and same-offer reference;
+- no new errors or seller/offer mismatches appear in exact-verification logs.
 
-## Backlog — Walmart alternate sellers and landed price
-After runtime stability closes, inspect the complete Walmart exact-detail and selected-offer execution path before changing behavior.
-
-Required behavior:
-- Treat every seller offer as a separate identity keyed by exact item/variant, seller, offer ID, condition, fulfillment method, and quantity/pack.
-- Keep Walmart's currently selected buy-box offer separate from the page's `More seller options` offers; never replace one with an unrelated lower sticker price.
-- Capture item price, shipping charge, mandatory seller fees when exposed, and compute `landed_price = item_price + shipping + mandatory fees` before deal qualification or ranking.
-- A `$3.50 + $3.25 shipping` offer must rank as `$6.75 delivered`, not `$3.50`, and must not beat a `$3.96 free shipping` Walmart offer.
-- Preserve explicit `free shipping`, unknown-shipping, pickup-only, delivery-only, membership-dependent, and location-dependent states rather than assuming zero.
-- Do not calculate discount from one seller's current price against another seller's reference/was price.
-- Prefer a verified selected offer for public alerts; alternate offers may be shown only when their seller/offer identity and landed price are independently verified.
-- If shipping cannot be verified before posting, block the alternate offer or label it incomplete; never advertise the sticker price as the payable total.
-- Show seller, item price, shipping, and delivered total clearly on cards when an alternate marketplace seller is used.
-- Add regression coverage for free shipping, paid shipping, unknown shipping, seller switching, buy-box versus alternate offers, quantity/pack mismatch, and a cheaper sticker price that is more expensive after shipping.
-
-## Follow-up after stability
-Rebase PR #200 onto the stable main branch, replace its standalone database construction with the shared process-isolated factory, rerun its targeted and full suites, and keep live eBay deployment blocked on production eBay credentials and Buy API approval.
+## Backlog
+- Deploy merged `main` to the canonical Discloud app and verify PRs #218, #219, and #220 in production.
+- Rebase and finish PR #200 only after the production stability/accuracy pass closes.

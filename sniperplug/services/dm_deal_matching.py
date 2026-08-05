@@ -6,34 +6,56 @@ from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
     DmDealMatchDecision,
     card_search_text,
-    card_title,
     smart_requirements,
     walmart_cash_cents,
 )
-from sniperplug.services.opportunity_watchlist import category_for_title
+from sniperplug.services.dm_flip_opportunities import (
+    FlipAssessment,
+    assess_flip_opportunity,
+)
+from sniperplug.services.dm_personal_categories import (
+    category_key_for_card,
+    flip_settings,
+    muted_category_preferences,
+    split_category_preferences,
+    split_exclude_terms,
+)
 
 
 def match_dm_deal(
     preference: DmDealAlertPreference,
     card: Any,
 ) -> DmDealMatchDecision:
-    """Apply exact-proof personal filters without weakening user minimums.
+    """Apply exact-proof personal filters without weakening hard user limits.
 
     Smart mode may add stricter adaptive requirements based on the item's
     current price. It never lowers a user's explicit minimum markdown, score,
-    or dollar-savings floor. Strict API-proven Walmart Cash may soften only the
-    adaptive markdown add-on by five points, never the user's own floor and
-    never below a real 20% markdown.
+    or dollar-savings floor. Strict API-proven Walmart Cash or a personally
+    favorite category may soften only Smart's additional adaptive requirement.
+
+    Personal category mutes and favorites are delivery-only. A separately
+    enabled flip lane may cross category boundaries only for a strict,
+    significant price-error/resale assessment. That lane still respects exact
+    proof, explicit floors, maximum price, keywords, excluded words,
+    Walmart-Cash-only mode, dedupe, and the daily DM cap.
     """
 
     pref = preference.normalized()
     if not pref.enabled:
         return DmDealMatchDecision(False, "DM alerts are disabled")
 
-    title = card_title(card)
     search_text = card_search_text(card)
-    category = category_for_title(title)
-    category_key = category.key if category is not None else "uncategorized"
+    category_key = category_key_for_card(card)
+    keyword_excludes, legacy_muted = split_exclude_terms(
+        pref.exclude_keywords
+    )
+    selected_categories, favorite_categories = split_category_preferences(
+        pref.categories
+    )
+    stored_muted = muted_category_preferences(pref.categories)
+    muted_categories = frozenset((*legacy_muted, *stored_muted))
+    flip_enabled, flip_min_profit_cents = flip_settings(pref.categories)
+    is_favorite = category_key in favorite_categories
 
     current_cents = _money_to_cents(
         getattr(card, "api_current_price", None)
@@ -63,6 +85,8 @@ def match_dm_deal(
             "exact markdown is not positive",
             category_key,
         )
+
+    # Hard personal constraints remain hard even for a flip override.
     if pref.max_price_cents is not None and current_cents > pref.max_price_cents:
         return DmDealMatchDecision(False, "price is above your maximum", category_key)
     if pref.walmart_cash_only and cash_cents <= 0:
@@ -71,40 +95,69 @@ def match_dm_deal(
             "Walmart Cash proof is required",
             category_key,
         )
-    if pref.categories and category_key not in pref.categories:
-        if not (cash_cents > 0 and "walmart_cash" in pref.categories):
-            return DmDealMatchDecision(
-                False,
-                "category is not selected",
-                category_key,
-            )
     if pref.keywords and not any(term in search_text for term in pref.keywords):
         return DmDealMatchDecision(
             False,
             "none of your required keywords matched",
             category_key,
         )
-    if pref.exclude_keywords and any(
-        term in search_text for term in pref.exclude_keywords
-    ):
+    if keyword_excludes and any(term in search_text for term in keyword_excludes):
         return DmDealMatchDecision(
             False,
             "an excluded keyword matched",
             category_key,
         )
 
+    flip = FlipAssessment(False)
+    if flip_enabled:
+        flip = assess_flip_opportunity(
+            card,
+            category_key=category_key,
+            current_cents=current_cents,
+            reference_cents=reference_cents,
+            discount=discount,
+            savings_cents=savings_cents,
+            score=score,
+            minimum_profit_cents=flip_min_profit_cents,
+        )
+
+    # Flip Override crosses category boundaries only. It does not erase other
+    # explicit personal filters or exact-deal requirements.
+    if category_key in muted_categories and not flip.qualified:
+        return DmDealMatchDecision(
+            False,
+            "category is muted in your personal DMs",
+            category_key,
+        )
+    if selected_categories and category_key not in selected_categories:
+        cash_exception = cash_cents > 0 and "walmart_cash" in selected_categories
+        if not cash_exception and not flip.qualified:
+            return DmDealMatchDecision(
+                False,
+                "category is not selected",
+                category_key,
+            )
+
     required_discount = pref.min_discount
     required_score = pref.min_score
     required_savings = pref.min_savings_cents
 
-    if pref.mode == "smart":
+    if pref.mode == "smart" and not flip.qualified:
         smart_discount, smart_savings = smart_requirements(current_cents)
         adaptive_discount = max(20, smart_discount)
-        if cash_cents > 0 and discount >= 20:
+        adaptive_savings = smart_savings
+
+        # Favorites affect only Smart's extra strictness. They never go below
+        # the subscriber's explicit floors or the real 20% markdown safety floor.
+        if is_favorite:
             adaptive_discount = max(20, adaptive_discount - 5)
+            adaptive_savings = max(0, int(round(adaptive_savings * 0.80)))
+        elif cash_cents > 0 and discount >= 20:
+            adaptive_discount = max(20, adaptive_discount - 5)
+
         required_discount = max(pref.min_discount, adaptive_discount)
         required_score = max(pref.min_score, 70)
-        required_savings = max(pref.min_savings_cents, smart_savings)
+        required_savings = max(pref.min_savings_cents, adaptive_savings)
 
     if discount < required_discount:
         return DmDealMatchDecision(
@@ -137,12 +190,18 @@ def match_dm_deal(
             cash_cents,
         )
 
-    reason = (
-        f"{discount:.0f}% exact markdown • saves ${savings_cents / 100:,.2f} • "
-        f"score {score}/250 • category {category_key}"
-    )
-    if cash_cents > 0:
-        reason += f" • ${cash_cents / 100:,.2f} Walmart Cash"
+    if flip.qualified:
+        reason = f"{flip.reason} • category {category_key}"
+    else:
+        reason = (
+            f"{discount:.0f}% exact markdown • saves ${savings_cents / 100:,.2f} • "
+            f"score {score}/250 • category {category_key}"
+        )
+        if is_favorite:
+            reason += " • favorite-category priority"
+        if cash_cents > 0:
+            reason += f" • ${cash_cents / 100:,.2f} Walmart Cash"
+
     return DmDealMatchDecision(
         True,
         reason,

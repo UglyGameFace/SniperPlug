@@ -6,18 +6,31 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.cogs.dm_deal_preferences_view import DmDealPreferencesView
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
     delete_dm_deal_alert_preference,
     get_dm_deal_alert_preference,
-    normalize_categories,
     normalize_terms,
     save_dm_deal_alert_preference,
+)
+from sniperplug.services.dm_personal_categories import (
+    category_label,
+    compose_exclude_terms,
+    flip_settings,
+    muted_category_preferences,
+    normalize_personal_categories,
+    split_category_preferences,
+    split_exclude_terms,
+    update_favorite_categories,
+    update_flip_settings,
+    update_muted_categories,
 )
 
 
 ACTION_CHOICES = [
-    app_commands.Choice(name="Enable or update alerts", value="enable"),
+    app_commands.Choice(name="Open personalization menu", value="menu"),
+    app_commands.Choice(name="Enable or update with typed options", value="enable"),
     app_commands.Choice(name="Show my settings", value="status"),
     app_commands.Choice(name="Send a test DM", value="test"),
     app_commands.Choice(name="Pause alerts", value="disable"),
@@ -40,15 +53,21 @@ class DmDealAlertsCog(commands.Cog):
         description="Set personal exact-verified deal alerts in your DMs.",
     )
     @app_commands.describe(
-        action="Enable, inspect, test, pause, or delete your personal alerts.",
+        action="Open the menu, inspect, test, pause, or update your personal alerts.",
         mode="Smart adapts quality rules to price; All and Custom use hard filters.",
         min_discount="Lowest exact Walmart markdown percentage you want.",
-        max_price="Do not DM products above this current price.",
+        max_price="Do not DM products above this current price, including flips.",
         min_score="Minimum Sniper score from 0 to 250.",
         min_savings="Minimum exact dollar savings from Walmart's was price.",
-        categories="Comma list: tech, gaming, home, essentials, toys, auto, beauty, cash.",
-        keywords="Comma list of words that must match at least one product detail.",
-        exclude="Comma list of words that always block a product.",
+        categories="Optional hard allowlist. Leave empty to keep all categories eligible.",
+        favorite_categories="Prioritize interests without excluding other great deals: tech, gaming, PC, smart home.",
+        unfavorite_categories="Remove categories from your personal favorites.",
+        keywords="Comma list of words that must match normal-interest alerts.",
+        exclude="Comma list of words that always block a product, including flips.",
+        mute_categories="Hide categories from normal DMs, such as baby, toys, pets, or beauty.",
+        unmute_categories="Restore personally muted categories, such as baby or toys.",
+        flip_alerts="Allow exceptional price-error/resell alerts across category mutes.",
+        flip_min_profit="Minimum conservative estimated net profit for a flip alert.",
         walmart_cash_only="Only alert when strict Walmart API Cash proof is attached.",
         daily_cap="Maximum personal deal DMs per UTC day.",
     )
@@ -63,8 +82,14 @@ class DmDealAlertsCog(commands.Cog):
         min_score: app_commands.Range[int, 0, 250] | None = None,
         min_savings: app_commands.Range[float, 0.0, 100000.0] | None = None,
         categories: app_commands.Range[str, 1, 300] | None = None,
+        favorite_categories: app_commands.Range[str, 1, 300] | None = None,
+        unfavorite_categories: app_commands.Range[str, 1, 300] | None = None,
         keywords: app_commands.Range[str, 1, 300] | None = None,
         exclude: app_commands.Range[str, 1, 300] | None = None,
+        mute_categories: app_commands.Range[str, 1, 300] | None = None,
+        unmute_categories: app_commands.Range[str, 1, 300] | None = None,
+        flip_alerts: bool | None = None,
+        flip_min_profit: app_commands.Range[float, 10.0, 100000.0] | None = None,
         walmart_cash_only: bool | None = None,
         daily_cap: app_commands.Range[int, 1, 100] | None = None,
     ) -> None:
@@ -81,6 +106,19 @@ class DmDealAlertsCog(commands.Cog):
             return
 
         preference = await get_dm_deal_alert_preference(self.bot.db, user_id)
+
+        if selected_action == "menu":
+            view = DmDealPreferencesView(
+                bot=self.bot,
+                user_id=user_id,
+                preference=preference,
+            )
+            await interaction.followup.send(
+                embed=view.build_embed(),
+                view=view,
+                ephemeral=True,
+            )
+            return
 
         if selected_action == "status":
             await interaction.followup.send(
@@ -127,6 +165,44 @@ class DmDealAlertsCog(commands.Cog):
             )
             return
 
+        keyword_excludes, legacy_muted = split_exclude_terms(
+            preference.exclude_keywords
+        )
+        stored_muted = muted_category_preferences(preference.categories)
+        updated_muted = list(dict.fromkeys((*legacy_muted, *stored_muted)))
+        updated_muted.extend(normalize_personal_categories(mute_categories))
+        remove_muted = set(normalize_personal_categories(unmute_categories))
+        updated_muted = [
+            category
+            for category in dict.fromkeys(updated_muted)
+            if category not in remove_muted
+        ]
+
+        updated_excludes = compose_exclude_terms(
+            normalize_terms(exclude)
+            if exclude is not None
+            else keyword_excludes
+        )
+        updated_categories = update_favorite_categories(
+            preference.categories,
+            add=favorite_categories,
+            remove=unfavorite_categories,
+            replacement_selected=categories,
+        )
+        updated_categories = update_muted_categories(
+            updated_categories,
+            replacement=updated_muted,
+        )
+        updated_categories = update_flip_settings(
+            updated_categories,
+            enabled=flip_alerts,
+            minimum_profit_cents=(
+                int(round(float(flip_min_profit) * 100))
+                if flip_min_profit is not None
+                else None
+            ),
+        )
+
         updated = replace(
             preference,
             enabled=True,
@@ -149,21 +225,13 @@ class DmDealAlertsCog(commands.Cog):
                 if min_savings is not None
                 else preference.min_savings_cents
             ),
-            categories=(
-                normalize_categories(categories)
-                if categories is not None
-                else preference.categories
-            ),
+            categories=updated_categories,
             keywords=(
                 normalize_terms(keywords)
                 if keywords is not None
                 else preference.keywords
             ),
-            exclude_keywords=(
-                normalize_terms(exclude)
-                if exclude is not None
-                else preference.exclude_keywords
-            ),
+            exclude_keywords=updated_excludes,
             walmart_cash_only=(
                 bool(walmart_cash_only)
                 if walmart_cash_only is not None
@@ -225,18 +293,82 @@ def build_dm_settings_embed(
     title: str = "🔔 Personal deal DM settings",
 ) -> discord.Embed:
     normalized = preference.normalized()
+    keyword_excludes, legacy_muted = split_exclude_terms(
+        normalized.exclude_keywords
+    )
+    stored_muted = muted_category_preferences(normalized.categories)
+    muted_categories = tuple(dict.fromkeys((*legacy_muted, *stored_muted)))
+    selected_categories, favorite_categories = split_category_preferences(
+        normalized.categories
+    )
+    flip_enabled, flip_min_profit_cents = flip_settings(normalized.categories)
+
+    muted_text = (
+        ", ".join(category_label(category) for category in muted_categories)
+        if muted_categories
+        else "none"
+    )
+    favorite_text = (
+        ", ".join(category_label(category) for category in favorite_categories)
+        if favorite_categories
+        else "none"
+    )
+    selected_text = (
+        ", ".join(category_label(category) for category in selected_categories)
+        if selected_categories
+        else "all categories"
+    )
+    keyword_text = ", ".join(keyword_excludes) if keyword_excludes else "none"
+
+    summary: list[str] = []
+    for line in normalized.summary_lines():
+        if line.startswith("Categories:"):
+            summary.append(f"Allowed categories: **{selected_text}**")
+            summary.append(f"Favorite DM categories: **{favorite_text}**")
+            summary.append(
+                "Price-error / flip override: "
+                f"**{'enabled' if flip_enabled else 'disabled'}**"
+            )
+            summary.append(
+                "Minimum estimated flip profit: "
+                f"**${flip_min_profit_cents / 100:,.2f}**"
+            )
+        elif line.startswith("Exclude:"):
+            summary.append(f"Exclude words: **{keyword_text}**")
+            summary.append(f"Muted DM categories: **{muted_text}**")
+        else:
+            summary.append(line)
+
     embed = discord.Embed(
         title=title,
-        description="\n".join(normalized.summary_lines()),
+        description="\n".join(summary),
         color=discord.Color.green() if normalized.enabled else discord.Color.orange(),
     )
     embed.add_field(
-        name="How Smart mode works",
+        name="Open the complete menu",
         value=(
-            "Smart mode raises the required percentage and dollar savings for cheap items, "
-            "allows smaller percentages on expensive items with meaningful savings, and "
-            "requires a stronger score unless the exact markdown is 70%+. API-proven Walmart "
-            "Cash may soften the threshold slightly, but never replaces a real was-price markdown."
+            "Run `/dm_deals action:Open personalization menu` for the paginated, searchable "
+            "catalog. Every current category is included, and future categories appear automatically."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Favorites and mutes are personal",
+        value=(
+            "Favorites get a small Smart-mode priority boost but do **not** hide other great deals. "
+            "Muted categories disappear from normal **personal** DMs only. Public alerts and every "
+            "other subscriber remain unchanged."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Price-error / flip override",
+        value=(
+            "When enabled, a significant cross-category price error may break through a category mute. "
+            "Without recent sold comps, SniperPlug uses a strict conservative resale haircut, fee reserve, "
+            "shipping reserve, minimum ROI, and your profit floor—and labels it **estimated**. When exact "
+            "recent eBay sold evidence is connected, the alert shows sold count, median sold price, and "
+            "estimated net profit. Active eBay listing prices never count as sold proof."
         ),
         inline=False,
     )
@@ -244,7 +376,8 @@ def build_dm_settings_embed(
         name="Built-in safety",
         value=(
             "Only exact-item, exact-offer, buyable Walmart deals with trusted current and was prices enter this stream. "
-            "Each exact offer/price is deduplicated per user, and your daily cap prevents DM floods."
+            "Flip Override crosses category boundaries only; explicit floors, maximum price, required/excluded words, "
+            "dedupe, and the daily cap remain hard."
         ),
         inline=False,
     )
@@ -275,6 +408,6 @@ def build_enabled_dm_embed(preference: DmDealAlertPreference) -> discord.Embed:
         title="✅ SniperPlug personal deal alerts are ready",
     )
     embed.set_footer(
-        text="Use /dm_deals action:Show my settings or action:Pause alerts at any time."
+        text="Use /dm_deals action:Open personalization menu or action:Pause alerts at any time."
     )
     return embed

@@ -46,6 +46,7 @@ def candidate(
     current: float = 20.0,
     reference: float = 100.0,
     title: str | None = None,
+    route: str = "electronics clearance",
 ) -> SourceCandidate:
     return SourceCandidate(
         source_key="walmart",
@@ -64,7 +65,7 @@ def candidate(
         product_id_type="sku",
         sku=item_id,
         selected_offer_id=item_id,
-        variant_attributes={"finderSourceQuery": "electronics clearance"},
+        variant_attributes={"finderSourceQuery": route},
     )
 
 
@@ -108,6 +109,41 @@ def test_recent_identical_catalog_rediscovery_skips_all_queue_writes() -> None:
             f"SELECT MIN(discovered_count), MAX(discovered_count) FROM {QUEUE_TABLE}"
         )
         assert await cursor.fetchone() == (1, 1)
+        await inner.close()
+
+    asyncio.run(run())
+
+
+def test_rotating_nonempty_catalog_route_does_not_force_a_write() -> None:
+    async def run() -> None:
+        inner, conn, db = await _new_db()
+        source = "global_catalog_autoscan:global_catalog_autoscan"
+        await enqueue_walmart_exact_verification_candidates_bulk(
+            db,
+            [candidate("810000", route="electronics clearance")],
+            min_discount=50,
+            source_label=source,
+        )
+
+        conn.queue_upserts = 0
+        conn.commits = 0
+        result = await enqueue_walmart_exact_verification_candidates_bulk(
+            db,
+            [candidate("810000", route="school backpacks")],
+            min_discount=50,
+            source_label=source,
+        )
+
+        assert result.persisted_rows == 0
+        assert result.unchanged_rows == 1
+        assert result.write_statements == 0
+        assert conn.queue_upserts == 0
+        assert conn.commits == 0
+        cursor = await inner.execute(
+            f"SELECT route_hint FROM {QUEUE_TABLE} WHERE item_id = ?",
+            ("810000",),
+        )
+        assert (await cursor.fetchone())[0] == "electronics clearance"
         await inner.close()
 
     asyncio.run(run())

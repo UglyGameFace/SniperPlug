@@ -288,10 +288,16 @@ def _queue_row_needs_write(
         (str(row[5] or ""), existing.title),
         (str(row[6] or ""), existing.product_url),
         (str(row[7] or ""), existing.image_url),
-        (str(row[8] or ""), existing.route_hint),
     ):
         if incoming and incoming != stored:
             return True
+
+    # Catalog routes rotate constantly and are discovery telemetry only. A route
+    # fills an empty hint, but a different nonempty route must not by itself
+    # rewrite an otherwise identical queue row every minute.
+    incoming_route = str(row[8] or "")
+    if incoming_route and not existing.route_hint:
+        return True
 
     if str(row[9] or "") != existing.source_label:
         return True

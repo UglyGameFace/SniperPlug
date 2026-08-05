@@ -29,6 +29,8 @@ from sniperplug.services.public_deal_posts import (
     release_public_deal_reservation,
     reserve_public_deal_post,
     resolve_public_alert_channel,
+    safe_find_recent_alert,
+    should_suppress_recent_alert,
 )
 from sniperplug.services.public_deal_quality import (
     is_public_deal_candidate,
@@ -383,7 +385,7 @@ async def retry_walmart_delivery_current_rules(
         message = "Posted successfully using the server's current threshold, category, proof, and duplicate rules."
         ok = True
     elif result.skipped_recent_alert_duplicate or result.skipped_reserved_duplicate:
-        message = "Safe retry was blocked by the normal duplicate/reservation guard. The server owner can use **Post once** after reviewing it when no normal send is active."
+        message = "Safe retry was blocked by the normal duplicate/reservation guard. A lower verified price can alert again; same or higher-price duplicates remain blocked."
         ok = False
     elif result.skipped_not_alertable:
         message = "Safe retry still fails the current threshold, category, or exact-proof gate. The recovery panel keeps the real reason visible."
@@ -415,11 +417,13 @@ async def post_walmart_owner_override(
     item: WalmartRecoveryItem,
     actor_id: int,
 ) -> WalmartRecoveryActionResult:
-    """Bypass only one soft guild rule while retaining exact proof.
+    """Bypass one soft guild rule while retaining proof and normal dedupe.
 
     Missing item/offer/seller/variant/structured-price proof can never use this
-    path. A live normal reservation/sending state is also never bypassed because
-    doing so could create two public posts at once.
+    path. Normal recent-alert dedupe also remains enforced: a genuinely lower
+    verified price may post, while a same or higher price may not. The canonical
+    event reservation is acquired alongside the one-time override reservation so
+    normal delivery cannot race the owner action.
     """
 
     if not item.can_owner_override or item.card is None:
@@ -471,19 +475,156 @@ async def post_walmart_owner_override(
         )
 
     retailer = "walmart"
+    canonical_key = str(item.public_key or item.deal_key)
     override_key = f"{OWNER_OVERRIDE_POST_PREFIX}:{item.deal_key}"
-    reserved = await reserve_public_deal_post(
+    product_key = card_product_key(item.card, retailer=retailer)
+    current_price = _float_or_none(
+        getattr(item.card, "current_price", None)
+        or getattr(item.card, "api_current_price", None)
+    )
+
+    canonical_status, canonical_seen_at = await _load_public_post_state(
+        db,
+        guild_id=int(guild_id),
+        deal_key=canonical_key,
+    )
+    if canonical_status == "posted":
+        detail = (
+            "Owner override stopped: this exact event already has a durable public post receipt. "
+            "Use the existing alert instead of creating a duplicate."
+        )
+        await _record_action(
+            db,
+            guild_id=guild_id,
+            deal_key=item.deal_key,
+            actor_id=actor_id,
+            action="owner_override",
+            outcome="blocked_duplicate",
+            detail=detail,
+        )
+        return WalmartRecoveryActionResult(False, detail)
+    if canonical_status == "sending" or (
+        canonical_status == "reserved"
+        and not _is_stale_reservation(
+            canonical_seen_at,
+            now=datetime.now(timezone.utc),
+        )
+    ):
+        detail = (
+            "Normal delivery currently owns this event reservation. Wait for it to finish or become stale; "
+            "the owner override will not race it."
+        )
+        await _record_action(
+            db,
+            guild_id=guild_id,
+            deal_key=item.deal_key,
+            actor_id=actor_id,
+            action="owner_override",
+            outcome="blocked_active_delivery",
+            detail=detail,
+        )
+        return WalmartRecoveryActionResult(False, detail)
+
+    override_reserved = await reserve_public_deal_post(
         db,
         guild_id=int(guild_id),
         retailer=retailer,
         deal_key=override_key,
         source_label=OWNER_OVERRIDE_SOURCE_LABEL,
     )
-    if not reserved:
+    if not override_reserved:
         return WalmartRecoveryActionResult(
             False,
             "This exact event has already used its one-time owner override or is currently being sent.",
         )
+
+    canonical_reserved = await reserve_public_deal_post(
+        db,
+        guild_id=int(guild_id),
+        retailer=retailer,
+        deal_key=canonical_key,
+        source_label=OWNER_OVERRIDE_SOURCE_LABEL,
+    )
+    if not canonical_reserved:
+        await release_public_deal_reservation(
+            db,
+            guild_id=int(guild_id),
+            deal_key=override_key,
+        )
+        detail = (
+            "Normal delivery claimed or already posted this event before the override could send. "
+            "No duplicate was created."
+        )
+        await _record_action(
+            db,
+            guild_id=guild_id,
+            deal_key=item.deal_key,
+            actor_id=actor_id,
+            action="owner_override",
+            outcome="blocked_canonical_reservation",
+            detail=detail,
+        )
+        return WalmartRecoveryActionResult(False, detail)
+
+    dedupe_errors: list[str] = []
+    recent_alert = await safe_find_recent_alert(
+        db,
+        guild_id=int(guild_id),
+        retailer=retailer,
+        product_key=product_key,
+        current_price=current_price,
+        alert_key=PUBLIC_ALERT_KEY,
+        errors=dedupe_errors,
+    )
+    if dedupe_errors:
+        await _release_override_reservations(
+            db,
+            guild_id=int(guild_id),
+            override_key=override_key,
+            canonical_key=canonical_key,
+        )
+        detail = (
+            "Owner override stopped because recent-alert history could not be verified safely: "
+            f"`{_compact(' | '.join(dedupe_errors), 360)}`"
+        )
+        await _record_action(
+            db,
+            guild_id=guild_id,
+            deal_key=item.deal_key,
+            actor_id=actor_id,
+            action="owner_override",
+            outcome="blocked_dedupe_unavailable",
+            detail=detail,
+        )
+        return WalmartRecoveryActionResult(False, detail)
+    if recent_alert and should_suppress_recent_alert(recent_alert, current_price):
+        await _release_override_reservations(
+            db,
+            guild_id=int(guild_id),
+            override_key=override_key,
+            canonical_key=canonical_key,
+        )
+        previous_price = _float_or_none(recent_alert.get("current_price"))
+        previous_note = (
+            "an unknown prior price"
+            if previous_price is None
+            else f"${previous_price:,.2f}"
+        )
+        detail = (
+            "Owner override stopped by the normal 30-day alert dedupe: this product was already "
+            f"alerted at {previous_note}. A lower exact verified price can alert again; a same or "
+            "higher price cannot be force-posted as a duplicate."
+        )
+        await _record_action(
+            db,
+            guild_id=guild_id,
+            deal_key=item.deal_key,
+            actor_id=actor_id,
+            action="owner_override",
+            outcome="blocked_recent_alert_duplicate",
+            detail=detail,
+        )
+        return WalmartRecoveryActionResult(False, detail)
 
     try:
         await mark_public_deal_sending(
@@ -491,8 +632,12 @@ async def post_walmart_owner_override(
             guild_id=int(guild_id),
             deal_key=override_key,
         )
+        await mark_public_deal_sending(
+            db,
+            guild_id=int(guild_id),
+            deal_key=canonical_key,
+        )
         embed = _owner_override_embed(item, actor_id=actor_id)
-        product_key = card_product_key(item.card, retailer=retailer)
         target = build_feedback_target(
             item.card,
             target_key=product_key,
@@ -509,10 +654,11 @@ async def post_walmart_owner_override(
             view=feedback_view,
         )
     except Exception as exc:
-        await release_public_deal_reservation(
+        await _release_override_reservations(
             db,
             guild_id=int(guild_id),
-            deal_key=override_key,
+            override_key=override_key,
+            canonical_key=canonical_key,
         )
         detail = f"Owner override send failed: `{type(exc).__name__}: {_compact(exc, 260)}`"
         await _record_action(
@@ -526,10 +672,6 @@ async def post_walmart_owner_override(
         )
         return WalmartRecoveryActionResult(False, detail)
 
-    current_price = _float_or_none(
-        getattr(item.card, "current_price", None)
-        or getattr(item.card, "api_current_price", None)
-    )
     finalized, notes = await finalize_successful_public_post(
         db,
         guild_id=int(guild_id),
@@ -545,10 +687,11 @@ async def post_walmart_owner_override(
     await _mark_original_delivery_receipt(
         db,
         guild_id=int(guild_id),
-        deal_key=item.public_key or item.deal_key,
+        deal_key=canonical_key,
     )
     detail = (
-        "Posted once as a server-owner override. Exact proof still passed; the automatic threshold/category settings were not changed."
+        "Posted once as a server-owner override. Exact proof and normal recent-alert dedupe still passed; "
+        "the automatic threshold/category settings were not changed."
     )
     if channel_note:
         detail += f" {channel_note}"
@@ -591,7 +734,8 @@ async def recheck_walmart_exact_offer(
 
     await ensure_walmart_exact_verification_queue(db)
     conn = db.require_conn()
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
     await conn.execute(
         f"""
         UPDATE {QUEUE_TABLE}
@@ -605,6 +749,11 @@ async def recheck_walmart_exact_offer(
                 ELSE last_error || ' | ' || ?
             END
         WHERE item_id = ?
+          AND (
+              lease_until IS NULL
+              OR lease_until = ''
+              OR lease_until < ?
+          )
         """,
         (
             now,
@@ -612,18 +761,42 @@ async def recheck_walmart_exact_offer(
             OWNER_RECHECK_SOURCE_LABEL,
             OWNER_RECHECK_SOURCE_LABEL,
             item.item_id,
+            now,
         ),
     )
     await conn.commit()
     verify = await conn.execute(
-        f"SELECT status, next_attempt_at FROM {QUEUE_TABLE} WHERE item_id = ? LIMIT 1",
+        f"SELECT status, next_attempt_at, lease_until FROM {QUEUE_TABLE} WHERE item_id = ? LIMIT 1",
         (item.item_id,),
     )
     row = await verify.fetchone()
-    if row is None or str(_row_get(row, "status", 0) or "") != "pending":
+    if row is None:
         return WalmartRecoveryActionResult(
             False,
-            "Exact recheck could not find or re-arm the queue row.",
+            "Exact recheck could not find the queue row.",
+        )
+
+    status = str(_row_get(row, "status", 0) or "")
+    lease_until = str(_row_get(row, "lease_until", 2) or "")
+    if _lease_is_active(lease_until, now=now_dt):
+        detail = (
+            f"Walmart item `{item.item_id}` is already being verified by the exact-detail worker. "
+            "Its active lease was preserved; check the recovery panel again after that cycle finishes."
+        )
+        await _record_action(
+            db,
+            guild_id=guild_id,
+            deal_key=item.deal_key,
+            actor_id=actor_id,
+            action="recheck_exact",
+            outcome="already_running",
+            detail=detail,
+        )
+        return WalmartRecoveryActionResult(False, detail)
+    if status != "pending":
+        return WalmartRecoveryActionResult(
+            False,
+            "Exact recheck could not re-arm the queue row without disturbing another worker.",
         )
 
     detail = (
@@ -735,6 +908,54 @@ async def _record_action(
     except Exception:
         # Recovery audit failure must not falsely report the user action failed.
         return
+
+
+async def _load_public_post_state(
+    db: Any,
+    *,
+    guild_id: int,
+    deal_key: str,
+) -> tuple[str, str]:
+    if not deal_key:
+        return "", ""
+    await ensure_public_post_tables(db)
+    conn = db.require_conn()
+    cursor = await conn.execute(
+        """
+        SELECT status, first_seen_at
+        FROM guild_public_deal_posts
+        WHERE CAST(guild_id AS TEXT) = ?
+          AND deal_key = ?
+          AND retailer = 'walmart'
+        LIMIT 1
+        """,
+        (snowflake_text(guild_id), str(deal_key)),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return "", ""
+    return (
+        str(_row_get(row, "status", 0) or "").lower(),
+        str(_row_get(row, "first_seen_at", 1) or ""),
+    )
+
+
+async def _release_override_reservations(
+    db: Any,
+    *,
+    guild_id: int,
+    override_key: str,
+    canonical_key: str,
+) -> None:
+    for deal_key in dict.fromkeys((override_key, canonical_key)):
+        try:
+            await release_public_deal_reservation(
+                db,
+                guild_id=int(guild_id),
+                deal_key=deal_key,
+            )
+        except Exception:
+            continue
 
 
 async def _mark_original_delivery_receipt(
@@ -866,6 +1087,11 @@ def _is_stale_reservation(value: str, *, now: datetime) -> bool:
     if parsed is None:
         return False
     return parsed <= now - timedelta(minutes=RESERVATION_STALE_MINUTES)
+
+
+def _lease_is_active(value: str, *, now: datetime) -> bool:
+    parsed = _parse_datetime(value)
+    return parsed is not None and parsed > now
 
 
 def _parse_datetime(value: Any) -> datetime | None:

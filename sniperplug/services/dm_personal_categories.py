@@ -8,6 +8,7 @@ from sniperplug.services.opportunity_watchlist import OPPORTUNITY_CATEGORIES, ca
 
 
 CATEGORY_MUTE_PREFIX = "category:"
+FAVORITE_CATEGORY_PREFIX = "favorite:"
 
 _CATEGORY_LABELS = {category.key: category.label for category in OPPORTUNITY_CATEGORIES}
 _CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
@@ -25,6 +26,24 @@ _CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
     "pet": ("pet_supplies",),
     "pets": ("pet_supplies",),
     "pet_supplies": ("pet_supplies",),
+    "pc": ("gpus", "cpus", "ram", "ssds"),
+    "pc_parts": ("gpus", "cpus", "ram", "ssds"),
+    "computer_parts": ("gpus", "cpus", "ram", "ssds"),
+    "electronics": (
+        "brand_direct_electronics",
+        "apple",
+        "gpus",
+        "cpus",
+        "ram",
+        "ssds",
+        "mobile_accessories",
+        "smart_home",
+    ),
+    "mobile": ("mobile_accessories",),
+    "phones": ("apple", "brand_direct_electronics", "mobile_accessories"),
+    "open_box": ("open_box_restored",),
+    "refurbished": ("open_box_restored",),
+    "refurb": ("open_box_restored",),
 }
 
 _STRUCTURED_CATEGORY_KEYS = (
@@ -123,6 +142,58 @@ def update_category_mutes(
     return compose_exclude_terms(keywords, muted)
 
 
+def split_category_preferences(
+    values: Iterable[str] | str | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    selected: list[str] = []
+    favorites: list[str] = []
+    for value in _split_values(values):
+        if value.startswith(FAVORITE_CATEGORY_PREFIX):
+            category = value[len(FAVORITE_CATEGORY_PREFIX) :].strip()
+            favorites.extend(normalize_personal_categories((category,)))
+        else:
+            selected.extend(normalize_personal_categories((value,)))
+    return _dedupe(selected), _dedupe(favorites)
+
+
+def compose_category_preferences(
+    selected: Iterable[str] | str | None,
+    favorites: Iterable[str] | str | None,
+) -> tuple[str, ...]:
+    selected_values = normalize_personal_categories(selected)
+    favorite_tokens = tuple(
+        f"{FAVORITE_CATEGORY_PREFIX}{category}"
+        for category in normalize_personal_categories(favorites)
+    )
+    return _dedupe((*selected_values, *favorite_tokens))
+
+
+def update_favorite_categories(
+    existing_categories: Iterable[str] | str | None,
+    *,
+    add: Iterable[str] | str | None = None,
+    remove: Iterable[str] | str | None = None,
+    replacement_selected: Iterable[str] | str | None = None,
+) -> tuple[str, ...]:
+    current_selected, current_favorites = split_category_preferences(
+        existing_categories
+    )
+    selected = (
+        normalize_personal_categories(replacement_selected)
+        if replacement_selected is not None
+        else current_selected
+    )
+    favorites = list(current_favorites)
+    favorites.extend(normalize_personal_categories(add))
+    remove_set = set(normalize_personal_categories(remove))
+    favorites = [
+        category
+        for category in _dedupe(favorites)
+        if category not in remove_set
+    ]
+    return compose_category_preferences(selected, favorites)
+
+
 def category_key_for_card(card: Any) -> str:
     title = _card_title(card)
     structured = " ".join(_structured_category_values(card))
@@ -145,11 +216,6 @@ def category_label(category_key: str) -> str:
     if key == "uncategorized":
         return "Uncategorized"
     return _CATEGORY_LABELS.get(key, key.replace("_", " ").title())
-
-
-def muted_category_labels(values: Iterable[str] | str | None) -> tuple[str, ...]:
-    _keywords, categories = split_exclude_terms(values)
-    return tuple(category_label(category) for category in categories)
 
 
 def _card_title(card: Any) -> str:

@@ -67,9 +67,9 @@ def test_category_mutes_and_favorites_are_personal_delivery_filters() -> None:
 
 
 def test_menu_category_storage_is_not_keyword_capped() -> None:
-    assert "Category choices are intentionally uncapped" in PERSONAL
-    assert "muted_tokens" in PERSONAL
-    assert "normalize_terms(keywords)" in PERSONAL
+    assert "muted_tokens = tuple(" in PERSONAL
+    assert "f\"{MUTED_CATEGORY_PREFIX}{category}\"" in PERSONAL
+    assert "return _dedupe(" in PERSONAL
     assert "compose_exclude_terms(self.exclude_keywords)" in MENU
 
 

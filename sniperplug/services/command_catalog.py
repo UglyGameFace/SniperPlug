@@ -109,6 +109,12 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use when automatic deals are missing or after changing the posting channel.",
     ),
     CommandCatalogEntry(
+        name="/walmart_recovery",
+        audience="Owner",
+        purpose="Review recent exact Walmart events that did not post and choose a safe recovery action.",
+        when_to_use="Retry current rules, recheck exact proof, or let the actual server owner post one soft-blocked event without weakening automatic settings.",
+    ),
+    CommandCatalogEntry(
         name="/autoscan_now",
         audience="Owner",
         purpose="Run a bounded manual autoscan test and show exact post/block decisions.",

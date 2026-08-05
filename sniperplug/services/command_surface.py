@@ -119,6 +119,7 @@ REQUIRED_CANONICAL_COMMANDS = frozenset(
         "setup_sniperplug_here",
         "sniperplug_dashboard",
         "autoscan_health",
+        "walmart_recovery",
         "autoscan_now",
         "deal_categories",
         "deal_threshold",

@@ -10,14 +10,15 @@ from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
     delete_dm_deal_alert_preference,
     get_dm_deal_alert_preference,
-    normalize_categories,
     normalize_terms,
     save_dm_deal_alert_preference,
 )
 from sniperplug.services.dm_personal_categories import (
     category_label,
+    split_category_preferences,
     split_exclude_terms,
     update_category_mutes,
+    update_favorite_categories,
 )
 
 
@@ -51,7 +52,9 @@ class DmDealAlertsCog(commands.Cog):
         max_price="Do not DM products above this current price.",
         min_score="Minimum Sniper score from 0 to 250.",
         min_savings="Minimum exact dollar savings from Walmart's was price.",
-        categories="Only these categories: tech, gaming, home, essentials, toys, auto, beauty, cash.",
+        categories="Optional hard allowlist. Leave empty to keep all categories eligible.",
+        favorite_categories="Prioritize interests without excluding other great deals: tech, gaming, PC, smart home.",
+        unfavorite_categories="Remove categories from your personal favorites.",
         keywords="Comma list of words that must match at least one product detail.",
         exclude="Comma list of words that always block a product from your DMs.",
         mute_categories="Hide categories only from your DMs, such as baby, toys, pets, or beauty.",
@@ -70,6 +73,8 @@ class DmDealAlertsCog(commands.Cog):
         min_score: app_commands.Range[int, 0, 250] | None = None,
         min_savings: app_commands.Range[float, 0.0, 100000.0] | None = None,
         categories: app_commands.Range[str, 1, 300] | None = None,
+        favorite_categories: app_commands.Range[str, 1, 300] | None = None,
+        unfavorite_categories: app_commands.Range[str, 1, 300] | None = None,
         keywords: app_commands.Range[str, 1, 300] | None = None,
         exclude: app_commands.Range[str, 1, 300] | None = None,
         mute_categories: app_commands.Range[str, 1, 300] | None = None,
@@ -146,6 +151,12 @@ class DmDealAlertsCog(commands.Cog):
                 else None
             ),
         )
+        updated_categories = update_favorite_categories(
+            preference.categories,
+            add=favorite_categories,
+            remove=unfavorite_categories,
+            replacement_selected=categories,
+        )
 
         updated = replace(
             preference,
@@ -169,11 +180,7 @@ class DmDealAlertsCog(commands.Cog):
                 if min_savings is not None
                 else preference.min_savings_cents
             ),
-            categories=(
-                normalize_categories(categories)
-                if categories is not None
-                else preference.categories
-            ),
+            categories=updated_categories,
             keywords=(
                 normalize_terms(keywords)
                 if keywords is not None
@@ -244,16 +251,33 @@ def build_dm_settings_embed(
     keyword_excludes, muted_categories = split_exclude_terms(
         normalized.exclude_keywords
     )
+    selected_categories, favorite_categories = split_category_preferences(
+        normalized.categories
+    )
+
     muted_text = (
         ", ".join(category_label(category) for category in muted_categories)
         if muted_categories
         else "none"
     )
+    favorite_text = (
+        ", ".join(category_label(category) for category in favorite_categories)
+        if favorite_categories
+        else "none"
+    )
+    selected_text = (
+        ", ".join(category_label(category) for category in selected_categories)
+        if selected_categories
+        else "all categories"
+    )
     keyword_text = ", ".join(keyword_excludes) if keyword_excludes else "none"
 
     summary: list[str] = []
     for line in normalized.summary_lines():
-        if line.startswith("Exclude:"):
+        if line.startswith("Categories:"):
+            summary.append(f"Allowed categories: **{selected_text}**")
+            summary.append(f"Favorite DM categories: **{favorite_text}**")
+        elif line.startswith("Exclude:"):
             summary.append(f"Exclude words: **{keyword_text}**")
             summary.append(f"Muted DM categories: **{muted_text}**")
         else:
@@ -265,21 +289,22 @@ def build_dm_settings_embed(
         color=discord.Color.green() if normalized.enabled else discord.Color.orange(),
     )
     embed.add_field(
-        name="Personal category mutes",
+        name="Favorites and mutes are personal",
         value=(
-            "A muted category disappears only from **your** DMs. The deal stays available "
-            "in public alerts and for other subscribers. Use `mute_categories:baby` to hide "
-            "Baby / Kids and `unmute_categories:baby` to restore it."
+            "Favorites get a small Smart-mode priority boost but do **not** hide other great deals. "
+            "Muted categories disappear only from **your** DMs. Public alerts and every other "
+            "subscriber remain unchanged. Example: `favorite_categories:tech,gaming,pc` and "
+            "`mute_categories:baby`."
         ),
         inline=False,
     )
     embed.add_field(
         name="How Smart mode works",
         value=(
-            "Smart mode raises the required percentage and dollar savings for cheap items, "
-            "allows smaller percentages on expensive items with meaningful savings, and "
-            "requires a stronger score unless the exact markdown is 70%+. API-proven Walmart "
-            "Cash may soften the threshold slightly, but never replaces a real was-price markdown."
+            "Smart mode adapts percentage and dollar-savings requirements to the item's price. "
+            "A favorite category may soften only Smart's additional requirement; it never goes "
+            "below your explicit markdown, score, or dollar-savings minimum and never replaces "
+            "exact current/was-price proof."
         ),
         inline=False,
     )

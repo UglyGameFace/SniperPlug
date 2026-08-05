@@ -188,8 +188,8 @@ async def build_global_autoscan_health_embed(
         title="🩺 Global Autoscan Health",
         description=(
             "Walmart discovery and exact verification run inside SniperPlug. "
-            "HP Store and Target have independent watcher health. One unhealthy "
-            "retailer does not silently disable another retailer."
+            "HP Store and Target have independent watcher health. "
+            "One unhealthy retailer does not silently disable another retailer."
         ),
         color=color,
     )
@@ -230,9 +230,9 @@ async def build_global_autoscan_health_embed(
     embed.add_field(name="Channel", value=channel_status, inline=False)
     embed.add_field(name="Setup repair", value=repair.discord_line(), inline=False)
     embed.add_field(
-        name="Walmart live fanout enrollment",
+        name="Live fanout enrollment",
         value=(
-            f"Enrolled: **{'yes' if enrolled else 'no'}**\n"
+            f"Walmart enrolled: **{'yes' if enrolled else 'no'}**\n"
             f"{enrollment_reason}"
         ),
         inline=False,

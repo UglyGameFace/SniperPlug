@@ -28,6 +28,17 @@ QUEUE_UPSERT_CHUNK_SIZE = 40
 _QUEUE_COLUMNS_PER_ROW = 16
 
 
+class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
+    """Enqueue result whose pressure value is intentionally bounded."""
+
+    def summary_line(self) -> str:
+        return (
+            "Walmart exact-detail queue: "
+            f"discovered **{self.discovered}** • unique item IDs this pass **{self.queued_unique}** • "
+            f"actionable due (bounded) **{self.pending_total}**"
+        )
+
+
 async def enqueue_walmart_exact_verification_candidates_bulk(
     db: Any,
     candidates: Iterable[SourceCandidate],
@@ -132,7 +143,7 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     await conn.commit()
     await maybe_prune_walmart_exact_verification_queue(conn, now=now)
     pressure = await load_walmart_exact_queue_pressure(db)
-    return VerificationQueueEnqueueResult(
+    return _BoundedVerificationQueueEnqueueResult(
         discovered=discovered,
         queued_unique=len(unique),
         pending_total=pressure.due_now,

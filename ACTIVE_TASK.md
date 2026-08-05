@@ -1,45 +1,61 @@
 # Active Task
 
 ## Status
-Active — Walmart selected-offer and delivered-price accuracy hardening is isolated on `fix/walmart-delivered-offer-price`. No production deployment has occurred.
+Implementation complete and merge-ready on PR #220 (`fix/walmart-delivered-offer-price`). No production deployment has occurred; production behavior remains unclaimed until the merged `main` branch is deployed to the canonical Discloud app and confirmed in live logs/cards.
 
 ## Scope
-Bind Walmart price proof to the exact selected seller/offer and use the payable delivered price for qualification whenever mandatory shipping is exposed. Alternate-seller minimum prices must remain context only and must never replace the selected buy-box offer.
+Bind Walmart current-price, reference-price, seller, offer, fulfillment, condition, and shipping proof to one selected offer. Use the payable delivered total for qualification whenever mandatory shipping is explicitly known. Alternate-seller and unit-price values remain context only and never participate in selected-offer deal math.
 
-## Confirmed findings
-- `SourceCandidate` and `NormalizedDeal` have seller/offer fields but no item-price, shipping-cost, delivered-price, or shipping-proof fields.
-- Walmart current-price extraction accepts broad item-level fields including `minPrice`, while seller and selected-offer identity are resolved separately.
-- Nested `selectedOffer` / `buyBoxOffer` seller and price data are not normalized as one atomic offer record.
-- Shipping charges are not included in discount math, ranking, price memory, or public qualification.
-- Marketplace offers with a seller identity can currently pass exact-offer identity without proving whether shipping is free, paid, or unknown.
+## Root causes confirmed
+- Broad item-level `minPrice` could represent a different seller while seller/offer identity was resolved separately.
+- Shipping had no first-class item-price, shipping-cost, delivered-price, or proof state in candidates/deals.
+- Third-party marketplace identity could be complete while mandatory shipping remained unknown.
+- A page-level `wasPrice` could be compared with a nested selected offer belonging to another seller.
+- Generic price dictionaries could contain unit pricing such as `$0.12/oz` rather than the full offer price.
+- Truthy display fallbacks could discard valid `$0.00` price evidence.
 
-## Intended changes
-- Normalize one selected-offer record from `selectedOffer`, `buyBoxOffer`, or the root buy-box payload.
-- Keep `minPrice` / alternate seller prices as labeled context only.
-- Capture selected seller, seller ID, offer ID, fulfillment, condition, item price, shipping state, shipping cost, and delivered total from the same offer record.
-- Make Walmart candidate `current_price` / `api_current_price` equal the selected offer's delivered total when shipping is known.
-- Fail closed for third-party marketplace offers whose mandatory shipping cannot be verified.
-- Preserve Walmart-owned offers when shipping is checkout/location dependent, while labeling that state instead of claiming free shipping.
-- Carry item price, shipping, and delivered total into normalized deal metadata and card evidence.
-- Keep exact item, seller, offer, variant, condition, fulfillment, duplicate, and threshold gates intact.
+## Implemented changes
+- Normalize one atomic offer from `selectedOffer`, `buyBoxOffer`, `primaryOffer`, `offer`, or the root Walmart buy-box payload.
+- Bind selected seller name/ID, offer ID, condition, fulfillment, item price, shipping state/cost, delivered total, and same-offer reference price.
+- Keep `minPrice` and `bestMarketplacePrice` as explicitly labeled other-seller/flip context only.
+- Use selected-offer item price plus mandatory shipping as Walmart `current_price` / `api_current_price` and discount input.
+- Fail closed for third-party marketplace offers when shipping is not returned; no alertable current price or discount survives.
+- Preserve Walmart-owned item prices with `checkout_dependent` shipping rather than falsely claiming free or delivered shipping.
+- Reject measurement-unit price structures while accepting currency-shaped amount structures.
+- Block page-level reference prices when a nested selected offer has no same-offer reference; retain the page value only as non-discount context.
+- Carry item price, shipping, delivered total, proof sources, payable-price status, seller, and offer identity into normalized deals and Walmart cards.
+- Preserve valid `$0.00` item/delivered evidence with explicit `is not None` rendering.
+- Avoid assigning unverified delivered totals to non-Walmart candidates.
+- Preserve existing positional dataclass constructor compatibility by appending the new fields.
 
-## Definition of done
-- Targeted tests cover paid shipping, explicit free shipping, unknown marketplace shipping, alternate `minPrice`, selected-offer seller switching, and delivered-price discount math.
-- Existing Walmart provider, exact-offer identity, exact-price enrichment, card rendering, queue snapshot, and public-lane tests pass.
-- Full Python tests, import smoke check, and static/compile validation pass in CI.
-- Review finds no unresolved correctness, compatibility, or conflicting implementation issues.
-- Temporary files or redundant code are removed before merge.
-- Production remains unclaimed until the merged code is deployed to the canonical Discloud app and confirmed in logs/cards.
+## Validation
+- Python 3.11 full suite: **1,101 passed**, one upstream `audioop` deprecation warning.
+- Python 3.12 Python Check: passed.
+- Import smoke check: passed.
+- `pip check`: passed.
+- `compileall` across app, tests, and entry points: passed.
+- Targeted regressions cover paid shipping, explicit free shipping, unknown marketplace shipping, alternate seller minimums, same-offer reference proof, cross-offer reference blocking, seller switching, exact-detail replacement, unit-price rejection, currency-unit acceptance, zero-value evidence, card rendering, and non-Walmart delivery semantics.
+- Qodo review findings for non-Walmart delivered totals, unit-price parsing, and zero-value rendering are resolved and outdated.
+- Final changed-file inspection contains only implementation, active-task documentation, and targeted regression files; temporary probe files were removed.
+
+## Cleanup and conflict inspection
+- No duplicate or temporary implementation remains.
+- Existing exact item, seller, offer, variant, condition, fulfillment, duplicate, queue, and per-server threshold gates remain intact.
+- No threshold was lowered and no identity/shipping proof was weakened.
+- PR #200 remains isolated and unmerged.
+- Duplicate Discloud app `1785806676351` remains outside this task and must stay offline.
 
 ## Current branch
 `fix/walmart-delivered-offer-price`
 
 ## Deployment boundary
-- Do not modify or deploy duplicate Discloud app `1785806676351`.
-- Do not merge PR #200 during this task.
-- Do not weaken exact verification or lower public alert thresholds.
-- Do not advertise unknown shipping as `$0` or `free`.
+After merge, deploy only the canonical SniperPlug Discloud app and verify:
+- cards show selected seller, item price, shipping, and delivered total;
+- other-seller minimums are labeled context only;
+- unknown marketplace shipping is blocked rather than shown as free/$0;
+- discount thresholds use the delivered total and same-offer reference;
+- no new errors or seller/offer mismatches appear in exact-verification logs.
 
 ## Backlog
-- Deploy merged `main` to canonical Discloud app and verify PRs #218/#219 in production if that has not already been done.
-- Rebase and finish PR #200 only after this task closes.
+- Deploy merged `main` to the canonical Discloud app and verify PRs #218, #219, and #220 in production.
+- Rebase and finish PR #200 only after the production stability/accuracy pass closes.

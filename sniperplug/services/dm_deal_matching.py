@@ -11,6 +11,7 @@ from sniperplug.services.dm_deal_alerts import (
 )
 from sniperplug.services.dm_personal_categories import (
     category_key_for_card,
+    split_category_preferences,
     split_exclude_terms,
 )
 
@@ -23,13 +24,12 @@ def match_dm_deal(
 
     Smart mode may add stricter adaptive requirements based on the item's
     current price. It never lowers a user's explicit minimum markdown, score,
-    or dollar-savings floor. Strict API-proven Walmart Cash may soften only the
-    adaptive markdown add-on by five points, never the user's own floor and
-    never below a real 20% markdown.
+    or dollar-savings floor. Strict API-proven Walmart Cash or a personally
+    favorite category may soften only Smart's additional adaptive requirement.
 
-    Personal category mutes are intentionally delivery-only. They suppress a
-    category from one subscriber's DMs without deleting the deal, muting the
-    server feed, or changing what another subscriber can receive.
+    Personal category mutes and favorites are delivery-only. They affect one
+    subscriber's DMs without deleting the deal, muting the server feed, or
+    changing what another subscriber can receive.
     """
 
     pref = preference.normalized()
@@ -41,6 +41,10 @@ def match_dm_deal(
     keyword_excludes, muted_categories = split_exclude_terms(
         pref.exclude_keywords
     )
+    selected_categories, favorite_categories = split_category_preferences(
+        pref.categories
+    )
+    is_favorite = category_key in favorite_categories
 
     current_cents = _money_to_cents(
         getattr(card, "api_current_price", None)
@@ -84,8 +88,8 @@ def match_dm_deal(
             "Walmart Cash proof is required",
             category_key,
         )
-    if pref.categories and category_key not in pref.categories:
-        if not (cash_cents > 0 and "walmart_cash" in pref.categories):
+    if selected_categories and category_key not in selected_categories:
+        if not (cash_cents > 0 and "walmart_cash" in selected_categories):
             return DmDealMatchDecision(
                 False,
                 "category is not selected",
@@ -111,11 +115,19 @@ def match_dm_deal(
     if pref.mode == "smart":
         smart_discount, smart_savings = smart_requirements(current_cents)
         adaptive_discount = max(20, smart_discount)
-        if cash_cents > 0 and discount >= 20:
+        adaptive_savings = smart_savings
+
+        # Favorites affect only Smart's extra strictness. They never go below
+        # the subscriber's explicit floors or the real 20% markdown safety floor.
+        if is_favorite:
             adaptive_discount = max(20, adaptive_discount - 5)
+            adaptive_savings = max(0, int(round(adaptive_savings * 0.80)))
+        elif cash_cents > 0 and discount >= 20:
+            adaptive_discount = max(20, adaptive_discount - 5)
+
         required_discount = max(pref.min_discount, adaptive_discount)
         required_score = max(pref.min_score, 70)
-        required_savings = max(pref.min_savings_cents, smart_savings)
+        required_savings = max(pref.min_savings_cents, adaptive_savings)
 
     if discount < required_discount:
         return DmDealMatchDecision(
@@ -152,6 +164,8 @@ def match_dm_deal(
         f"{discount:.0f}% exact markdown • saves ${savings_cents / 100:,.2f} • "
         f"score {score}/250 • category {category_key}"
     )
+    if is_favorite:
+        reason += " • favorite-category priority"
     if cash_cents > 0:
         reason += f" • ${cash_cents / 100:,.2f} Walmart Cash"
     return DmDealMatchDecision(

@@ -22,6 +22,9 @@ _CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
     "kids": ("baby_kids",),
     "children": ("baby_kids",),
     "baby_kids": ("baby_kids",),
+    "pet": ("pet_supplies",),
+    "pets": ("pet_supplies",),
+    "pet_supplies": ("pet_supplies",),
 }
 
 _STRUCTURED_CATEGORY_KEYS = (

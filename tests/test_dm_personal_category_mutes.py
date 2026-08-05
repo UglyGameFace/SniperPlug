@@ -5,15 +5,23 @@ from types import SimpleNamespace
 import discord
 
 from sniperplug.cogs.dm_deal_alerts import build_dm_settings_embed
+from sniperplug.cogs.dm_deal_preferences_view import DmDealPreferencesView
 from sniperplug.services.dm_deal_alerts import DmDealAlertPreference
 from sniperplug.services.dm_deal_matching import match_dm_deal
 from sniperplug.services.dm_personal_categories import (
+    all_personal_categories,
     category_key_for_card,
+    compose_category_preferences,
+    muted_category_preferences,
+    personal_category_pages,
+    search_personal_categories,
     split_category_preferences,
     split_exclude_terms,
     update_category_mutes,
     update_favorite_categories,
+    update_muted_categories,
 )
+from sniperplug.services.opportunity_watchlist import OPPORTUNITY_CATEGORIES
 
 
 def _card(
@@ -61,7 +69,7 @@ def test_personal_baby_mute_blocks_only_that_preference() -> None:
         mode="all",
         min_discount=30,
         min_score=50,
-        exclude_keywords=("category:baby_kids",),
+        categories=("muted:baby_kids",),
     )
     unmuted = DmDealAlertPreference(
         user_id=2,
@@ -80,7 +88,7 @@ def test_personal_baby_mute_blocks_only_that_preference() -> None:
     assert unmuted_decision.matched is True
 
 
-def test_mute_and_unmute_preserve_normal_excluded_words() -> None:
+def test_legacy_mute_tokens_remain_readable() -> None:
     muted = update_category_mutes(
         ("refurbished", "clearance"),
         add="baby",
@@ -89,10 +97,81 @@ def test_mute_and_unmute_preserve_normal_excluded_words() -> None:
     assert keywords == ("refurbished", "clearance")
     assert categories == ("baby_kids",)
 
-    restored = update_category_mutes(muted, remove="baby")
-    keywords, categories = split_exclude_terms(restored)
-    assert keywords == ("refurbished", "clearance")
-    assert categories == ()
+
+def test_new_category_mutes_preserve_favorites_allowlist_and_flip_tokens() -> None:
+    original = compose_category_preferences(
+        ("apple",),
+        ("gpus",),
+        muted=("baby_kids",),
+        flip_enabled=True,
+        flip_min_profit_cents=7_500,
+    )
+    updated = update_muted_categories(
+        original,
+        add="pets, toys",
+        remove="baby",
+    )
+    selected, favorites = split_category_preferences(updated)
+    muted = muted_category_preferences(updated)
+
+    assert selected == ("apple",)
+    assert favorites == ("gpus",)
+    assert muted == ("pet_supplies", "toys_collectibles")
+    assert "flip:enabled" in updated
+    assert "flip_profit:7500" in updated
+
+
+def test_complete_catalog_is_paginated_not_truncated() -> None:
+    catalog = all_personal_categories()
+    pages = personal_category_pages()
+    flattened = tuple(category for page in pages for category in page)
+
+    assert catalog == OPPORTUNITY_CATEGORIES
+    assert flattened == OPPORTUNITY_CATEGORIES
+    assert len(catalog) > 25
+    assert len(pages) == (len(catalog) + 24) // 25
+    assert all(1 <= len(page) <= 25 for page in pages)
+
+
+def test_menu_persists_every_category_without_keyword_cap() -> None:
+    all_keys = tuple(category.key for category in OPPORTUNITY_CATEGORIES)
+    stored = compose_category_preferences(
+        (),
+        (),
+        muted=all_keys,
+    )
+    normalized = DmDealAlertPreference(
+        user_id=1,
+        categories=stored,
+    ).normalized()
+
+    assert muted_category_preferences(normalized.categories) == all_keys
+    assert len(all_keys) > 12
+
+
+def test_menu_builds_pages_from_the_live_catalog() -> None:
+    view = DmDealPreferencesView(
+        bot=SimpleNamespace(db=None),
+        user_id=1,
+        preference=DmDealAlertPreference(user_id=1),
+    )
+
+    assert sum(len(page) for page in view._pages()) == len(OPPORTUNITY_CATEGORIES)
+    category_select = view.children[1]
+    assert isinstance(category_select, discord.ui.Select)
+    assert len(category_select.options) <= 25
+
+
+def test_category_search_covers_labels_terms_and_drivers_without_mutation() -> None:
+    full_before = all_personal_categories()
+    tech = search_personal_categories("graphics")
+    resale = search_personal_categories("resale value")
+    baby = search_personal_categories("baby")
+
+    assert any(category.key == "gpus" for category in tech)
+    assert any(category.key == "sneakers" for category in resale)
+    assert any(category.key == "baby_kids" for category in baby)
+    assert all_personal_categories() == full_before
 
 
 def test_favorite_categories_do_not_become_a_hard_allowlist() -> None:
@@ -194,8 +273,12 @@ def test_settings_show_human_labels_not_storage_tokens() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        categories=("favorite:gpus", "favorite:smart_home"),
-        exclude_keywords=("category:baby_kids", "refurbished"),
+        categories=(
+            "favorite:gpus",
+            "favorite:smart_home",
+            "muted:baby_kids",
+        ),
+        exclude_keywords=("refurbished",),
     )
     embed = build_dm_settings_embed(preference)
     description = embed.description or ""
@@ -204,5 +287,5 @@ def test_settings_show_human_labels_not_storage_tokens() -> None:
     assert "Favorite DM categories: **Graphics Cards, Smart Home / Security**" in description
     assert "Muted DM categories: **Baby / Kids**" in description
     assert "Exclude words: **refurbished**" in description
-    assert "category:baby_kids" not in description
+    assert "muted:baby_kids" not in description
     assert "favorite:gpus" not in description

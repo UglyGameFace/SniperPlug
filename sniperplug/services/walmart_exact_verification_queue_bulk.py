@@ -11,11 +11,13 @@ from sniperplug.services.walmart_exact_price_enrichment import (
     _positive_number,
     _trusted_reference,
 )
+from sniperplug.services.walmart_exact_queue_pressure import (
+    load_walmart_exact_queue_pressure,
+)
 from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     VerificationQueueEnqueueResult,
     _compact_text,
-    _pending_total,
     _price_to_cents,
     ensure_walmart_exact_verification_queue,
     maybe_prune_walmart_exact_verification_queue,
@@ -39,6 +41,8 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     Turso because its async adapter serializes each remote execute operation.
     Forty rows use 640 parameters, safely below SQLite's historical 999-variable
     limit while reducing hundreds of remote writes to a handful of statements.
+    The post-enqueue pressure summary is bounded as well; catalog discovery must
+    never run a full exact-queue count on the serialized remote connection.
     """
 
     if db is None:
@@ -127,11 +131,11 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
 
     await conn.commit()
     await maybe_prune_walmart_exact_verification_queue(conn, now=now)
-    pending_total = await _pending_total(conn, now_iso=now_iso)
+    pressure = await load_walmart_exact_queue_pressure(db)
     return VerificationQueueEnqueueResult(
         discovered=discovered,
         queued_unique=len(unique),
-        pending_total=pending_total,
+        pending_total=pressure.due_now,
     )
 
 

@@ -5,15 +5,21 @@ from typing import Any, Iterable
 
 from sniperplug.services.dm_deal_alerts import normalize_categories, normalize_terms
 from sniperplug.services.dm_flip_opportunities import DEFAULT_FLIP_MIN_PROFIT_CENTS
-from sniperplug.services.opportunity_watchlist import OPPORTUNITY_CATEGORIES, category_for_title
+from sniperplug.services.opportunity_watchlist import (
+    OPPORTUNITY_CATEGORIES,
+    OpportunityCategory,
+    category_for_title,
+)
 
 
 CATEGORY_MUTE_PREFIX = "category:"
 FAVORITE_CATEGORY_PREFIX = "favorite:"
 FLIP_ALERTS_TOKEN = "flip:enabled"
 FLIP_MIN_PROFIT_PREFIX = "flip_profit:"
+CATEGORY_PAGE_SIZE = 25
 
 _CATEGORY_LABELS = {category.key: category.label for category in OPPORTUNITY_CATEGORIES}
+_CATEGORY_KEYS = frozenset(_CATEGORY_LABELS)
 _CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
     "baby": ("baby_kids",),
     "babies": ("baby_kids",),
@@ -87,6 +93,47 @@ _BABY_APPAREL_RE = re.compile(
 )
 
 
+def all_personal_categories() -> tuple[OpportunityCategory, ...]:
+    """Return every live opportunity category, including future additions."""
+
+    return tuple(OPPORTUNITY_CATEGORIES)
+
+
+def search_personal_categories(query: str = "") -> tuple[OpportunityCategory, ...]:
+    normalized = " ".join(str(query or "").strip().lower().split())
+    if not normalized:
+        return all_personal_categories()
+
+    matches: list[OpportunityCategory] = []
+    for category in OPPORTUNITY_CATEGORIES:
+        haystack = " ".join(
+            (
+                category.key.replace("_", " "),
+                category.label,
+                *category.terms,
+                *category.economic_drivers,
+            )
+        ).lower()
+        if normalized in haystack:
+            matches.append(category)
+    return tuple(matches)
+
+
+def personal_category_pages(
+    query: str = "",
+    *,
+    page_size: int = CATEGORY_PAGE_SIZE,
+) -> tuple[tuple[OpportunityCategory, ...], ...]:
+    size = max(1, min(CATEGORY_PAGE_SIZE, int(page_size)))
+    categories = search_personal_categories(query)
+    if not categories:
+        return ()
+    return tuple(
+        categories[index : index + size]
+        for index in range(0, len(categories), size)
+    )
+
+
 def normalize_personal_categories(values: Iterable[str] | str | None) -> tuple[str, ...]:
     raw = _split_values(values)
     expanded: list[str] = []
@@ -96,7 +143,11 @@ def normalize_personal_categories(values: Iterable[str] | str | None) -> tuple[s
         if aliases:
             expanded.extend(aliases)
             continue
-        expanded.extend(normalize_categories((key,)))
+        expanded.extend(
+            category
+            for category in normalize_categories((key,))
+            if category in _CATEGORY_KEYS
+        )
     return _dedupe(expanded)
 
 
@@ -120,9 +171,9 @@ def compose_exclude_terms(
         f"{CATEGORY_MUTE_PREFIX}{category}"
         for category in normalize_personal_categories(muted_categories)
     )
-    # Existing storage intentionally caps personal filters. Put explicit category
-    # mutes first so a long keyword list cannot silently revive a muted category.
-    return normalize_terms((*category_tokens, *normalize_terms(keywords)))
+    # Category choices are intentionally uncapped. Only free-form keywords keep
+    # their bounded safety cap.
+    return _dedupe((*category_tokens, *normalize_terms(keywords)))
 
 
 def update_category_mutes(
@@ -175,7 +226,7 @@ def flip_settings(
                 minimum_profit_cents = int(raw)
             except (TypeError, ValueError):
                 continue
-    return enabled, max(1_000, min(1_000_000, minimum_profit_cents))
+    return enabled, max(1_000, min(10_000_000, minimum_profit_cents))
 
 
 def compose_category_preferences(
@@ -191,7 +242,7 @@ def compose_category_preferences(
         for category in normalize_personal_categories(favorites)
     )
     flip_tokens: list[str] = []
-    safe_profit = max(1_000, min(1_000_000, int(flip_min_profit_cents)))
+    safe_profit = max(1_000, min(10_000_000, int(flip_min_profit_cents)))
     if flip_enabled:
         flip_tokens.append(FLIP_ALERTS_TOKEN)
     if flip_enabled or safe_profit != DEFAULT_FLIP_MIN_PROFIT_CENTS:

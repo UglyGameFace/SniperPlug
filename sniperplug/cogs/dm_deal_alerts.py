@@ -14,6 +14,11 @@ from sniperplug.services.dm_deal_alerts import (
     normalize_terms,
     save_dm_deal_alert_preference,
 )
+from sniperplug.services.dm_personal_categories import (
+    category_label,
+    split_exclude_terms,
+    update_category_mutes,
+)
 
 
 ACTION_CHOICES = [
@@ -46,9 +51,11 @@ class DmDealAlertsCog(commands.Cog):
         max_price="Do not DM products above this current price.",
         min_score="Minimum Sniper score from 0 to 250.",
         min_savings="Minimum exact dollar savings from Walmart's was price.",
-        categories="Comma list: tech, gaming, home, essentials, toys, auto, beauty, cash.",
+        categories="Only these categories: tech, gaming, home, essentials, toys, auto, beauty, cash.",
         keywords="Comma list of words that must match at least one product detail.",
-        exclude="Comma list of words that always block a product.",
+        exclude="Comma list of words that always block a product from your DMs.",
+        mute_categories="Hide categories only from your DMs, such as baby, toys, pets, or beauty.",
+        unmute_categories="Restore personally muted categories, such as baby or toys.",
         walmart_cash_only="Only alert when strict Walmart API Cash proof is attached.",
         daily_cap="Maximum personal deal DMs per UTC day.",
     )
@@ -65,6 +72,8 @@ class DmDealAlertsCog(commands.Cog):
         categories: app_commands.Range[str, 1, 300] | None = None,
         keywords: app_commands.Range[str, 1, 300] | None = None,
         exclude: app_commands.Range[str, 1, 300] | None = None,
+        mute_categories: app_commands.Range[str, 1, 300] | None = None,
+        unmute_categories: app_commands.Range[str, 1, 300] | None = None,
         walmart_cash_only: bool | None = None,
         daily_cap: app_commands.Range[int, 1, 100] | None = None,
     ) -> None:
@@ -127,6 +136,17 @@ class DmDealAlertsCog(commands.Cog):
             )
             return
 
+        updated_excludes = update_category_mutes(
+            preference.exclude_keywords,
+            add=mute_categories,
+            remove=unmute_categories,
+            replacement_keywords=(
+                normalize_terms(exclude)
+                if exclude is not None
+                else None
+            ),
+        )
+
         updated = replace(
             preference,
             enabled=True,
@@ -159,11 +179,7 @@ class DmDealAlertsCog(commands.Cog):
                 if keywords is not None
                 else preference.keywords
             ),
-            exclude_keywords=(
-                normalize_terms(exclude)
-                if exclude is not None
-                else preference.exclude_keywords
-            ),
+            exclude_keywords=updated_excludes,
             walmart_cash_only=(
                 bool(walmart_cash_only)
                 if walmart_cash_only is not None
@@ -225,10 +241,37 @@ def build_dm_settings_embed(
     title: str = "🔔 Personal deal DM settings",
 ) -> discord.Embed:
     normalized = preference.normalized()
+    keyword_excludes, muted_categories = split_exclude_terms(
+        normalized.exclude_keywords
+    )
+    muted_text = (
+        ", ".join(category_label(category) for category in muted_categories)
+        if muted_categories
+        else "none"
+    )
+    keyword_text = ", ".join(keyword_excludes) if keyword_excludes else "none"
+
+    summary: list[str] = []
+    for line in normalized.summary_lines():
+        if line.startswith("Exclude:"):
+            summary.append(f"Exclude words: **{keyword_text}**")
+            summary.append(f"Muted DM categories: **{muted_text}**")
+        else:
+            summary.append(line)
+
     embed = discord.Embed(
         title=title,
-        description="\n".join(normalized.summary_lines()),
+        description="\n".join(summary),
         color=discord.Color.green() if normalized.enabled else discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Personal category mutes",
+        value=(
+            "A muted category disappears only from **your** DMs. The deal stays available "
+            "in public alerts and for other subscribers. Use `mute_categories:baby` to hide "
+            "Baby / Kids and `unmute_categories:baby` to restore it."
+        ),
+        inline=False,
     )
     embed.add_field(
         name="How Smart mode works",

@@ -6,6 +6,7 @@ from typing import Any
 
 import discord
 
+from sniperplug.models.candidate import SourceCandidate
 from sniperplug.services import walmart_global_deal_fanout as legacy
 from sniperplug.services.deal_category_preferences import decide_category
 from sniperplug.services.deal_feedback import (
@@ -18,6 +19,7 @@ from sniperplug.services.manual_review_share import share_review_card
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_posts import (
     PUBLIC_ALERT_KEY,
+    RESERVATION_STALE_MINUTES,
     card_deal_key,
     card_product_key,
     ensure_public_post_tables,
@@ -46,11 +48,13 @@ RECOVERY_EVENT_LIMIT = 25
 OWNER_OVERRIDE_SOURCE_LABEL = "owner_override:exact_walmart"
 OWNER_OVERRIDE_POST_PREFIX = "owner_override:v1"
 OWNER_RECHECK_SOURCE_LABEL = "owner_recovery:exact_recheck"
+TERMINAL_QUEUE_STATUSES = ("incomplete_identity", "identity_mismatch")
+
 SOFT_OVERRIDE_OUTCOMES = frozenset(
     {
         "below_threshold",
         "category_muted",
-        "reserved",
+        "stale_reservation",
         "eligible_without_post",
         "fanout_error",
     }
@@ -60,7 +64,7 @@ SAFE_RETRY_OUTCOMES = frozenset(
         "pending",
         "fanout_error",
         "eligible_without_post",
-        "reserved",
+        "stale_reservation",
     }
 )
 RECHECK_OUTCOMES = frozenset(
@@ -69,6 +73,7 @@ RECHECK_OUTCOMES = frozenset(
         "fanout_error",
         "pending",
         "invalid_snapshot",
+        "exact_identity_blocked",
     }
 )
 
@@ -84,6 +89,7 @@ class WalmartRecoveryItem:
     discount: float | None
     threshold: int
     item_id: str
+    product_url: str
     last_error: str
     post_status: str
     candidate: Any | None
@@ -103,10 +109,7 @@ class WalmartRecoveryItem:
 
     @property
     def can_share_manual_lead(self) -> bool:
-        return self.card is not None and self.outcome in {
-            "quality_blocked",
-            "invalid_snapshot",
-        }
+        return self.card is not None and self.outcome == "quality_blocked"
 
     def compact_reason(self) -> str:
         discount = "unknown markdown" if self.discount is None else f"{self.discount:.0f}% off"
@@ -130,18 +133,22 @@ async def load_walmart_recovery_items(
     window_hours: int = RECOVERY_WINDOW_HOURS,
     event_limit: int = RECOVERY_EVENT_LIMIT,
 ) -> list[WalmartRecoveryItem]:
-    """Load recent exact events that did not produce a durable guild post.
+    """Load both fanout no-post events and hard exact-queue failures.
 
-    This is intentionally read-only. Actions are explicit and are performed by
-    the separate recovery helpers below.
+    The event table contains verified markdowns that reached fanout. Terminal
+    seller/offer/item/proof failures never reach that table, so this loader also
+    reads recent terminal exact-queue rows. The loader is read-only; every
+    mutation is an explicit action from the private recovery console.
     """
 
     hours = max(1, min(24 * 30, int(window_hours)))
     limit = max(1, min(25, int(event_limit)))
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=hours)).isoformat()
 
     await legacy.ensure_global_deal_event_tables(db)
     await ensure_public_post_tables(db)
+    await ensure_walmart_exact_verification_queue(db)
     conn = db.require_conn()
 
     event_cursor = await conn.execute(
@@ -159,7 +166,7 @@ async def load_walmart_recovery_items(
 
     post_cursor = await conn.execute(
         """
-        SELECT deal_key, status
+        SELECT deal_key, status, first_seen_at
         FROM guild_public_deal_posts
         WHERE CAST(guild_id AS TEXT) = ?
           AND retailer = 'walmart'
@@ -168,14 +175,31 @@ async def load_walmart_recovery_items(
         (snowflake_text(guild_id), cutoff),
     )
     post_rows = list(await post_cursor.fetchall())
-    post_status = {
-        str(_row_get(row, "deal_key", 0) or ""): str(
-            _row_get(row, "status", 1) or ""
-        ).lower()
+    post_state = {
+        str(_row_get(row, "deal_key", 0) or ""): (
+            str(_row_get(row, "status", 1) or "").lower(),
+            str(_row_get(row, "first_seen_at", 2) or ""),
+        )
         for row in post_rows
     }
 
+    queue_cursor = await conn.execute(
+        f"""
+        SELECT item_id, title, product_url, image_url, last_seen_at,
+               status, last_error, snapshot_json
+        FROM {QUEUE_TABLE}
+        WHERE last_seen_at >= ?
+          AND status IN ('incomplete_identity', 'identity_mismatch')
+        ORDER BY last_seen_at DESC
+        LIMIT ?
+        """,
+        (cutoff, limit),
+    )
+    queue_rows = list(await queue_cursor.fetchall())
+
     loaded: list[WalmartRecoveryItem] = []
+    represented_item_ids: set[str] = set()
+
     for row in event_rows:
         deal_key = str(_row_get(row, "deal_key", 0) or "")
         snapshot_json = str(_row_get(row, "snapshot_json", 1) or "")
@@ -187,10 +211,12 @@ async def load_walmart_recovery_items(
         processed_at = str(_row_get(row, "processed_at", 4) or "")
         last_error = str(_row_get(row, "last_error", 5) or "").strip()
         candidate = _candidate_from_snapshot(snapshot_json)
+        item_id = _candidate_item_id(candidate)
+        if item_id:
+            represented_item_ids.add(item_id)
         card = legacy._exact_card_for_candidate(candidate)
 
         if card is None:
-            item_id = _candidate_item_id(candidate)
             loaded.append(
                 WalmartRecoveryItem(
                     deal_key=deal_key,
@@ -202,6 +228,7 @@ async def load_walmart_recovery_items(
                     discount=None,
                     threshold=int(threshold),
                     item_id=item_id,
+                    product_url=_candidate_product_url(candidate),
                     last_error=last_error,
                     post_status="",
                     candidate=candidate,
@@ -218,7 +245,11 @@ async def load_walmart_recovery_items(
             getattr(card, "public_post_key", None)
             or card_deal_key(card, retailer=retailer)
         )
-        status = post_status.get(public_key) or post_status.get(deal_key) or ""
+        status, reservation_at = (
+            post_state.get(public_key)
+            or post_state.get(deal_key)
+            or ("", "")
+        )
 
         if status == "posted":
             continue
@@ -228,9 +259,16 @@ async def load_walmart_recovery_items(
         elif last_error:
             outcome = "fanout_error"
             detail = f"fanout error: {_compact(last_error, 180)}"
-        elif status in {"reserved", "sending"}:
-            outcome = "reserved"
-            detail = f"durable post slot is {status}"
+        elif status == "sending":
+            outcome = "delivery_in_progress"
+            detail = "normal delivery is actively sending; override is locked to prevent a race duplicate"
+        elif status == "reserved":
+            if _is_stale_reservation(reservation_at, now=now):
+                outcome = "stale_reservation"
+                detail = "a stale post reservation blocked delivery and can be retried or overridden once"
+            else:
+                outcome = "delivery_in_progress"
+                detail = "normal delivery holds an active reservation; wait or retry after it becomes stale"
         elif category.action == "suppress":
             outcome = "category_muted"
             detail = f"muted category: {category.category_label}"
@@ -258,7 +296,12 @@ async def load_walmart_recovery_items(
                 detail=detail,
                 discount=discount,
                 threshold=int(threshold),
-                item_id=_candidate_item_id(candidate),
+                item_id=item_id,
+                product_url=str(
+                    getattr(card, "url", None)
+                    or _candidate_product_url(candidate)
+                    or ""
+                ),
                 last_error=last_error,
                 post_status=status,
                 candidate=candidate,
@@ -266,7 +309,53 @@ async def load_walmart_recovery_items(
             )
         )
 
-    return loaded
+    for row in queue_rows:
+        item_id = str(_row_get(row, "item_id", 0) or "").strip()
+        if not item_id or item_id in represented_item_ids:
+            continue
+        title = str(_row_get(row, "title", 1) or f"Walmart item {item_id}")
+        product_url = str(
+            _row_get(row, "product_url", 2)
+            or f"https://www.walmart.com/ip/{item_id}"
+        )
+        image_url = str(_row_get(row, "image_url", 3) or "")
+        event_at = str(_row_get(row, "last_seen_at", 4) or "unknown")
+        status = str(_row_get(row, "status", 5) or "")
+        last_error = str(_row_get(row, "last_error", 6) or "").strip()
+        snapshot_json = str(_row_get(row, "snapshot_json", 7) or "")
+        candidate = _candidate_from_snapshot(snapshot_json)
+        if candidate is None:
+            candidate = _queue_review_candidate(
+                item_id=item_id,
+                title=title,
+                product_url=product_url,
+                image_url=image_url,
+            )
+        detail = (
+            f"exact identity/proof blocked ({status}): "
+            f"{_compact(last_error or 'the exact worker did not receive complete identity proof', 240)}"
+        )
+        loaded.append(
+            WalmartRecoveryItem(
+                deal_key=f"queue:{item_id}",
+                public_key="",
+                label=title,
+                event_at=event_at,
+                outcome="exact_identity_blocked",
+                detail=detail,
+                discount=None,
+                threshold=int(threshold),
+                item_id=item_id,
+                product_url=product_url,
+                last_error=last_error,
+                post_status="",
+                candidate=candidate,
+                card=None,
+            )
+        )
+
+    loaded.sort(key=lambda item: item.event_at, reverse=True)
+    return loaded[:limit]
 
 
 async def retry_walmart_delivery_current_rules(
@@ -294,10 +383,10 @@ async def retry_walmart_delivery_current_rules(
         message = "Posted successfully using the server's current threshold, category, proof, and duplicate rules."
         ok = True
     elif result.skipped_recent_alert_duplicate or result.skipped_reserved_duplicate:
-        message = "Safe retry was blocked by the normal duplicate/reservation guard. The server owner can use **Post once** after reviewing it."
+        message = "Safe retry was blocked by the normal duplicate/reservation guard. The server owner can use **Post once** after reviewing it when no normal send is active."
         ok = False
     elif result.skipped_not_alertable:
-        message = "Safe retry still fails the current threshold, category, or exact-proof gate. The recovery panel will keep the real reason visible."
+        message = "Safe retry still fails the current threshold, category, or exact-proof gate. The recovery panel keeps the real reason visible."
         ok = False
     elif result.skipped_disabled or result.skipped_wrong_retailer:
         message = "Safe retry could not use this server's current Walmart delivery configuration."
@@ -326,17 +415,22 @@ async def post_walmart_owner_override(
     item: WalmartRecoveryItem,
     actor_id: int,
 ) -> WalmartRecoveryActionResult:
-    """Post one exact event while bypassing only soft guild delivery rules.
+    """Bypass only one soft guild rule while retaining exact proof.
 
-    The item must still pass the exact public proof gate at a 1% floor. This
-    action may bypass the guild threshold, muted category, or duplicate guard,
-    but it can never label an unverified identity/proof failure as verified.
+    Missing item/offer/seller/variant/structured-price proof can never use this
+    path. A live normal reservation/sending state is also never bypassed because
+    doing so could create two public posts at once.
     """
 
     if not item.can_owner_override or item.card is None:
         return WalmartRecoveryActionResult(
             False,
-            "This reason is not eligible for a verified owner override. Recheck the exact offer or share it as a clearly labeled manual lead.",
+            "This reason is not eligible for a verified owner override. Recheck the exact offer or share an available review card as a clearly labeled manual lead.",
+        )
+    if item.post_status == "sending":
+        return WalmartRecoveryActionResult(
+            False,
+            "Normal delivery is actively sending this event. Owner override is locked to prevent a race duplicate.",
         )
     if not is_public_deal_candidate(
         item.card,
@@ -558,7 +652,7 @@ async def share_walmart_manual_lead(
     if not item.can_share_manual_lead or item.card is None:
         return WalmartRecoveryActionResult(
             False,
-            "This item does not have a reviewable card for manual lead sharing.",
+            "This item does not have a reviewable card for manual lead sharing. Use **Open Walmart** after an exact-identity block, or request an exact recheck.",
         )
     ok, message = await share_review_card(
         bot=bot,
@@ -639,7 +733,7 @@ async def _record_action(
         )
         await conn.commit()
     except Exception:
-        # Recovery audit failure must not claim the user action itself failed.
+        # Recovery audit failure must not falsely report the user action failed.
         return
 
 
@@ -688,7 +782,7 @@ def _owner_override_embed(
     else:
         embed = discord.Embed(
             title=item.label,
-            url=str(getattr(item.card, "url", "") or "") or None,
+            url=item.product_url or None,
             color=discord.Color.orange(),
         )
     value = (
@@ -715,13 +809,36 @@ def _owner_override_embed(
     return embed
 
 
+def _queue_review_candidate(
+    *,
+    item_id: str,
+    title: str,
+    product_url: str,
+    image_url: str,
+) -> SourceCandidate:
+    return SourceCandidate(
+        source_key="walmart_exact_recovery_queue",
+        retailer="Walmart",
+        title=title,
+        product_url=product_url,
+        direct_product_url=product_url,
+        image_url=image_url or None,
+        product_id=item_id,
+        product_id_type="sku",
+        sku=item_id,
+        variant_attributes={
+            "recoverySource": "terminal_exact_queue",
+            "exactIdentityVerified": "no",
+        },
+    )
+
+
 def _candidate_item_id(candidate: Any | None) -> str:
     if candidate is None:
         return ""
     for value in (
         getattr(candidate, "product_id", None),
         getattr(candidate, "sku", None),
-        getattr(candidate, "selected_offer_id", None),
     ):
         text = str(value or "").strip()
         if text.isdigit():
@@ -732,6 +849,36 @@ def _candidate_item_id(candidate: Any | None) -> str:
         if text.isdigit():
             return text
     return ""
+
+
+def _candidate_product_url(candidate: Any | None) -> str:
+    if candidate is None:
+        return ""
+    return str(
+        getattr(candidate, "direct_product_url", None)
+        or getattr(candidate, "product_url", None)
+        or ""
+    )
+
+
+def _is_stale_reservation(value: str, *, now: datetime) -> bool:
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return False
+    return parsed <= now - timedelta(minutes=RESERVATION_STALE_MINUTES)
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _row_get(row: Any, key: str, index: int) -> Any:

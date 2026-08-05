@@ -4,11 +4,14 @@ import re
 from typing import Any, Iterable
 
 from sniperplug.services.dm_deal_alerts import normalize_categories, normalize_terms
+from sniperplug.services.dm_flip_opportunities import DEFAULT_FLIP_MIN_PROFIT_CENTS
 from sniperplug.services.opportunity_watchlist import OPPORTUNITY_CATEGORIES, category_for_title
 
 
 CATEGORY_MUTE_PREFIX = "category:"
 FAVORITE_CATEGORY_PREFIX = "favorite:"
+FLIP_ALERTS_TOKEN = "flip:enabled"
+FLIP_MIN_PROFIT_PREFIX = "flip_profit:"
 
 _CATEGORY_LABELS = {category.key: category.label for category in OPPORTUNITY_CATEGORIES}
 _CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
@@ -151,21 +154,49 @@ def split_category_preferences(
         if value.startswith(FAVORITE_CATEGORY_PREFIX):
             category = value[len(FAVORITE_CATEGORY_PREFIX) :].strip()
             favorites.extend(normalize_personal_categories((category,)))
+        elif value == FLIP_ALERTS_TOKEN or value.startswith(FLIP_MIN_PROFIT_PREFIX):
+            continue
         else:
             selected.extend(normalize_personal_categories((value,)))
     return _dedupe(selected), _dedupe(favorites)
 
 
+def flip_settings(
+    values: Iterable[str] | str | None,
+) -> tuple[bool, int]:
+    enabled = False
+    minimum_profit_cents = DEFAULT_FLIP_MIN_PROFIT_CENTS
+    for value in _split_values(values):
+        if value == FLIP_ALERTS_TOKEN:
+            enabled = True
+        elif value.startswith(FLIP_MIN_PROFIT_PREFIX):
+            raw = value[len(FLIP_MIN_PROFIT_PREFIX) :].strip()
+            try:
+                minimum_profit_cents = int(raw)
+            except (TypeError, ValueError):
+                continue
+    return enabled, max(1_000, min(1_000_000, minimum_profit_cents))
+
+
 def compose_category_preferences(
     selected: Iterable[str] | str | None,
     favorites: Iterable[str] | str | None,
+    *,
+    flip_enabled: bool = False,
+    flip_min_profit_cents: int = DEFAULT_FLIP_MIN_PROFIT_CENTS,
 ) -> tuple[str, ...]:
     selected_values = normalize_personal_categories(selected)
     favorite_tokens = tuple(
         f"{FAVORITE_CATEGORY_PREFIX}{category}"
         for category in normalize_personal_categories(favorites)
     )
-    return _dedupe((*selected_values, *favorite_tokens))
+    flip_tokens: list[str] = []
+    safe_profit = max(1_000, min(1_000_000, int(flip_min_profit_cents)))
+    if flip_enabled:
+        flip_tokens.append(FLIP_ALERTS_TOKEN)
+    if flip_enabled or safe_profit != DEFAULT_FLIP_MIN_PROFIT_CENTS:
+        flip_tokens.append(f"{FLIP_MIN_PROFIT_PREFIX}{safe_profit}")
+    return _dedupe((*selected_values, *favorite_tokens, *flip_tokens))
 
 
 def update_favorite_categories(
@@ -178,6 +209,7 @@ def update_favorite_categories(
     current_selected, current_favorites = split_category_preferences(
         existing_categories
     )
+    current_flip_enabled, current_flip_profit = flip_settings(existing_categories)
     selected = (
         normalize_personal_categories(replacement_selected)
         if replacement_selected is not None
@@ -191,7 +223,32 @@ def update_favorite_categories(
         for category in _dedupe(favorites)
         if category not in remove_set
     ]
-    return compose_category_preferences(selected, favorites)
+    return compose_category_preferences(
+        selected,
+        favorites,
+        flip_enabled=current_flip_enabled,
+        flip_min_profit_cents=current_flip_profit,
+    )
+
+
+def update_flip_settings(
+    existing_categories: Iterable[str] | str | None,
+    *,
+    enabled: bool | None = None,
+    minimum_profit_cents: int | None = None,
+) -> tuple[str, ...]:
+    selected, favorites = split_category_preferences(existing_categories)
+    current_enabled, current_profit = flip_settings(existing_categories)
+    return compose_category_preferences(
+        selected,
+        favorites,
+        flip_enabled=current_enabled if enabled is None else bool(enabled),
+        flip_min_profit_cents=(
+            current_profit
+            if minimum_profit_cents is None
+            else int(minimum_profit_cents)
+        ),
+    )
 
 
 def category_key_for_card(card: Any) -> str:

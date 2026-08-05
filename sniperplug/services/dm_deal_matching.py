@@ -9,8 +9,10 @@ from sniperplug.services.dm_deal_alerts import (
     smart_requirements,
     walmart_cash_cents,
 )
+from sniperplug.services.dm_flip_opportunities import assess_flip_opportunity
 from sniperplug.services.dm_personal_categories import (
     category_key_for_card,
+    flip_settings,
     split_category_preferences,
     split_exclude_terms,
 )
@@ -20,16 +22,18 @@ def match_dm_deal(
     preference: DmDealAlertPreference,
     card: Any,
 ) -> DmDealMatchDecision:
-    """Apply exact-proof personal filters without weakening user minimums.
+    """Apply exact-proof personal filters without weakening hard user limits.
 
     Smart mode may add stricter adaptive requirements based on the item's
     current price. It never lowers a user's explicit minimum markdown, score,
     or dollar-savings floor. Strict API-proven Walmart Cash or a personally
     favorite category may soften only Smart's additional adaptive requirement.
 
-    Personal category mutes and favorites are delivery-only. They affect one
-    subscriber's DMs without deleting the deal, muting the server feed, or
-    changing what another subscriber can receive.
+    Personal category mutes and favorites are delivery-only. A separately
+    enabled flip lane may cross category boundaries only for a strict,
+    significant price-error/resale assessment. That lane still respects exact
+    proof, maximum price, excluded words, Walmart-Cash-only mode, dedupe, and
+    the daily DM cap.
     """
 
     pref = preference.normalized()
@@ -44,6 +48,7 @@ def match_dm_deal(
     selected_categories, favorite_categories = split_category_preferences(
         pref.categories
     )
+    flip_enabled, flip_min_profit_cents = flip_settings(pref.categories)
     is_favorite = category_key in favorite_categories
 
     current_cents = _money_to_cents(
@@ -74,18 +79,49 @@ def match_dm_deal(
             "exact markdown is not positive",
             category_key,
         )
-    if category_key in muted_categories:
-        return DmDealMatchDecision(
-            False,
-            "category is muted in your personal DMs",
-            category_key,
-        )
+
+    # Hard personal constraints remain hard even for a flip override.
     if pref.max_price_cents is not None and current_cents > pref.max_price_cents:
         return DmDealMatchDecision(False, "price is above your maximum", category_key)
     if pref.walmart_cash_only and cash_cents <= 0:
         return DmDealMatchDecision(
             False,
             "Walmart Cash proof is required",
+            category_key,
+        )
+    if keyword_excludes and any(term in search_text for term in keyword_excludes):
+        return DmDealMatchDecision(
+            False,
+            "an excluded keyword matched",
+            category_key,
+        )
+
+    if flip_enabled:
+        flip = assess_flip_opportunity(
+            card,
+            category_key=category_key,
+            current_cents=current_cents,
+            reference_cents=reference_cents,
+            discount=discount,
+            savings_cents=savings_cents,
+            score=score,
+            minimum_profit_cents=flip_min_profit_cents,
+        )
+        if flip.qualified:
+            return DmDealMatchDecision(
+                True,
+                f"{flip.reason} • category {category_key}",
+                category_key,
+                int(round(discount)),
+                savings_cents,
+                cash_cents,
+            )
+
+    # Normal-interest delivery filters apply only after the universal flip lane.
+    if category_key in muted_categories:
+        return DmDealMatchDecision(
+            False,
+            "category is muted in your personal DMs",
             category_key,
         )
     if selected_categories and category_key not in selected_categories:
@@ -99,12 +135,6 @@ def match_dm_deal(
         return DmDealMatchDecision(
             False,
             "none of your required keywords matched",
-            category_key,
-        )
-    if keyword_excludes and any(term in search_text for term in keyword_excludes):
-        return DmDealMatchDecision(
-            False,
-            "an excluded keyword matched",
             category_key,
         )
 

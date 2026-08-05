@@ -20,6 +20,14 @@ class NormalizedDeal:
     discount_percent: float | None = None
     savings_amount: float | None = None
 
+    # Selected-offer payable-price breakdown. For Walmart marketplace offers,
+    # current_price is the delivered total whenever shipping is verified.
+    item_price: float | None = None
+    shipping_cost: float | None = None
+    delivered_price: float | None = None
+    shipping_status: str | None = None
+    shipping_source: str | None = None
+
     pre_coupon_price: float | None = None
     coupon_savings: float | None = None
     coupon_percent: float | None = None

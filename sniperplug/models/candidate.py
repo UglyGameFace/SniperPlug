@@ -29,6 +29,15 @@ class SourceCandidate:
     typical_price: float | None = None
     image_url: str | None = None
 
+    # Selected-offer payable-price truth. `current_price` remains the number used
+    # by ranking and discount math; for Walmart it is normalized to delivered
+    # price when mandatory shipping is known.
+    item_price: float | None = None
+    shipping_cost: float | None = None
+    delivered_price: float | None = None
+    shipping_status: str | None = None
+    shipping_source: str | None = None
+
     # Public deal proof. These fields are intentionally separate from display
     # copy so public posting never guesses from embed wording such as MSRP.
     deal_lane: str | None = None
@@ -72,6 +81,7 @@ class SourceCandidate:
     last_checked_at: str = field(default_factory=utc_now_iso)
 
     def __post_init__(self) -> None:
+        self._apply_walmart_selected_offer_truth()
         asin = self.product_id if self.product_id_type == "asin" else None
         normalized = normalize_product_url(
             retailer=self.retailer,
@@ -87,6 +97,123 @@ class SourceCandidate:
             if note not in self.signals:
                 self.signals.append(note)
 
+    def _apply_walmart_selected_offer_truth(self) -> None:
+        if str(self.retailer or "").strip().lower() != "walmart":
+            if self.item_price is None:
+                self.item_price = _float_or_none(self.current_price)
+            if self.delivered_price is None:
+                self.delivered_price = _float_or_none(self.current_price)
+            return
+
+        attrs = dict(self.variant_attributes or {})
+        selected_item = _float_or_none(attrs.get("selectedOfferItemPrice"))
+        selected_shipping = _float_or_none(attrs.get("selectedOfferShippingCost"))
+        selected_delivered = _float_or_none(attrs.get("selectedOfferDeliveredPrice"))
+        shipping_status = str(attrs.get("selectedOfferShippingStatus") or self.shipping_status or "").strip().lower()
+        marketplace = str(
+            attrs.get("selectedOfferMarketplace")
+            or attrs.get("isMarketPlaceItem")
+            or attrs.get("isMarketplaceItem")
+            or attrs.get("marketplace")
+            or ""
+        ).strip().lower()
+
+        selected_seller = str(attrs.get("selectedOfferSeller") or "").strip()
+        selected_seller_id = str(attrs.get("selectedOfferSellerId") or "").strip()
+        selected_offer_id = str(attrs.get("selectedOfferId") or "").strip()
+        selected_fulfillment = str(attrs.get("selectedOfferFulfillment") or "").strip()
+        selected_condition = str(attrs.get("selectedOfferCondition") or "").strip()
+
+        if selected_seller:
+            self.seller_name = selected_seller
+            attrs["seller"] = selected_seller
+        if selected_seller_id:
+            attrs["sellerId"] = selected_seller_id
+        if selected_offer_id:
+            self.selected_offer_id = selected_offer_id
+        if selected_fulfillment:
+            self.fulfillment_type = selected_fulfillment
+            attrs["fulfillment"] = selected_fulfillment
+        if selected_condition:
+            self.condition = selected_condition
+            self.api_condition = self.api_condition or selected_condition
+            attrs["condition"] = selected_condition
+
+        current_source = str(attrs.get("currentPriceSource") or self.api_price_path or "").strip()
+        source_is_alternate_min = current_source in {"minPrice", "min_price"}
+
+        if selected_item is not None and selected_item > 0:
+            self.item_price = round(selected_item, 2)
+            if selected_delivered is not None and selected_delivered > 0 and shipping_status in {"free", "paid"}:
+                self.shipping_cost = round(max(selected_shipping or 0.0, 0.0), 2)
+                self.delivered_price = round(selected_delivered, 2)
+                self.shipping_status = shipping_status
+                self.shipping_source = str(attrs.get("selectedOfferShippingSource") or "").strip() or None
+                self.current_price = self.delivered_price
+                self.api_current_price = self.delivered_price
+                self.api_price_path = str(attrs.get("selectedOfferDeliveredPriceSource") or "").strip() or self.api_price_path
+                attrs["currentPriceSource"] = self.api_price_path or "selectedOfferDeliveredPrice"
+                attrs["selectedOfferPublicPriceStatus"] = "verified_delivered"
+            else:
+                self.shipping_status = shipping_status or "unknown"
+                self.shipping_source = str(attrs.get("selectedOfferShippingSource") or "").strip() or None
+                self.delivered_price = None
+                if _is_third_party_marketplace(
+                    marketplace=marketplace,
+                    seller_name=self.seller_name,
+                    seller_id=selected_seller_id,
+                ):
+                    self.current_price = None
+                    self.api_current_price = None
+                    self.api_discount_percent = None
+                    attrs["selectedOfferPublicPriceStatus"] = "blocked_shipping_unknown"
+                    _append_signal(
+                        self.signals,
+                        "Walmart selected marketplace offer blocked: shipping cost was not returned",
+                    )
+                else:
+                    self.current_price = self.item_price
+                    self.api_current_price = self.item_price
+                    self.delivered_price = self.item_price
+                    self.shipping_status = "checkout_dependent"
+                    attrs["selectedOfferPublicPriceStatus"] = "item_price_shipping_checkout_dependent"
+                    _append_signal(
+                        self.signals,
+                        "Walmart shipping not separately returned; item price may depend on order, location, or checkout",
+                    )
+        elif source_is_alternate_min:
+            # A page-level minimum can belong to another seller. It is useful as
+            # context only and is never a payable selected-offer price.
+            self.current_price = None
+            self.api_current_price = None
+            self.api_discount_percent = None
+            self.delivered_price = None
+            attrs["selectedOfferPublicPriceStatus"] = "blocked_alternate_min_price"
+            _append_signal(
+                self.signals,
+                "Walmart alternate seller minimum price blocked from selected-offer deal math",
+            )
+        else:
+            fallback = _float_or_none(self.current_price)
+            self.item_price = self.item_price or fallback
+            self.delivered_price = self.delivered_price or fallback
+
+        reference = _float_or_none(self.api_reference_price) or _float_or_none(self.typical_price)
+        payable = _float_or_none(self.api_current_price) or _float_or_none(self.current_price)
+        self.api_discount_percent = _percent_off(payable, reference)
+
+        if self.item_price is not None:
+            attrs["itemPrice"] = f"{self.item_price:.2f}"
+        if self.shipping_cost is not None:
+            attrs["shippingCost"] = f"{self.shipping_cost:.2f}"
+        if self.delivered_price is not None:
+            attrs["deliveredPrice"] = f"{self.delivered_price:.2f}"
+        if self.shipping_status:
+            attrs["shippingStatus"] = self.shipping_status
+        if self.shipping_source:
+            attrs["shippingSource"] = self.shipping_source
+        self.variant_attributes = attrs
+
     def to_normalized_deal(self) -> NormalizedDeal:
         availability_bits: list[str] = []
         if self.stock_status:
@@ -101,6 +228,16 @@ class SourceCandidate:
             availability_bits.append(f"Fulfillment: {self.fulfillment_type}")
         if self.condition:
             availability_bits.append(f"Condition: {self.condition}")
+        if self.item_price is not None:
+            availability_bits.append(f"Item price: {money(self.item_price)}")
+        if self.shipping_status == "free":
+            availability_bits.append("Shipping: free (API proof)")
+        elif self.shipping_cost is not None:
+            availability_bits.append(f"Shipping: {money(self.shipping_cost)}")
+        elif self.shipping_status:
+            availability_bits.append(f"Shipping: {self.shipping_status.replace('_', ' ')}")
+        if self.delivered_price is not None:
+            availability_bits.append(f"Delivered total: {money(self.delivered_price)}")
         if self.is_business_offer:
             availability_bits.append("May require business account")
         if self.is_member_only:
@@ -115,6 +252,11 @@ class SourceCandidate:
             image_url=self.image_url,
             current_price=self.current_price,
             typical_price=self.typical_price,
+            item_price=self.item_price,
+            shipping_cost=self.shipping_cost,
+            delivered_price=self.delivered_price,
+            shipping_status=self.shipping_status,
+            shipping_source=self.shipping_source,
             source=self.source_key,
             sku=self.sku or (self.product_id if self.product_id_type == "sku" else None),
             upc=self.upc or (self.product_id if self.product_id_type == "upc" else None),
@@ -144,6 +286,11 @@ class SourceCandidate:
             "apiReferencePath": self.api_reference_path,
             "apiPricePath": self.api_price_path,
             "directProductUrl": self.direct_product_url,
+            "itemPrice": _money_attr(self.item_price),
+            "shippingCost": _money_attr(self.shipping_cost),
+            "deliveredPrice": _money_attr(self.delivered_price),
+            "shippingStatus": self.shipping_status,
+            "shippingSource": self.shipping_source,
         }
         for key, value in structured_attrs.items():
             if value is not None and value != "":
@@ -191,6 +338,16 @@ class SourceCandidate:
             deal.verification_notes.append(f"Selected offer ID: {self.selected_offer_id}")
         if self.seller_name:
             deal.verification_notes.append(f"Selected offer seller: {self.seller_name}")
+        if self.item_price is not None:
+            deal.verification_notes.append(f"Selected offer item price: {money(self.item_price)}")
+        if self.shipping_status == "free":
+            deal.verification_notes.append("Selected offer shipping: free (API proof)")
+        elif self.shipping_cost is not None:
+            deal.verification_notes.append(f"Selected offer shipping: {money(self.shipping_cost)}")
+        elif self.shipping_status:
+            deal.verification_notes.append(f"Selected offer shipping status: {self.shipping_status}")
+        if self.delivered_price is not None:
+            deal.verification_notes.append(f"Selected offer delivered total: {money(self.delivered_price)}")
         if self.fulfillment_type:
             deal.verification_notes.append(f"Selected offer fulfillment: {self.fulfillment_type}")
         if self.condition:
@@ -214,6 +371,29 @@ class SourceCandidate:
             deal.risk_flags.extend(self.signals[:5])
 
         return deal
+
+
+def _is_third_party_marketplace(*, marketplace: str, seller_name: str | None, seller_id: str | None) -> bool:
+    if marketplace in {"yes", "true", "1"}:
+        return True
+    normalized_name = " ".join(str(seller_name or "").lower().split())
+    normalized_id = str(seller_id or "").strip().upper()
+    if normalized_name in {"walmart", "walmart.com", "walmart stores inc", "walmart stores, inc."}:
+        return False
+    if normalized_id in {"0", "F55CDC31AB754BB68FE0B39041159D63", "WALMART"}:
+        return False
+    return bool(normalized_name or normalized_id)
+
+
+def _append_signal(signals: list[str], value: str) -> None:
+    if value not in signals:
+        signals.append(value)
+
+
+def _percent_off(current: float | None, reference: float | None) -> float | None:
+    if current is None or reference is None or reference <= 0 or reference <= current:
+        return None
+    return round((reference - current) / reference * 100.0, 2)
 
 
 def _float_or_none(value) -> float | None:

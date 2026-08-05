@@ -179,6 +179,28 @@ def compose_exclude_terms(
     return (*legacy_tokens, *normalize_terms(keywords))
 
 
+def update_category_mutes(
+    existing_excludes: Iterable[str] | str | None,
+    *,
+    add: Iterable[str] | str | None = None,
+    remove: Iterable[str] | str | None = None,
+    replacement_keywords: Iterable[str] | str | None = None,
+) -> tuple[str, ...]:
+    """Legacy adapter retained for old callers and existing saved rows."""
+
+    current_keywords, current_muted = split_exclude_terms(existing_excludes)
+    keywords = (
+        normalize_terms(replacement_keywords)
+        if replacement_keywords is not None
+        else current_keywords
+    )
+    muted = list(current_muted)
+    muted.extend(normalize_personal_categories(add))
+    remove_set = set(normalize_personal_categories(remove))
+    muted = [category for category in _dedupe(muted) if category not in remove_set]
+    return compose_exclude_terms(keywords, muted)
+
+
 def split_category_preferences(
     values: Iterable[str] | str | None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:

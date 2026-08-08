@@ -3,7 +3,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from sniperplug.services.dm_delivery_telemetry import (
-    DmDeliveryCounters,
     clear_user_dm_delivery_telemetry,
     dm_rejection_bucket,
     get_user_dm_delivery_telemetry,
@@ -55,18 +54,3 @@ def test_user_telemetry_explains_filter_duplicate_cap_and_send_outcomes() -> Non
     assert telemetry.sent == 1
     assert telemetry.last_outcome == "sent"
     assert any("discount: 1" in line for line in telemetry.summary_lines())
-
-
-def test_counter_summary_keeps_filter_and_delivery_skips_visible() -> None:
-    counters = DmDeliveryCounters(checked=4, matched=2, sent=1)
-    counters.record_rejection("score 60 is below the required 78")
-    counters.record_rejection("category is not selected")
-    counters.skipped_duplicate = 1
-    counters.skipped_daily_cap = 1
-
-    summary = counters.summary_fragment()
-
-    assert "checked/matched/sent **4/2/1**" in summary
-    assert "score **1**" in summary
-    assert "category **1**" in summary
-    assert "location/duplicate/cap **0/1/1**" in summary

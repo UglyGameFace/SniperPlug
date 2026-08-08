@@ -24,7 +24,10 @@ from sniperplug.services.dm_deal_alerts import (
     record_dm_receipt,
 )
 from sniperplug.services.dm_deal_matching import match_dm_deal
-from sniperplug.services.dm_delivery_telemetry import record_user_dm_outcome
+from sniperplug.services.dm_delivery_telemetry import (
+    record_user_dm_decision,
+    record_user_dm_outcome,
+)
 from sniperplug.services.public_deal_posts import (
     card_deal_key,
     maybe_post_public_deal_cards,
@@ -337,6 +340,11 @@ async def fanout_recent_exact_walmart_deals(
             for preference in preferences:
                 totals["dm_preferences_checked"] += 1
                 decision = match_dm_deal(preference, event.card)
+                record_user_dm_decision(
+                    preference.user_id,
+                    event_key=event.deal_key,
+                    decision=decision,
+                )
                 if not decision.matched:
                     continue
                 totals["dm_matches"] += 1

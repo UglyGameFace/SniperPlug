@@ -208,6 +208,11 @@ async def fanout_verified_retailer_events(
                     )
                     continue
                 decision = match_dm_deal(preference, card)
+                record_user_dm_decision(
+                    preference.user_id,
+                    event_key=event.event_key,
+                    decision=decision,
+                )
                 if not decision.matched:
                     continue
                 totals["dm_matches"] += 1

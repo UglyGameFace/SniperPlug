@@ -83,12 +83,12 @@ def dm_rejection_bucket(reason: str) -> str:
     text = str(reason or "").strip().lower()
     if "alerts are disabled" in text:
         return "disabled"
+    if "walmart cash" in text:
+        return "cash"
     if "proof" in text or "markdown is not positive" in text:
         return "proof"
     if "above your maximum" in text:
         return "price"
-    if "walmart cash" in text:
-        return "cash"
     if "keyword" in text or "required keywords" in text:
         return "keywords"
     if "category" in text:

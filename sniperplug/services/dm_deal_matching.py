@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sniperplug.services.dm_deal_alerts import (
@@ -9,6 +10,7 @@ from sniperplug.services.dm_deal_alerts import (
     smart_requirements,
     walmart_cash_cents,
 )
+from sniperplug.services.dm_delivery_telemetry import record_user_dm_decision
 from sniperplug.services.dm_flip_opportunities import (
     FlipAssessment,
     assess_flip_opportunity,
@@ -22,7 +24,38 @@ from sniperplug.services.dm_personal_categories import (
 )
 
 
+log = logging.getLogger("sniperplug.dm_deals.matching")
+
+
 def match_dm_deal(
+    preference: DmDealAlertPreference,
+    card: Any,
+) -> DmDealMatchDecision:
+    """Apply exact-proof personal filters and record the resulting decision.
+
+    Recording is intentionally process-local and write-free so a rejected DM
+    cannot add database contention to the hot fanout path. `/dm_deals` status
+    can still explain the user's filter decisions since the current bot process
+    started.
+    """
+
+    decision = _match_dm_deal_inner(preference, card)
+    try:
+        record_user_dm_decision(
+            preference.user_id,
+            event_key=_telemetry_event_key(card),
+            decision=decision,
+        )
+    except Exception:  # pragma: no cover - telemetry must never block delivery.
+        log.exception(
+            "Personal DM telemetry failed user=%s matched=%s",
+            getattr(preference, "user_id", None),
+            decision.matched,
+        )
+    return decision
+
+
+def _match_dm_deal_inner(
     preference: DmDealAlertPreference,
     card: Any,
 ) -> DmDealMatchDecision:
@@ -210,6 +243,21 @@ def match_dm_deal(
         savings_cents,
         cash_cents,
     )
+
+
+def _telemetry_event_key(card: Any) -> str:
+    retailer = str(getattr(card, "retailer", None) or "deal").strip().lower()
+    for attribute in ("deal_key", "event_key", "item_id", "product_id", "sku"):
+        value = getattr(card, attribute, None)
+        if value not in (None, ""):
+            return f"{retailer}:{value}"[:300]
+    label = str(
+        getattr(card, "label", None)
+        or getattr(card, "title", None)
+        or "unknown"
+    ).strip()
+    price = getattr(card, "api_current_price", None) or getattr(card, "current_price", None)
+    return f"{retailer}:{label}:{price}"[:300]
 
 
 def _money_to_cents(value: Any) -> int | None:

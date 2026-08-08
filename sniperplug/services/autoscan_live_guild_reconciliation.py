@@ -137,7 +137,7 @@ async def list_live_public_alert_guilds(
     only_guild_id: int | None = None,
     required_retailer: str | None = "walmart",
 ) -> LiveGuildLoadResult:
-    """Load enabled public-alert destinations present in Discord's live cache.
+    """Load only guilds present in Discord's current live guild cache.
 
     ``required_retailer`` defaults to Walmart for the global Walmart scheduler.
     Multi-retailer fanout may pass ``None`` to load every enabled destination
@@ -252,7 +252,6 @@ async def scheduler_membership_for_guild(
             db,
             bot,
             only_guild_id=target,
-            required_retailer="walmart",
         )
     except Exception as exc:
         log.exception(

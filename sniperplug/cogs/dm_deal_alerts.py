@@ -10,9 +10,15 @@ from sniperplug.cogs.dm_deal_preferences_view import DmDealPreferencesView
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
     delete_dm_deal_alert_preference,
+    dm_alerts_sent_today,
     get_dm_deal_alert_preference,
     normalize_terms,
     save_dm_deal_alert_preference,
+)
+from sniperplug.services.dm_delivery_telemetry import (
+    UserDmDeliveryTelemetry,
+    clear_user_dm_delivery_telemetry,
+    get_user_dm_delivery_telemetry,
 )
 from sniperplug.services.dm_personal_categories import (
     category_label,
@@ -99,6 +105,7 @@ class DmDealAlertsCog(commands.Cog):
 
         if selected_action == "delete":
             await delete_dm_deal_alert_preference(self.bot.db, user_id)
+            clear_user_dm_delivery_telemetry(user_id)
             await interaction.followup.send(
                 "🗑️ Your SniperPlug DM alert settings and delivery receipts were deleted.",
                 ephemeral=True,
@@ -121,8 +128,17 @@ class DmDealAlertsCog(commands.Cog):
             return
 
         if selected_action == "status":
+            sent_today = await dm_alerts_sent_today(self.bot.db, user_id)
+            telemetry = get_user_dm_delivery_telemetry(user_id)
+            embed = build_dm_settings_embed(preference)
+            add_dm_delivery_health_field(
+                embed,
+                preference=preference,
+                sent_today=sent_today,
+                telemetry=telemetry,
+            )
             await interaction.followup.send(
-                embed=build_dm_settings_embed(preference),
+                embed=embed,
                 ephemeral=True,
             )
             return
@@ -388,6 +404,29 @@ def build_dm_settings_embed(
             inline=False,
         )
     return embed
+
+
+def add_dm_delivery_health_field(
+    embed: discord.Embed,
+    *,
+    preference: DmDealAlertPreference,
+    sent_today: int,
+    telemetry: UserDmDeliveryTelemetry,
+) -> None:
+    normalized = preference.normalized()
+    remaining = max(0, normalized.max_alerts_per_day - int(sent_today))
+    lines = [
+        f"Today (UTC): **{int(sent_today)}/{normalized.max_alerts_per_day}** delivered • **{remaining}** remaining before the daily cap.",
+        "Process-local audit below resets when the bot restarts; it does not add database writes to deal fanout.",
+        *telemetry.summary_lines(),
+    ]
+    if int(sent_today) >= normalized.max_alerts_per_day:
+        lines.append("⚠️ Your daily cap is currently reached; additional matching deals will be skipped until the next UTC day.")
+    embed.add_field(
+        name="📬 Delivery health",
+        value="\n".join(lines)[:1024],
+        inline=False,
+    )
 
 
 def build_test_dm_embed(preference: DmDealAlertPreference) -> discord.Embed:

@@ -18,6 +18,10 @@ from sniperplug.services.dm_deal_alerts import (
     record_dm_receipt,
 )
 from sniperplug.services.dm_deal_matching import match_dm_deal
+from sniperplug.services.dm_delivery_telemetry import (
+    record_user_dm_decision,
+    record_user_dm_outcome,
+)
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.hp_deal_cards import build_hp_deal_card
 from sniperplug.services.hp_public_posts import maybe_post_hp_deal_cards
@@ -65,7 +69,8 @@ class VerifiedRetailerFanoutResult:
             "verified retailer fanout: "
             f"claimed **{self.events_claimed}** • processed **{self.events_processed}** • "
             f"deferred **{self.events_deferred}** • dead-lettered **{self.events_dead_lettered}** • "
-            f"guild posts **{self.public_posts}** • DM sent **{self.dm_sent}** • "
+            f"guild checks/posts **{self.guilds_checked}/{self.public_posts}** • "
+            f"DM checked/matched/sent **{self.dm_preferences_checked}/{self.dm_matches}/{self.dm_sent}** • "
             f"errors public/DM **{self.public_errors}/{self.dm_errors}**"
         )
 
@@ -101,7 +106,14 @@ async def fanout_verified_retailer_events(
         if not events:
             return VerifiedRetailerFanoutResult()
 
-        load_result = await list_live_public_alert_guilds(db, bot)
+        # HP/Target fanout must not inherit the Walmart scheduler's retailer gate.
+        # Each canonical retailer-specific post function applies its own retailer
+        # enablement check after this live-destination load.
+        load_result = await list_live_public_alert_guilds(
+            db,
+            bot,
+            required_retailer=None,
+        )
         guilds = list(load_result.guilds)
         preferences = await list_enabled_dm_deal_alert_preferences(db)
         totals = {
@@ -189,6 +201,11 @@ async def fanout_verified_retailer_events(
                     user_id=preference.user_id,
                     card=card,
                 ):
+                    record_user_dm_decision(
+                        preference.user_id,
+                        event_key=event.event_key,
+                        location_skipped=True,
+                    )
                     continue
                 decision = match_dm_deal(preference, card)
                 if not decision.matched:
@@ -200,11 +217,13 @@ async def fanout_verified_retailer_events(
                         user_id=preference.user_id,
                         deal_key=event.event_key,
                     ):
+                        record_user_dm_outcome(preference.user_id, "duplicate")
                         continue
                     if (
                         await dm_alerts_sent_today(db, preference.user_id)
                         >= preference.max_alerts_per_day
                     ):
+                        record_user_dm_outcome(preference.user_id, "daily_cap")
                         continue
                     user = bot.get_user(preference.user_id)
                     if user is None:
@@ -224,9 +243,11 @@ async def fanout_verified_retailer_events(
                     await clear_dm_delivery_failures(
                         db, user_id=preference.user_id
                     )
+                    record_user_dm_outcome(preference.user_id, "sent")
                     totals["dm_sent"] += 1
                 except discord.Forbidden as error:
                     totals["dm_disabled"] += 1
+                    record_user_dm_outcome(preference.user_id, "disabled")
                     await record_dm_delivery_failure(
                         db,
                         user_id=preference.user_id,
@@ -235,6 +256,7 @@ async def fanout_verified_retailer_events(
                     )
                 except discord.NotFound as error:
                     totals["dm_disabled"] += 1
+                    record_user_dm_outcome(preference.user_id, "disabled")
                     await record_dm_delivery_failure(
                         db,
                         user_id=preference.user_id,
@@ -243,6 +265,7 @@ async def fanout_verified_retailer_events(
                     )
                 except Exception as error:  # noqa: BLE001 - one subscriber cannot block others.
                     totals["dm_errors"] += 1
+                    record_user_dm_outcome(preference.user_id, "error")
                     errors.append(
                         f"DM {preference.user_id}: {type(error).__name__}: {error}"
                     )

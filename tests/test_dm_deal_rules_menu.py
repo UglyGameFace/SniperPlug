@@ -6,11 +6,12 @@ import pytest
 
 from sniperplug.cogs.dm_deal_preferences_view import (
     DmDealPreferencesView,
+    _DmDealRulesModal,
     parse_dm_rule_values,
 )
 
 
-def test_dm_rule_parser_accepts_clear_personal_thresholds() -> None:
+def test_dm_rule_parser_accepts_full_personal_rule_update() -> None:
     rules = parse_dm_rule_values(
         threshold_text="35",
         savings_text="$20.50",
@@ -23,19 +24,58 @@ def test_dm_rule_parser_accepts_clear_personal_thresholds() -> None:
     assert rules.min_savings_cents == 2050
     assert rules.min_score == 78
     assert rules.max_price_cents == 49_999
+    assert rules.clear_max_price is False
     assert rules.daily_cap == 25
+    assert rules.has_updates is True
 
 
-def test_dm_rule_parser_allows_no_personal_max_price() -> None:
+def test_dm_rule_parser_blank_fields_mean_keep_everything() -> None:
     rules = parse_dm_rule_values(
-        threshold_text="30",
-        savings_text="0",
-        score_text="60",
+        threshold_text="",
+        savings_text="",
+        score_text="",
         max_price_text="",
-        daily_cap_text="50",
+        daily_cap_text="",
+    )
+
+    assert rules.min_discount is None
+    assert rules.min_savings_cents is None
+    assert rules.min_score is None
+    assert rules.max_price_cents is None
+    assert rules.clear_max_price is False
+    assert rules.daily_cap is None
+    assert rules.has_updates is False
+
+
+def test_dm_rule_parser_can_change_only_threshold() -> None:
+    rules = parse_dm_rule_values(
+        threshold_text="50",
+        savings_text="",
+        score_text="",
+        max_price_text="",
+        daily_cap_text="",
+    )
+
+    assert rules.min_discount == 50
+    assert rules.min_savings_cents is None
+    assert rules.min_score is None
+    assert rules.max_price_cents is None
+    assert rules.clear_max_price is False
+    assert rules.daily_cap is None
+
+
+def test_dm_rule_parser_uses_explicit_off_to_remove_max_price() -> None:
+    rules = parse_dm_rule_values(
+        threshold_text="",
+        savings_text="",
+        score_text="",
+        max_price_text="off",
+        daily_cap_text="",
     )
 
     assert rules.max_price_cents is None
+    assert rules.clear_max_price is True
+    assert rules.has_updates is True
 
 
 @pytest.mark.parametrize(
@@ -54,16 +94,25 @@ def test_dm_rule_parser_rejects_out_of_range_values(
     message: str,
 ) -> None:
     kwargs = {
-        "threshold_text": "35",
-        "savings_text": "10",
-        "score_text": "78",
-        "max_price_text": "100",
-        "daily_cap_text": "25",
+        "threshold_text": "",
+        "savings_text": "",
+        "score_text": "",
+        "max_price_text": "",
+        "daily_cap_text": "",
     }
     kwargs[field] = value
 
     with pytest.raises(ValueError, match=message):
         parse_dm_rule_values(**kwargs)
+
+
+def test_dm_rules_modal_does_not_force_every_field() -> None:
+    source = inspect.getsource(_DmDealRulesModal)
+
+    assert source.count("required=False") == 5
+    assert ".default =" not in source
+    assert "blank keeps" in source.lower()
+    assert "type off to remove" in source.lower()
 
 
 def test_personal_menu_labels_public_and_flip_thresholds_separately() -> None:
@@ -72,6 +121,7 @@ def test_personal_menu_labels_public_and_flip_thresholds_separately() -> None:
     assert "DM Threshold:" in source
     assert "DM Deal Threshold:" in source
     assert "server's public deal channel only" in source
+    assert "fill **only what you want to change**" in source
     assert "Flip Profit:" in source
     assert "profit minimum applies **only to Flip Override**" in source
 

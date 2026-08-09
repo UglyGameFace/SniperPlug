@@ -24,6 +24,10 @@ from sniperplug.services.dm_deal_alerts import (
     record_dm_receipt,
 )
 from sniperplug.services.dm_deal_matching import match_dm_deal
+from sniperplug.services.dm_delivery_telemetry import (
+    record_user_dm_decision,
+    record_user_dm_outcome,
+)
 from sniperplug.services.public_deal_posts import (
     card_deal_key,
     maybe_post_public_deal_cards,
@@ -83,6 +87,8 @@ class GlobalDealFanoutResult:
     public_errors: int = 0
     dm_preferences_checked: int = 0
     dm_matches: int = 0
+    dm_skipped_duplicate: int = 0
+    dm_skipped_daily_cap: int = 0
     dm_sent: int = 0
     dm_disabled: int = 0
     dm_errors: int = 0
@@ -94,6 +100,10 @@ class GlobalDealFanoutResult:
             + self.public_skipped_reserved_duplicate
         )
 
+    @property
+    def dm_filter_rejected(self) -> int:
+        return max(0, int(self.dm_preferences_checked) - int(self.dm_matches))
+
     def summary_line(self) -> str:
         return (
             "global exact-deal fanout: "
@@ -104,7 +114,9 @@ class GlobalDealFanoutResult:
             f"(recent **{self.public_skipped_recent_duplicate}** • reserved **{self.public_skipped_reserved_duplicate}**) • "
             f"not alertable **{self.public_skipped_not_alertable}** • "
             f"disabled **{self.public_skipped_disabled}** • retailer **{self.public_skipped_wrong_retailer}** • "
-            f"DM sent **{self.dm_sent}** • errors public/DM **{self.public_errors}/{self.dm_errors}**"
+            f"DM checked/matched/sent **{self.dm_preferences_checked}/{self.dm_matches}/{self.dm_sent}** • "
+            f"DM skips filter/duplicate/cap **{self.dm_filter_rejected}/{self.dm_skipped_duplicate}/{self.dm_skipped_daily_cap}** • "
+            f"DM disabled **{self.dm_disabled}** • errors public/DM **{self.public_errors}/{self.dm_errors}**"
         )
 
 
@@ -215,7 +227,11 @@ async def fanout_recent_exact_walmart_deals(
                 new_events=ingested.new_events,
             )
 
-        load_result = await list_live_public_alert_guilds(db, bot)
+        load_result = await list_live_public_alert_guilds(
+            db,
+            bot,
+            required_retailer="walmart",
+        )
         guilds = list(load_result.guilds)
         preferences = await list_enabled_dm_deal_alert_preferences(db)
         totals = {
@@ -230,6 +246,8 @@ async def fanout_recent_exact_walmart_deals(
             "public_errors": 0,
             "dm_preferences_checked": 0,
             "dm_matches": 0,
+            "dm_skipped_duplicate": 0,
+            "dm_skipped_daily_cap": 0,
             "dm_sent": 0,
             "dm_disabled": 0,
             "dm_errors": 0,
@@ -322,6 +340,11 @@ async def fanout_recent_exact_walmart_deals(
             for preference in preferences:
                 totals["dm_preferences_checked"] += 1
                 decision = match_dm_deal(preference, event.card)
+                record_user_dm_decision(
+                    preference.user_id,
+                    event_key=event.deal_key,
+                    decision=decision,
+                )
                 if not decision.matched:
                     continue
                 totals["dm_matches"] += 1
@@ -331,9 +354,13 @@ async def fanout_recent_exact_walmart_deals(
                         user_id=preference.user_id,
                         deal_key=event.deal_key,
                     ):
+                        totals["dm_skipped_duplicate"] += 1
+                        record_user_dm_outcome(preference.user_id, "duplicate")
                         continue
                     sent_today = await dm_alerts_sent_today(db, preference.user_id)
                     if sent_today >= preference.max_alerts_per_day:
+                        totals["dm_skipped_daily_cap"] += 1
+                        record_user_dm_outcome(preference.user_id, "daily_cap")
                         continue
                     user = bot.get_user(preference.user_id)
                     if user is None:
@@ -350,9 +377,11 @@ async def fanout_recent_exact_walmart_deals(
                         db,
                         user_id=preference.user_id,
                     )
+                    record_user_dm_outcome(preference.user_id, "sent")
                     totals["dm_sent"] += 1
                 except discord.Forbidden as error:
                     totals["dm_disabled"] += 1
+                    record_user_dm_outcome(preference.user_id, "disabled")
                     await record_dm_delivery_failure(
                         db,
                         user_id=preference.user_id,
@@ -361,6 +390,7 @@ async def fanout_recent_exact_walmart_deals(
                     )
                 except discord.NotFound as error:
                     totals["dm_disabled"] += 1
+                    record_user_dm_outcome(preference.user_id, "disabled")
                     await record_dm_delivery_failure(
                         db,
                         user_id=preference.user_id,
@@ -369,6 +399,7 @@ async def fanout_recent_exact_walmart_deals(
                     )
                 except Exception as error:  # noqa: BLE001
                     totals["dm_errors"] += 1
+                    record_user_dm_outcome(preference.user_id, "error")
                     event_errors.append(
                         f"DM {preference.user_id}: {type(error).__name__}: {error}"
                     )

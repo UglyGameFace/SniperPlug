@@ -135,8 +135,13 @@ async def list_live_public_alert_guilds(
     bot: Any,
     *,
     only_guild_id: int | None = None,
+    required_retailer: str | None = "walmart",
 ) -> LiveGuildLoadResult:
     """Load only guilds present in Discord's current live guild cache.
+
+    ``required_retailer`` defaults to Walmart for the global Walmart scheduler.
+    Multi-retailer fanout may pass ``None`` to load every enabled destination
+    and let the canonical retailer-specific poster apply its own retailer gate.
 
     Discord snowflakes exceed JavaScript's exact integer range. CASTing inside
     SQLite makes the wire value text, preserving every digit before Python
@@ -150,6 +155,11 @@ async def list_live_public_alert_guilds(
         return LiveGuildLoadResult()
 
     target = int(only_guild_id) if only_guild_id is not None else None
+    retailer_key = (
+        str(required_retailer or "").strip().lower()
+        if required_retailer is not None
+        else None
+    )
     conn = db.require_conn()
     tombstoned = await load_ghost_tombstones(
         conn,
@@ -201,7 +211,12 @@ async def list_live_public_alert_guilds(
                 guild_id,
             )
             continue
-        if "walmart" not in set(config.get("retailers") or ()):
+        configured_retailers = {
+            str(value or "").strip().lower()
+            for value in (config.get("retailers") or ())
+            if str(value or "").strip()
+        }
+        if retailer_key is not None and retailer_key not in configured_retailers:
             continue
         try:
             channel_id = int(config.get("channel_id"))
@@ -229,7 +244,7 @@ async def scheduler_membership_for_guild(
     bot: Any,
     guild_id: int,
 ) -> tuple[bool, str]:
-    """Return the scheduler's real live-guild enrollment decision safely."""
+    """Return the Walmart scheduler's real live-guild enrollment decision safely."""
 
     target = int(guild_id)
     try:
@@ -265,7 +280,7 @@ async def scheduler_membership_for_guild(
         )
     return (
         False,
-        "This server is not present in the scheduler's eligible public-alert rows.",
+        "This server is not present in the scheduler's eligible Walmart public-alert rows.",
     )
 
 

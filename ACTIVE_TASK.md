@@ -1,66 +1,64 @@
 # Active Task
 
 ## Status
-Implementation complete and merge-ready on PR #222 (`fix/walmart-catalog-queue-write-amplification`). Production remains unclaimed until merged `main` is deployed to canonical Discloud app `1779293887444` and verified in live logs.
+Implementation and validation complete on branch `fix/delivery-audit-and-multiretailer-fanout`. PR #223 is merge-ready; production remains unclaimed until merged `main` is deployed to the canonical Discloud app and verified from live logs.
+
+## Task
+**SP-DELIVERY-223 — Repair sparse DM/public deal delivery observability and multi-retailer fanout enrollment**
 
 ## Scope
-Eliminate repeated Walmart catalog queue write amplification without dropping discovered item IDs, delaying new or changed candidates, weakening exact item/seller/offer/variant/shipping/reference proof, changing per-server thresholds, or breaking retry/recheck scheduling.
+1. Keep exact item/seller/offer/variant/shipping/reference proof fail-closed and unchanged.
+2. Keep Walmart's 10% discovery floor separate from each destination's public threshold; do not broaden public posting policy accidentally.
+3. Make DM fanout explain why exact deal events did not become DMs: filter rejection, duplicate receipt, daily cap, closed/unavailable DMs, or delivery error.
+4. Surface DM preferences checked and matches in normal fanout summaries instead of printing only `DM sent`.
+5. Repair the live public-destination loader so HP/Target verified-event fanout is not incorrectly gated on Walmart being enabled.
+6. Add focused regressions for retailer enrollment and DM delivery accounting.
+7. Run compile/static validation and available automated regression checks before completion.
 
-## Production evidence
-- The former `SELECT queue.item_id, queue.verified_at, queue.snapshot_json` warning is absent after PR #221.
-- The replacement fanout cursor-key read is fast: about 0.14-0.19 seconds remotely in the supplied log window.
-- Catalog batches repeatedly issued two or three `INSERT INTO walmart_exact_detail_queue` operations for 75-100 deduplicated candidates.
-- Those inserts took about 2.1-10.0 seconds remotely each; following commits took about 2.0-7.7 seconds.
-- Unrelated reads and exact claims then waited behind the serialized database worker.
-- Exact claim timing spiked to 9.81s, 11.95s, and 18.80s while the actual fetch work remained much smaller.
-- Catalog batches stretched to roughly 22-40 seconds during the worst write windows.
+## Findings
+- Production logs supplied 2026-08-08 show global Walmart discovery progressing continuously and the exact queue repeatedly draining to zero actionable rows.
+- Both current Walmart public destinations are enrolled and fanout executes without Discord send errors.
+- The visible fresh fanout examples were only 18.35% and 11.58% off, correctly below the two public thresholds (50% and 40%).
+- `GlobalDealFanoutResult` already stored `dm_preferences_checked` and `dm_matches`, but its summary omitted both.
+- DM non-matches, duplicate receipts, and daily-cap skips used bare `continue` paths with no counters explaining the loss.
+- `list_live_public_alert_guilds()` hard-required `walmart` in configured retailers. `verified_retailer_event_fanout.py` reused that loader for HP and Target, so an otherwise valid HP/Target destination could be skipped solely because Walmart was disabled.
+- Exact verification logs contain frequent missing-seller identity blocks and transient failures. Those are upstream proof failures, not Discord delivery failures, and remain backlog for a separate exact-verification task.
 
-## Root cause
-- Global catalog discovery runs every 60 seconds and calls `enqueue_walmart_exact_verification_candidates_bulk()`.
-- That function re-ran raw table/index initialization on every enqueue instead of sharing the exact worker's once-per-connection schema cache.
-- The enqueue batch was limited to 40 rows, so a normal 75-100 item pass still used two or three remote UPSERT statements.
-- `ON CONFLICT DO UPDATE` rewrote every rediscovered row even when its discovery projection was identical and recent.
-- Each unnecessary update maintained multiple queue indexes and was followed by a separate remote commit on the one serialized Turso connection.
-- Rotating catalog route labels could also change for the same product even though `route_hint` is discovery telemetry, not exact proof.
-- `discovered_count` is not read by production behavior; it is only maintained by the enqueue path and tests.
-
-## Implemented changes
-- Catalog enqueue now reuses `ensure_exact_runtime_schema_once()` so catalog and exact workers share one schema initialization per live connection.
-- One bounded primary-key projection loads current discovery state for the candidate IDs before writing.
-- Rows persist only when they are new, materially changed, stale enough for a six-hour retention heartbeat, or require pending/retry/failed rearming.
-- Recent identical rediscoveries skip both queue UPSERTs and the enqueue commit.
-- Rotating nonempty route labels do not force a rewrite by themselves; an empty stored route is still filled, and a route-derived priority increase still persists.
-- The conservative multi-row batch increased from 40 to 60 rows: 60 x 16 = 960 parameters, below SQLite's historical 999-variable ceiling.
-- Queue summaries now expose persisted rows, unchanged rows, and write-statement count.
-- The UPSERT still leaves exact status, verified timestamps/prices, snapshots, leases, attempts, seller/offer/variant/condition/fulfillment proof, and recheck tiers under the exact worker's ownership.
+## Changes
+- Made live public-destination loading retailer-aware while preserving Walmart as the default scheduler contract.
+- HP/Target verified-event fanout now loads all live enabled public destinations; the canonical HP/Target posting functions remain responsible for retailer-specific enablement.
+- Walmart fanout summaries now expose DM checked/matched/sent plus filter/duplicate/daily-cap skips and DM-disabled counts.
+- Verified HP/Target fanout summaries now expose DM checked/matched/sent and guild checks/posts.
+- Added process-local per-user DM delivery telemetry for proof, price, Walmart Cash, keyword, category, discount, score, savings, location, duplicate, cap, disabled-DM, send-error, and sent outcomes.
+- Added `📬 Delivery health` to `/dm_deals action:Show my settings`, including today's durable receipt count/cap plus the since-restart reason audit.
+- Telemetry intentionally adds no database write for rejected candidates, preventing delivery diagnostics from recreating remote DB write pressure.
+- Kept `match_dm_deal()` pure; delivery telemetry is recorded only at the real Walmart/HP/Target fanout boundaries.
+- Deleting personal DM alert data also clears the process-local delivery audit.
 
 ## Validation
-- Python 3.11 full suite: **1,113 passed**, one upstream `audioop` deprecation warning.
-- Python 3.12 Python Check: passed.
-- Import smoke check: passed.
-- `pip check`: passed.
-- `compileall` across app, tests, and entry points: passed.
-- Focused regressions prove 75 new rows use two writes; recent identical rediscovery uses zero writes and zero commits; stale rows receive retention heartbeats; retry rows rearm; changed price/title/source persists; rotating route-only changes are suppressed; and schema/cache/parameter boundaries remain valid.
-- Qodo recommends the bounded pre-read plus selective UPSERT approach for the serialized Turso worker.
-- No inline correctness review threads remain.
+- GitHub Import smoke check: **PASS** on head `7ddd53c3bfdcede5bbb43a9ac227e76acf9ad457`.
+- GitHub Python Check: **PASS** on the same head, including compile, import smoke, and full tests.
+- GitHub Python tests: **PASS** on the same head, including `pip check`, `python -m compileall -q sniperplug tests *.py`, and `pytest -q`.
+- The first full run exposed three compatibility/test failures; all three were corrected: preserved the existing live-loader contract phrase, preserved the scheduler membership call signature by relying on the Walmart default, and classified Walmart Cash before generic `proof`.
+- Full suite contains 1,119 tests; the pre-fix run reported 1,116 passed/3 failed, and the corrected head reran the same suite successfully.
 
 ## Cleanup and conflict inspection
-- Final diff contains only this task record, the enqueue-path implementation, and focused regressions.
-- No temporary, duplicate, compatibility-shim, or partially superseded enqueue implementation remains.
-- New IDs, meaningful metadata/price changes, retry rearming, source changes, and retention heartbeats remain immediate.
-- Exact proof, thresholds, duplicate suppression, event leases, public fanout, and DM behavior are unchanged.
-- PR #222 is mergeable against current `main` and is not behind its base.
-- PR #200 remains isolated and unmerged.
+- Removed an unused generic `DmDeliveryCounters` abstraction before completion.
+- Restored the generic DM matcher to its pre-task pure implementation so tests/legacy callers cannot inflate real delivery telemetry.
+- Current diff is limited to 9 task-relevant files.
+- Branch comparison: ahead of `main` by 17 commits, behind by 0; no unrelated base changes were pulled into the task.
+- Exact seller/offer/reference proof, Walmart 10% discovery floor, per-server public thresholds, Smart/All/Custom filter semantics, and public duplicate protection were not loosened.
 
-## Current branch
-`fix/walmart-catalog-queue-write-amplification`
+## Current branch / PR
+- Branch: `fix/delivery-audit-and-multiretailer-fanout`
+- PR: #223 — `Repair sparse deal delivery observability and multi-retailer fanout`
 
 ## Deployment boundary
-- Canonical app: `1779293887444`.
+- Canonical Discloud app: `1779293887444`.
 - Duplicate app `1785806676351` must never be targeted.
-- Production completion requires post-deploy logs showing ordinary repeated catalog passes report mostly unchanged rows with zero or few write statements, repeated multi-second queue inserts/commits materially fall, and exact claim/store lock waits improve.
+- Do not claim production completion until merged `main` is deployed to the canonical app and live logs confirm the new delivery accounting.
 
 ## Backlog
-- Investigate remaining isolated multi-second `WITH picked AS` fanout/event claims only after catalog queue write amplification is production-verified.
-- Audit unrelated repeated `CREATE TABLE/INDEX IF NOT EXISTS` paths after this active task closes.
-- Verify PR #220 seller/shipping card output against live Walmart payloads after database contention is resolved.
+- Investigate the high volume of Walmart `seller` identity blocks and transient exact-fetch failures as the next separate task.
+- Verify the already-merged catalog queue write-amplification fix remains healthy in production; current supplied logs show the expected mostly-unchanged rows and one write statement per batch.
+- PR #200 remains isolated and must not be mixed into this task.

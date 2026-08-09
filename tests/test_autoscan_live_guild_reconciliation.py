@@ -67,6 +67,44 @@ def test_live_loader_filters_true_stale_replica_rows_without_deleting(monkeypatc
     assert conn.commits == 0
 
 
+def test_live_loader_can_return_non_walmart_destination_for_multiretailer_fanout(monkeypatch) -> None:
+    live._SESSION_GHOST_TOMBSTONES.clear()
+    guild_id = 1514374173517152418
+    conn = _Connection(public_rows=[(str(guild_id),)])
+    db = _Database(conn)
+    bot = SimpleNamespace(guilds=[SimpleNamespace(id=guild_id)])
+
+    async def fake_tombstones(_conn, **_kwargs):
+        return set()
+
+    async def fake_config(_db, selected_guild_id):
+        assert selected_guild_id == guild_id
+        return {"enabled": True, "retailers": ("hp",), "channel_id": 987}
+
+    monkeypatch.setattr(live, "load_ghost_tombstones", fake_tombstones)
+    monkeypatch.setattr(live, "get_public_alert_config", fake_config)
+
+    walmart_only = asyncio.run(live.list_live_public_alert_guilds(db, bot))
+    all_destinations = asyncio.run(
+        live.list_live_public_alert_guilds(
+            db,
+            bot,
+            required_retailer=None,
+        )
+    )
+    hp_only = asyncio.run(
+        live.list_live_public_alert_guilds(
+            db,
+            bot,
+            required_retailer="hp",
+        )
+    )
+
+    assert walmart_only.guilds == ()
+    assert [guild.guild_id for guild in all_destinations.guilds] == [guild_id]
+    assert [guild.guild_id for guild in hp_only.guilds] == [guild_id]
+
+
 def test_reconciliation_session_quarantine_survives_stale_tombstone_read(monkeypatch) -> None:
     live._SESSION_GHOST_TOMBSTONES.clear()
     real_id = 1514374173517152418

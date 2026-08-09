@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import discord
@@ -30,6 +30,90 @@ TAB_LABELS = {
     TAB_MUTED: "🔕 Muted",
     TAB_ALLOWLIST: "🎯 Hard allowlist",
 }
+DM_MODE_ORDER = ("smart", "all", "custom")
+DM_MODE_LABELS = {
+    "smart": "Smart",
+    "all": "All",
+    "custom": "Custom",
+}
+
+
+@dataclass(frozen=True)
+class DmDealRuleDraft:
+    min_discount: int
+    min_savings_cents: int
+    min_score: int
+    max_price_cents: int | None
+    daily_cap: int
+
+
+def parse_dm_rule_values(
+    *,
+    threshold_text: str,
+    savings_text: str,
+    score_text: str,
+    max_price_text: str,
+    daily_cap_text: str,
+) -> DmDealRuleDraft:
+    """Parse the normal personal-DM rule form with user-facing validation."""
+
+    try:
+        threshold = int(str(threshold_text or "").strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("DM Deal Threshold must be a whole number from 0 to 95.") from exc
+    if not 0 <= threshold <= 95:
+        raise ValueError("DM Deal Threshold must be between 0% and 95%.")
+
+    savings = _parse_dollars(savings_text, field_name="Minimum savings")
+    if not 0 <= savings <= 100_000:
+        raise ValueError("Minimum savings must be between $0 and $100,000.")
+
+    try:
+        score = int(str(score_text or "").strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Minimum Sniper score must be a whole number from 0 to 250.") from exc
+    if not 0 <= score <= 250:
+        raise ValueError("Minimum Sniper score must be between 0 and 250.")
+
+    max_price_raw = str(max_price_text or "").strip()
+    if max_price_raw:
+        max_price = _parse_dollars(max_price_raw, field_name="Maximum item price")
+        if not 0.01 <= max_price <= 100_000:
+            raise ValueError("Maximum item price must be between $0.01 and $100,000, or left blank.")
+        max_price_cents: int | None = int(round(max_price * 100))
+    else:
+        max_price_cents = None
+
+    try:
+        daily_cap = int(str(daily_cap_text or "").strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Daily DM limit must be a whole number from 1 to 100.") from exc
+    if not 1 <= daily_cap <= 100:
+        raise ValueError("Daily DM limit must be between 1 and 100 alerts.")
+
+    return DmDealRuleDraft(
+        min_discount=threshold,
+        min_savings_cents=int(round(savings * 100)),
+        min_score=score,
+        max_price_cents=max_price_cents,
+        daily_cap=daily_cap,
+    )
+
+
+def _parse_dollars(value: str, *, field_name: str) -> float:
+    raw = str(value or "").replace("$", "").replace(",", "").strip()
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a dollar amount such as 20 or 49.99.") from exc
+
+
+def _mode_help(mode: str) -> str:
+    if mode == "smart":
+        return "adapts quality/value requirements upward by item price, while your saved floors stay hard"
+    if mode == "custom":
+        return "uses your manual floors exactly; no Smart price-based increase"
+    return "uses your saved hard floors without Smart price-based increases"
 
 
 class DmDealPreferencesView(discord.ui.View):
@@ -66,6 +150,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.exclude_keywords = tuple(keyword_excludes)
         self.flip_enabled = bool(flip_enabled)
         self.flip_min_profit_cents = int(flip_profit)
+        self._sync_dm_rule_draft(self.preference)
 
         self.tab = TAB_FAVORITES
         self.search_query = ""
@@ -73,6 +158,15 @@ class DmDealPreferencesView(discord.ui.View):
         self.saved = False
         self.dirty = False
         self._rebuild_items()
+
+    def _sync_dm_rule_draft(self, preference: DmDealAlertPreference) -> None:
+        normalized = preference.normalized()
+        self.dm_mode = normalized.mode
+        self.dm_min_discount = int(normalized.min_discount)
+        self.dm_min_savings_cents = int(normalized.min_savings_cents)
+        self.dm_min_score = int(normalized.min_score)
+        self.dm_max_price_cents = normalized.max_price_cents
+        self.dm_daily_cap = int(normalized.max_alerts_per_day)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if int(interaction.user.id) == self.user_id:
@@ -106,10 +200,12 @@ class DmDealPreferencesView(discord.ui.View):
         }[self.tab]
 
         description = (
+            "Use **DM Threshold** below for your normal personal alert rules. "
+            "Use the category editor for interests/mutes; **Flip Profit** belongs only to Flip Override.\n\n"
             f"**Every live category is available:** {len(categories)} total. "
             "Pages are only Discord's 25-option display limit; SniperPlug does not "
             "trim the catalog.\n\n"
-            f"Editing: **{TAB_LABELS[self.tab]}** • Page **{page_number}/{page_total}** "
+            f"Editing categories: **{TAB_LABELS[self.tab]}** • Page **{page_number}/{page_total}** "
             f"• Search: **{search_text}**\n{tab_help}"
         )
         if status:
@@ -119,6 +215,24 @@ class DmDealPreferencesView(discord.ui.View):
             title="🎛️ Personal Deal DM Menu",
             description=description,
             color=discord.Color.blurple(),
+        )
+        max_price_text = (
+            f"${self.dm_max_price_cents / 100:,.2f}"
+            if self.dm_max_price_cents is not None
+            else "no limit"
+        )
+        embed.add_field(
+            name="🔔 Normal DM deal rules",
+            value=(
+                f"Mode: **{DM_MODE_LABELS.get(self.dm_mode, self.dm_mode.title())}** — {_mode_help(self.dm_mode)}.\n"
+                f"DM Deal Threshold: **{self.dm_min_discount}%+ markdown**\n"
+                f"Minimum savings: **${self.dm_min_savings_cents / 100:,.2f}** • "
+                f"Minimum score: **{self.dm_min_score}/250**\n"
+                f"Max item price: **{max_price_text}** • Daily DM limit: **{self.dm_daily_cap}**\n"
+                "`/deal threshold` controls the **server's public deal channel only**. "
+                "It does not change these personal DM rules."
+            ),
+            inline=False,
         )
         embed.add_field(
             name="Your category choices",
@@ -130,16 +244,16 @@ class DmDealPreferencesView(discord.ui.View):
             inline=True,
         )
         embed.add_field(
-            name="Price-error / Flip Override",
+            name="💰 Flip Override — separate from normal DM rules",
             value=(
                 f"Status: **{'on' if self.flip_enabled else 'off'}**\n"
-                f"Minimum estimated net: **${self.flip_min_profit_cents / 100:,.2f}**\n"
-                "Recent eBay sold comps: **used when exact evidence is connected**"
+                f"Flip Profit minimum: **${self.flip_min_profit_cents / 100:,.2f} estimated net**\n"
+                "The profit minimum applies **only to Flip Override**; it does not replace your DM Deal Threshold."
             ),
             inline=True,
         )
         embed.add_field(
-            name="Selected in this tab",
+            name="Selected in this category tab",
             value=self._selection_preview(),
             inline=False,
         )
@@ -147,7 +261,7 @@ class DmDealPreferencesView(discord.ui.View):
             name="Safety boundary",
             value=(
                 "Flip Override crosses category boundaries only. Exact item, seller, offer, "
-                "variant, availability, current/was-price proof, your explicit floors, "
+                "variant, availability, current/was-price proof, your DM Deal Threshold and other explicit floors, "
                 "excluded words, maximum price, dedupe, and daily cap remain enforced. "
                 "Without sold comps, resale value is labeled **estimated**, never confirmed."
             ),
@@ -273,7 +387,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(flip)
 
         profit = discord.ui.Button(
-            label=f"Profit: ${self.flip_min_profit_cents / 100:,.0f}+",
+            label=f"Flip Profit: ${self.flip_min_profit_cents / 100:,.0f}+",
             emoji="📈",
             style=discord.ButtonStyle.secondary,
             row=3,
@@ -304,6 +418,24 @@ class DmDealPreferencesView(discord.ui.View):
         close.callback = self._close
         self.add_item(close)
 
+        dm_rules = discord.ui.Button(
+            label=f"DM Threshold: {self.dm_min_discount}%+",
+            emoji="🔔",
+            style=discord.ButtonStyle.primary,
+            row=4,
+        )
+        dm_rules.callback = self._open_dm_rules
+        self.add_item(dm_rules)
+
+        mode = discord.ui.Button(
+            label=f"Mode: {DM_MODE_LABELS.get(self.dm_mode, self.dm_mode.title())}",
+            emoji="🎚️",
+            style=discord.ButtonStyle.secondary,
+            row=4,
+        )
+        mode.callback = self._cycle_mode
+        self.add_item(mode)
+
     async def _refresh(self, interaction: discord.Interaction, *, status: str = "") -> None:
         self._rebuild_items()
         await interaction.response.edit_message(
@@ -322,6 +454,24 @@ class DmDealPreferencesView(discord.ui.View):
 
     async def _open_search(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(_CategorySearchModal(self))
+
+    async def _open_dm_rules(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(_DmDealRulesModal(self))
+
+    async def _cycle_mode(self, interaction: discord.Interaction) -> None:
+        try:
+            index = DM_MODE_ORDER.index(self.dm_mode)
+        except ValueError:
+            index = -1
+        self.dm_mode = DM_MODE_ORDER[(index + 1) % len(DM_MODE_ORDER)]
+        self.dirty = True
+        await self._refresh(
+            interaction,
+            status=(
+                f"🎚️ Draft DM mode changed to **{DM_MODE_LABELS[self.dm_mode]}** — "
+                f"{_mode_help(self.dm_mode)}. Press Save changes when finished."
+            ),
+        )
 
     async def _clear_search(self, interaction: discord.Interaction) -> None:
         self.search_query = ""
@@ -370,6 +520,12 @@ class DmDealPreferencesView(discord.ui.View):
         excludes = compose_exclude_terms(self.exclude_keywords)
         updated = replace(
             self.preference,
+            mode=self.dm_mode,
+            min_discount=self.dm_min_discount,
+            min_savings_cents=self.dm_min_savings_cents,
+            min_score=self.dm_min_score,
+            max_price_cents=self.dm_max_price_cents,
+            max_alerts_per_day=self.dm_daily_cap,
             categories=categories,
             exclude_keywords=excludes,
             failure_count=0,
@@ -377,6 +533,7 @@ class DmDealPreferencesView(discord.ui.View):
         ).normalized()
         saved = await save_dm_deal_alert_preference(self.bot.db, updated)
         self.preference = saved
+        self._sync_dm_rule_draft(saved)
         self.saved = True
         self.dirty = False
         self._rebuild_items()
@@ -548,6 +705,102 @@ class _CategorySearchModal(discord.ui.Modal, title="Search every deal category")
                 f"🔎 Search applied: **{self.owner.search_query}**"
                 if self.owner.search_query
                 else "✅ Showing every category."
+            ),
+        )
+
+
+class _DmDealRulesModal(discord.ui.Modal, title="Personal DM deal rules"):
+    threshold = discord.ui.TextInput(
+        label="DM Deal Threshold (%)",
+        placeholder="35",
+        required=True,
+        max_length=2,
+    )
+    savings = discord.ui.TextInput(
+        label="Minimum savings ($)",
+        placeholder="0",
+        required=True,
+        max_length=12,
+    )
+    score = discord.ui.TextInput(
+        label="Minimum Sniper score (0-250)",
+        placeholder="78",
+        required=True,
+        max_length=3,
+    )
+    max_price = discord.ui.TextInput(
+        label="Maximum item price ($) — blank = no limit",
+        placeholder="Leave blank for no limit",
+        required=False,
+        max_length=12,
+    )
+    daily_cap = discord.ui.TextInput(
+        label="Daily DM limit (1-100)",
+        placeholder="25",
+        required=True,
+        max_length=3,
+    )
+
+    def __init__(self, owner: DmDealPreferencesView) -> None:
+        super().__init__()
+        self.owner = owner
+        self.threshold.default = str(owner.dm_min_discount)
+        self.savings.default = f"{owner.dm_min_savings_cents / 100:.2f}"
+        self.score.default = str(owner.dm_min_score)
+        self.max_price.default = (
+            f"{owner.dm_max_price_cents / 100:.2f}"
+            if owner.dm_max_price_cents is not None
+            else ""
+        )
+        self.daily_cap.default = str(owner.dm_daily_cap)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            rules = parse_dm_rule_values(
+                threshold_text=str(self.threshold.value or ""),
+                savings_text=str(self.savings.value or ""),
+                score_text=str(self.score.value or ""),
+                max_price_text=str(self.max_price.value or ""),
+                daily_cap_text=str(self.daily_cap.value or ""),
+            )
+        except ValueError as error:
+            await interaction.response.send_message(
+                f"⚠️ {error}",
+                ephemeral=True,
+            )
+            return
+
+        before = (
+            self.owner.dm_min_discount,
+            self.owner.dm_min_savings_cents,
+            self.owner.dm_min_score,
+            self.owner.dm_max_price_cents,
+            self.owner.dm_daily_cap,
+        )
+        after = (
+            rules.min_discount,
+            rules.min_savings_cents,
+            rules.min_score,
+            rules.max_price_cents,
+            rules.daily_cap,
+        )
+        if before != after:
+            self.owner.dm_min_discount = rules.min_discount
+            self.owner.dm_min_savings_cents = rules.min_savings_cents
+            self.owner.dm_min_score = rules.min_score
+            self.owner.dm_max_price_cents = rules.max_price_cents
+            self.owner.dm_daily_cap = rules.daily_cap
+            self.owner.dirty = True
+
+        await self.owner._refresh(
+            interaction,
+            status=(
+                f"🔔 Draft personal rules updated: **{rules.min_discount}%+ DM Deal Threshold**, "
+                f"**${rules.min_savings_cents / 100:,.2f}+ savings**, "
+                f"score **{rules.min_score}+**, daily limit **{rules.daily_cap}**. "
+                "Press Save changes when finished."
+                if self.owner.dirty
+                else "Those personal DM rules are already selected."
             ),
         )
 

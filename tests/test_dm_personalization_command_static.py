@@ -3,6 +3,7 @@ from pathlib import Path
 
 SOURCE = Path("sniperplug/cogs/dm_deal_alerts.py").read_text(encoding="utf-8")
 MENU = Path("sniperplug/cogs/dm_deal_preferences_view.py").read_text(encoding="utf-8")
+COMPACT_MENU = "".join(MENU.split())
 MATCHER = Path("sniperplug/services/dm_deal_matching.py").read_text(encoding="utf-8")
 PERSONAL = Path("sniperplug/services/dm_personal_categories.py").read_text(encoding="utf-8")
 FLIP = Path("sniperplug/services/dm_flip_opportunities.py").read_text(encoding="utf-8")
@@ -70,7 +71,7 @@ def test_menu_category_storage_is_not_keyword_capped() -> None:
     assert "muted_tokens = tuple(" in PERSONAL
     assert "f\"{MUTED_CATEGORY_PREFIX}{category}\"" in PERSONAL
     assert "return _dedupe(" in PERSONAL
-    assert "compose_exclude_terms(self.exclude_keywords)" in MENU
+    assert "compose_exclude_terms(self.exclude_keywords)" in COMPACT_MENU
 
 
 def test_flip_lane_never_treats_active_listings_as_sold_proof() -> None:

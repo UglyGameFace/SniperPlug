@@ -97,10 +97,10 @@ class CanonicalSettingsCog(commands.Cog):
 
     @app_commands.command(
         name="deal_threshold",
-        description="Set this server's minimum exact Walmart markdown.",
+        description="Set this server's public deal-channel minimum markdown.",
     )
     @app_commands.describe(
-        percent="Recommended: 30-40 for normal deals; 50+ for stricter alerts.",
+        percent="Public channel only. Recommended: 30-40 for normal deals; 50+ for stricter alerts.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def deal_threshold(
@@ -111,7 +111,7 @@ class CanonicalSettingsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is None:
             await interaction.followup.send(
-                "Use this in a server so I can save its delivery threshold.",
+                "Use this in a server so I can save its public delivery threshold.",
                 ephemeral=True,
             )
             return
@@ -121,16 +121,18 @@ class CanonicalSettingsCog(commands.Cog):
             int(percent),
         )
         embed = discord.Embed(
-            title="✅ Server deal threshold updated",
+            title="✅ Public Deal Threshold updated",
             description=(
-                f"This server will receive exact-verified Walmart deals at **{saved}%+ markdown**.\n\n"
-                "The global catalog scanner still checks every configured route; this setting filters delivery only."
+                f"Public deal channel minimum: **{saved}%+ markdown**.\n\n"
+                "This controls this server's **public SniperPlug deal posts only**. "
+                "It does **not** change anyone's personal `/dm_deals` threshold.\n\n"
+                "The global catalog scanner still checks every configured route; this setting filters public delivery only."
             ),
             color=discord.Color.green(),
         )
         embed.add_field(
-            name="Recommended range",
-            value="Use **30-40%** for normal coverage. Use **50%+** only for stricter glitch/clearance alerts.",
+            name="Public-feed guidance",
+            value="Use **30-40%** for normal public coverage. Use **50%+** only for stricter glitch/clearance alerts.",
             inline=False,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -191,7 +193,8 @@ async def build_overview_dashboard(
             f"Public delivery: **{'on' if public_config.get('enabled') else 'off'}**\n"
             f"Channel: {f'<#{channel_id}>' if channel_id else '**not set**'}\n"
             f"Retailers: {format_retailers(public_config.get('retailers') or ())}\n"
-            f"Minimum exact markdown: **{threshold}%+**"
+            f"Public Deal Threshold: **{threshold}%+**\n"
+            "Personal `/dm_deals` thresholds: **separate per user**"
         ),
         inline=False,
     )
@@ -229,7 +232,7 @@ async def build_overview_dashboard(
         inline=False,
     )
     embed.set_footer(
-        text="Normal automatic coverage requires no /discover command. Use /autoscan_health for detailed delivery diagnosis."
+        text="Public autoscan and personal DM thresholds are separate. Use /autoscan_health for detailed public-delivery diagnosis."
     )
     return embed
 

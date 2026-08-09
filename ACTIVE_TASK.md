@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-In progress on branch `fix/dm-rules-optional-fields`. PR #224 is already merged into `main` and the live screenshot confirms the new DM rules modal is deployed, but its first version forces users to resubmit unrelated settings.
+Implementation and validation complete on PR #225 (`fix/dm-rules-optional-fields`). PR #224 is already merged into `main`; this follow-up fixes the live modal behavior reported after deployment. Production remains unclaimed until #225 is merged, deployed to the canonical Discloud app, and verified in Discord.
 
 ## Task
 **SP-DM-UX-225 — Make the personal DM rules form partial and non-forcing**
@@ -16,9 +16,9 @@ In progress on branch `fix/dm-rules-optional-fields`. PR #224 is already merged 
 7. Preserve the existing draft / Save changes / discard workflow and validate the full suite.
 
 ## Findings
-- The deployed PR #224 modal marks threshold, savings, score, and daily cap as required and pre-populates all scalar values.
-- That makes a single-setting edit feel like a full configuration rewrite even though most values are unrelated to the requested change.
-- Maximum price also needs three distinct meanings: blank = keep current, numeric value = set/update limit, explicit `off` = remove limit.
+- The deployed PR #224 modal marked threshold, savings, score, and daily cap as required and pre-populated all scalar values.
+- That made a single-setting edit feel like a full configuration rewrite even though most values were unrelated to the requested change.
+- Maximum price needed three distinct meanings: blank = keep current, numeric value = set/update limit, explicit `off` = remove limit.
 
 ## Changes
 - All five personal DM rule fields are optional.
@@ -29,18 +29,24 @@ In progress on branch `fix/dm-rules-optional-fields`. PR #224 is already merged 
 - Submitting an entirely blank form leaves every current setting untouched and says so.
 - The DM menu explains that the modal is partial-edit: fill only what you want to change.
 - Focused regressions cover blank/no-op submission, threshold-only edits, explicit max-price removal, validation, and non-required modal fields.
+- The existing category-storage static regression was made whitespace-insensitive after the first CI run exposed that it was asserting one exact source-line layout rather than the behavior/contract.
 
 ## Validation
-- Pending GitHub Actions validation after PR creation.
+- Initial PR run: import/compile passed; full suite found one static whitespace-only assertion failure in `test_menu_category_storage_is_not_keyword_capped`.
+- Corrected run on head `16691d9984982bdee216dfd85661cb1d5757e8a7`: **Import smoke PASS**.
+- Corrected run: **Python Check PASS**.
+- Corrected run: **Python tests PASS**, including `pip check`, `python -m compileall -q sniperplug tests *.py`, and full `pytest -q`.
+- Full suite reported **1,131 passed** after the correction.
 
 ## Cleanup and conflict inspection
-- No new preference storage or alternate save path was introduced.
+- Branch is based directly on merged `main` from PR #224 and is not behind it.
+- Changes are limited to the DM preference view, focused DM-rule tests, one whitespace-robust existing regression, and this active-task record.
+- No new preference storage, alternate save path, matching rule, public threshold rule, or compatibility shim was introduced.
 - Existing `Save changes` remains the only persistence action from the visual menu.
-- No matching or delivery policy changes are in scope.
 
 ## Current branch / PR
 - Branch: `fix/dm-rules-optional-fields`
-- PR: pending
+- PR: #225 — `Make DM rules form optional per field`
 
 ## Deployment boundary
 - Canonical Discloud app: `1779293887444`.

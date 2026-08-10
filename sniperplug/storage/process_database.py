@@ -31,6 +31,18 @@ EMBEDDED_REPLICA_ENABLED_ENV = "TURSO_EMBEDDED_REPLICA_ENABLED"
 TRANSIENT_READ_RETRY_ATTEMPTS = 5
 TRANSIENT_READ_RETRY_BASE_SECONDS = 0.35
 TRANSIENT_READ_RETRY_MAX_SECONDS = 2.0
+TRANSIENT_READ_TRANSPORT_TERMS = (
+    "unexpected eof",
+    "error reading a body from connection",
+    "connection reset by peer",
+    "connection closed before message completed",
+    "connection closed before response",
+    "error decoding response body",
+    "incomplete message",
+    "incompletemessage",
+    "broken pipe",
+    "connection aborted",
+)
 
 
 def libsql_safe_parameter(value: Any) -> Any:
@@ -62,14 +74,24 @@ def libsql_safe_parameter(value: Any) -> Any:
     return value
 
 
+def _is_retryable_parent_transport_error(exc: BaseException) -> bool:
+    """Recognize transient Hrana HTTP/body failures not classified by libSQL."""
+
+    lowered = str(exc or "").lower()
+    return "hrana" in lowered and any(
+        term in lowered for term in TRANSIENT_READ_TRANSPORT_TERMS
+    )
+
+
 def _safe_parent_read_retry(sql: str, exc: BaseException) -> bool:
     """Allow parent retries only for read-only, non-transactional worker errors.
 
     The child process already protects transaction semantics. A native Hrana
-    stream failure may be followed immediately by a second transient 502 on the
-    replacement connection; that second failure is reported as a non-fatal
-    ``LibsqlWorkerError``. Retrying that read in the parent is safe, while any
-    worker error explicitly marked as transaction-adjacent remains non-replayable.
+    stream failure may be followed immediately by another transient gateway or
+    HTTP-body transport failure on the replacement connection. Those failures
+    are reported as non-fatal ``LibsqlWorkerError`` values. Retrying that read
+    in the parent is safe, while any worker error explicitly marked as
+    transaction-adjacent remains non-replayable.
     """
 
     if not _is_read_only_sql(sql):
@@ -83,7 +105,20 @@ def _safe_parent_read_retry(sql: str, exc: BaseException) -> bool:
         or "discarded instead of replaying writes" in lowered
     ):
         return False
-    return _is_retryable_libsql_stream_error(exc)
+    return (
+        _is_retryable_libsql_stream_error(exc)
+        or _is_retryable_parent_transport_error(exc)
+    )
+
+
+async def _reset_worker_for_transient_read(connection: Any) -> bool:
+    """Discard a suspect worker so the next safe read gets a fresh connection."""
+
+    discard = getattr(connection, "_discard_worker_sync", None)
+    if not callable(discard):
+        return False
+    await asyncio.to_thread(discard)
+    return True
 
 
 class _SnowflakeSafeParameters:
@@ -104,16 +139,18 @@ class _SnowflakeSafeParameters:
                     raise
                 if attempt >= TRANSIENT_READ_RETRY_ATTEMPTS:
                     raise
+                worker_reset = await _reset_worker_for_transient_read(self)
                 delay = min(
                     TRANSIENT_READ_RETRY_MAX_SECONDS,
                     TRANSIENT_READ_RETRY_BASE_SECONDS * (2 ** (attempt - 1)),
                 )
                 log.warning(
-                    "Transient Turso read failed after worker reconnect; retrying "
-                    "safely attempt=%s/%s delay_s=%.2f error=%s",
+                    "Transient Turso read transport failure; retrying safely "
+                    "attempt=%s/%s delay_s=%.2f worker_reset=%s error=%s",
                     attempt + 1,
                     TRANSIENT_READ_RETRY_ATTEMPTS,
                     delay,
+                    str(worker_reset).lower(),
                     str(exc).splitlines()[0][:240],
                 )
                 await asyncio.sleep(delay)

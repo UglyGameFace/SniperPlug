@@ -30,6 +30,7 @@ def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypat
         db = FakeDatabase(conn)
         now = datetime.now(timezone.utc)
         old = (now - timedelta(days=10)).isoformat()
+        old_scan_run = (now - timedelta(days=40)).isoformat()
         recent = (now - timedelta(hours=1)).isoformat()
 
         await conn.executescript(
@@ -81,7 +82,7 @@ def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypat
             "store_cache",
         ):
             await conn.execute(f"INSERT INTO {table} VALUES (?)", (old,))
-        await conn.execute("INSERT INTO scan_runs VALUES (?)", (old,))
+        await conn.execute("INSERT INTO scan_runs VALUES (?)", (old_scan_run,))
         await conn.commit()
 
         monkeypatch.setattr(maintenance, "ensure_deal_feedback_tables", _noop_ensure)

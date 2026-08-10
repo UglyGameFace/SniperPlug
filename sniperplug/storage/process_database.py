@@ -27,6 +27,11 @@ from sniperplug.storage.libsql_process import (
 log = logging.getLogger("sniperplug")
 MAX_EXACT_JSON_INTEGER = 2**53 - 1
 DEFAULT_TURSO_OPERATION_TIMEOUT_SECONDS = 90.0
+DEFAULT_TURSO_STARTUP_READINESS_TIMEOUT_SECONDS = 300.0
+TURSO_STARTUP_READINESS_REQUIRED_SUCCESSES = 3
+TURSO_STARTUP_READINESS_SUCCESS_SPACING_SECONDS = 0.50
+TURSO_STARTUP_READINESS_RETRY_BASE_SECONDS = 1.0
+TURSO_STARTUP_READINESS_RETRY_MAX_SECONDS = 10.0
 EMBEDDED_REPLICA_ENABLED_ENV = "TURSO_EMBEDDED_REPLICA_ENABLED"
 TRANSIENT_READ_RETRY_ATTEMPTS = 5
 TRANSIENT_READ_RETRY_BASE_SECONDS = 0.35
@@ -119,6 +124,87 @@ async def _reset_worker_for_transient_read(connection: Any) -> bool:
         return False
     await asyncio.to_thread(discard)
     return True
+
+
+async def _await_turso_startup_readiness(
+    connection: Any,
+    *,
+    timeout_seconds: float,
+    required_successes: int = TURSO_STARTUP_READINESS_REQUIRED_SUCCESSES,
+) -> None:
+    """Wait for stable read connectivity before startup performs any migrations.
+
+    ``libsql.connect`` can succeed while the selected Turso database host or its
+    upstream route is still returning transient Hrana 502/EOF failures. Startup
+    is the worst place to discover that because a failed read aborts
+    ``setup_hook`` and causes a crash loop. Probe only with ``SELECT 1`` and
+    require several consecutive successes before allowing schema or migration
+    writes to begin. Runtime reads keep their normal short retry budget.
+    """
+
+    timeout = max(5.0, float(timeout_seconds))
+    successes_needed = max(1, int(required_successes))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    consecutive_successes = 0
+    failure_streak = 0
+    probe_count = 0
+
+    while True:
+        probe_count += 1
+        try:
+            await connection.execute("SELECT 1 AS sniperplug_turso_ready")
+        except LibsqlWorkerError as exc:
+            if not _safe_parent_read_retry("SELECT 1", exc):
+                raise
+            consecutive_successes = 0
+            failure_streak += 1
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    "Turso startup readiness did not stabilize within "
+                    f"{timeout:.1f}s after {probe_count} probes."
+                ) from exc
+            delay = min(
+                TURSO_STARTUP_READINESS_RETRY_MAX_SECONDS,
+                TURSO_STARTUP_READINESS_RETRY_BASE_SECONDS
+                * (2 ** min(failure_streak - 1, 4)),
+                remaining,
+            )
+            log.warning(
+                "Turso startup readiness still degraded; holding migrations "
+                "probe=%s consecutive_successes=0/%s retry_in_s=%.2f "
+                "remaining_s=%.1f error=%s",
+                probe_count,
+                successes_needed,
+                delay,
+                remaining,
+                str(exc).splitlines()[0][:240],
+            )
+            await asyncio.sleep(delay)
+            continue
+
+        failure_streak = 0
+        consecutive_successes += 1
+        if consecutive_successes >= successes_needed:
+            log.info(
+                "Turso startup readiness confirmed probes=%s consecutive_successes=%s "
+                "timeout_s=%.1f",
+                probe_count,
+                consecutive_successes,
+                timeout,
+            )
+            return
+
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(
+                "Turso startup readiness timed out before consecutive read "
+                f"successes reached {successes_needed}."
+            )
+        await asyncio.sleep(
+            min(TURSO_STARTUP_READINESS_SUCCESS_SPACING_SECONDS, remaining)
+        )
 
 
 class _SnowflakeSafeParameters:
@@ -216,6 +302,10 @@ class ProcessIsolatedDatabase(Database):
             "TURSO_PROCESS_STARTUP_TIMEOUT_SECONDS",
             DEFAULT_STARTUP_TIMEOUT_SECONDS,
         )
+        readiness_timeout = _positive_float_env(
+            "TURSO_STARTUP_READINESS_TIMEOUT_SECONDS",
+            DEFAULT_TURSO_STARTUP_READINESS_TIMEOUT_SECONDS,
+        )
         replica_requested = _boolean_env(
             EMBEDDED_REPLICA_ENABLED_ENV,
             default=False,
@@ -272,6 +362,11 @@ class ProcessIsolatedDatabase(Database):
                 operation_timeout_seconds=operation_timeout,
             )
 
+        await _await_turso_startup_readiness(
+            connection,
+            timeout_seconds=readiness_timeout,
+        )
+
         self.conn = connection
         self.backend = "turso-process-isolated"
         self.replica_mode = replica_mode
@@ -292,6 +387,7 @@ class ProcessIsolatedDatabase(Database):
             "worker_generation=%s safe_remote_default=true "
             "parent_startup_fallback=true bounded_queue_pressure=true "
             "no_op_cleanup_skips_write=true transient_read_retries=%s "
+            "startup_readiness_timeout_s=%.1f startup_readiness_successes=%s "
             "driver_version=%s operation_timeout_s=%.1f",
             identity.pid if identity else "unknown",
             identity.parent_pid if identity else os.getpid(),
@@ -302,6 +398,8 @@ class ProcessIsolatedDatabase(Database):
             sync_interval,
             worker_generation,
             TRANSIENT_READ_RETRY_ATTEMPTS,
+            readiness_timeout,
+            TURSO_STARTUP_READINESS_REQUIRED_SUCCESSES,
             driver_version,
             operation_timeout,
         )

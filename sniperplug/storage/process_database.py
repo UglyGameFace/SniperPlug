@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import importlib.util
 import logging
@@ -17,6 +18,9 @@ from sniperplug.storage.libsql_embedded_replica import (
 from sniperplug.storage.libsql_process import (
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
     LibsqlProcessConnection,
+    LibsqlWorkerError,
+    _is_read_only_sql,
+    _is_retryable_libsql_stream_error,
 )
 
 
@@ -24,6 +28,9 @@ log = logging.getLogger("sniperplug")
 MAX_EXACT_JSON_INTEGER = 2**53 - 1
 DEFAULT_TURSO_OPERATION_TIMEOUT_SECONDS = 90.0
 EMBEDDED_REPLICA_ENABLED_ENV = "TURSO_EMBEDDED_REPLICA_ENABLED"
+TRANSIENT_READ_RETRY_ATTEMPTS = 5
+TRANSIENT_READ_RETRY_BASE_SECONDS = 0.35
+TRANSIENT_READ_RETRY_MAX_SECONDS = 2.0
 
 
 def libsql_safe_parameter(value: Any) -> Any:
@@ -55,6 +62,30 @@ def libsql_safe_parameter(value: Any) -> Any:
     return value
 
 
+def _safe_parent_read_retry(sql: str, exc: BaseException) -> bool:
+    """Allow parent retries only for read-only, non-transactional worker errors.
+
+    The child process already protects transaction semantics. A native Hrana
+    stream failure may be followed immediately by a second transient 502 on the
+    replacement connection; that second failure is reported as a non-fatal
+    ``LibsqlWorkerError``. Retrying that read in the parent is safe, while any
+    worker error explicitly marked as transaction-adjacent remains non-replayable.
+    """
+
+    if not _is_read_only_sql(sql):
+        return False
+    detail = str(exc or "")
+    lowered = detail.lower()
+    if (
+        detail.startswith("_FatalWorkerError:")
+        or "inside or near a transaction" in lowered
+        or "commit outcome is unknown" in lowered
+        or "discarded instead of replaying writes" in lowered
+    ):
+        return False
+    return _is_retryable_libsql_stream_error(exc)
+
+
 class _SnowflakeSafeParameters:
     async def execute(
         self,
@@ -64,7 +95,30 @@ class _SnowflakeSafeParameters:
         safe_params = None
         if params is not None:
             safe_params = tuple(libsql_safe_parameter(value) for value in params)
-        return await super().execute(sql, safe_params)
+
+        for attempt in range(1, TRANSIENT_READ_RETRY_ATTEMPTS + 1):
+            try:
+                return await super().execute(sql, safe_params)
+            except LibsqlWorkerError as exc:
+                if not _safe_parent_read_retry(sql, exc):
+                    raise
+                if attempt >= TRANSIENT_READ_RETRY_ATTEMPTS:
+                    raise
+                delay = min(
+                    TRANSIENT_READ_RETRY_MAX_SECONDS,
+                    TRANSIENT_READ_RETRY_BASE_SECONDS * (2 ** (attempt - 1)),
+                )
+                log.warning(
+                    "Transient Turso read failed after worker reconnect; retrying "
+                    "safely attempt=%s/%s delay_s=%.2f error=%s",
+                    attempt + 1,
+                    TRANSIENT_READ_RETRY_ATTEMPTS,
+                    delay,
+                    str(exc).splitlines()[0][:240],
+                )
+                await asyncio.sleep(delay)
+
+        raise RuntimeError("unreachable Turso read retry state")
 
 
 class SnowflakeSafeLibsqlProcessConnection(
@@ -200,8 +254,8 @@ class ProcessIsolatedDatabase(Database):
             "replica_mode=%s replica_startup_error=%s sync_interval_s=%.1f "
             "worker_generation=%s safe_remote_default=true "
             "parent_startup_fallback=true bounded_queue_pressure=true "
-            "no_op_cleanup_skips_write=true driver_version=%s "
-            "operation_timeout_s=%.1f",
+            "no_op_cleanup_skips_write=true transient_read_retries=%s "
+            "driver_version=%s operation_timeout_s=%.1f",
             identity.pid if identity else "unknown",
             identity.parent_pid if identity else os.getpid(),
             str(replica_requested).lower(),
@@ -210,6 +264,7 @@ class ProcessIsolatedDatabase(Database):
             replica_startup_error,
             sync_interval,
             worker_generation,
+            TRANSIENT_READ_RETRY_ATTEMPTS,
             driver_version,
             operation_timeout,
         )

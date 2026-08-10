@@ -17,6 +17,13 @@ class _FakeRemoteConnection:
         self.identity = SimpleNamespace(pid=pid, parent_pid=os.getpid())
         self.worker_generation = 1
         self.closed = False
+        self.readiness_calls = 0
+
+    async def execute(self, sql, params=None):
+        assert str(sql) == "SELECT 1 AS sniperplug_turso_ready"
+        assert params is None
+        self.readiness_calls += 1
+        return object()
 
     async def close(self) -> None:
         self.closed = True
@@ -100,6 +107,7 @@ async def test_remote_process_is_safe_default(
     assert database.backend == "turso-process-isolated"
     assert database.replica_mode == "remote-process"
     assert isinstance(database.conn, _FakeRemoteConnection)
+    assert database.conn.readiness_calls == 3
     assert calls == [
         {
             "database": "libsql://primary.example",
@@ -148,6 +156,7 @@ async def test_parent_falls_back_when_replica_startup_crashes(
     assert database.backend == "turso-process-isolated"
     assert database.replica_mode == "remote-process-fallback:RuntimeError"
     assert isinstance(database.conn, _FakeRemoteConnection)
+    assert database.conn.readiness_calls == 3
     assert remote_calls
     assert "parent_remote_fallback=true" in caplog.text
     assert "stayed online through parent-level remote fallback" in caplog.text

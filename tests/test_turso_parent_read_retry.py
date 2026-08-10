@@ -6,6 +6,7 @@ from sniperplug.storage.libsql_process import LibsqlWorkerError
 from sniperplug.storage.process_database import (
     TRANSIENT_READ_RETRY_ATTEMPTS,
     _SnowflakeSafeParameters,
+    _await_turso_startup_readiness,
 )
 
 
@@ -28,6 +29,19 @@ class _SequencedBaseConnection:
 
 class _RetryConnection(_SnowflakeSafeParameters, _SequencedBaseConnection):
     pass
+
+
+class _ReadinessConnection:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls: list[str] = []
+
+    async def execute(self, sql, params=None):
+        self.calls.append(str(sql))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def _stream_error() -> LibsqlWorkerError:
@@ -155,3 +169,64 @@ async def test_transient_read_retry_is_bounded(monkeypatch) -> None:
     assert len(connection.calls) == TRANSIENT_READ_RETRY_ATTEMPTS
     assert connection.discard_calls == TRANSIENT_READ_RETRY_ATTEMPTS - 1
     assert sleeps == [0.35, 0.7, 1.4, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_startup_readiness_waits_for_stable_consecutive_reads(monkeypatch) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("sniperplug.storage.process_database.asyncio.sleep", fake_sleep)
+    connection = _ReadinessConnection([_gateway_error(), "ok", "ok", "ok"])
+
+    await _await_turso_startup_readiness(
+        connection,
+        timeout_seconds=60.0,
+        required_successes=3,
+    )
+
+    assert len(connection.calls) == 4
+    assert sleeps == [1.0, 0.5, 0.5]
+    assert set(connection.calls) == {"SELECT 1 AS sniperplug_turso_ready"}
+
+
+@pytest.mark.asyncio
+async def test_startup_readiness_resets_success_streak_after_transient_failure(monkeypatch) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("sniperplug.storage.process_database.asyncio.sleep", fake_sleep)
+    connection = _ReadinessConnection(["ok", _transport_eof_error(), "ok", "ok", "ok"])
+
+    await _await_turso_startup_readiness(
+        connection,
+        timeout_seconds=60.0,
+        required_successes=3,
+    )
+
+    assert len(connection.calls) == 5
+    assert sleeps == [0.5, 1.0, 0.5, 0.5]
+
+
+@pytest.mark.asyncio
+async def test_startup_readiness_does_not_hide_non_transient_database_errors(monkeypatch) -> None:
+    async def forbidden_sleep(_delay: float) -> None:
+        raise AssertionError("non-transient startup errors must not be retried")
+
+    monkeypatch.setattr("sniperplug.storage.process_database.asyncio.sleep", forbidden_sleep)
+    connection = _ReadinessConnection(
+        [LibsqlWorkerError("ValueError: no such table: broken_schema")]
+    )
+
+    with pytest.raises(LibsqlWorkerError, match="no such table"):
+        await _await_turso_startup_readiness(
+            connection,
+            timeout_seconds=60.0,
+            required_successes=3,
+        )
+
+    assert len(connection.calls) == 1

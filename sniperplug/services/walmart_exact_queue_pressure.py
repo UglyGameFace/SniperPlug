@@ -10,7 +10,14 @@ from sniperplug.services.walmart_exact_verification_queue import (
 )
 
 
-DEFAULT_PRESSURE_CAP = 2_000
+# Catalog emergency backpressure only needs to know whether total actionable
+# pressure has reached 600. The fresh-work policy trips much earlier (12/48),
+# and a single exact worker cannot legitimately hold hundreds of active leases.
+# Capping each lane at the amount its policy can actually use prevents a 20s
+# worker from scanning thousands of queue rows simply to produce diagnostics.
+DEFAULT_PRESSURE_CAP = 600
+FRESH_PRESSURE_CAP = 64
+VERIFYING_PRESSURE_CAP = 64
 
 
 async def load_walmart_exact_queue_pressure(
@@ -18,18 +25,21 @@ async def load_walmart_exact_queue_pressure(
     *,
     cap: int = DEFAULT_PRESSURE_CAP,
 ) -> WalmartExactQueueHealth:
-    """Load only bounded counts needed by scheduling and background logs.
+    """Load bounded scheduling counts without repeatedly scanning the queue.
 
-    The complete owner-health query intentionally scans the queue to report every
-    long-lived status. It is not appropriate before and after every exact cycle.
-    This snapshot stops after ``cap`` matching rows in each actionable lane,
-    which is enough for every drain/backpressure decision while protecting the
-    serialized database worker even when production enters remote-only fallback.
+    ``cap`` controls the scheduled-recheck lane because total emergency
+    backpressure can depend on it. Fresh/retry and active-lease lanes are capped
+    more tightly at the maximum information current scheduling policy can use.
+    Counts at a cap are intentionally lower bounds; callers use this snapshot for
+    threshold decisions and bounded logging, never owner-facing exact totals.
     """
 
     if db is None:
         return WalmartExactQueueHealth()
     bounded_cap = max(1, int(cap))
+    fresh_cap = min(bounded_cap, FRESH_PRESSURE_CAP)
+    recheck_cap = bounded_cap
+    verifying_cap = min(bounded_cap, VERIFYING_PRESSURE_CAP)
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -79,13 +89,13 @@ async def load_walmart_exact_queue_pressure(
             now_iso,
             discovery_cutoff,
             now_iso,
-            bounded_cap,
+            fresh_cap,
             now_iso,
             discovery_cutoff,
             now_iso,
-            bounded_cap,
+            recheck_cap,
             now_iso,
-            bounded_cap,
+            verifying_cap,
         ),
     )
     row = await cursor.fetchone()

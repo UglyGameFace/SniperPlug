@@ -62,11 +62,21 @@ def test_bounded_pressure_returns_only_scheduling_counts() -> None:
     assert health.verifying == 2
     assert health.total == 332
     assert conn.sql.count("LIMIT ?") == 3
-    assert conn.params[3] == 600
+    assert conn.params[3] == 64
     assert conn.params[7] == 600
-    assert conn.params[9] == 600
+    assert conn.params[9] == 64
     assert "SELECT *" not in conn.sql.upper()
     assert "identity_mismatch" not in conn.sql
+
+
+def test_exact_worker_can_request_a_tighter_all_lane_cap() -> None:
+    conn = PressureConnection()
+
+    asyncio.run(load_walmart_exact_queue_pressure(PressureDatabase(conn), cap=64))
+
+    assert conn.params[3] == 64
+    assert conn.params[7] == 64
+    assert conn.params[9] == 64
 
 
 def test_bounded_pressure_summary_does_not_claim_unmeasured_totals() -> None:
@@ -91,11 +101,15 @@ def test_background_workers_never_call_complete_queue_health() -> None:
     assert "load_walmart_exact_queue_pressure" in BULK_RUNTIME
     assert "load_walmart_exact_queue_health" not in BULK_RUNTIME
     assert "_pending_total" not in BULK_RUNTIME
+    assert "EXACT_WORKER_PRESSURE_CAP = 64" in BULK_RUNTIME
+    assert "cap=EXACT_WORKER_PRESSURE_CAP" in BULK_RUNTIME
 
 
-def test_pressure_query_is_capped_in_every_actionable_lane() -> None:
+def test_pressure_query_is_capped_to_policy_useful_work() -> None:
     assert PRESSURE.count("LIMIT ?") == 3
-    assert "DEFAULT_PRESSURE_CAP = 2_000" in PRESSURE
+    assert "DEFAULT_PRESSURE_CAP = 600" in PRESSURE
+    assert "FRESH_PRESSURE_CAP = 64" in PRESSURE
+    assert "VERIFYING_PRESSURE_CAP = 64" in PRESSURE
     assert "status IN ('pending', 'retry', 'failed', 'verifying')" in PRESSURE
     assert "'verified_markdown'" in PRESSURE
     assert "lease_until >= ?" in PRESSURE

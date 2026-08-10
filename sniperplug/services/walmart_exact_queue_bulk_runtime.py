@@ -41,6 +41,12 @@ from sniperplug.services.walmart_recheck_schedule_rearm import (
 )
 
 
+# The exact worker only needs to detect the fresh-work drain threshold (48).
+# A 64-row cap leaves headroom while preventing the 20-second worker from
+# rereading hundreds/thousands of scheduled rechecks before and after each batch.
+EXACT_WORKER_PRESSURE_CAP = 64
+
+
 async def process_actionable_walmart_exact_queue_batch(
     db: Any,
     *,
@@ -66,8 +72,8 @@ async def process_actionable_walmart_exact_queue_batch(
     Exact queue and offer-memory schema initialization is cached per live
     database connection. Terminal identity maintenance is bounded to a
     fifteen-minute cadence because terminal rows are already excluded from
-    ordinary claims immediately. Scheduling decisions use a bounded pressure
-    snapshot rather than a full-table owner-health scan on every cycle.
+    ordinary claims immediately. Scheduling decisions use a tightly bounded
+    pressure snapshot rather than rereading the scheduled-recheck backlog.
     """
 
     if db is None or provider is None or limit <= 0:
@@ -80,7 +86,10 @@ async def process_actionable_walmart_exact_queue_batch(
     await maybe_prune_walmart_exact_queue_bounded(conn, now=now)
     await rearm_legacy_due_rechecks_bounded(conn, now=now)
 
-    pressure_before = await load_walmart_exact_queue_pressure(db)
+    pressure_before = await load_walmart_exact_queue_pressure(
+        db,
+        cap=EXACT_WORKER_PRESSURE_CAP,
+    )
     drain_mode = should_use_drain_mode(pressure_before)
     effective_limit = max(1, int(limit))
     effective_concurrency = max(1, int(concurrency))
@@ -191,7 +200,10 @@ async def process_actionable_walmart_exact_queue_batch(
     )
     await conn.commit()
     store_seconds = max(0.0, time.monotonic() - store_started)
-    pressure_after = await load_walmart_exact_queue_pressure(db)
+    pressure_after = await load_walmart_exact_queue_pressure(
+        db,
+        cap=EXACT_WORKER_PRESSURE_CAP,
+    )
     return ExactQueueRuntimeResult(
         claimed=len(claims),
         pending_total=pressure_after.due_now,

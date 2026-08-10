@@ -110,14 +110,13 @@ async def run_storage_maintenance(
         params=((now - timedelta(days=max(1, int(feedback_event_days)))).isoformat(),),
         limit=batch_size,
     )
-    stale_active_deals_marked_expired = await update_rows(
+    stale_active_deals_marked_expired = await update_bounded_rows(
         conn,
-        """
-        UPDATE guild_active_deal_cache
-        SET status = 'expired'
-        WHERE status IN ('active', 'stale') AND last_seen_at < ?
-        """,
-        ((now - timedelta(hours=max(1, int(active_deal_stale_hours)))).isoformat(),),
+        table="guild_active_deal_cache",
+        set_sql="status = 'expired'",
+        where_sql="status IN ('active', 'stale') AND last_seen_at < ?",
+        params=((now - timedelta(hours=max(1, int(active_deal_stale_hours)))).isoformat(),),
+        limit=batch_size,
     )
     old_inactive_active_deals = await delete_bounded_rows(
         conn,
@@ -199,23 +198,21 @@ async def run_storage_maintenance(
     )
 
 
-async def delete_bounded_rows(
+async def _bounded_rowids(
     conn: Any,
     *,
     table: str,
     where_sql: str,
     params: tuple[Any, ...],
     limit: int,
-) -> int:
-    """Delete at most ``limit`` selected rowids and skip no-op writes."""
-
+) -> list[int]:
     safe_limit = max(1, min(int(limit), 5_000))
     cursor = await conn.execute(
         f"SELECT rowid FROM {table} WHERE {where_sql} ORDER BY rowid LIMIT ?",
         (*params, safe_limit),
     )
     rows = await cursor.fetchall()
-    rowids = []
+    rowids: list[int] = []
     for row in rows:
         try:
             value = row["rowid"]
@@ -227,9 +224,28 @@ async def delete_bounded_rows(
             continue
         if rowid not in rowids:
             rowids.append(rowid)
+    return rowids
+
+
+async def delete_bounded_rows(
+    conn: Any,
+    *,
+    table: str,
+    where_sql: str,
+    params: tuple[Any, ...],
+    limit: int,
+) -> int:
+    """Delete at most ``limit`` selected rowids and skip no-op writes."""
+
+    rowids = await _bounded_rowids(
+        conn,
+        table=table,
+        where_sql=where_sql,
+        params=params,
+        limit=limit,
+    )
     if not rowids:
         return 0
-
     placeholders = ",".join("?" for _ in rowids)
     await conn.execute(
         f"DELETE FROM {table} WHERE rowid IN ({placeholders})",
@@ -238,13 +254,29 @@ async def delete_bounded_rows(
     return len(rowids)
 
 
-async def update_rows(conn: Any, sql: str, params: tuple[Any, ...]) -> int:
-    cursor = await conn.execute(sql, params)
-    return row_count(cursor)
+async def update_bounded_rows(
+    conn: Any,
+    *,
+    table: str,
+    set_sql: str,
+    where_sql: str,
+    params: tuple[Any, ...],
+    limit: int,
+) -> int:
+    """Update at most ``limit`` selected rowids and skip no-op writes."""
 
-
-def row_count(cursor: Any) -> int:
-    try:
-        return max(0, int(getattr(cursor, "rowcount", 0) or 0))
-    except (TypeError, ValueError):
+    rowids = await _bounded_rowids(
+        conn,
+        table=table,
+        where_sql=where_sql,
+        params=params,
+        limit=limit,
+    )
+    if not rowids:
         return 0
+    placeholders = ",".join("?" for _ in rowids)
+    await conn.execute(
+        f"UPDATE {table} SET {set_sql} WHERE rowid IN ({placeholders})",
+        tuple(rowids),
+    )
+    return len(rowids)

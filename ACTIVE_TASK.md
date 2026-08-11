@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-Implementation, targeted regression coverage, repository CI, compilation/static validation, and initial cleanup are complete on PR #230 (`hotfix/turso-startup-outage-hold-v2`). Production completion remains unclaimed until the PR is merged, canonical Discloud app `1779293887444` is redeployed, and live startup logs prove a prolonged retryable Turso outage no longer terminates the process.
+Code-side implementation and pre-merge Definition-of-Done validation are complete on PR #230 (`hotfix/turso-startup-outage-hold-v2`). Production completion remains unclaimed until the PR is merged, canonical Discloud app `1779293887444` is redeployed, and live startup logs prove a prolonged retryable Turso outage no longer terminates the process.
 
 ## Task
 **SP-TURSO-STARTUP — Keep SniperPlug alive through prolonged retryable Turso outages**
@@ -42,13 +42,16 @@ Implementation, targeted regression coverage, repository CI, compilation/static 
 - `pip check`: **PASS — no broken requirements**.
 - `python -m compileall -q sniperplug tests *.py`: **PASS**.
 - Full Python 3.11 suite: **1,148 passed, 1 upstream `audioop` deprecation warning**.
+- The documentation-only validation-status commit also completed all three GitHub workflows successfully.
 
 ## Cleanup and conflict inspection
 - The fix modifies the existing readiness/retry implementation; no second startup gate, fallback database, compatibility shim, or duplicate retry service was added.
 - The production database remains the source of truth; there is no unsafe local SQLite failover or split-brain write path.
 - Embedded replicas remain opt-in and unchanged.
-- Branch was created directly from merged `main` at `a99ebcbb651aa01083a880ac7714adb53bd07124` (PR #229) and was zero commits behind at task start.
-- Final branch-vs-main comparison, changed-file inspection, PR mergeability, and review-thread inspection are required once this status commit finishes CI.
+- Branch comparison after validation showed **0 commits behind `main`** and only three intended files changed: this task record, `sniperplug/storage/process_database.py`, and `tests/test_turso_parent_read_retry.py`.
+- PR #230 is mergeable.
+- No inline review threads or submitted reviews exist. The only PR comment is the existing Qodo billing-paused notice; it contains no code finding.
+- Final diff inspection found no duplicate implementation, temporary fallback, alternate database path, or unrelated feature change.
 
 ## Current branch / PR
 - Branch: `hotfix/turso-startup-outage-hold-v2`

@@ -1,59 +1,61 @@
 # Active Task
 
 ## Status
-Implementation and validation complete on PR #225 (`fix/dm-rules-optional-fields`). PR #224 is already merged into `main`; this follow-up fixes the live modal behavior reported after deployment. Production remains unclaimed until #225 is merged, deployed to the canonical Discloud app, and verified in Discord.
+Implementation is in progress on `hotfix/turso-startup-outage-hold-v2`. Production completion is unclaimed until CI is green, the final diff is clean, the change is merged, canonical Discloud app `1779293887444` is redeployed, and live startup logs prove a prolonged retryable Turso outage no longer terminates the process.
 
 ## Task
-**SP-DM-UX-225 — Make the personal DM rules form partial and non-forcing**
+**SP-TURSO-STARTUP — Keep SniperPlug alive through prolonged retryable Turso outages**
 
 ## Scope
-1. Keep all deal matching, exact proof, Smart-mode, public threshold, dedupe, and Flip Override behavior unchanged.
-2. Let a user edit only the personal DM rule they actually want to change.
-3. Make every DM rules modal field optional; blank must mean keep the current value.
-4. Stop pre-filling all current values into the editable text boxes.
-5. Show current values as placeholders/hints instead.
-6. Keep maximum-price removal explicit so blank does not accidentally clear a limit.
-7. Preserve the existing draft / Save changes / discard workflow and validate the full suite.
+1. Fix the startup failure shown immediately after merged PR #229 was deployed.
+2. Preserve the stable-read gate before schema/migration work.
+3. Never run migrations while Turso's read path is degraded.
+4. Never turn retryable Hrana 502/EOF/worker-transport failures into a timed startup crash loop.
+5. Keep non-transient database/configuration errors fail-fast.
+6. Keep writes, transaction-adjacent failures, and unknown commit outcomes non-replayable.
+7. Preserve the process-isolated Turso worker and canonical database identity.
+8. Validate focused startup/retry safety plus the repository CI suite before merge.
 
 ## Findings
-- The deployed PR #224 modal marked threshold, savings, score, and daily cap as required and pre-populated all scalar values.
-- That made a single-setting edit feel like a full configuration rewrite even though most values were unrelated to the requested change.
-- Maximum price needed three distinct meanings: blank = keep current, numeric value = set/update limit, explicit `off` = remove limit.
+- PR #229 correctly added a stable-read gate, but its implementation still raised `TimeoutError` after 300 seconds of sustained retryable failures.
+- The supplied production log hit that exact branch after twelve readiness probes: Turso repeatedly returned Hrana `502 Bad Gateway` with `upstream forward failed`, then `_await_turso_startup_readiness()` raised and `setup_hook` terminated the bot.
+- This contradicted PR #229's stated goal of keeping the startup process alive and backing off instead of entering a crash loop.
+- `libsql.connect()` creating a connection object is not proof that the selected Turso host/route can execute reads; Turso's own Python quickstart documents remote access as an over-the-wire path, so provider/network failures must remain recoverable at this boundary.
+- The current retry wrapper only caught `LibsqlWorkerError`; a parent worker timeout or lost worker/pipe during a read could therefore still bypass the safe read retry path even though replaying a read-only `SELECT` is safe.
 
 ## Changes
-- All five personal DM rule fields are optional.
-- Blank fields now mean `keep current value` and are ignored by the parser/update path.
-- Current values are displayed through field placeholders instead of editable defaults.
-- Maximum price accepts explicit `off`, `none`, `clear`, or `no limit` to remove an existing limit; blank keeps the current limit unchanged.
-- Modal submission updates only fields that were actually supplied and changed.
-- Submitting an entirely blank form leaves every current setting untouched and says so.
-- The DM menu explains that the modal is partial-edit: fill only what you want to change.
-- Focused regressions cover blank/no-op submission, threshold-only edits, explicit max-price removal, validation, and non-required modal fields.
-- The existing category-storage static regression was made whitespace-insensitive after the first CI run exposed that it was asserting one exact source-line layout rather than the behavior/contract.
+- The former 300-second readiness timeout is now a degraded-status reporting window, not a fatal deadline.
+- Retryable startup failures continue waiting indefinitely with bounded exponential backoff while migrations remain held.
+- A prolonged outage emits an explicit status log stating `retryable_outage_fatal=false` instead of raising `TimeoutError`.
+- The readiness gate resets the suspect worker after an exhausted retryable read before the next outer probe.
+- Safe parent read retry now also recognizes parent worker timeouts and known worker/pipe transport-loss errors.
+- Runtime read retries may recover those parent worker transport failures, while writes still never replay.
+- Startup telemetry now reports `startup_readiness_status_window_s` and `retryable_startup_outage_fatal=false` rather than implying the window is a fatal timeout.
 
 ## Validation
-- Initial PR run: import/compile passed; full suite found one static whitespace-only assertion failure in `test_menu_category_storage_is_not_keyword_capped`.
-- Corrected run on head `16691d9984982bdee216dfd85661cb1d5757e8a7`: **Import smoke PASS**.
-- Corrected run: **Python Check PASS**.
-- Corrected run: **Python tests PASS**, including `pip check`, `python -m compileall -q sniperplug tests *.py`, and full `pytest -q`.
-- Full suite reported **1,131 passed** after the correction.
+- Focused regressions added for parent-worker read timeout recovery.
+- Focused regression added proving a parent-worker timeout on a write is never replayed.
+- Focused regression added reproducing a retryable Hrana 502 outage that lasts beyond the readiness reporting window and then recovers; startup must complete rather than raise.
+- Existing consecutive-success, success-streak reset, non-transient failure, bounded read retry, EOF read recovery, write no-replay, and transaction-adjacent no-replay tests remain in place.
+- Repository CI, import smoke, compile/static validation, and full pytest suite are still pending on the PR branch.
 
 ## Cleanup and conflict inspection
-- Branch is based directly on merged `main` from PR #224 and is not behind it.
-- Changes are limited to the DM preference view, focused DM-rule tests, one whitespace-robust existing regression, and this active-task record.
-- No new preference storage, alternate save path, matching rule, public threshold rule, or compatibility shim was introduced.
-- Existing `Save changes` remains the only persistence action from the visual menu.
+- The fix modifies the existing readiness/retry implementation; no second startup gate, fallback database, compatibility shim, or duplicate retry service was added.
+- The production database remains the source of truth; there is no unsafe local SQLite failover or split-brain write path.
+- Embedded replicas remain opt-in and unchanged.
+- Branch was created directly from merged `main` at `a99ebcbb651aa01083a880ac7714adb53bd07124` (PR #229) and was zero commits behind at task start.
 
 ## Current branch / PR
-- Branch: `fix/dm-rules-optional-fields`
-- PR: #225 — `Make DM rules form optional per field`
+- Branch: `hotfix/turso-startup-outage-hold-v2`
+- PR: pending creation after initial implementation record.
 
 ## Deployment boundary
 - Canonical Discloud app: `1779293887444`.
 - Duplicate app `1785806676351` must never be targeted.
-- Do not claim production completion until merged `main` is deployed to the canonical app and the live Discord form shows no forced fields.
+- Do not claim production completion until merged `main` is deployed and live logs show either stable Turso readiness or continued bounded waiting during a retryable outage without an unhandled startup exception.
 
 ## Backlog
+- Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` only after this Turso startup task satisfies its Definition of Done.
 - Investigate the high volume of Walmart `seller` identity blocks and transient exact-fetch failures as a separate exact-verification task.
 - Continue verifying PR #223 delivery-health accounting from live post-deploy logs.
 - PR #200 remains isolated and must not be mixed into this task.

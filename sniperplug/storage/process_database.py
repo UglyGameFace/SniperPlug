@@ -48,6 +48,13 @@ TRANSIENT_READ_TRANSPORT_TERMS = (
     "broken pipe",
     "connection aborted",
 )
+TRANSIENT_PARENT_WORKER_TERMS = (
+    "worker process is not running",
+    "could not send request to turso/libsql worker",
+    "turso/libsql worker closed its response pipe",
+    "turso/libsql worker did not initialize within",
+    "turso/libsql worker pid=",
+)
 
 
 def libsql_safe_parameter(value: Any) -> Any:
@@ -88,15 +95,26 @@ def _is_retryable_parent_transport_error(exc: BaseException) -> bool:
     )
 
 
+def _is_retryable_parent_worker_error(exc: BaseException) -> bool:
+    """Recognize parent/worker transport loss that is safe to replay for reads."""
+
+    if isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError, EOFError)):
+        return True
+    lowered = str(exc or "").lower()
+    return isinstance(exc, RuntimeError) and any(
+        term in lowered for term in TRANSIENT_PARENT_WORKER_TERMS
+    )
+
+
 def _safe_parent_read_retry(sql: str, exc: BaseException) -> bool:
     """Allow parent retries only for read-only, non-transactional worker errors.
 
     The child process already protects transaction semantics. A native Hrana
     stream failure may be followed immediately by another transient gateway or
     HTTP-body transport failure on the replacement connection. Those failures
-    are reported as non-fatal ``LibsqlWorkerError`` values. Retrying that read
-    in the parent is safe, while any worker error explicitly marked as
-    transaction-adjacent remains non-replayable.
+    are reported as non-fatal worker/transport errors. Retrying that read in the
+    parent is safe, while any worker error explicitly marked as transaction-
+    adjacent remains non-replayable.
     """
 
     if not _is_read_only_sql(sql):
@@ -113,6 +131,7 @@ def _safe_parent_read_retry(sql: str, exc: BaseException) -> bool:
     return (
         _is_retryable_libsql_stream_error(exc)
         or _is_retryable_parent_transport_error(exc)
+        or _is_retryable_parent_worker_error(exc)
     )
 
 
@@ -132,20 +151,22 @@ async def _await_turso_startup_readiness(
     timeout_seconds: float,
     required_successes: int = TURSO_STARTUP_READINESS_REQUIRED_SUCCESSES,
 ) -> None:
-    """Wait for stable read connectivity before startup performs any migrations.
+    """Wait for stable read connectivity before startup performs migrations.
 
     ``libsql.connect`` can succeed while the selected Turso database host or its
     upstream route is still returning transient Hrana 502/EOF failures. Startup
-    is the worst place to discover that because a failed read aborts
-    ``setup_hook`` and causes a crash loop. Probe only with ``SELECT 1`` and
-    require several consecutive successes before allowing schema or migration
-    writes to begin. Runtime reads keep their normal short retry budget.
+    must never turn a retryable provider outage into a Discloud crash loop, so
+    retryable read failures wait indefinitely with bounded backoff. The legacy
+    ``timeout_seconds`` setting is retained as the degraded-status reporting
+    window; it is no longer a fatal deadline. Non-transient database errors still
+    fail immediately, and migrations remain held until stable reads return.
     """
 
-    timeout = max(5.0, float(timeout_seconds))
+    status_window = max(5.0, float(timeout_seconds))
     successes_needed = max(1, int(required_successes))
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    started = loop.time()
+    last_outage_notice = started
     consecutive_successes = 0
     failure_streak = 0
     probe_count = 0
@@ -154,31 +175,40 @@ async def _await_turso_startup_readiness(
         probe_count += 1
         try:
             await connection.execute("SELECT 1 AS sniperplug_turso_ready")
-        except LibsqlWorkerError as exc:
+        except Exception as exc:
             if not _safe_parent_read_retry("SELECT 1", exc):
                 raise
             consecutive_successes = 0
             failure_streak += 1
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise TimeoutError(
-                    "Turso startup readiness did not stabilize within "
-                    f"{timeout:.1f}s after {probe_count} probes."
-                ) from exc
+            worker_reset = await _reset_worker_for_transient_read(connection)
+            now = loop.time()
+            elapsed = max(0.0, now - started)
+            if now - last_outage_notice >= status_window:
+                log.error(
+                    "Turso startup connectivity remains degraded after %.1fs; "
+                    "migrations are still held and startup will continue waiting "
+                    "instead of crashing retryable_outage_fatal=false probes=%s "
+                    "worker_reset=%s error=%s",
+                    elapsed,
+                    probe_count,
+                    str(worker_reset).lower(),
+                    str(exc).splitlines()[0][:240],
+                )
+                last_outage_notice = now
             delay = min(
                 TURSO_STARTUP_READINESS_RETRY_MAX_SECONDS,
                 TURSO_STARTUP_READINESS_RETRY_BASE_SECONDS
                 * (2 ** min(failure_streak - 1, 4)),
-                remaining,
             )
             log.warning(
                 "Turso startup readiness still degraded; holding migrations "
                 "probe=%s consecutive_successes=0/%s retry_in_s=%.2f "
-                "remaining_s=%.1f error=%s",
+                "elapsed_s=%.1f worker_reset=%s error=%s",
                 probe_count,
                 successes_needed,
                 delay,
-                remaining,
+                elapsed,
+                str(worker_reset).lower(),
                 str(exc).splitlines()[0][:240],
             )
             await asyncio.sleep(delay)
@@ -187,24 +217,18 @@ async def _await_turso_startup_readiness(
         failure_streak = 0
         consecutive_successes += 1
         if consecutive_successes >= successes_needed:
+            elapsed = max(0.0, loop.time() - started)
             log.info(
                 "Turso startup readiness confirmed probes=%s consecutive_successes=%s "
-                "timeout_s=%.1f",
+                "elapsed_s=%.1f status_window_s=%.1f retryable_outage_fatal=false",
                 probe_count,
                 consecutive_successes,
-                timeout,
+                elapsed,
+                status_window,
             )
             return
 
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            raise TimeoutError(
-                "Turso startup readiness timed out before consecutive read "
-                f"successes reached {successes_needed}."
-            )
-        await asyncio.sleep(
-            min(TURSO_STARTUP_READINESS_SUCCESS_SPACING_SECONDS, remaining)
-        )
+        await asyncio.sleep(TURSO_STARTUP_READINESS_SUCCESS_SPACING_SECONDS)
 
 
 class _SnowflakeSafeParameters:
@@ -220,7 +244,7 @@ class _SnowflakeSafeParameters:
         for attempt in range(1, TRANSIENT_READ_RETRY_ATTEMPTS + 1):
             try:
                 return await super().execute(sql, safe_params)
-            except LibsqlWorkerError as exc:
+            except Exception as exc:
                 if not _safe_parent_read_retry(sql, exc):
                     raise
                 if attempt >= TRANSIENT_READ_RETRY_ATTEMPTS:
@@ -302,7 +326,7 @@ class ProcessIsolatedDatabase(Database):
             "TURSO_PROCESS_STARTUP_TIMEOUT_SECONDS",
             DEFAULT_STARTUP_TIMEOUT_SECONDS,
         )
-        readiness_timeout = _positive_float_env(
+        readiness_status_window = _positive_float_env(
             "TURSO_STARTUP_READINESS_TIMEOUT_SECONDS",
             DEFAULT_TURSO_STARTUP_READINESS_TIMEOUT_SECONDS,
         )
@@ -364,7 +388,7 @@ class ProcessIsolatedDatabase(Database):
 
         await _await_turso_startup_readiness(
             connection,
-            timeout_seconds=readiness_timeout,
+            timeout_seconds=readiness_status_window,
         )
 
         self.conn = connection
@@ -387,8 +411,9 @@ class ProcessIsolatedDatabase(Database):
             "worker_generation=%s safe_remote_default=true "
             "parent_startup_fallback=true bounded_queue_pressure=true "
             "no_op_cleanup_skips_write=true transient_read_retries=%s "
-            "startup_readiness_timeout_s=%.1f startup_readiness_successes=%s "
-            "driver_version=%s operation_timeout_s=%.1f",
+            "startup_readiness_status_window_s=%.1f startup_readiness_successes=%s "
+            "retryable_startup_outage_fatal=false driver_version=%s "
+            "operation_timeout_s=%.1f",
             identity.pid if identity else "unknown",
             identity.parent_pid if identity else os.getpid(),
             str(replica_requested).lower(),
@@ -398,7 +423,7 @@ class ProcessIsolatedDatabase(Database):
             sync_interval,
             worker_generation,
             TRANSIENT_READ_RETRY_ATTEMPTS,
-            readiness_timeout,
+            readiness_status_window,
             TURSO_STARTUP_READINESS_REQUIRED_SUCCESSES,
             driver_version,
             operation_timeout,

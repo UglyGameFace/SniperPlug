@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-Implementation is in progress on `hotfix/turso-startup-outage-hold-v2`. Production completion is unclaimed until CI is green, the final diff is clean, the change is merged, canonical Discloud app `1779293887444` is redeployed, and live startup logs prove a prolonged retryable Turso outage no longer terminates the process.
+Implementation, targeted regression coverage, repository CI, compilation/static validation, and initial cleanup are complete on PR #230 (`hotfix/turso-startup-outage-hold-v2`). Production completion remains unclaimed until the PR is merged, canonical Discloud app `1779293887444` is redeployed, and live startup logs prove a prolonged retryable Turso outage no longer terminates the process.
 
 ## Task
 **SP-TURSO-STARTUP — Keep SniperPlug alive through prolonged retryable Turso outages**
@@ -20,8 +20,8 @@ Implementation is in progress on `hotfix/turso-startup-outage-hold-v2`. Producti
 - PR #229 correctly added a stable-read gate, but its implementation still raised `TimeoutError` after 300 seconds of sustained retryable failures.
 - The supplied production log hit that exact branch after twelve readiness probes: Turso repeatedly returned Hrana `502 Bad Gateway` with `upstream forward failed`, then `_await_turso_startup_readiness()` raised and `setup_hook` terminated the bot.
 - This contradicted PR #229's stated goal of keeping the startup process alive and backing off instead of entering a crash loop.
-- `libsql.connect()` creating a connection object is not proof that the selected Turso host/route can execute reads; Turso's own Python quickstart documents remote access as an over-the-wire path, so provider/network failures must remain recoverable at this boundary.
-- The current retry wrapper only caught `LibsqlWorkerError`; a parent worker timeout or lost worker/pipe during a read could therefore still bypass the safe read retry path even though replaying a read-only `SELECT` is safe.
+- `libsql.connect()` creating a connection object is not proof that the selected Turso host/route can execute reads; the remote database path can remain transiently unavailable after the worker itself initializes.
+- The prior retry wrapper only caught `LibsqlWorkerError`; a parent worker timeout or lost worker/pipe during a read could therefore bypass the safe read retry path even though replaying a read-only `SELECT` is safe.
 
 ## Changes
 - The former 300-second readiness timeout is now a degraded-status reporting window, not a fatal deadline.
@@ -33,21 +33,26 @@ Implementation is in progress on `hotfix/turso-startup-outage-hold-v2`. Producti
 - Startup telemetry now reports `startup_readiness_status_window_s` and `retryable_startup_outage_fatal=false` rather than implying the window is a fatal timeout.
 
 ## Validation
-- Focused regressions added for parent-worker read timeout recovery.
-- Focused regression added proving a parent-worker timeout on a write is never replayed.
-- Focused regression added reproducing a retryable Hrana 502 outage that lasts beyond the readiness reporting window and then recovers; startup must complete rather than raise.
-- Existing consecutive-success, success-streak reset, non-transient failure, bounded read retry, EOF read recovery, write no-replay, and transaction-adjacent no-replay tests remain in place.
-- Repository CI, import smoke, compile/static validation, and full pytest suite are still pending on the PR branch.
+- Focused regressions cover parent-worker read timeout recovery and prove a parent-worker timeout on a write is never replayed.
+- A production-shaped Hrana 502 regression exceeds the readiness reporting window and then recovers; startup completes rather than raising the old timeout.
+- Existing consecutive-success, success-streak reset, non-transient failure, bounded read retry, EOF read recovery, write no-replay, and transaction-adjacent no-replay tests remain passing.
+- GitHub Import smoke check: **PASS**.
+- GitHub Python Check (Python 3.12; dependency check, compile, import smoke, full suite): **PASS**.
+- GitHub Python tests (Python 3.11.15): **PASS**.
+- `pip check`: **PASS — no broken requirements**.
+- `python -m compileall -q sniperplug tests *.py`: **PASS**.
+- Full Python 3.11 suite: **1,148 passed, 1 upstream `audioop` deprecation warning**.
 
 ## Cleanup and conflict inspection
 - The fix modifies the existing readiness/retry implementation; no second startup gate, fallback database, compatibility shim, or duplicate retry service was added.
 - The production database remains the source of truth; there is no unsafe local SQLite failover or split-brain write path.
 - Embedded replicas remain opt-in and unchanged.
 - Branch was created directly from merged `main` at `a99ebcbb651aa01083a880ac7714adb53bd07124` (PR #229) and was zero commits behind at task start.
+- Final branch-vs-main comparison, changed-file inspection, PR mergeability, and review-thread inspection are required once this status commit finishes CI.
 
 ## Current branch / PR
 - Branch: `hotfix/turso-startup-outage-hold-v2`
-- PR: pending creation after initial implementation record.
+- PR: #230 — `Keep startup alive through prolonged Turso outages`
 
 ## Deployment boundary
 - Canonical Discloud app: `1779293887444`.

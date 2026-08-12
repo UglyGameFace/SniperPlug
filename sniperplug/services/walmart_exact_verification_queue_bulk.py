@@ -83,14 +83,18 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
 ) -> VerificationQueueEnqueueResult:
     """Persist globally deduplicated discovery leads without write amplification.
 
-    Search prices remain prioritization hints only. Production catalog passes
+    Ordinary discovery hints remain prioritization-only. When a catalog result
+    contains a complete atomic selected offer, a bounded normalized proof
+    snapshot is persisted separately so the canonical exact worker can reuse it
+    while it is fresh and still revalidate item, price, seller, offer, variant,
+    and marketplace shipping before promotion. Production catalog passes
     repeatedly rediscover many of the same item IDs, so the enqueue path first
     loads one bounded projection for those primary keys and writes only rows
-    that are new, materially changed, due for a pending/retry rearm, or old
-    enough to need a retention heartbeat. Schema initialization is shared with
-    the exact worker's once-per-connection cache.
+    that are new, materially changed, safely rearmed, or old enough to need a
+    retention/proof heartbeat. Schema initialization is shared with the exact
+    worker's once-per-connection cache.
 
-    Sixty rows use 960 parameters, below SQLite's conservative historical
+    Fifty-five rows use 990 parameters, below SQLite's conservative historical
     999-variable limit. A normal 75-100 row pass therefore uses no writes when
     every row is a recent unchanged rediscovery, and at most two statements
     when the complete pass is genuinely new or changed.

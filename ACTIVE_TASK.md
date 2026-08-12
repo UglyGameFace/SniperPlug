@@ -1,57 +1,50 @@
 # Active Task
 
 ## Status
-**Complete — SP-TURSO-STARTUP satisfied its Definition of Done in production after merged PR #230.** Canonical Discloud app `1779293887444` redeployed merged `main` at `23e6d0fd77f3fe35921bb6d0fffcc483c9cb8420` and completed a clean startup through the new readiness path.
+**Active — SP-DM-DIVERSITY.** PR #231 merged successfully and closed SP-TURSO-STARTUP after production validation. Work is isolated on branch `fix/dm-alert-diversity-unlimited`.
 
 ## Task
-**SP-TURSO-STARTUP — Keep SniperPlug alive through prolonged retryable Turso outages**
+**SP-DM-DIVERSITY — Prevent broad Smart DM alerts from being monopolized by apparel/fashion deals and add a true Unlimited daily-limit option**
 
-## Scope completed
-1. Preserve the stable-read gate before schema/migration work.
-2. Never run migrations while Turso's read path is degraded.
-3. Never turn retryable Hrana 502/EOF/worker-transport failures into the old timed startup crash loop.
-4. Keep non-transient database/configuration errors fail-fast.
-5. Keep writes, transaction-adjacent failures, and unknown commit outcomes non-replayable.
-6. Preserve the process-isolated Turso worker and canonical database identity.
+## Scope
+1. Preserve every existing hard personal filter, exact-price proof requirement, dedupe rule, retailer/location guard, favorite, mute, hard allowlist, and strict Flip Override behavior.
+2. Stop broad Smart alerts with a finite daily cap from letting one category family consume the user's available DM slots merely because those events arrived first.
+3. Treat `premium_apparel`, `shoes_apparel`, and `sneakers` as one fashion family for delivery balancing so aliases cannot bypass the guard.
+4. Keep intentional user choices authoritative: hard allowlists, favorite categories, and strict Flip Override opportunities are not suppressed by automatic diversity balancing.
+5. Add one shared durable delivery policy used by live Walmart bulk fanout and verified HP/Target event fanout; retain compatible semantics in the legacy Walmart fanout implementation.
+6. Add a real Unlimited personal-DM option. Unlimited removes the total daily alert cap rather than encoding a fake large number; it must survive normalization/storage and display clearly in the UI.
+7. Make diversity state durable across process restarts rather than relying on in-memory counters.
+8. Add focused regression coverage, compile/static validation, full-suite validation, cleanup, and conflict inspection before claiming code-side completion.
 
-## Root cause
-- PR #229 correctly added a stable-read gate but still raised `TimeoutError` after 300 seconds of sustained retryable failures.
-- Production hit that exact branch on Aug 10 while Turso repeatedly returned Hrana `502 Bad Gateway` / `upstream forward failed`.
-- A parent worker timeout or lost worker/pipe during a read could also bypass the safe read retry path because the wrapper only caught `LibsqlWorkerError`.
+## Findings
+- `sniperplug/services/walmart_global_deal_fanout_bulk.py` is the live Walmart scheduled fanout imported by `global_auto_scan_runner.py`.
+- Walmart bulk fanout evaluates verified events in queue/FIFO order and immediately sends each matched DM until the user's total daily receipt count reaches `max_alerts_per_day`.
+- `sniperplug/services/verified_retailer_event_fanout.py` uses the same total-count-only behavior for HP/Target verified events.
+- No shared delivery-diversity guard currently exists, so an apparel-heavy verified wave can consume a finite daily cap before later tech/home/gaming events arrive.
+- The current preference model clamps `max_alerts_per_day` to 1–100, the UI rejects values outside 1–100, and `_preference_from_row` converts a stored zero back to the default. Therefore Unlimited does not exist today.
+- Existing DM receipts persist only `user_id`, `deal_key`, and `delivered_at`; category-family counts cannot currently survive a restart.
+- The live matcher already knows category keys, favorites, hard allowlists, mutes, and strict flip qualification, so the delivery policy can preserve those decisions instead of guessing from titles a second time.
 
-## Changes delivered by PR #230
-- The former 300-second readiness timeout is now a degraded-status reporting window, not a fatal deadline.
-- Retryable startup failures continue waiting with bounded exponential backoff while migrations remain held.
-- Prolonged outages emit `retryable_outage_fatal=false` telemetry instead of terminating startup.
-- The readiness gate resets suspect workers between retryable outer probes.
-- Safe read-only retry recognizes parent worker timeouts and known worker/pipe transport-loss errors.
-- Writes still never replay after an uncertain failure.
+## Planned implementation
+- Use `0` as the canonical durable Unlimited sentinel while retaining 25/day as the default for existing users.
+- Add explicit UI parsing/display for `unlimited`/equivalent no-cap terms rather than exposing the sentinel as a magic number.
+- Add durable per-delivery category-family receipt metadata without destructively altering the existing receipt table.
+- Add one shared DM delivery gate that enforces the finite total cap first, then applies family balancing only to broad Smart alerts where slot scarcity exists.
+- Unlimited subscribers receive every otherwise-qualifying deal; diversity balancing does not silently turn Unlimited into another hidden cap.
+- Integrate the shared gate into Walmart bulk, verified-retailer, and retained legacy Walmart DM delivery paths.
 
 ## Validation
-- Import smoke check: PASS.
-- Python Check on Python 3.12: PASS.
-- Python tests on Python 3.11.15: PASS.
-- `pip check`: PASS.
-- `python -m compileall -q sniperplug tests *.py`: PASS.
-- Full Python 3.11 suite: 1,148 passed with one upstream `audioop` deprecation warning.
-- Final branch inspection found no duplicate startup gate, alternate database, temporary fallback, or unrelated feature change.
-
-## Live production proof — Aug 11, 2026
-- Merged `main` deployed automatically to canonical Discloud app `1779293887444`.
-- Startup logged `Turso startup readiness confirmed probes=3 consecutive_successes=3 elapsed_s=1.0 status_window_s=300.0 retryable_outage_fatal=false`.
-- Runtime telemetry logged `retryable_startup_outage_fatal=false`.
-- Database connected as `turso-process-isolated` and schema initialization completed.
-- Discord gateway connected and `SniperPlug online as SniperPlug#1450` was logged.
-- The old `TimeoutError: Turso startup readiness did not stabilize within 300.0s` appears only in the historical Aug 10 log section and did not recur after the Aug 11 deployment.
+- Pending implementation.
 
 ## Cleanup status
-- Startup task is closed. No additional startup patch is required from the supplied production evidence.
-- PR #231 is the documentation-only closure record for this completed task.
-- No runtime code is changed by PR #231.
+- No implementation changes have been made yet beyond this task record.
+- No second matcher or retailer-specific diversity policy will be introduced.
+
+## Blockers
+- None currently.
 
 ## Backlog
-- **SP-DM-DIVERSITY — Prevent broad smart DM alerts from being monopolized by apparel/fashion deals.** Root-cause tracing found that the matcher has no delivery-diversity guard and the shared daily cap is consumed in arrival order. Preserve intentional single-category/favorite choices and use one shared policy across live Walmart and verified-retailer DM fanout paths.
-- Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content`.
+- Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` only after SP-DM-DIVERSITY satisfies Definition of Done.
 - Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings during Walmart drain-mode exact verification.
 - Investigate the high volume of Walmart `seller` identity blocks and transient exact-fetch failures.
 - Continue verifying PR #223 delivery-health accounting from live post-deploy logs.

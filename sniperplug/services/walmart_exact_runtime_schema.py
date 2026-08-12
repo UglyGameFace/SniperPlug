@@ -20,7 +20,8 @@ from sniperplug.services.walmart_global_offer_memory import (
 
 
 TERMINAL_MAINTENANCE_INTERVAL_SECONDS = 15 * 60
-CLAIM_ORDER_INDEX = f"idx_{QUEUE_TABLE}_claim_order"
+LEGACY_CLAIM_ORDER_INDEX = f"idx_{QUEUE_TABLE}_claim_order"
+CLAIM_ORDER_INDEX = f"idx_{QUEUE_TABLE}_claim_order_v2"
 STATUS_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_due"
 _STATE_ATTR = "_sniperplug_walmart_exact_runtime_state"
 _FALLBACK_STATES: dict[int, "_RuntimeState"] = {}
@@ -80,6 +81,7 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
         if state.schema_ready:
             return
         await ensure_walmart_exact_verification_queue(db)
+        await conn.execute(f"DROP INDEX IF EXISTS {LEGACY_CLAIM_ORDER_INDEX}")
         await conn.execute(
             f"""
             CREATE INDEX IF NOT EXISTS {CLAIM_ORDER_INDEX}
@@ -88,13 +90,14 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
                     WHEN 'pending' THEN 0
                     WHEN 'retry' THEN 1
                     WHEN 'failed' THEN 2
-                    WHEN 'verifying' THEN 3
-                    WHEN 'verified_markdown' THEN 4
-                    WHEN 'verified_under_threshold' THEN 5
-                    WHEN 'verified_no_reference' THEN 6
-                    WHEN 'verified_reference' THEN 7
-                    WHEN 'not_buyable' THEN 8
-                    ELSE 9
+                    WHEN 'page_retry' THEN 3
+                    WHEN 'verifying' THEN 4
+                    WHEN 'verified_markdown' THEN 5
+                    WHEN 'verified_under_threshold' THEN 6
+                    WHEN 'verified_no_reference' THEN 7
+                    WHEN 'verified_reference' THEN 8
+                    WHEN 'not_buyable' THEN 9
+                    ELSE 10
                 END,
                 priority_score DESC,
                 last_seen_at DESC,

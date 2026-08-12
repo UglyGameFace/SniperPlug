@@ -69,11 +69,13 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
         await runtime_schema.ensure_exact_runtime_schema_once(second)
 
         assert calls == {"queue": 2, "offer": 2}
-        assert first_conn.execute_count == 2
+        assert first_conn.execute_count == 3
         assert first_conn.commit_count == 1
-        assert second_conn.execute_count == 2
+        assert second_conn.execute_count == 3
         assert second_conn.commit_count == 1
-        claim_sql, pressure_sql = first_conn.sql
+        drop_legacy_sql, claim_sql, pressure_sql = first_conn.sql
+        assert runtime_schema.LEGACY_CLAIM_ORDER_INDEX in drop_legacy_sql
+        assert "DROP INDEX IF EXISTS" in drop_legacy_sql
         assert runtime_schema.CLAIM_ORDER_INDEX in claim_sql
         assert "CASE status" in claim_sql
         assert "priority_score DESC" in claim_sql
@@ -132,7 +134,8 @@ def test_claim_query_order_matches_claim_order_index() -> None:
     for fragment in (
         "CASE status",
         "WHEN 'pending' THEN 0",
-        "WHEN 'verified_markdown' THEN 4",
+        "WHEN 'page_retry' THEN 3",
+        "WHEN 'verified_markdown' THEN 5",
         "priority_score DESC",
         "last_seen_at DESC",
     ):

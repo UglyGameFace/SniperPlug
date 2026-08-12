@@ -751,7 +751,7 @@ def _log_public_skip(
     log.info(
         "Global Walmart public destination decision guild=%s deal=%s threshold=%s "
         "discount=%s price=%s posted=%s recent_duplicate=%s reserved_duplicate=%s "
-        "not_alertable=%s disabled=%s wrong_retailer=%s label=%s",
+        "not_alertable=%s not_alertable_reasons=%s disabled=%s wrong_retailer=%s label=%s",
         guild_id,
         event.deal_key,
         threshold,
@@ -761,6 +761,7 @@ def _log_public_skip(
         int(getattr(result, "skipped_recent_alert_duplicate", 0) or 0),
         int(getattr(result, "skipped_reserved_duplicate", 0) or 0),
         int(getattr(result, "skipped_not_alertable", 0) or 0),
+        list(getattr(result, "not_alertable_reasons", ()) or ()),
         int(getattr(result, "skipped_disabled", 0) or 0),
         int(getattr(result, "skipped_wrong_retailer", 0) or 0),
         _compact(getattr(event.card, "label", None), 100),

@@ -23,6 +23,7 @@ from sniperplug.services.walmart_exact_queue_health import (
     load_walmart_exact_queue_health,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
+    PAGE_RETRY_STATUS,
     QUEUE_TABLE,
     _classify_exact_candidate,
     _pending_total,
@@ -44,6 +45,7 @@ TERMINAL_NEXT_ATTEMPT = "9999-12-31T23:59:59+00:00"
 DRAIN_ACTIONABLE_THRESHOLD = 450
 DRAIN_BATCH_SIZE = 24
 DRAIN_CONCURRENCY = 4
+EXACT_FETCH_HARD_TIMEOUT_SECONDS = 50.0
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,12 @@ class ExactQueueRuntimeResult:
     identity_missing_proof: int = 0
     identity_other: int = 0
     failed: int = 0
+    retry_page: int = 0
+    retry_api: int = 0
+    retry_timeout: int = 0
+    retry_price_change: int = 0
+    retry_candidate: int = 0
+    retry_other: int = 0
     pending_total: int = 0
     terminal_quarantined: int = 0
     terminal_rearmed: int = 0
@@ -80,6 +88,11 @@ class ExactQueueRuntimeResult:
             f"proof **{self.identity_missing_proof}** • "
             f"other **{self.identity_other}**"
         )
+        retry_detail = (
+            f"page **{self.retry_page}** • api **{self.retry_api}** • "
+            f"timeout **{self.retry_timeout}** • price-change **{self.retry_price_change}** • "
+            f"candidate **{self.retry_candidate}** • other **{self.retry_other}**"
+        )
         timing = (
             f"claim **{self.claim_seconds:.2f}s** • "
             f"fetch **{self.fetch_seconds:.2f}s** • "
@@ -93,7 +106,7 @@ class ExactQueueRuntimeResult:
             f"markdowns **{self.markdowns}** • no reference **{self.no_reference}** • "
             f"under threshold **{self.under_threshold}** • unavailable **{self.unavailable}** • "
             f"identity unavailable / safely blocked **{self.identity_blocked}** "
-            f"({identity_detail}) • transient failures **{self.failed}** • "
+            f"({identity_detail}) • transient failures **{self.failed}** ({retry_detail}) • "
             f"terminal rows quarantined **{self.terminal_quarantined}** • "
             f"weekly identity reprobes **{self.terminal_rearmed}** • "
             f"actionable due **{self.pending_total}** • timings {timing}"
@@ -182,7 +195,7 @@ async def process_actionable_walmart_exact_queue_batch(
     limit: int = 6,
     concurrency: int = 2,
     min_discount: int = 50,
-    timeout_seconds: float = 8.0,
+    timeout_seconds: float = EXACT_FETCH_HARD_TIMEOUT_SECONDS,
 ) -> ExactQueueRuntimeResult:
     if db is None or provider is None or limit <= 0:
         return ExactQueueRuntimeResult()
@@ -248,6 +261,12 @@ async def process_actionable_walmart_exact_queue_batch(
         "identity_missing_proof": 0,
         "identity_other": 0,
         "failed": 0,
+        "retry_page": 0,
+        "retry_api": 0,
+        "retry_timeout": 0,
+        "retry_price_change": 0,
+        "retry_candidate": 0,
+        "retry_other": 0,
     }
 
     store_started = time.monotonic()
@@ -268,6 +287,7 @@ async def process_actionable_walmart_exact_queue_batch(
                 counts[bucket] += 1
             else:
                 counts["failed"] += 1
+                counts[_retry_error_bucket(status=status, error=error)] += 1
             continue
 
         await store_exact_candidate_with_tiered_recheck(
@@ -338,7 +358,7 @@ async def _fetch_exact_candidate_off_loop(
     try:
         payload = await asyncio.wait_for(
             detail_fetcher(claim.item_id),
-            timeout=max(0.1, float(timeout_seconds)),
+            timeout=max(1.0, float(timeout_seconds)),
         )
         request = ProviderScanRequest(
             source_key="walmart_exact_detail_queue",
@@ -353,11 +373,24 @@ async def _fetch_exact_candidate_off_loop(
         )
     except asyncio.CancelledError:
         raise
+    except TimeoutError:
+        return (
+            None,
+            "retry",
+            f"retry_kind=outer_timeout exact Walmart detail exceeded {float(timeout_seconds):.1f}s hard safety budget",
+        )
     except Exception as error:  # noqa: BLE001 - provider failures remain retryable.
-        return None, "retry", _compact_text(error, 500)
+        retry_kind = str(getattr(error, "retry_kind", "") or "").strip().lower()
+        status = PAGE_RETRY_STATUS if retry_kind.startswith("page_") else "retry"
+        kind = retry_kind or "provider_exception"
+        return None, status, f"retry_kind={kind} {_compact_text(error, 440)}"
 
     if exact is None:
-        return None, "retry", "exact Walmart detail response did not build a candidate"
+        return (
+            None,
+            "retry",
+            "retry_kind=candidate_build exact Walmart detail response did not build a candidate",
+        )
     if _candidate_item_id(exact) != claim.item_id:
         return None, "identity_mismatch", "exact item identity mismatch"
 
@@ -374,7 +407,7 @@ async def _fetch_exact_candidate_off_loop(
         getattr(merged, "api_current_price", None)
         or getattr(merged, "current_price", None)
     ) is None:
-        return None, "retry", "exact detail did not provide a numeric current price"
+        return None, "retry", "retry_kind=api_price_missing exact detail did not provide a numeric current price"
     return merged, "verified", ""
 
 
@@ -426,6 +459,21 @@ def _page_recovery_failure_context(attrs: dict[str, Any]) -> str:
     if detail:
         context += f" ({_compact_text(detail, 220)})"
     return context
+
+
+def _retry_error_bucket(*, status: str, error: str) -> str:
+    lowered = str(error or "").lower()
+    if "page_price_mismatch" in lowered:
+        return "retry_price_change"
+    if status == PAGE_RETRY_STATUS or "retry_kind=page_" in lowered:
+        return "retry_page"
+    if "timeout" in lowered:
+        return "retry_timeout"
+    if "retry_kind=api_" in lowered:
+        return "retry_api"
+    if "candidate_build" in lowered:
+        return "retry_candidate"
+    return "retry_other"
 
 
 def _identity_error_bucket(*, status: str, error: str) -> str:

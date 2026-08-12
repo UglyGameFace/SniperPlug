@@ -25,6 +25,7 @@ class PressureCursor:
     async def fetchone(self):
         return {
             "initial_due_now": 11,
+            "recovery_due_now": 23,
             "recheck_due_now": 319,
             "verifying": 2,
         }
@@ -57,14 +58,16 @@ def test_bounded_pressure_returns_only_scheduling_counts() -> None:
     )
 
     assert health.initial_due_now == 11
+    assert health.recovery_due_now == 23
     assert health.recheck_due_now == 319
-    assert health.due_now == 330
+    assert health.due_now == 353
     assert health.verifying == 2
-    assert health.total == 332
-    assert conn.sql.count("LIMIT ?") == 3
+    assert health.total == 355
+    assert conn.sql.count("LIMIT ?") == 4
     assert conn.params[3] == 64
-    assert conn.params[7] == 600
-    assert conn.params[9] == 64
+    assert conn.params[7] == 64
+    assert conn.params[11] == 600
+    assert conn.params[13] == 64
     assert "SELECT *" not in conn.sql.upper()
     assert "identity_mismatch" not in conn.sql
 
@@ -76,7 +79,8 @@ def test_exact_worker_can_request_a_tighter_all_lane_cap() -> None:
 
     assert conn.params[3] == 64
     assert conn.params[7] == 64
-    assert conn.params[9] == 64
+    assert conn.params[11] == 64
+    assert conn.params[13] == 64
 
 
 def test_bounded_pressure_summary_does_not_claim_unmeasured_totals() -> None:
@@ -85,8 +89,9 @@ def test_bounded_pressure_summary_does_not_claim_unmeasured_totals() -> None:
 
     summary = bounded_pressure_summary(health)
 
-    assert "actionable due **330**" in summary
+    assert "actionable due **353**" in summary
     assert "new/retry **11**" in summary
+    assert "page recovery **23**" in summary
     assert "scheduled rechecks **319**" in summary
     assert "actively verifying **2**" in summary
     assert "terminal" not in summary
@@ -106,9 +111,10 @@ def test_background_workers_never_call_complete_queue_health() -> None:
 
 
 def test_pressure_query_is_capped_to_policy_useful_work() -> None:
-    assert PRESSURE.count("LIMIT ?") == 3
+    assert PRESSURE.count("LIMIT ?") == 4
     assert "DEFAULT_PRESSURE_CAP = 600" in PRESSURE
     assert "FRESH_PRESSURE_CAP = 64" in PRESSURE
+    assert "RECOVERY_PRESSURE_CAP = 64" in PRESSURE
     assert "VERIFYING_PRESSURE_CAP = 64" in PRESSURE
     assert "status IN ('pending', 'retry', 'failed', 'verifying')" in PRESSURE
     assert "'verified_markdown'" in PRESSURE

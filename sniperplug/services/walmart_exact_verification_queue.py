@@ -31,10 +31,14 @@ QUEUE_TABLE = "walmart_exact_detail_queue"
 QUEUE_MAX_ROWS = 50_000
 QUEUE_RETENTION_DAYS = 14
 QUEUE_VERIFIED_SNAPSHOT_MAX_AGE_MINUTES = 90
-QUEUE_LEASE_SECONDS = 120
+QUEUE_LEASE_SECONDS = 240
 QUEUE_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
 QUEUE_RETRY_BASE_SECONDS = 5 * 60
 QUEUE_RETRY_MAX_SECONDS = 6 * 60 * 60
+PAGE_RETRY_STATUS = "page_retry"
+PAGE_RETRY_BASE_SECONDS = 30 * 60
+PAGE_RETRY_RATE_LIMIT_SECONDS = 60 * 60
+PAGE_RETRY_PRICE_MISMATCH_SECONDS = 10 * 60
 
 _last_cleanup_monotonic = 0.0
 
@@ -647,6 +651,37 @@ async def _store_exact_candidate(
     )
 
 
+def _failure_storage_policy(
+    *,
+    status: str,
+    error: str,
+    attempts: int,
+) -> tuple[str, int]:
+    if status in {"identity_mismatch", "incomplete_identity"}:
+        return status, 12 * 60 * 60
+    if status == PAGE_RETRY_STATUS:
+        lowered = str(error or "").lower()
+        if "page_price_mismatch" in lowered:
+            return PAGE_RETRY_STATUS, PAGE_RETRY_PRICE_MISMATCH_SECONDS
+        if any(
+            marker in lowered
+            for marker in (
+                "page_http_403",
+                "page_http_429",
+                "page_challenge",
+            )
+        ):
+            return PAGE_RETRY_STATUS, PAGE_RETRY_RATE_LIMIT_SECONDS
+        return PAGE_RETRY_STATUS, PAGE_RETRY_BASE_SECONDS
+    if status == "provider_unavailable":
+        return "retry", 30 * 60
+    delay_seconds = min(
+        QUEUE_RETRY_MAX_SECONDS,
+        QUEUE_RETRY_BASE_SECONDS * (2 ** min(6, max(1, int(attempts)) - 1)),
+    )
+    return "retry", delay_seconds
+
+
 async def _store_failure(
     conn: Any,
     *,
@@ -656,18 +691,11 @@ async def _store_failure(
     now: datetime,
 ) -> None:
     attempts = max(1, claim.attempt_count + 1)
-    if status in {"identity_mismatch", "incomplete_identity"}:
-        delay_seconds = 12 * 60 * 60
-        stored_status = status
-    elif status == "provider_unavailable":
-        delay_seconds = 30 * 60
-        stored_status = "retry"
-    else:
-        delay_seconds = min(
-            QUEUE_RETRY_MAX_SECONDS,
-            QUEUE_RETRY_BASE_SECONDS * (2 ** min(6, attempts - 1)),
-        )
-        stored_status = "retry"
+    stored_status, delay_seconds = _failure_storage_policy(
+        status=status,
+        error=error,
+        attempts=attempts,
+    )
     await conn.execute(
         f"""
         UPDATE {QUEUE_TABLE}

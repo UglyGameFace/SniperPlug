@@ -17,6 +17,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
 # worker from scanning thousands of queue rows simply to produce diagnostics.
 DEFAULT_PRESSURE_CAP = 600
 FRESH_PRESSURE_CAP = 64
+RECOVERY_PRESSURE_CAP = 64
 VERIFYING_PRESSURE_CAP = 64
 
 
@@ -38,6 +39,7 @@ async def load_walmart_exact_queue_pressure(
         return WalmartExactQueueHealth()
     bounded_cap = max(1, int(cap))
     fresh_cap = min(bounded_cap, FRESH_PRESSURE_CAP)
+    recovery_cap = min(bounded_cap, RECOVERY_PRESSURE_CAP)
     recheck_cap = bounded_cap
     verifying_cap = min(bounded_cap, VERIFYING_PRESSURE_CAP)
     conn = db.require_conn()
@@ -52,6 +54,15 @@ async def load_walmart_exact_queue_pressure(
             SELECT item_id
             FROM {QUEUE_TABLE}
             WHERE status IN ('pending', 'retry', 'failed', 'verifying')
+              AND next_attempt_at <= ?
+              AND last_seen_at >= ?
+              AND (lease_until IS NULL OR lease_until < ?)
+            LIMIT ?
+        ),
+        recovery_due AS (
+            SELECT item_id
+            FROM {QUEUE_TABLE}
+            WHERE status = 'page_retry'
               AND next_attempt_at <= ?
               AND last_seen_at >= ?
               AND (lease_until IS NULL OR lease_until < ?)
@@ -82,6 +93,7 @@ async def load_walmart_exact_queue_pressure(
         )
         SELECT
             (SELECT COUNT(*) FROM fresh_due) AS initial_due_now,
+            (SELECT COUNT(*) FROM recovery_due) AS recovery_due_now,
             (SELECT COUNT(*) FROM recheck_due) AS recheck_due_now,
             (SELECT COUNT(*) FROM active_verifying) AS verifying
         """,
@@ -93,6 +105,10 @@ async def load_walmart_exact_queue_pressure(
             now_iso,
             discovery_cutoff,
             now_iso,
+            recovery_cap,
+            now_iso,
+            discovery_cutoff,
+            now_iso,
             recheck_cap,
             now_iso,
             verifying_cap,
@@ -100,13 +116,15 @@ async def load_walmart_exact_queue_pressure(
     )
     row = await cursor.fetchone()
     fresh = _as_int(_row_get(row, "initial_due_now", 0))
-    rechecks = _as_int(_row_get(row, "recheck_due_now", 1))
-    verifying = _as_int(_row_get(row, "verifying", 2))
-    due = fresh + rechecks
+    recovery = _as_int(_row_get(row, "recovery_due_now", 1))
+    rechecks = _as_int(_row_get(row, "recheck_due_now", 2))
+    verifying = _as_int(_row_get(row, "verifying", 3))
+    due = fresh + recovery + rechecks
     return WalmartExactQueueHealth(
         total=due + verifying,
         due_now=due,
         initial_due_now=fresh,
+        recovery_due_now=recovery,
         recheck_due_now=rechecks,
         verifying=verifying,
     )
@@ -119,6 +137,7 @@ def bounded_pressure_summary(health: WalmartExactQueueHealth) -> str:
         "bounded queue pressure: "
         f"actionable due **{max(0, int(health.due_now or 0))}** "
         f"(new/retry **{max(0, int(health.initial_due_now or 0))}** • "
+        f"page recovery **{max(0, int(health.recovery_due_now or 0))}** • "
         f"scheduled rechecks **{max(0, int(health.recheck_due_now or 0))}**) • "
         f"actively verifying **{max(0, int(health.verifying or 0))}**"
     )

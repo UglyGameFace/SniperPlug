@@ -53,7 +53,7 @@ class _Cursor:
 
 class _Connection:
     async def execute(self, _sql, _params=()):
-        return _Cursor((455, 0, 0, 0, 310, 290, 120, 0, 25, 10, 5))
+        return _Cursor((455, 0, 0, 0, 0, 310, 120, 290, 120, 0, 25, 10, 5))
 
 
 class _Database:
@@ -67,14 +67,18 @@ def test_queue_health_separates_transient_retries_from_identity_blocks() -> None
     assert health.total == 455
     assert health.due_now == 0
     assert health.initial_due_now == 0
+    assert health.recovery_due_now == 0
     assert health.recheck_due_now == 0
     assert health.delayed_retries == 310
+    assert health.delayed_recovery_retries == 120
     assert health.identity_blocked == 290
     assert health.stale == 5
     assert "due now **0**" in health.summary_line()
     assert "new/retry **0**" in health.summary_line()
+    assert "page recovery **0**" in health.summary_line()
     assert "scheduled rechecks **0**" in health.summary_line()
     assert "delayed transient retries **310**" in health.summary_line()
+    assert "page recovery **120**" in health.summary_line()
     assert "identity unavailable / safely blocked **290**" in health.summary_line()
     assert "stale/unclaimable **5**" in health.summary_line()
 

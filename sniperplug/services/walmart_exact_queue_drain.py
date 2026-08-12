@@ -81,13 +81,14 @@ async def claim_due_rows_batched(
                 WHEN 'pending' THEN 0
                 WHEN 'retry' THEN 1
                 WHEN 'failed' THEN 2
-                WHEN 'verifying' THEN 3
-                WHEN 'verified_markdown' THEN 4
-                WHEN 'verified_under_threshold' THEN 5
-                WHEN 'verified_no_reference' THEN 6
-                WHEN 'verified_reference' THEN 7
-                WHEN 'not_buyable' THEN 8
-                ELSE 9
+                WHEN 'page_retry' THEN 3
+                WHEN 'verifying' THEN 4
+                WHEN 'verified_markdown' THEN 5
+                WHEN 'verified_under_threshold' THEN 6
+                WHEN 'verified_no_reference' THEN 7
+                WHEN 'verified_reference' THEN 8
+                WHEN 'not_buyable' THEN 9
+                ELSE 10
             END,
             priority_score DESC,
             last_seen_at DESC

@@ -21,7 +21,11 @@ from sniperplug.services.variant_proof import extract_variant_proof
 from sniperplug.services.walmart_cash import strict_walmart_promotion_proof
 from sniperplug.services.walmart_cash_api_truth import extract_walmart_cash_api_truth
 from sniperplug.services.walmart_api_value_proof import extract_walmart_api_value_proof
-from sniperplug.services.walmart_marketplace_comp import is_marketplace_comp_source, marketplace_comp_from_item
+from sniperplug.services.walmart_marketplace_comp import (
+    is_marketplace_comp_source,
+    marketplace_comp_from_item,
+    selected_offer_delivery_attributes,
+)
 from sniperplug.services.walmart_promo_classifier import classify_walmart_api_promos
 from sniperplug.services.public_deal_quality import (
     LANE_CART_PROMO,
@@ -883,11 +887,50 @@ def _first_clean_condition(item: dict[str, Any]) -> tuple[str | None, str | None
 
 
 def _selected_offer_proof(item: dict[str, Any]) -> dict[str, str | None]:
-    seller_name = _clean_string(item.get("sellerName") or item.get("sellerDisplayName") or item.get("seller") or _nested_value(item, "sellerInfo", "sellerName") or _nested_value(item, "sellerInfo", "name") or _nested_value(item, "seller", "name"))
-    seller_id = _clean_string(item.get("sellerId") or item.get("sellerID") or _nested_value(item, "sellerInfo", "sellerId") or _nested_value(item, "seller", "id"))
-    fulfillment_type = _clean_string(item.get("fulfillmentType") or item.get("fulfillment") or item.get("fulfillmentBadge") or _nested_value(item, "fulfillmentSummary", "fulfillment") or _nested_value(item, "fulfillmentSummary", "fulfillmentType"))
-    condition, condition_path = _first_clean_condition(item)
-    is_walmart_seller = _is_walmart_seller(seller_name=seller_name, seller_id=seller_id, item=item)
+    """Normalize seller/fulfillment from the same canonical selected-offer node.
+
+    Keep this provider-facing projection aligned with marketplace_comp_from_item()
+    and SourceCandidate's delivered-price normalization instead of maintaining a
+    second, shallower seller parser that can miss nested selectedOffer/buyBox data.
+    """
+
+    attrs = selected_offer_delivery_attributes(item)
+    seller_name = _clean_string(
+        attrs.get("selectedOfferSeller")
+        or item.get("sellerName")
+        or item.get("sellerDisplayName")
+        or item.get("seller")
+        or _nested_value(item, "sellerInfo", "sellerName")
+        or _nested_value(item, "sellerInfo", "name")
+        or _nested_value(item, "seller", "name")
+    )
+    seller_id = _clean_string(
+        attrs.get("selectedOfferSellerId")
+        or item.get("sellerId")
+        or item.get("sellerID")
+        or _nested_value(item, "sellerInfo", "sellerId")
+        or _nested_value(item, "seller", "id")
+    )
+    fulfillment_type = _clean_string(
+        attrs.get("selectedOfferFulfillment")
+        or item.get("fulfillmentType")
+        or item.get("fulfillment")
+        or item.get("fulfillmentBadge")
+        or _nested_value(item, "fulfillmentSummary", "fulfillment")
+        or _nested_value(item, "fulfillmentSummary", "fulfillmentType")
+    )
+    selected_condition = _clean_string(attrs.get("selectedOfferCondition"))
+    if selected_condition:
+        condition, condition_path = selected_condition, "selectedOffer.condition"
+    else:
+        condition, condition_path = _first_clean_condition(item)
+    is_walmart_seller = _is_walmart_seller(
+        seller_name=seller_name,
+        seller_id=seller_id,
+        item=item,
+    )
+    marketplace = str(attrs.get("selectedOfferMarketplace") or "").strip().lower()
+    marketplace_known = marketplace in {"yes", "true", "1", "no", "false", "0"}
     return {
         "raw_api": item,
         "seller_name": seller_name or ("Walmart" if is_walmart_seller else None),
@@ -895,7 +938,13 @@ def _selected_offer_proof(item: dict[str, Any]) -> dict[str, str | None]:
         "fulfillment_type": fulfillment_type,
         "condition": condition,
         "condition_path": condition_path,
-        "is_walmart_seller": "yes" if is_walmart_seller else "no" if seller_name or seller_id or item.get("marketplace") is True else None,
+        "is_walmart_seller": (
+            "yes"
+            if is_walmart_seller
+            else "no"
+            if seller_name or seller_id or marketplace in {"yes", "true", "1"}
+            else None if not marketplace_known else "no"
+        ),
     }
 
 

@@ -5,6 +5,7 @@ on:
     branches: [fix/walmart-fresh-catalog-proof]
     paths:
       - tools/apply_walmart_fresh_catalog_proof.py
+      - tests/test_walmart_fresh_discovery_proof.py
       - .github/workflows/apply-walmart-fresh-catalog-proof.yml
 
 permissions:

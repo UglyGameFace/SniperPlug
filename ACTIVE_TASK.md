@@ -1,63 +1,60 @@
 # Active Task
 
 ## Status
-**Complete code-side — SP-WM-PAGE-RETRY-FANOUT satisfied its Definition of Done. PR #235 merged into `main` at `14a9a518bb9d7db5246f962f2a0f82d6daec4953`, all three canonical PR workflows passed, and all three canonical workflows on the merge commit passed. The implementation task lock is released after validation of this task-record-only close commit. Production behavior remains intentionally unclaimed until merged `main` is deployed and live Walmart traffic exercises the new retry/public-skip telemetry.**
+**Active — SP-WM-MISSED-DEALS-236. Live production validation after PR #235 disproves practical completion: catalog discovery is healthy, but most exact Walmart claims are still failing in page/API recovery before they can become verified alerts, and an exact 56.82% event was rejected publicly as `quality:review_or_watchlist`. The task lock is re-engaged. Do not begin another implementation task until this task satisfies its Definition of Done.**
 
 ## Task
-**SP-WM-PAGE-RETRY-FANOUT — Stop Walmart page-recovery transient storms from starving fresh discovery, expose exact retry/public skip reasons, and preserve strict item/price/seller/offer/shipping/variant/reference safety.**
+**SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification so catalog-discovered deals are not lost to flaky detail/page recovery, preserve official seller/offer proof instead of discarding it, stop transient API recovery traffic from starving fresh discovery, and eliminate false public rejection of exact-verified cards caused by stale review/watchlist text.**
 
-## Root cause / findings
-- PR #234's seller-identity recovery was confirmed live: post-deploy exact batches consistently reported `identity unavailable / safely blocked 0`, versus the previous 16–24 seller blocks per batch.
-- The next production bottleneck was repeated 6–8/8 transient exact failures. Product-page HTTP/challenge/network/price-change failures were stored as ordinary `retry`, and the fresh-work pressure policy counted those retries exactly like brand-new discoveries. Recovery hiccups could therefore raise fresh/retry pressure above the 12-row catalog-pause threshold and stop new Walmart discovery.
-- The former outer exact-worker hard timeout was 8 seconds while the official Walmart provider allows a 12-second HTTP timeout and product-page recovery independently allows up to 8 seconds. That outer budget could race legitimate bounded provider work. Live timing did not prove it was the dominant failure class, so typed telemetry was added rather than guessing.
-- Retry-delay/storage policy existed in both compatibility and production bulk persistence, creating drift risk.
-- The page-recovery one-time rearm counter treated unsupported/negative cursor `rowcount` as zero instead of falling back to `SELECT changes()`.
-- Live fanout proved personal DM delivery end to end for KC Masterpiece at `$3.98`, 67.3% discount (`DM checked/matched/sent 1/1/1`). The same event returned generic public `not_alertable=1` for a 40% guild, but the old public path collapsed category suppression, quality rejection, and `should_alert=false` into one counter. That log alone did not prove a public-post logic bug, so no safety/category gate was weakened without evidence.
+## Production evidence
+- Live catalog discovery continues returning roughly 90–100 usable Walmart item IDs per two-route batch, so global discovery itself is functioning.
+- Exact verification throughput is unacceptable. Production repeatedly reports entire claimed batches as transient failures: `page 8/8`, `api 8/8`, and mixed batches such as `page 5 + api 3`, often with `verified 0`.
+- Catalog discovery still pauses at `fresh/retry pressure 12/12` and `13/12` while `page recovery 0`, proving ordinary API/detail retries remain in the fresh/retry lane and can still contribute to discovery starvation.
+- User-supplied Walmart screenshots show real live seller identity on products SniperPlug previously labeled as missing seller identity: Bounty item `22395155` is sold and shipped by Walmart; DEWALT item `2814230491` shows seller `HVAC AND TOOLS` and fulfillment by Walmart. A Patbrela 34 QT air-fryer listing in the same report is visibly above the 40% server threshold, demonstrating missed alert opportunity rather than only below-threshold identity noise.
+- New public-skip telemetry exposed an exact Walmart event at 56.82% being blocked by `quality:review_or_watchlist`; that is not a threshold failure and requires tracing the exact-card normalization/text gate.
 
-## Changes delivered
-- `WalmartProviderError` now carries bounded `retry_kind` classifications for API HTTP status, timeout, network, non-JSON, payload shape, and generic detail failures.
-- `WalmartPageRecoveryTransientError` now carries bounded reason codes for page HTTP status, timeout, network, challenge, redirect, oversized response, and selected-offer price mismatch.
-- Added queue status `page_retry` with bounded delays: 10 minutes for price-change mismatch, 30 minutes for ordinary page-recovery transients, and 60 minutes for 403/429/challenge pressure.
-- Centralized retry persistence through one `_failure_storage_policy()` shared by compatibility and production bulk persistence.
-- Added a separate bounded page-recovery pressure lane. Page retries still count toward total emergency pressure but no longer trip the normal 12-row fresh-discovery pause or 48-row fresh-drain thresholds by themselves.
-- Claim ordering is fresh work first, ordinary retry/failed work second, page recovery third, and scheduled rechecks last. Runtime claim SQL and the expression-index SQL use the same literal ordering contract.
-- Versioned/rebuilt the claim-order expression index and drops the obsolete legacy index to avoid duplicate write overhead.
-- Raised the exact hard-safety timeout to 50 seconds and queue lease to 240 seconds so the outer worker does not prematurely race bounded provider operations; provider-level HTTP/page timeouts remain the normal control points.
-- Exact-worker summaries now break transient failures into page/API/outer-timeout/price-change/candidate-build/other buckets, and persisted errors retain compact `retry_kind` information.
-- Queue health/pressure diagnostics now report due and delayed page-recovery retries separately.
-- Page-recovery migration row counting now falls back to `SELECT changes()` when cursor `rowcount` is unavailable.
-- Public posting now records `not_alertable_reasons` for category suppression/error, specific public-quality rejection, scout rejection, or `should_alert=false`.
-- `public_deal_rejection_reason()` is the canonical diagnostic mirror of the existing boolean quality gate, and `has_verified_api_threshold_discount()` delegates to it so the old gate semantics are preserved.
-- No CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, alternate-retailer proof substitution, unrestricted historical rearm, or weakened exact item/price/seller/offer/shipping/variant/condition/fulfillment/reference/category/threshold/dedupe rule was introduced.
+## Root cause / findings so far
+- The Walmart Affiliate catalog/search response is already normalized into `SourceCandidate` with selected seller, seller ID, offer ID, fulfillment, condition, marketplace state, item price, reference price, and shipping evidence where returned.
+- The exact queue currently discards that official discovery offer proof. Its enqueue row preserves item ID, apparent prices, title, URL/image, route, and timestamps, but not seller/offer/fulfillment/condition/marketplace proof. The worker then has to rediscover identity from the detail endpoint or Walmart product HTML even when the catalog response already had it.
+- `WalmartPageRecoveryProvider` always begins with the item-detail endpoint. If that payload still needs seller recovery, it immediately depends on Walmart HTML. It does not currently retry the already-working Affiliate search endpoint for an exact matching item ID before touching the page.
+- Product-page recovery is strict and intentionally fail-closed, but production is frequently receiving page-level transient failures. No CAPTCHA/challenge bypass, proxy rotation, or scraping evasion will be introduced.
+- Official detail/API failures are still persisted as ordinary `retry`; the fresh-work pressure policy counts that lane with genuinely new work. PR #235 separated only `page_retry`, so API recovery storms can still hit the normal 12-row catalog-pause threshold.
+- Exact retry telemetry currently reports only broad buckets (`page`, `api`, etc.). The persisted error contains `retry_kind`, but the batch summary does not surface top concrete reasons such as `page_http_403`, `page_challenge`, `api_http_404`, or `api_network`.
+- `public_deal_quality.is_review_or_watchlist()` scans rendered card text for generic review/watchlist markers before checking the structured exact proof.
+- Exact Walmart normalization deliberately removes stale review/scout wording, but its stale-marker set does not cover generic `watchlist` wording. An otherwise exact-verified markdown can therefore remain poisoned by stale display text and be rejected on a later guild-specific quality pass.
+
+## Scope / plan
+1. Trace and preserve official catalog/search selected-offer proof through queue enqueue, claim, exact merge, snapshot, and fanout without allowing stale identity to masquerade as current proof.
+2. Add an official exact-item search fallback before HTML recovery. Accept it only when the Affiliate search result returns the exact requested Walmart item ID; bind seller/offer proof only with strict selected-price/item consistency.
+3. If recently observed discovery offer proof is used as a last-resort identity assist, require a bounded freshness window plus exact item and cent-for-cent exact-price agreement; otherwise fail closed.
+4. Add a bounded `api_retry` recovery lane for transient official detail/API failures, separate from fresh first-pass work. It must remain inside total emergency backpressure and use bounded delays; do not simply raise or disable pressure thresholds.
+5. Preserve claim priority: genuinely fresh first-pass work ahead of recovery traffic; recovery lanes must not monopolize discovery.
+6. Surface top concrete `retry_kind` reasons in live exact-worker summaries so remaining HTTP/challenge/API behavior can be diagnosed without guesswork or secrets.
+7. Repair the exact-verified public-card review/watchlist false negative. Only cards satisfying the strict exact Walmart proof boundary may have stale review/watchlist presentation markers scrubbed/ignored; non-exact scout/watchlist cards must remain blocked.
+8. Add focused regressions for the production failure shapes, including exact Affiliate-search fallback, stale discovery proof rejection, API retry pressure isolation, and exact-card watchlist normalization.
+9. Run dependency checks, compile/static validation, focused tests, full suite, cleanup/redundancy inspection, diff/conflict inspection, PR CI/review inspection, merge, and post-merge canonical validation before claiming code completion.
+10. Require a later live deployment to prove production improvement; code-side success alone must not be called live-complete.
+
+## Safety invariants
+- Requested item ID must exactly equal the official item being verified.
+- Current price must come from a current official exact-item response; discovery/page identity may never replace a missing exact current price.
+- Seller, offer, condition, fulfillment, variant, shipping, and selected price may not be mixed across different offers.
+- Any reused discovery identity must be recent, official, exact-item matched, and price-aligned; stale or ambiguous proof remains blocked.
+- Marketplace mandatory shipping remains part of delivered-price truth.
+- Reference-price, threshold, category, duplicate, condition, and availability gates remain fail-closed.
+- No CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, alternate-retailer proof substitution, or unrestricted historical rearm.
 
 ## Validation
-- Initial focused implementation workflow: **PASS** for `git diff --check`, compile, dependency install, and focused Walmart retry/backpressure/fanout regressions.
-- First canonical PR run exposed four stale architecture assertions that modeled the pre-`page_retry` health tuple, SQL parameter count, index statement count, and claim ordinal. The runtime path was inspected before updating those contracts.
-- The next full branch run exposed one static claim-order parity mismatch; the implementation itself was cleaned up so runtime claim SQL and expression-index SQL use the same literal `page_retry` ordering instead of weakening the test.
-- Final branch Python 3.11.15 suite: **1,181 passed**, with one upstream `discord.py` `audioop` deprecation warning.
-- `pip check`: **PASS — no broken requirements**.
-- `git diff --check`: **PASS**.
-- Compile/import validation: **PASS** through the canonical workflows.
-- Final PR head `ed31b6c26e2a460d7230f2b461e54b9122a49cfa` passed all three canonical workflows: **Import smoke check PASS**, **Python tests PASS**, **Python Check PASS**.
-- Merge commit `14a9a518bb9d7db5246f962f2a0f82d6daec4953` independently passed all three canonical `main` workflows: **Import smoke check PASS**, **Python tests PASS** including `pip check`, compileall, and pytest, and **Python Check PASS** including compile, import smoke, and the full suite.
+- Pending. Production evidence has reproduced the failure and the real execution path has been inspected through catalog candidate normalization, queue enqueue, exact worker, detail/page provider, public fanout, and quality gate.
 
-## Cleanup / conflict / review inspection
-- Temporary applicator/test-repair scripts and workflows self-deleted before the final implementation branch commit and are absent from the net PR diff.
-- Production runner path was verified to use `walmart_exact_queue_bulk_runtime`; the compatibility runtime was kept policy-compatible instead of becoming a competing implementation.
-- Retry delay/storage logic is centralized rather than duplicated across bulk and compatibility persistence.
-- Runtime claim ordering and runtime-schema expression-index ordering are literal/static parity matches.
-- Before merge, PR #235 was mergeable and the branch was **0 commits behind `main`**.
-- PR #235 had no human reviews and no inline review threads. The only PR conversation comment was an automated Qodo billing notice saying review was paused because its subscription was inactive; it contained no code finding.
-- PR #235 merged cleanly into `main` as `14a9a518bb9d7db5246f962f2a0f82d6daec4953`.
+## Cleanup / conflict inspection
+- Pending. Any new recovery path must integrate with the canonical bulk exact runtime rather than creating a parallel exact worker.
 
-## Production validation boundary
-- Code-side completion does **not** claim the live bot already has the new behavior.
-- After the merged `main` is deployed, live exact-worker lines should expose transient buckets such as `page`, `api`, `timeout`, `price-change`, `candidate`, and `other` instead of one opaque failure count.
-- Queue-pressure diagnostics should show page-recovery pressure separately; page-recovery retries alone should no longer trigger the normal fresh-discovery pause.
-- Future public Walmart skips should show `not_alertable_reasons=[...]`, allowing a category suppression, quality gate, or `should_alert=false` decision to be diagnosed without guessing.
+## Blockers
+- None currently. Live logs provide the production signatures; exact per-reason retry telemetry still needs to be surfaced by this task.
 
 ## Backlog
 - Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` after this task closes.
-- Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings after this task closes unless live retry telemetry proves a direct connection.
+- Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings after this active Walmart task closes unless the current root cause directly explains them.
 - Continue verifying PR #223 delivery-health accounting from live post-deploy logs after this task closes.
 - PR #200 remains isolated and must not be mixed into this task.

@@ -1,0 +1,26 @@
+name: Diagnose Walmart full-suite hang
+
+on:
+  push:
+    branches: [fix/walmart-fresh-catalog-proof]
+    paths:
+      - .github/workflows/diagnose-walmart-full-suite-hang.yml
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/walmart-fresh-catalog-proof
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run verbose suite to first failure or hang
+        run: timeout --signal=TERM --kill-after=10s 90s pytest -vv -x

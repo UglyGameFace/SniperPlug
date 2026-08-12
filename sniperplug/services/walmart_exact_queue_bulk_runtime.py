@@ -26,6 +26,7 @@ from sniperplug.services.walmart_exact_queue_runtime import (
     _fetch_exact_candidate_off_loop,
     _identity_error_bucket,
     _retry_error_bucket,
+    _retry_kind_from_error,
 )
 from sniperplug.services.walmart_exact_runtime_schema import (
     ensure_exact_runtime_schema_once,
@@ -154,6 +155,7 @@ async def process_actionable_walmart_exact_queue_batch(
     }
 
     persistence_outcomes: list[ExactQueuePersistenceOutcome] = []
+    retry_reason_counts: dict[str, int] = {}
     for claim, outcome in outcomes:
         candidate, status, error = outcome
         observed_at = datetime.now(timezone.utc)
@@ -174,6 +176,8 @@ async def process_actionable_walmart_exact_queue_batch(
             else:
                 counts["failed"] += 1
                 counts[_retry_error_bucket(status=status, error=error)] += 1
+                retry_kind = _retry_kind_from_error(error)
+                retry_reason_counts[retry_kind] = retry_reason_counts.get(retry_kind, 0) + 1
             continue
 
         counts["verified"] += 1
@@ -224,5 +228,11 @@ async def process_actionable_walmart_exact_queue_batch(
         claim_seconds=claim_seconds,
         fetch_seconds=fetch_seconds,
         store_seconds=store_seconds,
+        retry_reasons=tuple(
+            sorted(
+                retry_reason_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:6]
+        ),
         **counts,
     )

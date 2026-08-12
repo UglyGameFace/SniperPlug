@@ -178,6 +178,40 @@ class WalmartProvider(DealProvider):
         url = f"{self.search_url}?{urllib.parse.urlencode(params)}"
         return self._request_json(url)
 
+    async def fetch_exact_search_item_payload(self, item_id: str) -> dict:
+        """Refresh one exact Walmart item through the Affiliate search API.
+
+        Catalog discovery already uses this endpoint successfully in production.
+        An exact-ID search is accepted only when one returned row's item ID is
+        exactly the requested ID; relevance ordering is never trusted as proof.
+        """
+
+        return await asyncio.to_thread(self._exact_search_item_payload, item_id)
+
+    def _exact_search_item_payload(self, item_id: str) -> dict:
+        clean_id = str(item_id or "").strip()
+        if not clean_id:
+            raise WalmartProviderError(
+                "Walmart exact Affiliate search skipped: missing item id.",
+                retry_kind="api_exact_search_missing_id",
+            )
+        request = ProviderScanRequest(
+            source_key="walmart_exact_search",
+            query=clean_id,
+            max_results=25,
+            page=1,
+            metadata={"exact_item_lookup": "yes"},
+        )
+        payload = self._search(query=clean_id, request=request, page_size=25)
+        item = _exact_item_from_search_payload(payload, clean_id)
+        if item is None:
+            raise WalmartProviderError(
+                f"Walmart Affiliate search returned no exact item match for {clean_id}.",
+                retry_kind="api_exact_search_no_match",
+            )
+        exact = dict(item)
+        exact["sniperplugOfficialExactSource"] = "affiliate_search_exact_item"
+        return exact
 
     async def fetch_product_detail_payload(self, item_id: str) -> dict:
         return await asyncio.to_thread(self._product_detail_payload, item_id)
@@ -207,11 +241,16 @@ class WalmartProvider(DealProvider):
             except WalmartProviderError as exc:
                 last_error = exc
 
-        retry_kind = str(getattr(last_error, "retry_kind", "") or "").strip()
-        raise WalmartProviderError(
-            f"Walmart detail promo endpoint unavailable for {clean_id}: {last_error}",
-            retry_kind=retry_kind or "api_detail",
-        )
+        try:
+            return self._exact_search_item_payload(clean_id)
+        except WalmartProviderError as search_error:
+            detail_kind = str(getattr(last_error, "retry_kind", "") or "").strip()
+            search_kind = str(getattr(search_error, "retry_kind", "") or "").strip()
+            raise WalmartProviderError(
+                "Walmart exact item refresh unavailable for "
+                f"{clean_id}: detail={last_error}; exact_search={search_error}",
+                retry_kind=search_kind or detail_kind or "api_detail",
+            ) from search_error
 
     def _request_json(self, url: str) -> dict:
         headers = self._signed_headers()
@@ -515,6 +554,24 @@ def _first_detail_item(payload: Any) -> dict | None:
                     if found:
                         return found
 
+    return None
+
+
+def _exact_item_from_search_payload(payload: Any, item_id: str) -> dict | None:
+    """Return only a search row whose Walmart item ID exactly matches."""
+
+    clean_id = str(item_id or "").strip()
+    if not clean_id or not isinstance(payload, dict):
+        return None
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        returned_id = item.get("itemId") or item.get("usItemId")
+        if str(returned_id or "").strip() == clean_id:
+            return item
     return None
 
 

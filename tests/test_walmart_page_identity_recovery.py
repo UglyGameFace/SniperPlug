@@ -40,6 +40,12 @@ class FixturePageProvider(WalmartPageRecoveryProvider):
         assert str(self.payload.get("itemId")) == str(item_id)
         return copy.deepcopy(self.payload)
 
+    async def _official_exact_search_payload(self, item_id: str) -> dict:
+        raise WalmartProviderError(
+            f"fixture exact search unavailable for {item_id}",
+            retry_kind="api_fixture_unavailable",
+        )
+
     async def _load_product_page_scripts(self, item_id: str) -> list[str]:
         self.page_calls += 1
         return list(self.scripts)
@@ -641,3 +647,86 @@ def test_page_recovery_failure_reason_is_preserved_in_terminal_identity_error() 
     assert reason.startswith("missing seller identity")
     assert "page recovery=no_price_aligned_seller" in reason
     assert "seller-bearing buy box" in reason
+
+
+class ExactAffiliateRecoveryProvider(FixturePageProvider):
+    def __init__(self, detail_payload: dict, exact_search_payload: dict, scripts: list[str] | None = None):
+        super().__init__(detail_payload, scripts or [])
+        self.exact_search_payload = exact_search_payload
+        self.exact_search_calls = 0
+
+    async def _official_exact_search_payload(self, item_id: str) -> dict:
+        self.exact_search_calls += 1
+        assert str(self.exact_search_payload.get("itemId")) == str(item_id)
+        payload = copy.deepcopy(self.exact_search_payload)
+        payload["sniperplugOfficialExactSource"] = "affiliate_search_exact_item"
+        return payload
+
+
+def test_missing_detail_seller_uses_exact_affiliate_search_before_product_page() -> None:
+    provider = ExactAffiliateRecoveryProvider(
+        {
+            "itemId": 22395155,
+            "name": "Bounty Everyday Disposable Paper Napkins",
+            "salePrice": 5.74,
+            "wasPrice": 14.49,
+            "availableOnline": True,
+        },
+        {
+            "itemId": 22395155,
+            "name": "Bounty Everyday Disposable Paper Napkins",
+            "salePrice": 5.74,
+            "wasPrice": 14.49,
+            "sellerName": "Walmart",
+            "isMarketPlaceItem": False,
+            "availableOnline": True,
+        },
+    )
+
+    payload = asyncio.run(provider.fetch_product_detail_payload("22395155"))
+    candidate = provider._candidate_from_item(
+        payload,
+        ProviderScanRequest(source_key="test", query="22395155", max_results=1),
+    )
+
+    assert provider.exact_search_calls == 1
+    assert provider.page_calls == 0
+    assert payload["sellerName"] == "Walmart"
+    assert candidate is not None
+    assert candidate.seller_name == "Walmart"
+    assert candidate.variant_attributes["officialExactSource"] == "affiliate_search_exact_item"
+    assert any("official Affiliate search" in signal for signal in candidate.signals)
+
+
+def test_exact_affiliate_search_cannot_accept_relevance_neighbor(monkeypatch) -> None:
+    from sniperplug.providers.walmart import WalmartProvider
+
+    provider = WalmartProvider(
+        WalmartAffiliateConfig(
+            enabled=True,
+            consumer_id="test",
+            private_key_b64="unused",
+        )
+    )
+
+    def fake_search(*, query, request, page_size):
+        assert query == "2814230491"
+        return {
+            "items": [
+                {
+                    "itemId": 999999,
+                    "name": "Different DEWALT kit",
+                    "salePrice": 180.0,
+                    "sellerName": "Wrong Seller",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_search", fake_search)
+
+    try:
+        provider._exact_search_item_payload("2814230491")
+    except WalmartProviderError as exc:
+        assert exc.retry_kind == "api_exact_search_no_match"
+    else:
+        raise AssertionError("exact Affiliate fallback must reject a relevance neighbor")

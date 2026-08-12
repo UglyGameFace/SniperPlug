@@ -37,7 +37,7 @@ def match_dm_deal(
     enabled flip lane may cross category boundaries only for a strict,
     significant price-error/resale assessment. That lane still respects exact
     proof, explicit floors, maximum price, keywords, excluded words,
-    Walmart-Cash-only mode, dedupe, and the daily DM cap.
+    Walmart-Cash-only mode, dedupe, and the saved daily-limit policy.
     """
 
     pref = preference.normalized()
@@ -209,6 +209,7 @@ def match_dm_deal(
         required_discount,
         savings_cents,
         cash_cents,
+        priority_override=flip.qualified,
     )
 
 

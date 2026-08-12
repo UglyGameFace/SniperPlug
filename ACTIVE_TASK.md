@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-WM-MISSED-DEALS-236. PR #236 Milestone 1 passed code validation but FAILED the live throughput gate: production still produced repeated 8/8 transient exact-verification losses, `api_exact_search_no_match` / `page_challenge` dominated, and actionable due climbed to 107. Milestone 2 is implemented on PR #237 with bounded fresh official catalog selected-offer proof reuse inside the same canonical exact worker. Focused validation and the 1,192-test canonical suite pass; final cleanup-head CI, conflict/review inspection, merge, post-merge CI, and live production proof remain. The Single Active Task Lock remains engaged.**
+**Active — SP-WM-MISSED-DEALS-236. PR #236 Milestone 1 passed code validation but FAILED the live throughput gate: production still produced repeated 8/8 transient exact-verification losses, `api_exact_search_no_match` / `page_challenge` dominated, and actionable due climbed to 107. Milestone 2 is now merged through PR #237 at `7ea621694598e4cfd68943774111faad130ef314`; focused/full/static/cleanup/conflict validation and the real merge-commit workflows pass. The task remains intentionally OPEN for live production throughput proof. The Single Active Task Lock remains engaged.**
 
 ## Task
 **SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification so real catalog-discovered deals are not lost to flaky detail/page recovery, use current official seller/offer proof safely, and prevent false public rejection of strict exact-verified cards.**
@@ -21,7 +21,7 @@
 - Retry persistence already carried concrete `retry_kind`, but live summaries exposed only broad page/API buckets.
 - Cleanup found and removed a duplicate exact-Affiliate request that could occur before HTML fallback.
 
-## Changes already on `main` from PR #236
+## Changes on `main` from PR #236
 - Added a current exact-ID Affiliate search recovery path using the existing Walmart Affiliate search API.
 - Exact recovery accepts only a result whose `itemId`/`usItemId` exactly equals the requested Walmart item; relevance neighbors cannot supply identity.
 - Both detail-endpoint failure and incomplete seller/offer identity try current official exact-ID Affiliate search before Walmart HTML.
@@ -30,16 +30,16 @@
 - Exact-worker summaries include concrete retry kinds such as `page_http_403`, `page_challenge`, `api_http_429`, `api_exact_search_no_match`, and `api_network` in addition to broad buckets.
 - Strict exact Walmart normalization removes stale `watchlist` presentation wording only after the existing exact item/price/offer/reference/URL/threshold proof boundary passes. Non-exact scout/watchlist cards remain blocked.
 
-## Milestone 2 — PR #237 fresh official catalog selected-offer proof
+## Milestone 2 merged through PR #237 — fresh official catalog selected-offer proof
 - Live production proved numeric item IDs cannot rely on the Affiliate keyword-search fallback as an exact lookup: catalog discovery had just returned an item, but later keyword searches frequently returned `api_exact_search_no_match`.
 - The catalog `SourceCandidate` already normalizes the selected item ID, selected offer, seller, variant, condition, fulfillment, item price, marketplace shipping, delivered total, and same-offer reference proof. The previous queue representation discarded most of that structure before exact verification.
-- PR #237 persists only a bounded normalized selected-offer snapshot (never the raw Walmart payload or product page) alongside the canonical exact queue.
+- The exact queue now persists only a bounded normalized selected-offer snapshot (never the raw Walmart payload or product page).
 - The canonical worker may use the snapshot without another Walmart fetch only while it is within the bounded freshness window, exact-item matched, cent-for-cent matched to the queued payable price, seller/offer complete, variant-safe, and marketplace shipping complete.
 - For third-party marketplace offers, delivered-price truth remains mandatory. The Aiho 3-Piece Gray regression requires `$73.99 + $19.99 = $93.98` and refuses sibling `$139.99`/`$169.99` context as a selected-offer reference.
 - Same-selected-offer trusted Walmart reference proof survives promotion; cross-offer/sibling context is stripped back to no-reference rather than used to manufacture a discount.
 - `page_retry` rows can be rearmed when a new safe fresh catalog snapshot arrives, allowing healthy catalog discovery to rescue work that previously depended on a challenged product page.
 - Missing, stale, price-conflicting, shipping-incomplete, identity-incomplete, or variant-ambiguous snapshots fall through to the existing detail → exact-search → page recovery chain.
-- Exact-worker telemetry now reports `fresh catalog proof **N**` so live production can prove whether this path actually reduces refetch failures.
+- Exact-worker telemetry reports `fresh catalog proof **N**` so live production can prove whether this path actually reduces refetch failures.
 - No parallel exact worker, CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, seller guessing, threshold weakening, category weakening, duplicate weakening, relevance-neighbor borrowing, or alternate-retailer proof substitution was added.
 
 ## Safety invariants
@@ -60,18 +60,23 @@
 - Compile/static validation: **PASS**.
 - First full PR #237 diagnostic identified one backward-compatibility defect rather than a performance hang: the low-level drain SELECT required new snapshot columns on a deliberately minimal old-schema test table. The failed test left its `aiosqlite` worker open, causing pytest to appear hung after the assertion failure.
 - Compatibility repair: current production schema keeps the one-query fast SELECT; only the specific missing-snapshot-column error retries once with `''` / `NULL` aliases. Other database errors still propagate. Legacy claims therefore remain fail-closed with no fabricated fresh proof.
-- Legacy ownership regression now asserts empty snapshot fields and closes its SQLite connection in `finally`.
-- Canonical PR suite after compatibility repair: **1,192 passed**, one upstream `discord.py` `audioop` deprecation warning, in **13.31s**.
-- Canonical PR workflows after compatibility repair: **Import smoke PASS / Python tests PASS / Python Check PASS**.
-- Temporary deterministic applicator/workflow were removed after focused validation; temporary full-suite diagnostic workflow has also been removed from the branch.
+- Legacy ownership regression asserts empty snapshot fields and closes its SQLite connection in `finally`.
+- Canonical PR suite after compatibility repair: **1,192 passed**, one upstream `discord.py` `audioop` deprecation warning.
+- Final cleanup-head canonical suite: **1,192 passed**, one upstream warning, in **13.40s**.
+- Final cleanup-head workflows: **Import smoke PASS / Python tests PASS / Python Check PASS**.
+- Final PR net diff contained exactly 11 intended task/test files. Temporary applicator and diagnostic workflows were absent.
+- Final PR inspection: `main` unchanged from the PR base, branch 0 behind, GitHub mergeable, no review submissions, no review threads, and no code-review comments. The only PR comment was Qodo reporting its subscription inactive.
+- PR #237 merged successfully as `7ea621694598e4cfd68943774111faad130ef314`.
+- Real merge-commit `main` workflows: **Import smoke PASS / Python tests PASS / Python Check PASS**.
 
 ## Remaining Definition of Done
-1. Require the final cleanup/task-record PR head to pass canonical Import smoke / Python tests / Python Check again.
-2. Inspect final PR net diff, changed files, mergeability, branch freshness, conflicts, comments, reviews, review threads, and absence of temporary/duplicate implementation paths.
-3. Merge PR #237 only if those gates remain clean.
-4. Validate the real `main` merge commit through all canonical workflows.
-5. Deploy the merged code and inspect live exact-worker telemetry, especially `fresh catalog proof`, `api_exact_search_no_match`, `page_challenge`, whole-batch transient losses, and actionable-due trend.
-6. Keep this task active until production demonstrates materially improved exact-verification throughput without seller/variant/shipping/reference regressions. If live evidence still fails the gate, continue under this same task rather than moving on.
+1. Deploy current `main` to Discloud.
+2. Inspect live exact-worker summaries for `fresh catalog proof`, `api_exact_search_no_match`, `page_challenge`, whole-batch transient losses, and actionable-due trend.
+3. Confirm fresh catalog proof materially reduces unnecessary detail/search/page refetching for newly discovered safe offers.
+4. Confirm actionable due trends down rather than continuing to snowball and that repeated `8 claimed → 0 verified` streaks materially decrease.
+5. Confirm marketplace delivered-price truth and same-selected-offer reference safety remain intact in live cards; sibling/variant reference prices must not leak across offers.
+6. Confirm strong exact deals are no longer rejected merely because stale `watchlist` presentation text survived an earlier scan state.
+7. Keep this task active until production demonstrates materially improved throughput without seller/variant/shipping/reference regressions. If live evidence still fails the gate, continue under this same task rather than moving on.
 
 ## Cleanup / conflicts
 - Canonical provider/queue/worker path retained; no parallel exact worker introduced.
@@ -80,11 +85,11 @@
 - Bulk enqueue remains bounded below SQLite's conservative parameter ceiling at 55 rows × 18 parameters = 990.
 - Ordinary recent rediscovery write suppression remains in place; safe proof snapshots have their own bounded refresh cadence.
 - Low-level pre-snapshot queue compatibility is preserved without adding a production-path schema query on every exact claim.
-- Temporary implementation and diagnostic helpers are absent from the intended final source tree.
-- Final PR conflict/review/net-diff inspection is pending the cleanup-head CI gate.
+- Temporary implementation and diagnostic helpers are absent from `main`.
+- PR conflict/review/net-diff inspection passed before merge.
 
 ## Blocker
-- **Final PR #237 cleanup-head validation and merge, followed by live production proof.** Code-side Milestone 2 has focused and full-suite validation, but the overall Walmart missed-deal task remains active until production proves throughput improvement.
+- **Live production validation of Milestone 2.** Code-side validation, cleanup, merge, and real merge-commit CI are complete, but the overall Walmart missed-deal task remains active until production proves the throughput improvement.
 
 ## Backlog
 - Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` after this task closes.

@@ -38,6 +38,7 @@ class UserDmDeliveryTelemetry:
     skipped_location: int = 0
     skipped_duplicate: int = 0
     skipped_daily_cap: int = 0
+    skipped_diversity: int = 0
     sent: int = 0
     disabled: int = 0
     errors: int = 0
@@ -65,7 +66,7 @@ class UserDmDeliveryTelemetry:
             (
                 "Other skips — location: **"
                 f"{self.skipped_location}**, already sent: **{self.skipped_duplicate}**, "
-                f"daily cap: **{self.skipped_daily_cap}**"
+                f"daily cap: **{self.skipped_daily_cap}**, diversity reserve: **{self.skipped_diversity}**"
             ),
             f"Closed/unavailable DMs: **{self.disabled}** • delivery errors: **{self.errors}**",
         ]
@@ -156,6 +157,8 @@ def record_user_dm_outcome(user_id: int, outcome: str) -> None:
         updates["skipped_duplicate"] = current.skipped_duplicate + 1
     elif normalized == "daily_cap":
         updates["skipped_daily_cap"] = current.skipped_daily_cap + 1
+    elif normalized == "diversity_cap":
+        updates["skipped_diversity"] = current.skipped_diversity + 1
     elif normalized == "sent":
         updates["sent"] = current.sent + 1
     elif normalized == "disabled":

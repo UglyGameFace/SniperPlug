@@ -1,0 +1,44 @@
+name: Apply Walmart retry test contract repair
+
+on:
+  push:
+    branches:
+      - fix/walmart-page-retry-fanout
+    paths:
+      - .github/scripts/apply_walmart_retry_test_contracts.py
+      - .github/workflows/apply-walmart-retry-test-contracts.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/walmart-page-retry-fanout
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply regression contracts
+        run: python .github/scripts/apply_walmart_retry_test_contracts.py
+      - name: Diff check
+        run: git diff --check
+      - name: Compile
+        run: python -m compileall -q sniperplug tests '*.py'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip check
+      - name: Full test suite
+        run: pytest -q
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update Walmart retry architecture regression contracts"
+          git push origin HEAD:fix/walmart-page-retry-fanout

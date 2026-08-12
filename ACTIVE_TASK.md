@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-WM-MISSED-DEALS-236. PR #236 Milestone 1 failed the live throughput gate. PR #237 Milestone 2 merged and passed code/merge CI, but its first production validation also FAILED: after an interrupted deployment the exact worker repeatedly reported `fresh catalog proof 0` while the global catalog producer stopped completing batches, leaving the worker to hammer old page-recovery rows. Milestone 3 is implemented on PR #238 to bound and recover durable catalog claims after restart/cancellation. The first PR-head canonical suite passes with 1,196 tests. Final cleanup-head CI, conflict/review inspection, merge/main CI, and live production proof remain. The Single Active Task Lock remains engaged.**
+**Active — SP-WM-MISSED-DEALS-236. PR #236 Milestone 1 failed the live throughput gate. PR #237 Milestone 2 merged and passed code/merge CI, but its first production validation also FAILED: after an interrupted deployment the exact worker repeatedly reported `fresh catalog proof 0` while the global catalog producer stopped completing batches, leaving the worker to hammer old page-recovery rows. Milestone 3 is now merged through PR #238 at `10385d358e2c4437a20834f1f067552f264a0695`; final cleanup-head validation, conflict/review inspection, and the real merge-commit workflows all pass. The task remains intentionally OPEN for live Discloud proof of catalog recovery, fresh-proof activation, throughput improvement, and exact-card safety. The Single Active Task Lock remains engaged.**
 
 ## Task
 **SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification so real catalog-discovered deals are not lost to flaky detail/page recovery, use current official seller/offer proof safely, and prevent false public rejection of strict exact-verified cards.**
@@ -51,17 +51,17 @@
 - Exact-worker telemetry reports `fresh catalog proof **N**` so live production can prove whether this path actually reduces refetch failures.
 - No parallel exact worker, CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, seller guessing, threshold weakening, category weakening, duplicate weakening, relevance-neighbor borrowing, or alternate-retailer proof substitution was added.
 
-## Milestone 3 — PR #238 interrupted catalog-claim recovery
+## Milestone 3 merged through PR #238 — interrupted catalog-claim recovery
 - The durable global catalog claim previously used a 15-minute lease. `CancelledError` re-raised without releasing an in-flight claim, and `cog_unload` canceled worker tasks without awaiting them.
 - A replacement catalog worker receiving an active durable claim returned `claim=None`, slept 15 seconds, and emitted no claim-contention telemetry. This matches the post-restart silent producer gap.
 - Current catalog batches use two routes / four search requests. Search requests can wait up to 45 seconds for exact-priority coordinator capacity and then spend up to 12 seconds in Walmart HTTP. A 3-minute claim bound leaves a conservative degraded-batch margin while reducing crash/restart starvation from 15 minutes to at most 3 minutes.
-- PR #238 uses the same 3-minute ceiling both for newly written `lease_until` values and as a maximum claim age. The age ceiling is independent of stored lease duration, so a claim created by the old 15-minute version becomes recoverable after three minutes without a schema migration.
+- The same 3-minute ceiling is used both for newly written `lease_until` values and as a maximum claim age. The age ceiling is independent of stored lease duration, so a claim created by the old 15-minute version becomes recoverable after three minutes without a schema migration.
 - Claim takeover remains token-guarded in the UPDATE itself. If multiple replacement processes race to recover one stale claim, only the first token can win.
 - Recovery intentionally repeats the same route slice; the durable cursor is not advanced until the winning claim completes, so restart recovery cannot silently skip catalog coverage.
 - A stale/slow worker holding the obsolete token cannot advance the cursor after takeover.
 - Cooperative cancellation explicitly releases an in-flight, not-yet-completed catalog claim, and cog unload now awaits canceled worker tasks so that cleanup can run before unload returns.
-- Catalog startup telemetry now exposes `catalog_claim_lease_s`, recovered batches append `recovered abandoned claim **yes**`, and active claim contention is logged at a bounded once-per-minute cadence instead of remaining silent.
-- Failure logging now distinguishes a discovery failure before cursor commit from a later fanout failure after the durable cursor has already advanced.
+- Catalog startup telemetry exposes `catalog_claim_lease_s`, recovered batches append `recovered abandoned claim **yes**`, and active claim contention is logged at a bounded once-per-minute cadence instead of remaining silent.
+- Failure logging distinguishes a discovery failure before cursor commit from a later fanout failure after the durable cursor has already advanced.
 
 ## Safety invariants
 - Requested item ID must exactly equal the official item being verified.
@@ -79,26 +79,26 @@
 - Fresh-proof focused regressions: **PASS**, including Aiho delivered-price/reference isolation, same-offer reference preservation, stale/price-conflict rejection, third-party unknown-shipping rejection, zero-network promotion, and pre-Milestone-2 schema migration.
 - Queue runtime/drain/bulk/persistence and page/public regressions: **PASS**.
 - PR #237 canonical/final suites: **1,192 passed**; dependency, compile, import smoke, Python Check, and Python tests passed; merge and real merge-commit workflows passed.
-- Milestone 3 restart path inspected through `global_auto_scan_runner` → durable catalog state → request coordinator → off-loop catalog discovery. The request coordinator wait ceiling is 45 seconds, Walmart Affiliate HTTP timeout is 12 seconds, catalog concurrency is 3, and two-route batches create four searches.
+- Milestone 3 restart path inspected through `global_auto_scan_runner` → durable catalog state → request coordinator → off-loop catalog discovery. The request coordinator wait ceiling is 45 seconds, Walmart Affiliate HTTP timeout is 12 seconds, catalog concurrency is 3, and the production two-route batch creates four searches.
 - PR #238 restart regressions reproduce an old persisted 15-minute lease, require the first 179 seconds to remain owned, require recovery immediately after the new 3-minute ceiling, require the replacement to repeat the exact same route slice, and prove the old token cannot advance the cursor during takeover.
 - PR #238 also regresses explicit cancellation release/no-cursor-advance and the runner's awaited shutdown/cancellation-release lifecycle.
 - First PR #238 canonical run: **1,196 passed**, one upstream `discord.py` `audioop` deprecation warning, in **13.47s**.
 - First PR #238 dependency validation: **PASS — no broken requirements**.
 - First PR #238 compile/static validation: **PASS**.
-- First PR #238 workflows: **Import smoke PASS / Python Check PASS / Python tests PASS**.
+- First and final cleanup-head PR #238 workflows: **Import smoke PASS / Python Check PASS / Python tests PASS**.
+- Final PR #238 diff contained exactly four intended files: `ACTIVE_TASK.md`, the canonical global autoscan runner, the canonical global catalog state service, and the restart regression file. The branch was 0 behind `main`, GitHub reported mergeable, review submissions/threads were empty, and the only PR comment was Qodo reporting its inactive subscription.
+- Cleanup removed an unused regression import before the final head; the final head reran and passed all canonical workflows.
+- PR #238 merged successfully as `10385d358e2c4437a20834f1f067552f264a0695`.
+- Real PR #238 merge-commit workflows on `main`: **Import smoke PASS / Python Check PASS / Python tests PASS**, including dependency and compile gates.
 
 ## Remaining Definition of Done
-1. Require the final task-record/cleanup PR #238 head to pass canonical Import smoke / Python Check / Python tests again.
-2. Inspect final PR net diff, changed files, branch freshness, mergeability, conflicts, comments, reviews, review threads, and absence of temporary/duplicate recovery paths.
-3. Merge PR #238 only if those gates remain clean.
-4. Validate the real `main` merge commit through all canonical workflows.
-5. Deploy current `main` to Discloud and verify startup reports `catalog_claim_lease_s=180`.
-6. Verify a restarted process resumes `Global Walmart catalog batch completed` within the bounded startup/claim-recovery window rather than remaining silently starved for 15 minutes.
-7. After new catalog batches occur, inspect `fresh catalog proof`, `api_exact_search_no_match`, `page_challenge`, whole-batch transient losses, and actionable-due trend.
-8. Confirm fresh catalog proof materially reduces unnecessary detail/search/page refetching for newly discovered safe offers and actionable due trends down rather than snowballing.
-9. Confirm marketplace delivered-price truth and same-selected-offer reference safety remain intact in live cards; sibling/variant reference prices must not leak across offers.
-10. Confirm strong exact deals are no longer rejected merely because stale `watchlist` presentation text survived an earlier scan state.
-11. Keep this task active until production demonstrates materially improved throughput without seller/variant/shipping/reference regressions. If live evidence still fails the gate, continue under this same task rather than moving on.
+1. Deploy current `main` to Discloud and verify startup reports `catalog_claim_lease_s=180`.
+2. Verify a restarted process resumes `Global Walmart catalog batch completed` within the bounded startup/claim-recovery window rather than remaining silently starved for 15 minutes. A cooperative shutdown should release immediately; a hard kill is bounded by the three-minute claim age plus worker startup/retry cadence.
+3. After new catalog batches occur, inspect `fresh catalog proof`, `api_exact_search_no_match`, `page_challenge`, whole-batch transient losses, and actionable-due trend.
+4. Confirm fresh catalog proof materially reduces unnecessary detail/search/page refetching for newly discovered safe offers and actionable due trends down rather than snowballing.
+5. Confirm marketplace delivered-price truth and same-selected-offer reference safety remain intact in live cards; sibling/variant reference prices must not leak across offers.
+6. Confirm strong exact deals are no longer rejected merely because stale `watchlist` presentation text survived an earlier scan state.
+7. Keep this task active until production demonstrates materially improved throughput without seller/variant/shipping/reference regressions. If live evidence still fails the gate, continue under this same task rather than moving on.
 
 ## Cleanup / conflicts
 - Canonical provider/queue/worker path retained; no parallel catalog or exact worker introduced.
@@ -108,11 +108,11 @@
 - Ordinary recent rediscovery write suppression remains in place; safe proof snapshots have their own bounded refresh cadence.
 - Low-level pre-snapshot queue compatibility is preserved without adding a production-path schema query on every exact claim.
 - Catalog recovery modifies only lease ownership/lifecycle; it does not alter Walmart candidate proof, thresholds, fanout eligibility, or exact verification semantics.
-- No temporary implementation workflow or duplicate catalog state table has been added.
-- Final PR #238 conflict/review/net-diff inspection is pending the cleanup-head CI gate.
+- No temporary implementation workflow or duplicate catalog state table was added.
+- PR #238 final conflict/review/net-diff inspection passed before merge.
 
 ## Blocker
-- **Final PR #238 cleanup-head validation/merge followed by live production proof.** The first code-side Milestone 3 gate is green, but the overall Walmart missed-deal task remains active until production proves catalog recovery and exact-verification throughput.
+- **Live production validation of merged Milestone 3.** Code-side implementation, targeted regressions, canonical full suites, compile/dependency checks, cleanup, conflict/review inspection, merge, and real merge-commit CI are complete. The overall Walmart missed-deal task remains active until Discloud proves catalog recovery, fresh-proof activation, throughput improvement, and exact-card safety.
 
 ## Backlog
 - Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` after this task closes.

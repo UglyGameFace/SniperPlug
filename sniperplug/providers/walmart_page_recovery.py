@@ -6,8 +6,8 @@ import html as html_lib
 import json
 import os
 import re
-import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -403,8 +403,11 @@ def _request_product_page_scripts(item_id: str, timeout: float) -> list[str]:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             final_url = str(getattr(response, "geturl", lambda: url)() or url)
-            if "walmart.com" not in final_url.lower():
-                raise WalmartPageRecoveryTransientError("product page redirected away from walmart.com")
+            final_host = (urllib.parse.urlparse(final_url).hostname or "").lower().rstrip(".")
+            if final_host != "walmart.com" and not final_host.endswith(".walmart.com"):
+                raise WalmartPageRecoveryTransientError(
+                    "product page redirected away from walmart.com"
+                )
             while True:
                 chunk = response.read(64 * 1024)
                 if not chunk:
@@ -549,7 +552,7 @@ def _offer_nodes(product: dict[str, Any], path: str):
                 if isinstance(child, dict):
                     yielded.add(id(child))
                     yield child, f"{path}.{key}[{index}]", priority - 5
-    if _raw_seller_identity(product) != (None, None):
+    if _raw_seller_identity_shallow(product) != (None, None):
         yield product, path, 70
 
     # Some Next.js payloads put the matched product identity above the buy-box
@@ -563,7 +566,10 @@ def _offer_nodes(product: dict[str, Any], path: str):
         if depth > 5:
             continue
         if isinstance(current, dict):
-            if id(current) not in yielded and _raw_seller_identity(current) != (None, None):
+            if (
+                id(current) not in yielded
+                and _raw_seller_identity_shallow(current) != (None, None)
+            ):
                 price = _node_price(current)
                 if price is not None:
                     yielded.add(id(current))
@@ -586,7 +592,7 @@ def _proof_from_offer(
 ) -> WalmartPageIdentityProof | None:
     seller_name, seller_id = _raw_seller_identity(offer)
     if not seller_name and not seller_id:
-        seller_name, seller_id = _raw_seller_identity(product)
+        seller_name, seller_id = _raw_seller_identity_shallow(product)
     if not seller_name and not seller_id:
         return None
 

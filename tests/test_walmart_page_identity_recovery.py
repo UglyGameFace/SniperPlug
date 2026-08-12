@@ -341,3 +341,52 @@ def test_canonical_runtime_registers_page_recovery_provider_and_bounded_rearm() 
     assert "WalmartPageRecoveryProvider" in source
     assert "rearm_recent_identity_rows_for_page_recovery" in source
     assert "WalmartProvider(walmart_affiliate_config" not in source
+
+
+def test_nested_offer_seller_cannot_be_borrowed_for_another_offer_price() -> None:
+    script = json.dumps(
+        {
+            "@type": "Product",
+            "sku": "1008",
+            "currentPrice": "10.00",
+            "offers": [
+                {"price": "10.00"},
+                {"price": "20.00", "seller": {"name": "Seller B"}},
+            ],
+        }
+    )
+
+    result = recover_page_identity_from_scripts(
+        [script],
+        item_id="1008",
+        api_item_price=10.0,
+    )
+
+    assert result.proof is None
+    assert result.status in {"seller_identity_missing", "price_mismatch", "no_price_aligned_seller"}
+
+
+def test_redirect_host_must_be_walmart_domain(monkeypatch) -> None:
+    from sniperplug.providers import walmart_page_recovery as page_recovery
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def geturl(self):
+            return "https://walmart.com.evil.example/ip/1009"
+
+        def read(self, _size):
+            return b""
+
+    monkeypatch.setattr(page_recovery.urllib.request, "urlopen", lambda *_args, **_kwargs: FakeResponse())
+
+    try:
+        page_recovery._request_product_page_scripts("1009", 3.0)
+    except page_recovery.WalmartPageRecoveryTransientError as exc:
+        assert "redirected away" in str(exc)
+    else:
+        raise AssertionError("lookalike redirect host must not be trusted")

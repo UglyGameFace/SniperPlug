@@ -40,6 +40,8 @@ from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartAffiliateConfig
 from sniperplug.providers.walmart_page_recovery import (
+    PAGE_RECOVERY_REARM_LIMIT,
+    PAGE_RECOVERY_REARM_WINDOW_HOURS,
     WalmartPageRecoveryProvider,
     rearm_recent_identity_rows_for_page_recovery,
 )
@@ -137,8 +139,8 @@ class SniperPlugBot(commands.Bot):
             log.info(
                 "Walmart page identity recovery migration ready: recent_rows_rearmed=%s max_rearm=%s window_hours=%s",
                 rearmed_identity_rows,
-                250,
-                72,
+                PAGE_RECOVERY_REARM_LIMIT,
+                PAGE_RECOVERY_REARM_WINDOW_HOURS,
             )
         except Exception:
             log.exception(

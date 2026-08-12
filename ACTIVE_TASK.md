@@ -1,84 +1,52 @@
 # Active Task
 
 ## Status
-**Complete — SP-WM-LIVE-BUYBOX-PROOF satisfied its code-side Definition of Done, PR #234 was merged into `main` at `79ac675e34373cbaf48f8d90b035edb9007a358a`, and both PR-head and merge-commit canonical validation workflows passed. Production behavior remains intentionally unclaimed until merged `main` is deployed to the canonical SniperPlug Discloud app and live Walmart traffic exercises the corrected buy-box recovery path.**
+**Active — SP-WM-PAGE-RETRY-FANOUT. Live production logs after PR #234 confirm seller/offer identity blocking dropped to zero, but Walmart exact verification is now suffering repeated transient-retry storms that pause catalog discovery. The same logs also show a 67.3% verified Walmart event reaching DM delivery while the 40% public destination reports `not_alertable`, whose current telemetry does not identify the actual gate. No production-complete claim is allowed until both paths are traced, corrected where needed, and validated.**
 
 ## Task
-**SP-WM-LIVE-BUYBOX-PROOF — Make exact Walmart product-page recovery consume the selected buy-box seller/shipping evidence that Walmart actually exposes for live marketplace items, without weakening item/price/variant/seller/offer safety.**
+**SP-WM-PAGE-RETRY-FANOUT — Stop Walmart page-recovery transient storms from starving fresh discovery, expose exact retry/public skip reasons, and preserve strict item/price/seller/offer/shipping/variant/reference safety.**
 
 ## Scope
-1. Trace the real recovery execution path from terminal exact queue row / manual recheck through `CachedWalmartProvider` → `WalmartPageRecoveryProvider` → exact candidate merge → `exact_offer_identity()` → shipping/public quality gates.
-2. Reproduce the live failure shape represented by Walmart items `17549068871` (RedSwing tent stove, seller Merry Li, free shipping) and `2368146027` (Seizeen 4-burner grill, seller Seizeen, paid shipping shown on page).
-3. Determine why page recovery could not bind seller evidence that was present on the exact Walmart page; inspect script capture limits, item-node matching, seller aliases, nesting depth, selected-offer association, and page/API price alignment.
-4. Recover only exact selected-buy-box seller/offer/shipping evidence that is bound to the requested Walmart item and price. Never borrow a seller or shipping term from another offer/variant.
-5. Preserve fail-closed behavior for item mismatch, ambiguous seller/offer, price mismatch, unknown mandatory shipping, condition/fulfillment/variant conflicts, reference-price proof, availability, threshold, category, and dedupe.
-6. Improve recovery observability so a future terminal row exposes the page-recovery failure reason instead of collapsing everything to generic `missing seller identity`.
-7. Complete focused live-shape regressions, full regressions, compile/import/dependency validation, cleanup, diff/conflict inspection, PR review/CI inspection, merge, and post-merge canonical validation.
+1. Trace the real exact-worker execution path from queue claim through `CachedWalmartProvider` → `WalmartPageRecoveryProvider` → official API/page fallback → `_fetch_exact_candidate_off_loop()` → `_store_failure()` → fresh-work backpressure.
+2. Determine why live batches repeatedly show 6–8 transient failures out of 8 claims even though seller identity blocks are now zero. Distinguish official API failures, product-page HTTP/challenge/network failures, price-change retries, outer exact-worker timeouts, and candidate-build failures.
+3. Prevent page-recovery retry traffic from being indistinguishable from genuinely fresh first-pass exact work when applying the catalog pause policy. Preserve bounded retries and fail closed; do not bypass Walmart challenges, CAPTCHAs, or rate limits.
+4. Align exact-worker/provider timeout budgets so the outer worker does not race or prematurely cancel a legitimate official API/page recovery operation while a background thread continues running.
+5. Add bounded retry telemetry that exposes useful failure classes/reasons in live batch diagnostics without logging secrets or raw page bodies.
+6. Trace the verified-event public fanout path for the live 67.3% KC Masterpiece event: DM matched/sent, while the 40% public destination returned `not_alertable`. Determine whether that was category suppression, public-quality proof, `should_alert`, or another intended gate. Add exact public skip-reason telemetry; correct only an actual logic defect and do not weaken category/threshold/dedupe/proof rules.
+7. Fix the page-recovery one-time rearm count so unsupported DB cursor `rowcount` falls back to `SELECT changes()`; startup `recent_rows_rearmed=0` must be trustworthy.
+8. Add focused regressions for the production failure shapes, then run full tests, dependency/static/compile validation, cleanup, diff/conflict inspection, PR review/CI inspection, merge, and post-merge canonical validation.
 
-## Root cause / findings
-- Confirmed execution path: the recovery panel's **Recheck exact offer** only re-arms the queue row; the next exact worker calls the registered cached Walmart provider, whose `fetch_product_detail_payload()` delegates to `WalmartPageRecoveryProvider` before the candidate is rebuilt and passed to `exact_offer_identity()`.
-- `exact_offer_identity()` requires exact price proof, exact item ID, selected offer ID, and seller identity. A recovered marketplace seller still must have known shipping before its delivered price can become alertable.
-- The first page fallback could discard Walmart's rich `__NEXT_DATA__`/structured page state when a single script exceeded its 2 MB cap. Live Walmart page state can be larger than that even when it contains the selected buy-box evidence needed for exact recovery.
-- The fallback's explicit buy-box aliases and bounded traversal were too narrow for live page-state shapes. It recognized `selectedOffer`/`buyBoxOffer` but not common nested `buyBox`, `buyBoxWinner`, `offerInfo`, or several item-ID aliases.
-- There were two seller parsers in the page-recovery file. The actual nested path used by `_raw_seller_identity()` did not recognize `sellerInfo.sellerDisplayName`, `merchantInfo.merchantName`, or `merchantInfo.merchantId`; that reproduced the live symptom where shipping/price could be present while seller identity remained `None`.
-- `WalmartProvider._selected_offer_proof()` was a second, shallower provider-side seller parser instead of consuming the existing canonical `selected_offer_delivery_attributes()` normalization. That duplicate path could disagree with the marketplace/delivered-price layer.
-- Page recovery previously stopped once any seller identity existed, even if a third-party marketplace offer still had `shipping unknown`. Seller recovery alone could therefore still quarantine a real free-shipping deal.
-- Page recovery previously returned seller/offer/marketplace proof only; it did not propagate same-buy-box shipping evidence. That is material for the live examples: the RedSwing stove has free shipping, while the Seizeen grill has roughly $49.99 mandatory shipping, so item-price markdown alone overstates the grill's delivered discount.
-- `_exact_identity_failure_reason()` did not include `pageIdentityRecoveryStatus` or page-recovery detail, hiding the actual fallback failure behind generic `missing seller identity`.
+## Findings so far
+- PR #234 is live and its primary seller-identity objective is confirmed: post-deploy exact batches consistently report `identity unavailable / safely blocked 0`, versus the previous 16–24 seller blocks per 24-item batch.
+- Live exact batches now frequently show 6–8 `transient failures` out of 8 claims. These retries can raise fresh/retry pressure above the catalog pause threshold (`14/12`, later `38/12`) and stop discovery.
+- `_fetch_exact_candidate_off_loop()` wraps the entire provider detail call in `asyncio.wait_for(..., timeout=8s)` and maps every provider exception to generic status `retry` with only `last_error` retaining the cause.
+- The official Walmart provider itself permits a 12-second HTTP timeout. Product-page recovery separately defaults to an 8-second page HTTP timeout. The outer 8-second worker budget is therefore structurally shorter than the provider operations it encloses.
+- The live batch wall-clock pattern is usually much shorter than four sequential 8-second timeouts at concurrency two, so outer timeout collision alone is not proven as the dominant production cause; fast HTTP/challenge/provider failures remain likely and need reason telemetry before changing retry policy blindly.
+- `_store_failure()` sends generic retries through 5-minute exponential backoff (capped at 6 hours). `walmart_exact_queue_pressure` counts due `retry` rows as fresh work, and `FRESH_DISCOVERY_PAUSE_THRESHOLD` is 12. This directly explains why repeated page/provider retries can pause catalog intake.
+- Product-page recovery intentionally treats HTTP 403/408/425/429/5xx, network/timeouts, and challenge pages as transient. That fail-closed boundary must remain.
+- The page-recovery migration count currently uses `_safe_rowcount()`, which converts unsupported/negative cursor rowcount to zero instead of using the `SELECT changes()` fallback already used elsewhere in the queue runtime.
+- Live fanout at 14:46 proves DM delivery works end to end for at least one strong verified Walmart event: KC Masterpiece at `$3.98`, 67.3% discount, `DM checked/matched/sent 1/1/1`.
+- The same event did not publicly post to guild `1514374173517152418` despite a 40% threshold; the destination reported `not_alertable=1`. The public posting layer currently collapses category suppression, public-quality rejection, and `should_alert` rejection into the same counter, so the log alone cannot prove this was a bug.
 
-## Changes delivered
-- Expanded bounded product-page capture while retaining strict resource ceilings: 8 MB wire, 6 MB per structured script, 7 MB total structured data, 32 scripts, 75,000 JSON nodes, and concurrency fixed at two requests.
-- Added exact item aliases and explicit live buy-box aliases (`buyBox`, `buybox`, `buyBoxWinner`, `offerInfo`) plus a still-bounded deeper seller-bearing descendant scan.
-- Unified live seller alias handling so both nested seller readers recognize `sellerInfo`, `sellerDisplayName`, `merchantInfo`, `merchantName`, and `merchantId`.
-- Integrated `WalmartProvider._selected_offer_proof()` with the existing canonical `selected_offer_delivery_attributes()` normalization instead of maintaining an independent seller/fulfillment parser.
-- Page recovery now also runs for an already-known third-party marketplace seller when selected-offer shipping is still unknown.
-- Added same-offer shipping extraction that accepts only explicitly shipping-labelled fields from the selected-offer subtree, including zero/free shipping and mandatory paid shipping. It does not treat unrelated page prices as shipping.
-- Recovered shipping is merged only into the same price-aligned exact payload/selected-offer node and cannot overwrite conflicting official values.
-- Official exact item price remains authoritative. Page seller/shipping proof still requires exact item match and cent-for-cent selected-offer price alignment; price disagreement is retryable rather than bound to a seller.
-- Added seller-conflict and marketplace-conflict checks so existing official identity cannot silently be replaced by disagreeing page evidence.
-- Page recovery result now carries shipping status/cost and diagnostic detail into candidate attributes.
-- Exact terminal failure text now appends page-recovery status/detail, so a future block identifies which recovery step failed instead of only reporting `missing seller identity`.
-- Bumped the one-time bounded recent terminal rearm key to v2 so up to 250 recent/high-priority seller/offer identity rows from the last 72 hours can exercise the corrected fallback after deployment without reopening the historical queue.
+## Safety invariants
+- Exact requested Walmart item must match the exact detail/page item.
+- Official selected-item price remains authoritative; page seller/offer recovery requires cent-for-cent price alignment.
+- Seller, offer, variant, condition, fulfillment, and mandatory shipping must remain bound to the same selected offer.
+- Delivered-price math must continue including mandatory marketplace shipping.
+- Trusted reference-price proof, availability, threshold, category, duplicate, and public quality gates remain fail closed.
+- No CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, alternate-retailer proof substitution, or unrestricted historical queue rearm.
 
 ## Validation
-- Live-shape focused regression for item `17549068871`: deep `sellerInfo.sellerDisplayName = Merry Li`, exact item price `$56.99`, reference `$99.99`, and free shipping are recovered together; the public current price remains `$56.99`.
-- Live-shape focused regression for item `2368146027`: `merchantInfo.merchantName = Seizeen`, item price `$149.99`, and `$49.99` shipping produce a delivered price of `$199.98`; the resulting delivered markdown versus `$289.99` is about 31%, preventing a false 40%+ deal.
-- Added regression proving a known marketplace seller with unknown shipping still invokes page recovery.
-- Added regression proving a structured page-state script larger than the former 2 MB ceiling is retained within the new bounds.
-- Added regression proving page-recovery failure status/detail survives into the terminal identity error.
-- Focused Walmart suites: **40 passed**.
-- `pip check`: **PASS — no broken requirements**.
-- `python -m compileall -q sniperplug tests *.py`: **PASS**.
-- `git diff --check`: **PASS** after EOF cleanup.
-- Full Python 3.11.15 branch suite: **1,178 passed**, one upstream `discord.py` `audioop` deprecation warning.
-- Implementation commit: `1e9b305b1d3ab1231809c6f826c250f849a39f35`.
-- Final PR head `c19585ef7b78a45b630c8bccf67d5c5d42731551` passed all three canonical workflows:
-  - **Import smoke check: PASS**.
-  - **Python tests: PASS** including dependency check, compileall, and full pytest suite.
-  - **Python Check: PASS** including compile, import smoke, and full suite.
-- Merge commit `79ac675e34373cbaf48f8d90b035edb9007a358a` independently passed all three canonical `main` workflows:
-  - **Import smoke check: PASS**.
-  - **Python tests: PASS** including `pip check`, compileall, and pytest.
-  - **Python Check: PASS** including compile, import smoke, and full suite.
+- Pending implementation.
 
-## Cleanup, review, and conflict inspection
-- Temporary branch-only applicator workflow/scripts deleted themselves before the implementation commit and are absent from the net PR diff.
-- Branch comparison at implementation inspection was **0 commits behind `main`**; PR #234 was subsequently reported mergeable before merge.
-- Net runtime/test scope was limited to `sniperplug/providers/walmart.py`, `sniperplug/providers/walmart_page_recovery.py`, `sniperplug/services/walmart_exact_queue_runtime.py`, `tests/test_walmart_page_identity_recovery.py`, and this task record.
-- The duplicate provider-side selected-offer seller parser was integrated with the existing canonical selected-offer normalization rather than left as a competing implementation.
-- No relaxed exact-item, exact-price, seller/offer, marketplace, shipping, condition, fulfillment, variant, reference-price, availability, threshold, category, or dedupe gate was introduced.
-- No raw-page persistence, CAPTCHA/challenge bypass, proxy rotation, alternate retailer source, or unrestricted historical queue rearm was introduced.
-- PR #234 had no human reviews and no inline review threads. The only PR conversation comment was an automated Qodo billing notice saying Qodo review was paused because its subscription was inactive; it contained no code finding.
-- PR #234 merged cleanly into `main` as `79ac675e34373cbaf48f8d90b035edb9007a358a`.
+## Cleanup / conflict inspection
+- Pending implementation.
 
-## Merge / deployment boundary
-- PR #234: `Recover live Walmart buy-box seller and shipping proof` — **merged**.
-- Merge commit: `79ac675e34373cbaf48f8d90b035edb9007a358a`.
-- Code-side task lock is released after validation of this task-record-only close commit.
-- Production completion remains intentionally unclaimed until merged `main` is deployed to the canonical SniperPlug Discloud app and live rechecks confirm seller/shipping recovery and normal fanout without new queue pressure or Discord lag.
+## Blockers
+- None currently. Live logs provide the production failure signature, but exact transient sub-reasons are not yet surfaced by current telemetry.
 
 ## Backlog
 - Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` after this task closes.
-- Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings during Walmart drain-mode exact verification after this task closes.
-- Continue verifying PR #223 delivery-health accounting from live post-deploy logs.
+- Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings after this active Walmart delivery task closes unless the current root cause directly explains them.
+- Continue verifying PR #223 delivery-health accounting from live post-deploy logs after this task closes.
 - PR #200 remains isolated and must not be mixed into this task.

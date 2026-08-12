@@ -7,6 +7,8 @@ import discord
 
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
+    UNLIMITED_MAX_ALERTS_PER_DAY,
+    daily_cap_label,
     save_dm_deal_alert_preference,
 )
 from sniperplug.services.dm_personal_categories import (
@@ -40,6 +42,15 @@ _MAX_PRICE_CLEAR_TERMS = {
     "off",
     "none",
     "clear",
+    "no limit",
+    "no-limit",
+    "nolimit",
+}
+_DAILY_CAP_UNLIMITED_TERMS = {
+    "0",
+    "off",
+    "none",
+    "unlimited",
     "no limit",
     "no-limit",
     "nolimit",
@@ -134,14 +145,19 @@ def parse_dm_rule_values(
     daily_cap_raw = str(daily_cap_text or "").strip()
     daily_cap: int | None = None
     if daily_cap_raw:
-        try:
-            daily_cap = int(daily_cap_raw)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "Daily DM limit must be a whole number from 1 to 100."
-            ) from exc
-        if not 1 <= daily_cap <= 100:
-            raise ValueError("Daily DM limit must be between 1 and 100 alerts.")
+        if daily_cap_raw.lower() in _DAILY_CAP_UNLIMITED_TERMS:
+            daily_cap = UNLIMITED_MAX_ALERTS_PER_DAY
+        else:
+            try:
+                daily_cap = int(daily_cap_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "Daily DM limit must be 1 to 100, or `unlimited`."
+                ) from exc
+            if not 1 <= daily_cap <= 100:
+                raise ValueError(
+                    "Daily DM limit must be between 1 and 100 alerts, or `unlimited`."
+                )
 
     return DmDealRuleDraft(
         min_discount=threshold,
@@ -295,7 +311,7 @@ class DmDealPreferencesView(discord.ui.View):
                 f"DM Deal Threshold: **{self.dm_min_discount}%+ markdown**\n"
                 f"Minimum savings: **${self.dm_min_savings_cents / 100:,.2f}** • "
                 f"Minimum score: **{self.dm_min_score}/250**\n"
-                f"Max item price: **{max_price_text}** • Daily DM limit: **{self.dm_daily_cap}**\n"
+                f"Max item price: **{max_price_text}** • Daily DM limit: **{daily_cap_label(self.dm_daily_cap)}**\n"
                 "`/deal threshold` controls the **server's public deal channel only**. "
                 "It does not change these personal DM rules."
             ),
@@ -330,9 +346,10 @@ class DmDealPreferencesView(discord.ui.View):
             value=(
                 "Flip Override crosses category boundaries only. Exact item, seller, offer, "
                 "variant, availability, current/was-price proof, your DM Deal Threshold and "
-                "other explicit floors, excluded words, maximum price, dedupe, and daily cap "
-                "remain enforced. Without sold comps, resale value is labeled **estimated**, "
-                "never confirmed."
+                "other explicit floors, excluded words, maximum price, dedupe, and your saved "
+                "daily-limit policy remain enforced. Broad Smart alerts with a finite limit "
+                "also reserve room for category variety; Unlimited has no hidden family cap. "
+                "Without sold comps, resale value is labeled **estimated**, never confirmed."
             ),
             inline=False,
         )
@@ -928,10 +945,10 @@ class _DmDealRulesModal(
         max_length=12,
     )
     daily_cap = discord.ui.TextInput(
-        label="Daily DM limit (1-100) — optional",
-        placeholder="Blank keeps current",
+        label="Daily DM limit — optional",
+        placeholder="Blank keeps current • type unlimited for no cap",
         required=False,
-        max_length=3,
+        max_length=12,
     )
 
     def __init__(
@@ -960,7 +977,7 @@ class _DmDealRulesModal(
                 "blank keeps • type off to remove"
             )
         self.daily_cap.placeholder = (
-            f"Current: {owner.dm_daily_cap}/day • blank keeps"
+            f"Current: {daily_cap_label(owner.dm_daily_cap)} • blank keeps"
         )
 
     async def on_submit(
@@ -1039,7 +1056,7 @@ class _DmDealRulesModal(
         ):
             self.owner.dm_daily_cap = rules.daily_cap
             changed.append(
-                f"daily limit **{rules.daily_cap}**"
+                f"daily limit **{daily_cap_label(rules.daily_cap)}**"
             )
 
         if changed:

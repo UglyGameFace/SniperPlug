@@ -13,7 +13,7 @@ permissions:
 jobs:
   apply-and-validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,15 +34,19 @@ jobs:
           pip check
       - name: Compile changed Python surface
         run: python -m compileall -q sniperplug tests *.py
-      - name: Run focused Walmart reliability regressions
+      - name: Run fresh-proof regressions
+        run: timeout 45s pytest -vv -s tests/test_walmart_fresh_discovery_proof.py
+      - name: Run queue regressions
         run: >-
-          pytest -q
-          tests/test_walmart_fresh_discovery_proof.py
+          timeout 45s pytest -q
           tests/test_walmart_exact_queue_runtime.py
           tests/test_walmart_exact_queue_drain.py
           tests/test_walmart_exact_verification_queue_bulk.py
           tests/test_walmart_catalog_queue_write_suppression.py
           tests/test_walmart_exact_queue_bulk_persistence.py
+      - name: Run page/public regressions
+        run: >-
+          timeout 45s pytest -q
           tests/test_walmart_page_identity_recovery.py
           tests/test_walmart_exact_public_lane.py
       - name: Commit validated implementation and remove applicator

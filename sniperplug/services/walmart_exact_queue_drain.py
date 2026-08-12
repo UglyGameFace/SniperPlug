@@ -28,6 +28,12 @@ from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
 PUBLIC_ALERT_RECHECK_PERCENT = 50.0
 MID_TIER_RECHECK_PERCENT = 30.0
+_DISCOVERY_SNAPSHOT_COLUMNS = (
+    "discovery_snapshot_json, discovery_snapshot_at"
+)
+_LEGACY_DISCOVERY_SNAPSHOT_PROJECTION = (
+    "'' AS discovery_snapshot_json, NULL AS discovery_snapshot_at"
+)
 
 
 async def claim_due_rows_batched(
@@ -52,6 +58,11 @@ async def claim_due_rows_batched(
     A shared lease token still protects all final writes. If another process
     races between the two statements, the UPDATE guards and returned IDs prevent
     this worker from processing rows it did not lease.
+
+    Production initializes the current queue schema before calling this helper.
+    Direct legacy callers that still own the pre-snapshot queue shape remain
+    supported fail-closed: only a missing discovery-snapshot column causes one
+    bounded retry with empty snapshot aliases. Other database errors propagate.
     """
 
     now_utc = now.astimezone(timezone.utc)
@@ -65,39 +76,12 @@ async def claim_due_rows_batched(
         now_utc + timedelta(seconds=QUEUE_LEASE_SECONDS)
     ).isoformat()
 
-    select_cursor = await conn.execute(
-        f"""
-        SELECT
-            item_id, title, product_url, image_url,
-            apparent_current_cents, apparent_reference_cents,
-            route_hint, attempt_count,
-            discovery_snapshot_json, discovery_snapshot_at
-        FROM {QUEUE_TABLE}
-        WHERE next_attempt_at <= ?
-          AND last_seen_at >= ?
-          AND status NOT IN ('incomplete_identity', 'identity_mismatch')
-          AND (lease_until IS NULL OR lease_until < ?)
-        ORDER BY
-            CASE status
-                WHEN 'pending' THEN 0
-                WHEN 'retry' THEN 1
-                WHEN 'failed' THEN 2
-                WHEN 'page_retry' THEN 3
-                WHEN 'verifying' THEN 4
-                WHEN 'verified_markdown' THEN 5
-                WHEN 'verified_under_threshold' THEN 6
-                WHEN 'verified_no_reference' THEN 7
-                WHEN 'verified_reference' THEN 8
-                WHEN 'not_buyable' THEN 9
-                ELSE 10
-            END,
-            priority_score DESC,
-            last_seen_at DESC
-        LIMIT ?
-        """,
-        (now_iso, discovery_cutoff, now_iso, bounded_limit),
+    selected_rows = await _select_due_rows_with_optional_discovery_snapshot(
+        conn,
+        now_iso=now_iso,
+        discovery_cutoff=discovery_cutoff,
+        bounded_limit=bounded_limit,
     )
-    selected_rows = await select_cursor.fetchall()
     if not selected_rows:
         return []
 
@@ -171,6 +155,72 @@ async def claim_due_rows_batched(
             )
         )
     return claims
+
+
+async def _select_due_rows_with_optional_discovery_snapshot(
+    conn: Any,
+    *,
+    now_iso: str,
+    discovery_cutoff: str,
+    bounded_limit: int,
+) -> list[Any]:
+    params = (now_iso, discovery_cutoff, now_iso, bounded_limit)
+    try:
+        cursor = await conn.execute(
+            _due_rows_select_sql(_DISCOVERY_SNAPSHOT_COLUMNS),
+            params,
+        )
+    except Exception as exc:
+        if not _is_missing_discovery_snapshot_column(exc):
+            raise
+        cursor = await conn.execute(
+            _due_rows_select_sql(_LEGACY_DISCOVERY_SNAPSHOT_PROJECTION),
+            params,
+        )
+    return list(await cursor.fetchall())
+
+
+def _due_rows_select_sql(snapshot_projection: str) -> str:
+    return f"""
+        SELECT
+            item_id, title, product_url, image_url,
+            apparent_current_cents, apparent_reference_cents,
+            route_hint, attempt_count,
+            {snapshot_projection}
+        FROM {QUEUE_TABLE}
+        WHERE next_attempt_at <= ?
+          AND last_seen_at >= ?
+          AND status NOT IN ('incomplete_identity', 'identity_mismatch')
+          AND (lease_until IS NULL OR lease_until < ?)
+        ORDER BY
+            CASE status
+                WHEN 'pending' THEN 0
+                WHEN 'retry' THEN 1
+                WHEN 'failed' THEN 2
+                WHEN 'page_retry' THEN 3
+                WHEN 'verifying' THEN 4
+                WHEN 'verified_markdown' THEN 5
+                WHEN 'verified_under_threshold' THEN 6
+                WHEN 'verified_no_reference' THEN 7
+                WHEN 'verified_reference' THEN 8
+                WHEN 'not_buyable' THEN 9
+                ELSE 10
+            END,
+            priority_score DESC,
+            last_seen_at DESC
+        LIMIT ?
+    """
+
+
+def _is_missing_discovery_snapshot_column(exc: BaseException) -> bool:
+    message = str(exc or "").lower()
+    return (
+        "no such column" in message
+        and (
+            "discovery_snapshot_json" in message
+            or "discovery_snapshot_at" in message
+        )
+    )
 
 
 async def store_exact_candidate_with_tiered_recheck(

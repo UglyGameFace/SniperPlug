@@ -46,9 +46,12 @@
 
 ## Cleanup status
 - Startup task is closed. No additional startup patch is required from the supplied production evidence.
-- Two separate runtime findings from the same post-deploy log are intentionally not mixed into this task: repeated Discord gateway lag warnings (`websocket is 41.5s behind`) and the high Walmart seller-identity block rate.
+- PR #231 is the documentation-only closure record for this completed task.
+- No runtime code is changed by PR #231.
 
 ## Backlog
+- **SP-DM-DIVERSITY — Prevent broad smart DM alerts from being monopolized by apparel/fashion deals.** Root-cause tracing found that the matcher has no delivery-diversity guard and the shared daily cap is consumed in arrival order. Preserve intentional single-category/favorite choices and use one shared policy across live Walmart and verified-retailer DM fanout paths.
+- Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content`.
 - Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings during Walmart drain-mode exact verification.
 - Investigate the high volume of Walmart `seller` identity blocks and transient exact-fetch failures.
 - Continue verifying PR #223 delivery-health accounting from live post-deploy logs.

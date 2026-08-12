@@ -24,6 +24,7 @@ from sniperplug.services.walmart_fresh_work_policy import (
     catalog_backpressure_reason,
 )
 from sniperplug.services.walmart_global_catalog_autoscan import (
+    CLAIM_LEASE_SECONDS as GLOBAL_CATALOG_CLAIM_LEASE_SECONDS,
     claim_next_catalog_routes,
     complete_catalog_claim,
     load_global_catalog_state,
@@ -51,6 +52,7 @@ GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS = 15
 GLOBAL_DISCOVERY_MIN_DISCOUNT = 10
 GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 2
 GLOBAL_BACKPRESSURE_LOG_INTERVAL_SECONDS = 5 * 60
+GLOBAL_CLAIM_BUSY_LOG_INTERVAL_SECONDS = 60
 GLOBAL_FANOUT_EVENT_LIMIT = 20
 GLOBAL_EXACT_QUEUE_BATCH_SIZE = 8
 GLOBAL_EXACT_QUEUE_CONCURRENCY = 2
@@ -71,6 +73,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
         super().__init__(bot)
         self._walmart_catalog_discovery_task: asyncio.Task | None = None
         self._last_backpressure_log_monotonic = 0.0
+        self._last_claim_busy_log_monotonic = 0.0
         self._catalog_active = False
         self._exact_active = False
         self._reconciliation_active = False
@@ -95,7 +98,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
         legacy.log.info(
             "Autoscan global architecture active python=%s platform=%s "
             "per_guild_discovery=false global_catalog_routes_per_batch=%s "
-            "global_catalog_interval_s=%s exact_queue_batch=%s "
+            "global_catalog_interval_s=%s catalog_claim_lease_s=%s exact_queue_batch=%s "
             "exact_queue_interval_s=%s global_exact_fanout=true personal_dm_alerts=true "
             "external_verified_event_fanout=true terminal_identity_quarantine=true "
             "exact_parse_off_event_loop=true bulk_exact_persistence=true "
@@ -109,24 +112,30 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             sys.platform,
             GLOBAL_DISCOVERY_ROUTES_PER_BATCH,
             GLOBAL_DISCOVERY_INTERVAL_SECONDS,
+            GLOBAL_CATALOG_CLAIM_LEASE_SECONDS,
             GLOBAL_EXACT_QUEUE_BATCH_SIZE,
             GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS,
         )
 
     async def cog_unload(self) -> None:
         self.global_reconciliation_loop.cancel()
-        tasks_to_cancel = (
-            self._event_loop_watchdog_task,
-            self._walmart_verification_queue_task,
-            self._walmart_catalog_discovery_task,
+        tasks_to_cancel = tuple(
+            task
+            for task in (
+                self._event_loop_watchdog_task,
+                self._walmart_verification_queue_task,
+                self._walmart_catalog_discovery_task,
+            )
+            if task is not None
         )
         self._event_loop_watchdog_task = None
         self._walmart_verification_queue_task = None
         self._walmart_catalog_discovery_task = None
         self._runtime_phase = "unloading"
         for task in tasks_to_cancel:
-            if task is not None:
-                task.cancel()
+            task.cancel()
+        if tasks_to_cancel:
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
     @tasks.loop(minutes=GLOBAL_RECONCILIATION_MINUTES)
     async def global_reconciliation_loop(self) -> None:
@@ -239,12 +248,27 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     continue
 
                 claim = None
+                claim_completed = False
                 try:
                     claim = await claim_next_catalog_routes(
                         self.bot.db,
                         route_count=GLOBAL_DISCOVERY_ROUTES_PER_BATCH,
                     )
                     if claim is None:
+                        now = time.monotonic()
+                        if (
+                            now - self._last_claim_busy_log_monotonic
+                            >= GLOBAL_CLAIM_BUSY_LOG_INTERVAL_SECONDS
+                        ):
+                            state = await load_global_catalog_state(self.bot.db)
+                            if state.claim_active:
+                                legacy.log.info(
+                                    "Global Walmart catalog discovery waiting on active durable claim "
+                                    "started_at=%s retry_in_s=%s",
+                                    state.last_started_at or "unknown",
+                                    GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS,
+                                )
+                            self._last_claim_busy_log_monotonic = now
                         await asyncio.sleep(GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS)
                         continue
 
@@ -279,6 +303,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         raise RuntimeError(
                             "global catalog claim could not be confirmed complete"
                         )
+                    claim_completed = True
                     state = await load_global_catalog_state(self.bot.db)
                     elapsed = max(0.0, time.monotonic() - started)
                     legacy.log.info(
@@ -308,9 +333,22 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()
                 except asyncio.CancelledError:
+                    if claim is not None and not claim_completed:
+                        try:
+                            await asyncio.shield(
+                                release_catalog_claim(
+                                    self.bot.db,
+                                    claim,
+                                    error="CancelledError: catalog worker cancelled",
+                                )
+                            )
+                        except Exception:
+                            legacy.log.exception(
+                                "Failed to release global catalog claim during cancellation"
+                            )
                     raise
                 except Exception as error:
-                    if claim is not None:
+                    if claim is not None and not claim_completed:
                         try:
                             await release_catalog_claim(
                                 self.bot.db,
@@ -321,9 +359,15 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                             legacy.log.exception(
                                 "Failed to release global catalog claim after error"
                             )
-                    legacy.log.exception(
-                        "Global Walmart catalog batch failed safely; durable cursor was not advanced"
-                    )
+                    if claim_completed:
+                        legacy.log.exception(
+                            "Global Walmart catalog post-completion work failed safely; "
+                            "durable cursor was already advanced"
+                        )
+                    else:
+                        legacy.log.exception(
+                            "Global Walmart catalog batch failed safely; durable cursor was not advanced"
+                        )
                 finally:
                     self._catalog_active = False
                     self._runtime_phase = "idle"

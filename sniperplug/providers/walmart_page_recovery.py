@@ -21,18 +21,21 @@ from sniperplug.services.walmart_marketplace_comp import (
 
 
 PAGE_RECOVERY_STATUS_KEY = "sniperplugPageRecoveryStatus"
+PAGE_RECOVERY_DETAIL_KEY = "sniperplugPageRecoveryDetail"
 PAGE_RECOVERY_SOURCE_KEY = "sniperplugPageRecoverySource"
 PAGE_RECOVERY_PRICE_KEY = "sniperplugPageRecoveryPrice"
-PAGE_RECOVERY_VERSION = "walmart_product_page_identity_v1"
+PAGE_RECOVERY_SHIPPING_COST_KEY = "sniperplugPageRecoveryShippingCost"
+PAGE_RECOVERY_SHIPPING_STATUS_KEY = "sniperplugPageRecoveryShippingStatus"
+PAGE_RECOVERY_VERSION = "walmart_product_page_buybox_v2"
 PAGE_RECOVERY_REARM_TABLE = "walmart_page_recovery_migrations"
-PAGE_RECOVERY_REARM_KEY = "recent_incomplete_identity_rearm_v1"
+PAGE_RECOVERY_REARM_KEY = "recent_incomplete_identity_rearm_v2"
 PAGE_RECOVERY_REARM_LIMIT = 250
 PAGE_RECOVERY_REARM_WINDOW_HOURS = 72
-PAGE_RECOVERY_MAX_WIRE_BYTES = 5 * 1024 * 1024
-PAGE_RECOVERY_MAX_SCRIPT_BYTES = 2 * 1024 * 1024
-PAGE_RECOVERY_MAX_STRUCTURED_BYTES = 4 * 1024 * 1024
-PAGE_RECOVERY_MAX_JSON_NODES = 30_000
-PAGE_RECOVERY_MAX_SCRIPTS = 24
+PAGE_RECOVERY_MAX_WIRE_BYTES = 8 * 1024 * 1024
+PAGE_RECOVERY_MAX_SCRIPT_BYTES = 6 * 1024 * 1024
+PAGE_RECOVERY_MAX_STRUCTURED_BYTES = 7 * 1024 * 1024
+PAGE_RECOVERY_MAX_JSON_NODES = 75_000
+PAGE_RECOVERY_MAX_SCRIPTS = 32
 PAGE_RECOVERY_CONCURRENCY = 2
 
 _TRANSIENT_HTTP_CODES = {403, 408, 425, 429, 500, 502, 503, 504}
@@ -69,6 +72,8 @@ class WalmartPageIdentityProof:
     offer_id: str | None
     current_price: float | None
     marketplace: bool | None
+    shipping_cost: float | None
+    free_shipping: bool | None
     source: str
 
     @property
@@ -78,6 +83,14 @@ class WalmartPageIdentityProof:
             return f"id:{seller_id.lower()}"
         seller_name = _clean_text(self.seller_name)
         return f"name:{seller_name.lower()}" if seller_name else ""
+
+    @property
+    def shipping_status(self) -> str | None:
+        if self.shipping_cost is not None:
+            return "free" if self.shipping_cost == 0 else "paid"
+        if self.free_shipping is True:
+            return "free"
+        return None
 
 
 @dataclass(frozen=True)
@@ -149,6 +162,10 @@ class WalmartPageRecoveryProvider(WalmartProvider):
                 )
             return _mark_page_recovery(payload, recovery.status, recovery.detail)
 
+        seller_conflict = _seller_identity_conflict(payload, recovery.proof)
+        if seller_conflict:
+            return _mark_page_recovery(payload, "seller_conflict", seller_conflict)
+
         conflict = _marketplace_conflict(payload, recovery.proof)
         if conflict:
             return _mark_page_recovery(payload, "marketplace_conflict", conflict)
@@ -183,12 +200,21 @@ class WalmartPageRecoveryProvider(WalmartProvider):
         source = _clean_text(item.get(PAGE_RECOVERY_SOURCE_KEY))
         if source:
             attrs["pageIdentityRecoverySource"] = source
+        detail = _clean_text(item.get(PAGE_RECOVERY_DETAIL_KEY))
+        if detail:
+            attrs["pageIdentityRecoveryDetail"] = detail
         price = _positive_float(item.get(PAGE_RECOVERY_PRICE_KEY))
         if price is not None:
             attrs["pageIdentityRecoveryPrice"] = f"{price:.2f}"
+        shipping_cost = _nonnegative_float(item.get(PAGE_RECOVERY_SHIPPING_COST_KEY))
+        if shipping_cost is not None:
+            attrs["pageIdentityRecoveryShippingCost"] = f"{shipping_cost:.2f}"
+        shipping_status = _clean_text(item.get(PAGE_RECOVERY_SHIPPING_STATUS_KEY))
+        if shipping_status:
+            attrs["pageIdentityRecoveryShippingStatus"] = shipping_status
         candidate.variant_attributes = attrs
         if status == "verified_identity":
-            signal = "Walmart seller/offer identity recovered from exact product-page structured data"
+            signal = "Walmart seller/offer buy-box proof recovered from exact product-page structured data"
         else:
             signal = f"Walmart product-page identity recovery: {status.replace('_', ' ')}"
         if signal not in candidate.signals:
@@ -200,10 +226,18 @@ def needs_page_identity_recovery(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
     seller_name, seller_id = _raw_seller_identity(payload)
-    if seller_name or seller_id:
-        return False
-    marketplace = _raw_marketplace(payload)
-    return marketplace is not False
+    attrs = selected_offer_delivery_attributes(payload)
+    marketplace = _first_bool(
+        attrs.get("selectedOfferMarketplace"),
+        _raw_marketplace(payload),
+    )
+    if not seller_name and not seller_id:
+        return marketplace is not False
+    return (
+        marketplace is True
+        and str(attrs.get("selectedOfferShippingStatus") or "").strip().lower()
+        == "unknown"
+    )
 
 
 def recover_page_identity_from_scripts(
@@ -261,6 +295,8 @@ def recover_page_identity_from_scripts(
                 score += 20
             if proof.offer_id:
                 score += 10
+            if proof.shipping_status:
+                score += 8
             if _is_walmart_seller(proof.seller_name, proof.seller_id):
                 score += 5
             candidates.append((score, proof))
@@ -286,6 +322,8 @@ def recover_page_identity_from_scripts(
             _clean_text(proof.offer_id),
             _price_to_cents(proof.current_price) if proof.current_price is not None else None,
             proof.marketplace,
+            _price_to_cents(proof.shipping_cost) if proof.shipping_cost is not None else None,
+            proof.shipping_status,
         )
         for proof in top
     }
@@ -523,7 +561,17 @@ def _walk_dict_nodes(value: Any, *, prefix: str):
 
 
 def _node_matches_item(node: dict[str, Any], item_id: str) -> bool:
-    for key in ("itemId", "usItemId", "productId", "productID", "sku"):
+    for key in (
+        "itemId",
+        "usItemId",
+        "productId",
+        "productID",
+        "sku",
+        "item_id",
+        "us_item_id",
+        "walmartItemId",
+        "catalogItemId",
+    ):
         if _digits(node.get(key)) == item_id:
             return True
     for key in ("url", "canonicalUrl", "canonicalURL", "productUrl", "productURL"):
@@ -537,9 +585,13 @@ def _offer_nodes(product: dict[str, Any], path: str):
     yielded: set[int] = set()
     priorities = (
         ("selectedOffer", 120),
-        ("buyBoxOffer", 115),
+        ("buyBoxOffer", 118),
+        ("buyBox", 116),
+        ("buybox", 116),
+        ("buyBoxWinner", 114),
         ("primaryOffer", 110),
         ("offer", 100),
+        ("offerInfo", 96),
         ("offers", 90),
     )
     for key, priority in priorities:
@@ -560,10 +612,10 @@ def _offer_nodes(product: dict[str, Any], path: str):
     # the score below explicit selected/buy-box nodes.
     stack: list[tuple[Any, str, int]] = [(product, path, 0)]
     scanned = 0
-    while stack and scanned < 400:
+    while stack and scanned < 2_500:
         current, current_path, depth = stack.pop()
         scanned += 1
-        if depth > 5:
+        if depth > 12:
             continue
         if isinstance(current, dict):
             if (
@@ -618,6 +670,8 @@ def _proof_from_offer(
         elif seller_name or seller_id:
             marketplace = True
 
+    shipping_cost, free_shipping = _selected_shipping_evidence(offer)
+
     return WalmartPageIdentityProof(
         item_id=item_id,
         seller_name=seller_name,
@@ -625,6 +679,8 @@ def _proof_from_offer(
         offer_id=offer_id,
         current_price=_node_price(offer) or _node_price(product),
         marketplace=marketplace,
+        shipping_cost=shipping_cost,
+        free_shipping=free_shipping,
         source=source,
     )
 
@@ -670,24 +726,92 @@ def _money(value: Any) -> float | None:
     return _positive_float(value)
 
 
+def _money_allow_zero(value: Any) -> float | None:
+    if isinstance(value, dict):
+        for key in ("amount", "price", "value", "currencyAmount", "currencyValue"):
+            parsed = _nonnegative_float(value.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+    return _nonnegative_float(value)
+
+
+def _selected_shipping_evidence(node: dict[str, Any]) -> tuple[float | None, bool | None]:
+    """Extract explicit shipping evidence from this selected-offer subtree only."""
+
+    costs: list[float] = []
+    free_flags: list[bool] = []
+    stack: list[tuple[Any, str, int]] = [(node, "offer", 0)]
+    scanned = 0
+    while stack and scanned < 240:
+        current, path, depth = stack.pop()
+        scanned += 1
+        if depth > 6:
+            continue
+        if isinstance(current, dict):
+            for key, value in current.items():
+                normalized = str(key).strip().lower()
+                child_path = f"{path}.{normalized}"
+                if normalized in {
+                    "shippingprice",
+                    "shippingcost",
+                    "shippingfee",
+                    "shipprice",
+                    "shipcost",
+                }:
+                    parsed = _money_allow_zero(value)
+                    if parsed is not None:
+                        costs.append(parsed)
+                elif normalized in {
+                    "freeshipping",
+                    "isfreeshipping",
+                    "shippingisfree",
+                }:
+                    flag = _first_bool(value)
+                    if flag is not None:
+                        free_flags.append(flag)
+                elif normalized in {"price", "cost", "fee"} and "shipping" in path:
+                    parsed = _money_allow_zero(value)
+                    if parsed is not None:
+                        costs.append(parsed)
+                if isinstance(value, (dict, list)):
+                    stack.append((value, child_path, depth + 1))
+        elif isinstance(current, list):
+            for index, child in enumerate(current[:30]):
+                if isinstance(child, (dict, list)):
+                    stack.append((child, f"{path}[{index}]", depth + 1))
+
+    if any(flag is True for flag in free_flags):
+        costs.append(0.0)
+    if costs:
+        cost = round(min(costs), 2)
+        return cost, cost == 0
+    if free_flags and all(flag is False for flag in free_flags):
+        return None, False
+    return None, None
+
+
 def _raw_seller_identity(value: dict[str, Any]) -> tuple[str | None, str | None]:
     seller_name = _first_text(
         value.get("sellerName"),
         value.get("sellerDisplayName"),
     )
     seller_id = _first_text(value.get("sellerId"), value.get("sellerID"))
-    for key in ("seller", "sellerInfo", "merchant"):
+    for key in ("seller", "sellerInfo", "merchant", "merchantInfo"):
         child = value.get(key)
         if isinstance(child, dict):
             seller_name = seller_name or _first_text(
                 child.get("name"),
                 child.get("sellerName"),
+                child.get("sellerDisplayName"),
                 child.get("displayName"),
+                child.get("merchantName"),
             )
             seller_id = seller_id or _first_text(
                 child.get("id"),
                 child.get("sellerId"),
                 child.get("sellerID"),
+                child.get("merchantId"),
             )
         elif isinstance(child, str) and not seller_name:
             seller_name = _clean_text(child)
@@ -705,12 +829,24 @@ def _raw_seller_identity(value: dict[str, Any]) -> tuple[str | None, str | None]
 def _raw_seller_identity_shallow(value: dict[str, Any]) -> tuple[str | None, str | None]:
     seller_name = _first_text(value.get("sellerName"), value.get("sellerDisplayName"))
     seller_id = _first_text(value.get("sellerId"), value.get("sellerID"))
-    seller = value.get("seller")
-    if isinstance(seller, dict):
-        seller_name = seller_name or _first_text(seller.get("name"), seller.get("sellerName"))
-        seller_id = seller_id or _first_text(seller.get("id"), seller.get("sellerId"))
-    elif isinstance(seller, str):
-        seller_name = seller_name or _clean_text(seller)
+    for key in ("seller", "sellerInfo", "merchant", "merchantInfo"):
+        seller = value.get(key)
+        if isinstance(seller, dict):
+            seller_name = seller_name or _first_text(
+                seller.get("name"),
+                seller.get("sellerName"),
+                seller.get("sellerDisplayName"),
+                seller.get("displayName"),
+                seller.get("merchantName"),
+            )
+            seller_id = seller_id or _first_text(
+                seller.get("id"),
+                seller.get("sellerId"),
+                seller.get("sellerID"),
+                seller.get("merchantId"),
+            )
+        elif isinstance(seller, str):
+            seller_name = seller_name or _clean_text(seller)
     return seller_name, seller_id
 
 
@@ -731,6 +867,24 @@ def _raw_marketplace(payload: dict[str, Any]) -> bool | None:
                 )
             )
     return _first_bool(*values)
+
+
+def _seller_identity_conflict(
+    payload: dict[str, Any],
+    proof: WalmartPageIdentityProof,
+) -> str:
+    api_name, api_id = _raw_seller_identity(payload)
+    page_name = _clean_text(proof.seller_name)
+    page_id = _clean_text(proof.seller_id)
+    if api_id and page_id and api_id.strip().lower() != page_id.strip().lower():
+        return "official exact-detail seller ID disagreed with the price-aligned product-page buy box"
+    if (
+        api_name
+        and page_name
+        and " ".join(api_name.lower().split()) != " ".join(page_name.lower().split())
+    ):
+        return "official exact-detail seller name disagreed with the price-aligned product-page buy box"
+    return ""
 
 
 def _marketplace_conflict(
@@ -768,6 +922,10 @@ def _merge_verified_page_identity(
         merged["marketplace"] = proof.marketplace
         merged["isMarketPlaceItem"] = proof.marketplace
         merged["isMarketplaceItem"] = proof.marketplace
+    if proof.shipping_cost is not None:
+        merged.setdefault("shippingCost", proof.shipping_cost)
+    elif proof.free_shipping is True:
+        merged.setdefault("freeShipping", True)
 
     for key in ("selectedOffer", "buyBoxOffer", "primaryOffer", "offer"):
         child = merged.get(key)
@@ -788,6 +946,10 @@ def _merge_verified_page_identity(
             child.setdefault("offerId", proof.offer_id)
         if proof.marketplace is not None:
             child.setdefault("isMarketPlaceItem", proof.marketplace)
+        if proof.shipping_cost is not None:
+            child.setdefault("shippingCost", proof.shipping_cost)
+        elif proof.free_shipping is True:
+            child.setdefault("freeShipping", True)
         break
 
     merged[PAGE_RECOVERY_STATUS_KEY] = "verified_identity"
@@ -795,6 +957,10 @@ def _merge_verified_page_identity(
     merged[PAGE_RECOVERY_PRICE_KEY] = (
         f"{proof.current_price:.2f}" if proof.current_price is not None else ""
     )
+    merged[PAGE_RECOVERY_SHIPPING_COST_KEY] = (
+        f"{proof.shipping_cost:.2f}" if proof.shipping_cost is not None else ""
+    )
+    merged[PAGE_RECOVERY_SHIPPING_STATUS_KEY] = proof.shipping_status or "unknown"
     return merged
 
 
@@ -802,7 +968,7 @@ def _mark_page_recovery(payload: dict[str, Any], status: str, detail: str = "") 
     marked = copy.deepcopy(payload)
     marked[PAGE_RECOVERY_STATUS_KEY] = status
     if detail:
-        marked["sniperplugPageRecoveryDetail"] = _compact(detail, 300)
+        marked[PAGE_RECOVERY_DETAIL_KEY] = _compact(detail, 300)
     return marked
 
 
@@ -844,6 +1010,11 @@ def _first_bool(*values: Any) -> bool | None:
 
 
 def _positive_float(value: Any) -> float | None:
+    parsed = _nonnegative_float(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _nonnegative_float(value: Any) -> float | None:
     if value in (None, ""):
         return None
     try:
@@ -856,7 +1027,7 @@ def _positive_float(value: Any) -> float | None:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    return round(parsed, 2) if parsed > 0 else None
+    return round(parsed, 2) if parsed >= 0 else None
 
 
 def _digits(value: Any) -> str:

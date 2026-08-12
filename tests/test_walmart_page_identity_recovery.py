@@ -390,3 +390,212 @@ def test_redirect_host_must_be_walmart_domain(monkeypatch) -> None:
         assert "redirected away" in str(exc)
     else:
         raise AssertionError("lookalike redirect host must not be trusted")
+
+
+def test_live_redswing_shape_recovers_deep_seller_info_and_free_shipping() -> None:
+    provider = FixturePageProvider(
+        {
+            "itemId": 17549068871,
+            "name": "RedSwing Camping Tent Stove",
+            "selectedOffer": {
+                "offerId": "offer-redswing-live",
+                "currentPrice": 56.99,
+                "wasPrice": 99.99,
+                "isMarketPlaceItem": True,
+            },
+            "availableOnline": True,
+        },
+        [
+            json.dumps(
+                {
+                    "props": {
+                        "pageProps": {
+                            "initialData": {
+                                "data": {
+                                    "product": {
+                                        "usItemId": "17549068871",
+                                        "buyBox": {
+                                            "priceInfo": {"currentPrice": {"amount": 56.99}},
+                                            "sellerInfo": {
+                                                "sellerDisplayName": "Merry Li",
+                                                "sellerId": "seller-merry-li",
+                                            },
+                                            "fulfillment": {
+                                                "shippingOption": {"price": {"amount": 0.0}}
+                                            },
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        ],
+    )
+
+    payload = asyncio.run(provider.fetch_product_detail_payload("17549068871"))
+    candidate = provider._candidate_from_item(
+        payload,
+        ProviderScanRequest(source_key="test", query="17549068871", max_results=1),
+    )
+
+    assert candidate is not None
+    assert candidate.selected_offer_id == "offer-redswing-live"
+    assert candidate.seller_name == "Merry Li"
+    assert candidate.shipping_status == "free"
+    assert candidate.shipping_cost == 0.0
+    assert candidate.current_price == 56.99
+    assert candidate.api_current_price == 56.99
+    assert candidate.typical_price == 99.99
+    assert candidate.variant_attributes["pageIdentityRecoveryShippingStatus"] == "free"
+
+
+def test_live_grill_shape_recovers_paid_shipping_and_uses_delivered_price() -> None:
+    provider = FixturePageProvider(
+        {
+            "itemId": 2368146027,
+            "name": "Upgraded Gas Grill 4 Burner",
+            "selectedOffer": {
+                "offerId": "offer-seizeen-live",
+                "currentPrice": 149.99,
+                "wasPrice": 289.99,
+                "isMarketPlaceItem": True,
+            },
+            "availableOnline": True,
+        },
+        [
+            json.dumps(
+                {
+                    "product": {
+                        "item_id": "2368146027",
+                        "buyBoxWinner": {
+                            "currentPrice": 149.99,
+                            "merchantInfo": {
+                                "merchantName": "Seizeen",
+                                "merchantId": "seller-seizeen",
+                            },
+                            "shippingFee": 49.99,
+                        },
+                    }
+                }
+            )
+        ],
+    )
+
+    payload = asyncio.run(provider.fetch_product_detail_payload("2368146027"))
+    candidate = provider._candidate_from_item(
+        payload,
+        ProviderScanRequest(source_key="test", query="2368146027", max_results=1),
+    )
+
+    assert candidate is not None
+    assert candidate.seller_name == "Seizeen"
+    assert candidate.shipping_status == "paid"
+    assert candidate.shipping_cost == 49.99
+    assert candidate.item_price == 149.99
+    assert candidate.delivered_price == 199.98
+    assert candidate.current_price == 199.98
+    assert candidate.api_discount_percent is not None
+    assert 31.0 <= candidate.api_discount_percent <= 31.1
+    assert candidate.variant_attributes["pageIdentityRecoveryShippingStatus"] == "paid"
+
+
+def test_existing_marketplace_seller_with_unknown_shipping_still_triggers_page_recovery() -> None:
+    provider = FixturePageProvider(
+        {
+            "itemId": 2001,
+            "name": "Marketplace seller already known",
+            "selectedOffer": {
+                "offerId": "offer-2001",
+                "sellerName": "Known Seller",
+                "currentPrice": 20.0,
+                "wasPrice": 50.0,
+                "isMarketPlaceItem": True,
+            },
+        },
+        [
+            json.dumps(
+                {
+                    "product": {
+                        "usItemId": "2001",
+                        "buyBox": {
+                            "currentPrice": 20.0,
+                            "sellerInfo": {"sellerName": "Known Seller"},
+                            "freeShipping": True,
+                        },
+                    }
+                }
+            )
+        ],
+    )
+
+    payload = asyncio.run(provider.fetch_product_detail_payload("2001"))
+    candidate = provider._candidate_from_item(
+        payload,
+        ProviderScanRequest(source_key="test", query="2001", max_results=1),
+    )
+
+    assert provider.page_calls == 1
+    assert candidate is not None
+    assert candidate.shipping_status == "free"
+    assert candidate.current_price == 20.0
+
+
+def test_large_next_data_script_is_not_dropped_before_live_buybox_data() -> None:
+    from sniperplug.providers import walmart_page_recovery as page_recovery
+
+    parser = page_recovery._StructuredScriptParser()
+    payload = json.dumps(
+        {
+            "padding": "x" * (2 * 1024 * 1024 + 64 * 1024),
+            "product": {
+                "usItemId": "3001",
+                "buyBox": {
+                    "currentPrice": 10.0,
+                    "sellerInfo": {"sellerName": "Large State Seller"},
+                },
+            },
+        }
+    )
+    parser.feed('<script id="__NEXT_DATA__" type="application/json">')
+    parser.feed(payload)
+    parser.feed("</script>")
+    parser.close()
+
+    assert len(parser.scripts) == 1
+    result = page_recovery.recover_page_identity_from_scripts(
+        parser.scripts,
+        item_id="3001",
+        api_item_price=10.0,
+    )
+    assert result.proof is not None
+    assert result.proof.seller_name == "Large State Seller"
+
+
+def test_page_recovery_failure_reason_is_preserved_in_terminal_identity_error() -> None:
+    from sniperplug.models.candidate import SourceCandidate
+    from sniperplug.services.walmart_exact_queue_runtime import _exact_identity_failure_reason
+
+    candidate = SourceCandidate(
+        source_key="walmart_exact_detail_queue",
+        retailer="Walmart",
+        title="Blocked item",
+        product_url="https://www.walmart.com/ip/4001",
+        direct_product_url="https://www.walmart.com/ip/4001",
+        product_id="4001",
+        product_id_type="sku",
+        sku="4001",
+        selected_offer_id="offer-4001",
+        variant_attributes={
+            "exactDetailPriceProof": "yes",
+            "exactDetailItemId": "4001",
+            "pageIdentityRecoveryStatus": "no_price_aligned_seller",
+            "pageIdentityRecoveryDetail": "matching product existed but seller-bearing buy box was not price aligned",
+        },
+    )
+
+    reason = _exact_identity_failure_reason(candidate)
+    assert reason.startswith("missing seller identity")
+    assert "page recovery=no_price_aligned_seller" in reason
+    assert "seller-bearing buy box" in reason

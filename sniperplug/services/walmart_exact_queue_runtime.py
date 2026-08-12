@@ -391,17 +391,18 @@ def _prepare_exact_candidate(claim: Any, exact: SourceCandidate, payload: Any) -
 
 def _exact_identity_failure_reason(candidate: SourceCandidate) -> str:
     attrs = dict(getattr(candidate, "variant_attributes", None) or {})
+    page_context = _page_recovery_failure_context(attrs)
     if str(attrs.get("exactDetailPriceProof") or "").strip().lower() != "yes":
-        return "missing exact price proof"
+        return "missing exact price proof" + page_context
 
     item_id = _candidate_item_id(candidate)
     exact_item_id = str(attrs.get("exactDetailItemId") or "").strip()
     if not item_id or not exact_item_id or item_id != exact_item_id:
-        return "exact item identity mismatch"
+        return "exact item identity mismatch" + page_context
 
     offer_id = str(getattr(candidate, "selected_offer_id", None) or "").strip()
     if not offer_id or offer_id.lower() in {"none", "unknown", "null"}:
-        return "missing selected offer identity"
+        return "missing selected offer identity" + page_context
 
     seller_id = str(attrs.get("sellerId") or "").strip()
     seller_name = str(
@@ -411,9 +412,20 @@ def _exact_identity_failure_reason(candidate: SourceCandidate) -> str:
     ).strip()
     walmart_seller = str(attrs.get("walmartSeller") or "").strip().lower() == "yes"
     if not seller_id and not seller_name and not walmart_seller:
-        return "missing seller identity"
+        return "missing seller identity" + page_context
 
-    return "incomplete exact offer identity"
+    return "incomplete exact offer identity" + page_context
+
+
+def _page_recovery_failure_context(attrs: dict[str, Any]) -> str:
+    status = str(attrs.get("pageIdentityRecoveryStatus") or "").strip()
+    if not status:
+        return ""
+    detail = str(attrs.get("pageIdentityRecoveryDetail") or "").strip()
+    context = f"; page recovery={status}"
+    if detail:
+        context += f" ({_compact_text(detail, 220)})"
+    return context
 
 
 def _identity_error_bucket(*, status: str, error: str) -> str:

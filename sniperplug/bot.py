@@ -38,7 +38,13 @@ from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
-from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
+from sniperplug.providers.walmart import WalmartAffiliateConfig
+from sniperplug.providers.walmart_page_recovery import (
+    PAGE_RECOVERY_REARM_LIMIT,
+    PAGE_RECOVERY_REARM_WINDOW_HOURS,
+    WalmartPageRecoveryProvider,
+    rearm_recent_identity_rows_for_page_recovery,
+)
 from sniperplug.services.active_deal_history import ensure_active_deal_history
 from sniperplug.services.bounded_feedback_views import (
     register_bounded_persistent_feedback_views as register_persistent_feedback_views,
@@ -114,16 +120,32 @@ class SniperPlugBot(commands.Bot):
 
         provider_registry.clear()
         provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
-        walmart_provider = WalmartProvider(walmart_affiliate_config(self.settings))
+        walmart_provider = WalmartPageRecoveryProvider(
+            walmart_affiliate_config(self.settings)
+        )
         provider_registry.register(CachedWalmartProvider(self.db, walmart_provider))
         provider_registry.register(HomeDepotProvider())
         provider_registry.register(SerpApiHomeDepotProvider())
         log.info(
-            "Walmart provider registered: enabled=%s configured=%s publisher_id=%s",
+            "Walmart provider registered: enabled=%s configured=%s publisher_id=%s page_identity_recovery=true",
             walmart_provider.config.enabled,
             walmart_provider.config.configured,
             bool(walmart_provider.config.publisher_id),
         )
+        try:
+            rearmed_identity_rows = await rearm_recent_identity_rows_for_page_recovery(
+                self.db
+            )
+            log.info(
+                "Walmart page identity recovery migration ready: recent_rows_rearmed=%s max_rearm=%s window_hours=%s",
+                rearmed_identity_rows,
+                PAGE_RECOVERY_REARM_LIMIT,
+                PAGE_RECOVERY_REARM_WINDOW_HOURS,
+            )
+        except Exception:
+            log.exception(
+                "Walmart page identity recovery migration failed safely; provider fallback remains active"
+            )
 
         # Canonical command surface. Legacy cogs may remain importable as helper
         # libraries, but only the commands below are added to the live tree.

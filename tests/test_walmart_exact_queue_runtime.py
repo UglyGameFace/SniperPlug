@@ -330,3 +330,11 @@ def test_rediscovered_terminal_identity_row_rearms_once_with_indexed_queries() -
         await conn.close()
 
     asyncio.run(run())
+
+
+def test_retry_kind_parser_keeps_concrete_reason() -> None:
+    from sniperplug.services.walmart_exact_queue_runtime import _retry_kind_from_error
+
+    assert _retry_kind_from_error("retry_kind=page_http_403 Walmart blocked request") == "page_http_403"
+    assert _retry_kind_from_error("retry_kind=api_http_429 throttled") == "api_http_429"
+    assert _retry_kind_from_error("plain failure") == "unclassified"

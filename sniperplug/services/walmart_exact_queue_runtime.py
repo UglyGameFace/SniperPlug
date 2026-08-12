@@ -70,6 +70,7 @@ class ExactQueueRuntimeResult:
     retry_price_change: int = 0
     retry_candidate: int = 0
     retry_other: int = 0
+    retry_reasons: tuple[tuple[str, int], ...] = ()
     pending_total: int = 0
     terminal_quarantined: int = 0
     terminal_rearmed: int = 0
@@ -98,6 +99,11 @@ class ExactQueueRuntimeResult:
             f"fetch **{self.fetch_seconds:.2f}s** • "
             f"store **{self.store_seconds:.2f}s**"
         )
+        retry_reasons = ""
+        if self.retry_reasons:
+            retry_reasons = " • retry kinds " + ", ".join(
+                f"**{name}={count}**" for name, count in self.retry_reasons[:6]
+            )
         return (
             "Walmart background exact verification: "
             f"mode **{self.mode}** • batch/concurrency **{self.batch_size}/{self.concurrency}** • "
@@ -106,8 +112,8 @@ class ExactQueueRuntimeResult:
             f"markdowns **{self.markdowns}** • no reference **{self.no_reference}** • "
             f"under threshold **{self.under_threshold}** • unavailable **{self.unavailable}** • "
             f"identity unavailable / safely blocked **{self.identity_blocked}** "
-            f"({identity_detail}) • transient failures **{self.failed}** ({retry_detail}) • "
-            f"terminal rows quarantined **{self.terminal_quarantined}** • "
+            f"({identity_detail}) • transient failures **{self.failed}** ({retry_detail})"
+            f"{retry_reasons} • terminal rows quarantined **{self.terminal_quarantined}** • "
             f"weekly identity reprobes **{self.terminal_rearmed}** • "
             f"actionable due **{self.pending_total}** • timings {timing}"
         )
@@ -459,6 +465,16 @@ def _page_recovery_failure_context(attrs: dict[str, Any]) -> str:
     if detail:
         context += f" ({_compact_text(detail, 220)})"
     return context
+
+
+def _retry_kind_from_error(error: str) -> str:
+    for token in str(error or "").split():
+        if not token.startswith("retry_kind="):
+            continue
+        value = token.split("=", 1)[1].strip().strip(",;:()[]{}")
+        if value:
+            return value[:80]
+    return "unclassified"
 
 
 def _retry_error_bucket(*, status: str, error: str) -> str:

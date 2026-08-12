@@ -63,12 +63,31 @@ def test_exact_markdown_is_not_demoted_by_auxiliary_cart_promo() -> None:
 
 def test_exact_markdown_clears_stale_review_only_markers() -> None:
     card = exact_card()
+    card.embed.add_field(
+        name="Old scan liveness",
+        value="Useful discount. Good for watchlist, but not a true glitch yet.",
+        inline=False,
+    )
 
     assert normalize_exact_verified_walmart_card(card, min_discount=50) is True
     assert "review-only" not in card.label.lower()
     assert "review/scout-only" not in str(card.embed.description or "").lower()
     assert not any("staff review" in str(field.value or "").lower() for field in card.embed.fields)
+    assert not any("watchlist" in str(field.value or "").lower() for field in card.embed.fields)
     assert quality.is_review_or_watchlist(card) is False
+
+
+def test_non_exact_watchlist_card_remains_blocked() -> None:
+    card = exact_card()
+    card.variant_attributes["exactDetailPriceProof"] = "no"
+    card.embed.add_field(
+        name="Watchlist",
+        value="Good for watchlist; staff review required.",
+        inline=False,
+    )
+
+    assert normalize_exact_verified_walmart_card(card, min_discount=50) is False
+    assert quality.is_review_or_watchlist(card) is True
 
 
 def test_exact_card_can_cross_repeated_public_gates_without_self_poisoning() -> None:

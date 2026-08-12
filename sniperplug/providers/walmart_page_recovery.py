@@ -122,6 +122,9 @@ class WalmartPageRecoveryProvider(WalmartProvider):
     async def _official_detail_payload(self, item_id: str) -> dict:
         return await super().fetch_product_detail_payload(item_id)
 
+    async def _official_exact_search_payload(self, item_id: str) -> dict:
+        return await super().fetch_exact_search_item_payload(item_id)
+
     async def _load_product_page_scripts(self, item_id: str) -> list[str]:
         timeout = _bounded_float_env(
             "WALMART_PAGE_RECOVERY_TIMEOUT_SECONDS",
@@ -142,6 +145,26 @@ class WalmartPageRecoveryProvider(WalmartProvider):
             return payload
         if not needs_page_identity_recovery(payload):
             return payload
+
+        # The Affiliate search route is already the healthy global-discovery
+        # source. Refresh this exact item ID before relying on Walmart HTML. The
+        # base provider accepts only an exact returned item ID, so a relevance
+        # neighbor can never donate seller/offer identity. If the base detail
+        # fallback already used this exact search, do not issue the same request
+        # twice before falling back to the page.
+        already_exact_search = (
+            _clean_text(payload.get("sniperplugOfficialExactSource"))
+            == "affiliate_search_exact_item"
+        )
+        if not already_exact_search:
+            try:
+                search_payload = await self._official_exact_search_payload(clean_item_id)
+            except WalmartProviderError:
+                search_payload = None
+            if isinstance(search_payload, dict):
+                payload = search_payload
+                if not needs_page_identity_recovery(payload):
+                    return payload
 
         async with self._page_recovery_semaphore:
             try:
@@ -200,9 +223,16 @@ class WalmartPageRecoveryProvider(WalmartProvider):
         if candidate is None:
             return None
         status = _clean_text(item.get(PAGE_RECOVERY_STATUS_KEY))
-        if not status:
-            return candidate
         attrs = dict(candidate.variant_attributes or {})
+        official_source = _clean_text(item.get("sniperplugOfficialExactSource"))
+        if official_source:
+            attrs["officialExactSource"] = official_source
+            signal = "Walmart exact item refreshed through official Affiliate search"
+            if signal not in candidate.signals:
+                candidate.signals.append(signal)
+        if not status:
+            candidate.variant_attributes = attrs
+            return candidate
         attrs["pageIdentityRecoveryStatus"] = status
         source = _clean_text(item.get(PAGE_RECOVERY_SOURCE_KEY))
         if source:

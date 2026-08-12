@@ -1,63 +1,75 @@
 # Active Task
 
 ## Status
-**Complete code-side — SP-WM-PAGE-RETRY-FANOUT satisfied its Definition of Done. PR #235 merged into `main` at `14a9a518bb9d7db5246f962f2a0f82d6daec4953`, all three canonical PR workflows passed, and all three canonical workflows on the merge commit passed. The implementation task lock is released after validation of this task-record-only close commit. Production behavior remains intentionally unclaimed until merged `main` is deployed and live Walmart traffic exercises the new retry/public-skip telemetry.**
+**Active — SP-WM-MISSED-DEALS-236. Live production validation after PR #235 disproved practical completion: global discovery works, but exact Walmart verification still loses too many candidates to page/API recovery, and a 56.82% exact event was falsely rejected as `quality:review_or_watchlist`. PR #236 Milestone 1 now has a clean implementation/full-suite pass plus cleanup; final canonical CI/review/conflict inspection, merge, post-merge validation, and later live production proof remain. The task lock stays engaged.**
 
 ## Task
-**SP-WM-PAGE-RETRY-FANOUT — Stop Walmart page-recovery transient storms from starving fresh discovery, expose exact retry/public skip reasons, and preserve strict item/price/seller/offer/shipping/variant/reference safety.**
+**SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification, use current official seller/offer proof safely, prevent flaky recovery from causing missed alerts, and eliminate false public rejection of exact-verified cards from stale review/watchlist text.**
+
+## Production evidence
+- Global catalog discovery remains healthy at roughly 90–100 usable Walmart item IDs per two-route batch.
+- Exact verification repeatedly produced full transient batches such as `page 8/8`, `api 8/8`, and mixed `page 5 + api 3`, frequently with `verified 0`.
+- Discovery still occasionally paused at `fresh/retry pressure 12/12` or `13/12`. Some of that is genuine first-pass work after successful catalog batches, so simply raising the threshold or moving counters into another lane would not solve the throughput defect.
+- User screenshots show live seller proof for previously blocked items: Bounty `22395155` is sold/shipped by Walmart; DEWALT `2814230491` is sold by `HVAC AND TOOLS` and fulfilled by Walmart. The Patbrela 34 QT air-fryer example is about 43.7% off, above the affected server's 40% threshold, demonstrating a real missed-alert opportunity.
+- Public skip telemetry exposed a 56.82% exact Walmart event rejected as `quality:review_or_watchlist`.
 
 ## Root cause / findings
-- PR #234's seller-identity recovery was confirmed live: post-deploy exact batches consistently reported `identity unavailable / safely blocked 0`, versus the previous 16–24 seller blocks per batch.
-- The next production bottleneck was repeated 6–8/8 transient exact failures. Product-page HTTP/challenge/network/price-change failures were stored as ordinary `retry`, and the fresh-work pressure policy counted those retries exactly like brand-new discoveries. Recovery hiccups could therefore raise fresh/retry pressure above the 12-row catalog-pause threshold and stop new Walmart discovery.
-- The former outer exact-worker hard timeout was 8 seconds while the official Walmart provider allows a 12-second HTTP timeout and product-page recovery independently allows up to 8 seconds. That outer budget could race legitimate bounded provider work. Live timing did not prove it was the dominant failure class, so typed telemetry was added rather than guessing.
-- Retry-delay/storage policy existed in both compatibility and production bulk persistence, creating drift risk.
-- The page-recovery one-time rearm counter treated unsupported/negative cursor `rowcount` as zero instead of falling back to `SELECT changes()`.
-- Live fanout proved personal DM delivery end to end for KC Masterpiece at `$3.98`, 67.3% discount (`DM checked/matched/sent 1/1/1`). The same event returned generic public `not_alertable=1` for a 40% guild, but the old public path collapsed category suppression, quality rejection, and `should_alert=false` into one counter. That log alone did not prove a public-post logic bug, so no safety/category gate was weakened without evidence.
+- Walmart Affiliate search/catalog responses already contain useful selected-offer seller/fulfillment/condition/price proof for many products.
+- The exact worker cannot safely treat an old discovery snapshot as current proof, so Milestone 1 refreshes the requested item through the same current Affiliate search API when detail is unavailable/incomplete instead of blindly reusing stale identity.
+- `WalmartPageRecoveryProvider` previously moved directly from incomplete item-detail seller identity to Walmart HTML. Live logs show that page dependency failing heavily.
+- A strict exact-ID Affiliate search is a safer official recovery path than HTML as long as relevance neighbors are rejected; the implementation requires exact `itemId`/`usItemId` equality.
+- The renderer can emit `Good for watchlist` for mid-tier cards. Exact-card normalization removed stale review/scout wording but omitted generic `watchlist`, so a later strict public gate could reject an otherwise exact-verified deal solely because old presentation text survived.
+- Retry records already preserve a concrete `retry_kind`, but the live summary formerly exposed only broad `page`/`api` buckets.
+- Cleanup inspection found one redundant path: when both detail URLs had already fallen back to exact Affiliate search and that result still needed page identity, the wrapper would call the exact Affiliate search a second time before HTML. That duplicate request has been removed and regression-covered.
 
-## Changes delivered
-- `WalmartProviderError` now carries bounded `retry_kind` classifications for API HTTP status, timeout, network, non-JSON, payload shape, and generic detail failures.
-- `WalmartPageRecoveryTransientError` now carries bounded reason codes for page HTTP status, timeout, network, challenge, redirect, oversized response, and selected-offer price mismatch.
-- Added queue status `page_retry` with bounded delays: 10 minutes for price-change mismatch, 30 minutes for ordinary page-recovery transients, and 60 minutes for 403/429/challenge pressure.
-- Centralized retry persistence through one `_failure_storage_policy()` shared by compatibility and production bulk persistence.
-- Added a separate bounded page-recovery pressure lane. Page retries still count toward total emergency pressure but no longer trip the normal 12-row fresh-discovery pause or 48-row fresh-drain thresholds by themselves.
-- Claim ordering is fresh work first, ordinary retry/failed work second, page recovery third, and scheduled rechecks last. Runtime claim SQL and the expression-index SQL use the same literal ordering contract.
-- Versioned/rebuilt the claim-order expression index and drops the obsolete legacy index to avoid duplicate write overhead.
-- Raised the exact hard-safety timeout to 50 seconds and queue lease to 240 seconds so the outer worker does not prematurely race bounded provider operations; provider-level HTTP/page timeouts remain the normal control points.
-- Exact-worker summaries now break transient failures into page/API/outer-timeout/price-change/candidate-build/other buckets, and persisted errors retain compact `retry_kind` information.
-- Queue health/pressure diagnostics now report due and delayed page-recovery retries separately.
-- Page-recovery migration row counting now falls back to `SELECT changes()` when cursor `rowcount` is unavailable.
-- Public posting now records `not_alertable_reasons` for category suppression/error, specific public-quality rejection, scout rejection, or `should_alert=false`.
-- `public_deal_rejection_reason()` is the canonical diagnostic mirror of the existing boolean quality gate, and `has_verified_api_threshold_discount()` delegates to it so the old gate semantics are preserved.
-- No CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, alternate-retailer proof substitution, unrestricted historical rearm, or weakened exact item/price/seller/offer/shipping/variant/condition/fulfillment/reference/category/threshold/dedupe rule was introduced.
+## PR #236 Milestone 1 changes
+- Added `WalmartProvider.fetch_exact_search_item_payload()` / `_exact_search_item_payload()` using the existing Affiliate search API with full response data.
+- Exact search accepts only an exact requested Walmart item-ID match; relevance neighbors cannot donate seller/offer identity.
+- If both official item-detail URL forms fail, exact verification tries current exact-ID Affiliate search before returning a transient API failure.
+- If item detail succeeds but seller/offer identity remains incomplete, `WalmartPageRecoveryProvider` tries exact-ID Affiliate search before Walmart HTML.
+- If the base detail path already used exact Affiliate search, the page wrapper detects `sniperplugOfficialExactSource=affiliate_search_exact_item` and does not call the same search twice.
+- Exact-search candidates carry bounded diagnostic proof-source metadata/signals without weakening price, seller, marketplace-shipping, condition, variant, reference, threshold, category, or dedupe gates.
+- Exact-worker summaries now aggregate top concrete retry kinds such as `page_http_403`, `page_challenge`, `api_http_429`, and `api_network` alongside broad buckets.
+- Strict exact Walmart normalization now removes stale `watchlist` presentation wording only after the existing exact item/price/offer/reference/URL/threshold proof boundary passes. Non-exact scout/watchlist cards remain blocked.
+- Added regressions for Bounty-shaped official exact-search seller recovery, relevance-neighbor rejection, duplicate exact-search prevention, exact-card watchlist cleanup, non-exact watchlist blocking, and retry-kind parsing.
+- No CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, seller guessing, alternate-retailer proof, threshold weakening, or relevance-neighbor borrowing was introduced.
+
+## Remaining decisions / scope
+1. Finish canonical CI on the final cleanup/task-record head, then inspect net diff, mergeability, conflicts, PR comments/reviews, and stale/temporary files.
+2. Merge only if those gates are clean, then validate the real merge commit through canonical `main` workflows.
+3. Keep the overall task active after merge until live deployment proves materially better verified-throughput and shows concrete retry reasons.
+4. Use post-deploy telemetry to decide whether retaining bounded fresh discovery-offer proof or introducing a distinct `api_retry` recovery lane is actually necessary. Do not add either merely to move counters around.
+5. If discovery proof is ever reused, require bounded freshness plus exact item and cent-for-cent current-price agreement; stale/ambiguous proof remains blocked.
+
+## Safety invariants
+- Requested item ID must exactly equal the current official item being verified.
+- Current price must come from a current official exact-item response; stale discovery/page identity cannot replace missing current-price proof.
+- Seller, offer, condition, fulfillment, variant, shipping, and selected price cannot be mixed across different offers.
+- Marketplace mandatory shipping remains part of delivered-price truth.
+- Reference-price, threshold, category, duplicate, condition, and availability gates remain fail-closed.
+- No CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, alternate-retailer proof substitution, or unrestricted historical rearm.
 
 ## Validation
-- Initial focused implementation workflow: **PASS** for `git diff --check`, compile, dependency install, and focused Walmart retry/backpressure/fanout regressions.
-- First canonical PR run exposed four stale architecture assertions that modeled the pre-`page_retry` health tuple, SQL parameter count, index statement count, and claim ordinal. The runtime path was inspected before updating those contracts.
-- The next full branch run exposed one static claim-order parity mismatch; the implementation itself was cleaned up so runtime claim SQL and expression-index SQL use the same literal `page_retry` ordering instead of weakening the test.
-- Final branch Python 3.11.15 suite: **1,181 passed**, with one upstream `discord.py` `audioop` deprecation warning.
-- `pip check`: **PASS — no broken requirements**.
-- `git diff --check`: **PASS**.
-- Compile/import validation: **PASS** through the canonical workflows.
-- Final PR head `ed31b6c26e2a460d7230f2b461e54b9122a49cfa` passed all three canonical workflows: **Import smoke check PASS**, **Python tests PASS**, **Python Check PASS**.
-- Merge commit `14a9a518bb9d7db5246f962f2a0f82d6daec4953` independently passed all three canonical `main` workflows: **Import smoke check PASS**, **Python tests PASS** including `pip check`, compileall, and pytest, and **Python Check PASS** including compile, import smoke, and the full suite.
+- Real execution path inspected end to end: Affiliate catalog/search normalization → global enqueue → exact claim → item detail → official exact-search/page recovery → exact offer identity → bulk persistence → fanout → guild public-quality gate.
+- Milestone applicator: dependency installation **PASS**, `git diff --check` **PASS**, compile **PASS**, focused recovery/public/runtime/pressure/schema/architecture diagnostics **PASS**.
+- First canonical PR head: **Import smoke PASS**, **Python tests PASS**, **Python Check PASS**.
+- First canonical full suite: **1,185 passed**, one upstream `discord.py` `audioop` deprecation warning; `pip check` reported no broken requirements; compileall passed.
+- Cleanup applicator for duplicate exact-search request: **PASS** for install, diff check, compile, focused exact-recovery/public/runtime tests, and commit.
+- Cleanup implementation commit: `065dd2d41ceb5d0fbb13d2b48129a991da2b71e3`.
+- Final canonical PR CI after this task-record commit: **pending**.
 
-## Cleanup / conflict / review inspection
-- Temporary applicator/test-repair scripts and workflows self-deleted before the final implementation branch commit and are absent from the net PR diff.
-- Production runner path was verified to use `walmart_exact_queue_bulk_runtime`; the compatibility runtime was kept policy-compatible instead of becoming a competing implementation.
-- Retry delay/storage logic is centralized rather than duplicated across bulk and compatibility persistence.
-- Runtime claim ordering and runtime-schema expression-index ordering are literal/static parity matches.
-- Before merge, PR #235 was mergeable and the branch was **0 commits behind `main`**.
-- PR #235 had no human reviews and no inline review threads. The only PR conversation comment was an automated Qodo billing notice saying review was paused because its subscription was inactive; it contained no code finding.
-- PR #235 merged cleanly into `main` as `14a9a518bb9d7db5246f962f2a0f82d6daec4953`.
+## Cleanup / conflict inspection
+- Both temporary applicator scripts/workflows self-delete before their implementation commits; they are not intended to remain in the net PR diff.
+- Milestone 1 integrates into the canonical `WalmartProvider` → `WalmartPageRecoveryProvider` → bulk exact worker path; no competing exact worker was created.
+- Page HTML is now later in the recovery chain and remains strict/fail-closed.
+- Duplicate exact Affiliate search before page fallback was removed rather than tolerated.
+- Final net-diff/redundancy/conflict/review inspection is pending final canonical CI.
 
-## Production validation boundary
-- Code-side completion does **not** claim the live bot already has the new behavior.
-- After the merged `main` is deployed, live exact-worker lines should expose transient buckets such as `page`, `api`, `timeout`, `price-change`, `candidate`, and `other` instead of one opaque failure count.
-- Queue-pressure diagnostics should show page-recovery pressure separately; page-recovery retries alone should no longer trigger the normal fresh-discovery pause.
-- Future public Walmart skips should show `not_alertable_reasons=[...]`, allowing a category suppression, quality gate, or `should_alert=false` decision to be diagnosed without guessing.
+## Blockers
+- None currently. Final canonical PR validation/inspection is the next gate.
 
 ## Backlog
 - Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` after this task closes.
-- Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings after this task closes unless live retry telemetry proves a direct connection.
-- Continue verifying PR #223 delivery-health accounting from live post-deploy logs after this task closes.
+- Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings after this active Walmart task closes unless the current root cause directly explains them.
+- Continue verifying PR #223 delivery-health accounting after this task closes.
 - PR #200 remains isolated and must not be mixed into this task.

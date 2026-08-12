@@ -12,7 +12,11 @@ from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHeal
 STATE_TABLE = "walmart_global_catalog_autoscan_state"
 STATE_KEY = "walmart"
 DEFAULT_ROUTES_PER_BATCH = 4
-CLAIM_LEASE_SECONDS = 15 * 60
+# Two catalog routes currently produce four search requests. Search requests may
+# wait up to 45s for exact-priority capacity and then spend up to 12s in Walmart
+# HTTP, so three minutes leaves a conservative degraded-batch margin while
+# bounding crash/restart starvation far below the historical 15-minute lease.
+CLAIM_LEASE_SECONDS = 3 * 60
 DEFAULT_ACTIONABLE_QUEUE_LIMIT = 450
 
 
@@ -24,6 +28,7 @@ class GlobalCatalogClaim:
     total_routes: int
     completed_routes_before: int
     completed_passes_before: int
+    recovered_abandoned_claim: bool = False
 
     @property
     def next_index(self) -> int:
@@ -40,10 +45,16 @@ class GlobalCatalogClaim:
 
     def summary_line(self) -> str:
         end = self.start_index + len(self.queries)
+        recovered = (
+            " • recovered abandoned claim **yes**"
+            if self.recovered_abandoned_claim
+            else ""
+        )
         return (
             "global catalog claim: "
             f"routes **{self.start_index + 1}-{min(end, self.total_routes)}**/"
             f"**{self.total_routes}** • pass **{self.completed_passes_before + 1}**"
+            f"{recovered}"
         )
 
 
@@ -111,8 +122,11 @@ async def claim_next_catalog_routes(
 
     The cursor advances only after ``complete_catalog_claim`` succeeds. A crash
     therefore repeats at most one small route batch rather than silently losing
-    part of the catalog. The state is global, not guild-specific, so adding more
-    Discord servers never multiplies Walmart API traffic.
+    part of the catalog. Claims also have a bounded age independent of the
+    stored ``lease_until`` value, so a claim written by older code with a much
+    longer lease cannot starve a restarted catalog producer indefinitely. The
+    state is global, not guild-specific, so adding more Discord servers never
+    multiplies Walmart API traffic.
     """
 
     await ensure_global_catalog_state(db)
@@ -123,10 +137,13 @@ async def claim_next_catalog_routes(
     conn = db.require_conn()
     now_dt = now or _utc_now()
     now_iso = now_dt.isoformat()
+    stale_before_iso = (
+        now_dt - timedelta(seconds=CLAIM_LEASE_SECONDS)
+    ).isoformat()
     cursor = await conn.execute(
         f"""
         SELECT cursor_index, completed_routes, completed_passes,
-               claim_token, lease_until
+               claim_token, lease_until, last_started_at
         FROM {STATE_TABLE}
         WHERE state_key = ?
         """,
@@ -138,8 +155,20 @@ async def claim_next_catalog_routes(
 
     active_token = str(_row_get(row, "claim_token", 3) or "").strip()
     lease_until = _parse_datetime(_row_get(row, "lease_until", 4))
-    if active_token and lease_until is not None and lease_until > now_dt:
+    last_started_at = _parse_datetime(_row_get(row, "last_started_at", 5))
+    age_expired = bool(
+        active_token
+        and last_started_at is not None
+        and last_started_at + timedelta(seconds=CLAIM_LEASE_SECONDS) <= now_dt
+    )
+    if (
+        active_token
+        and lease_until is not None
+        and lease_until > now_dt
+        and not age_expired
+    ):
         return None
+    recovered_abandoned_claim = bool(active_token)
 
     total_routes = len(pool)
     count = max(1, min(int(route_count), total_routes))
@@ -157,7 +186,8 @@ async def claim_next_catalog_routes(
             lease_until = ?, last_started_at = ?, last_error = '', updated_at = ?
         WHERE state_key = ?
           AND (
-              claim_token = '' OR lease_until IS NULL OR lease_until <= ?
+              claim_token = '' OR lease_until IS NULL OR lease_until <= ? OR
+              (last_started_at IS NOT NULL AND last_started_at <= ?)
           )
         """,
         (
@@ -169,6 +199,7 @@ async def claim_next_catalog_routes(
             now_iso,
             STATE_KEY,
             now_iso,
+            stale_before_iso,
         ),
     )
     verify = await conn.execute(
@@ -187,6 +218,7 @@ async def claim_next_catalog_routes(
         total_routes=total_routes,
         completed_routes_before=_as_int(_row_get(row, "completed_routes", 1)),
         completed_passes_before=_as_int(_row_get(row, "completed_passes", 2)),
+        recovered_abandoned_claim=recovered_abandoned_claim,
     )
 
 
@@ -271,10 +303,15 @@ async def load_global_catalog_state(db: Any) -> GlobalCatalogState:
     row = await cursor.fetchone()
     now = _utc_now()
     lease_until = _parse_datetime(_row_get(row, "lease_until", 4))
+    last_started_at = _parse_datetime(_row_get(row, "last_started_at", 5))
     active = bool(
         str(_row_get(row, "claim_token", 3) or "").strip()
         and lease_until is not None
         and lease_until > now
+        and (
+            last_started_at is None
+            or last_started_at + timedelta(seconds=CLAIM_LEASE_SECONDS) > now
+        )
     )
     return GlobalCatalogState(
         cursor_index=_as_int(_row_get(row, "cursor_index", 0)),

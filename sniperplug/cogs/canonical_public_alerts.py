@@ -291,7 +291,11 @@ class WalmartRecoveryView(discord.ui.View):
                 ),
             )
         )
-        url = str(getattr(item.card, "url", "") or "") if item.card else ""
+        url = str(
+            (getattr(item.card, "url", "") if item.card else "")
+            or item.product_url
+            or ""
+        )
         if url.startswith(("https://", "http://")):
             self.add_item(
                 discord.ui.Button(

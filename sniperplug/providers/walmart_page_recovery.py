@@ -141,6 +141,12 @@ class WalmartPageRecoveryProvider(WalmartProvider):
             api_item_price=_api_selected_item_price(payload),
         )
         if recovery.proof is None:
+            if recovery.status == "price_mismatch":
+                raise WalmartProviderError(
+                    "Walmart product-page identity recovery saw a price mismatch for "
+                    f"{clean_item_id}: {recovery.detail or 'selected offer changed'}; "
+                    "retrying instead of binding a seller"
+                )
             return _mark_page_recovery(payload, recovery.status, recovery.detail)
 
         conflict = _marketplace_conflict(payload, recovery.proof)
@@ -229,6 +235,7 @@ def recover_page_identity_from_scripts(
         return WalmartPageRecoveryResult(None, "no_exact_item_match")
 
     candidates: list[tuple[int, WalmartPageIdentityProof]] = []
+    mismatched_prices: list[float] = []
     for node, path in matching_nodes:
         for offer, offer_path, priority in _offer_nodes(node, path):
             proof = _proof_from_offer(
@@ -243,6 +250,7 @@ def recover_page_identity_from_scripts(
                 if proof.current_price is None:
                     continue
                 if _price_to_cents(api_item_price) != _price_to_cents(proof.current_price):
+                    mismatched_prices.append(proof.current_price)
                     continue
             score = priority
             if proof.current_price is not None:
@@ -258,6 +266,14 @@ def recover_page_identity_from_scripts(
             candidates.append((score, proof))
 
     if not candidates:
+        if api_item_price is not None and mismatched_prices:
+            distinct = sorted({round(price, 2) for price in mismatched_prices})
+            sample = ", ".join(f"${price:.2f}" for price in distinct[:3])
+            return WalmartPageRecoveryResult(
+                None,
+                "price_mismatch",
+                f"official API item price ${api_item_price:.2f} did not match page offer price(s) {sample}",
+            )
         status = "no_price_aligned_seller" if api_item_price is not None else "seller_identity_missing"
         return WalmartPageRecoveryResult(None, status)
 

@@ -27,6 +27,7 @@ jobs:
         run: |
           python .github/scripts/apply_walmart_live_buybox.py
           python .github/scripts/fix_walmart_selected_offer_proof.py
+          python .github/scripts/fix_walmart_buybox_seller_aliases.py
 
       - name: Install dependencies
         run: |
@@ -56,6 +57,7 @@ jobs:
           rm -f .github/workflows/apply-walmart-live-buybox-proof.yml
           rm -f .github/scripts/apply_walmart_live_buybox.py
           rm -f .github/scripts/fix_walmart_selected_offer_proof.py
+          rm -f .github/scripts/fix_walmart_buybox_seller_aliases.py
           git diff --check
           git config user.name "UglyGameFace"
           git config user.email "85308991+UglyGameFace@users.noreply.github.com"

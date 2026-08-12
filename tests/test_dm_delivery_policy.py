@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import inspect
 
+import aiosqlite
 import pytest
 
+import sniperplug.services.dm_deal_alerts as alerts
 import sniperplug.services.dm_delivery_policy as policy
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
@@ -13,6 +15,14 @@ from sniperplug.services.dm_deal_alerts import (
 from sniperplug.services import verified_retailer_event_fanout
 from sniperplug.services import walmart_global_deal_fanout
 from sniperplug.services import walmart_global_deal_fanout_bulk
+
+
+class _FakeDatabase:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def require_conn(self):
+        return self.conn
 
 
 def _preference(
@@ -178,6 +188,54 @@ async def test_favorite_fashion_category_bypasses_automatic_diversity(monkeypatc
 
     assert gate.allowed is True
     assert gate.reason == "allowed"
+
+
+@pytest.mark.asyncio
+async def test_family_receipt_schema_and_history_survive_policy_reinitialization() -> None:
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    db = _FakeDatabase(conn)
+    alerts._SCHEMA_READY = False
+    policy._SCHEMA_READY = False
+
+    try:
+        await policy.record_dm_delivery_receipt(
+            db,
+            user_id=42,
+            deal_key="walmart:test-fashion-1",
+            category_family="fashion",
+        )
+
+        assert await alerts.dm_receipt_exists(
+            db,
+            user_id=42,
+            deal_key="walmart:test-fashion-1",
+        ) is True
+        assert await policy.dm_family_alerts_sent_today(
+            db,
+            user_id=42,
+            category_family="fashion",
+        ) == 1
+
+        # Simulate a process/schema cache reset. The durable row must remain
+        # countable after the policy re-runs its idempotent schema setup.
+        policy._SCHEMA_READY = False
+        assert await policy.dm_family_alerts_sent_today(
+            db,
+            user_id=42,
+            category_family="fashion",
+        ) == 1
+
+        await policy.delete_dm_delivery_history(db, user_id=42)
+        assert await policy.dm_family_alerts_sent_today(
+            db,
+            user_id=42,
+            category_family="fashion",
+        ) == 0
+    finally:
+        alerts._SCHEMA_READY = False
+        policy._SCHEMA_READY = False
+        await conn.close()
 
 
 def test_every_retained_dm_fanout_uses_the_shared_delivery_gate() -> None:

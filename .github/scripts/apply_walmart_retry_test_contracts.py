@@ -54,11 +54,28 @@ replace_once(
     '''        "WHEN 'pending' THEN 0",\n        "WHEN 'page_retry' THEN 3",\n        "WHEN 'verified_markdown' THEN 5",\n        "priority_score DESC",\n''',
 )
 
+# Keep the runtime claim SQL and the expression index definition literally aligned.
+replace_once(
+    "sniperplug/services/walmart_exact_queue_drain.py",
+    '''from sniperplug.services.walmart_exact_verification_queue import (\n    PAGE_RETRY_STATUS,\n    QUEUE_LEASE_SECONDS,\n''',
+    '''from sniperplug.services.walmart_exact_verification_queue import (\n    QUEUE_LEASE_SECONDS,\n''',
+)
+replace_once(
+    "sniperplug/services/walmart_exact_queue_drain.py",
+    '''    bounded_limit = max(1, int(limit))\n    page_retry_status = PAGE_RETRY_STATUS\n    batch_token = uuid.uuid4().hex\n''',
+    '''    bounded_limit = max(1, int(limit))\n    batch_token = uuid.uuid4().hex\n''',
+)
+replace_once(
+    "sniperplug/services/walmart_exact_queue_drain.py",
+    '''                WHEN '{page_retry_status}' THEN 3\n''',
+    '''                WHEN 'page_retry' THEN 3\n''',
+)
+
 # Record that canonical full-suite regressions were inspected and were stale test contracts.
 path = ROOT / "ACTIVE_TASK.md"
 text = path.read_text(encoding="utf-8")
 needle = "## Validation\n- Implementation patch applied on `fix/walmart-page-retry-fanout`; targeted and full validation pending canonical CI."
-replacement = "## Validation\n- Implementation patch applied on `fix/walmart-page-retry-fanout`; focused compile/diff/tests passed.\n- First canonical PR run: import smoke **PASS**; full suites exposed four stale architecture assertions that still modeled the pre-`page_retry` health tuple/SQL parameter count/index statement count/claim ordinal. Runtime behavior was inspected before updating those contracts.\n- Canonical full-suite rerun pending after test-contract repair."
+replacement = "## Validation\n- Implementation patch applied on `fix/walmart-page-retry-fanout`; focused compile/diff/tests passed.\n- First canonical PR run: import smoke **PASS**; full suites exposed four stale architecture assertions that still modeled the pre-`page_retry` health tuple/SQL parameter count/index statement count/claim ordinal. Runtime behavior was inspected before updating those contracts.\n- The regression-contract rerun reduced the suite to one static parity failure: runtime claim SQL interpolated `page_retry` while the expression-index SQL used the literal. The runtime was cleaned up to use the same literal ordering contract instead of weakening the parity test.\n- Canonical full-suite rerun pending after that cleanup."
 if needle not in text:
     raise RuntimeError("ACTIVE_TASK validation marker missing")
 path.write_text(text.replace(needle, replacement, 1), encoding="utf-8")
@@ -72,4 +89,4 @@ for relative in (
     if target.exists():
         target.unlink()
 
-print("Updated Walmart retry regression contracts")
+print("Updated Walmart retry regression contracts and claim SQL parity")

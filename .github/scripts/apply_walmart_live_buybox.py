@@ -1,0 +1,363 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(
+            f"{path}: expected exactly one match, found {count}\n--- OLD ---\n{old}"
+        )
+    file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+provider = "sniperplug/providers/walmart_page_recovery.py"
+runtime = "sniperplug/services/walmart_exact_queue_runtime.py"
+tests = Path("tests/test_walmart_page_identity_recovery.py")
+
+replace_once(
+    provider,
+    '''PAGE_RECOVERY_STATUS_KEY = "sniperplugPageRecoveryStatus"\nPAGE_RECOVERY_SOURCE_KEY = "sniperplugPageRecoverySource"\nPAGE_RECOVERY_PRICE_KEY = "sniperplugPageRecoveryPrice"\nPAGE_RECOVERY_VERSION = "walmart_product_page_identity_v1"\nPAGE_RECOVERY_REARM_TABLE = "walmart_page_recovery_migrations"\nPAGE_RECOVERY_REARM_KEY = "recent_incomplete_identity_rearm_v1"\nPAGE_RECOVERY_REARM_LIMIT = 250\nPAGE_RECOVERY_REARM_WINDOW_HOURS = 72\nPAGE_RECOVERY_MAX_WIRE_BYTES = 5 * 1024 * 1024\nPAGE_RECOVERY_MAX_SCRIPT_BYTES = 2 * 1024 * 1024\nPAGE_RECOVERY_MAX_STRUCTURED_BYTES = 4 * 1024 * 1024\nPAGE_RECOVERY_MAX_JSON_NODES = 30_000\nPAGE_RECOVERY_MAX_SCRIPTS = 24\nPAGE_RECOVERY_CONCURRENCY = 2\n''',
+    '''PAGE_RECOVERY_STATUS_KEY = "sniperplugPageRecoveryStatus"\nPAGE_RECOVERY_DETAIL_KEY = "sniperplugPageRecoveryDetail"\nPAGE_RECOVERY_SOURCE_KEY = "sniperplugPageRecoverySource"\nPAGE_RECOVERY_PRICE_KEY = "sniperplugPageRecoveryPrice"\nPAGE_RECOVERY_SHIPPING_COST_KEY = "sniperplugPageRecoveryShippingCost"\nPAGE_RECOVERY_SHIPPING_STATUS_KEY = "sniperplugPageRecoveryShippingStatus"\nPAGE_RECOVERY_VERSION = "walmart_product_page_buybox_v2"\nPAGE_RECOVERY_REARM_TABLE = "walmart_page_recovery_migrations"\nPAGE_RECOVERY_REARM_KEY = "recent_incomplete_identity_rearm_v2"\nPAGE_RECOVERY_REARM_LIMIT = 250\nPAGE_RECOVERY_REARM_WINDOW_HOURS = 72\nPAGE_RECOVERY_MAX_WIRE_BYTES = 8 * 1024 * 1024\nPAGE_RECOVERY_MAX_SCRIPT_BYTES = 6 * 1024 * 1024\nPAGE_RECOVERY_MAX_STRUCTURED_BYTES = 7 * 1024 * 1024\nPAGE_RECOVERY_MAX_JSON_NODES = 75_000\nPAGE_RECOVERY_MAX_SCRIPTS = 32\nPAGE_RECOVERY_CONCURRENCY = 2\n''',
+)
+
+replace_once(
+    provider,
+    '''class WalmartPageIdentityProof:\n    item_id: str\n    seller_name: str | None\n    seller_id: str | None\n    offer_id: str | None\n    current_price: float | None\n    marketplace: bool | None\n    source: str\n\n    @property\n    def seller_key(self) -> str:\n        seller_id = _clean_text(self.seller_id)\n        if seller_id:\n            return f"id:{seller_id.lower()}"\n        seller_name = _clean_text(self.seller_name)\n        return f"name:{seller_name.lower()}" if seller_name else ""\n''',
+    '''class WalmartPageIdentityProof:\n    item_id: str\n    seller_name: str | None\n    seller_id: str | None\n    offer_id: str | None\n    current_price: float | None\n    marketplace: bool | None\n    shipping_cost: float | None\n    free_shipping: bool | None\n    source: str\n\n    @property\n    def seller_key(self) -> str:\n        seller_id = _clean_text(self.seller_id)\n        if seller_id:\n            return f"id:{seller_id.lower()}"\n        seller_name = _clean_text(self.seller_name)\n        return f"name:{seller_name.lower()}" if seller_name else ""\n\n    @property\n    def shipping_status(self) -> str | None:\n        if self.shipping_cost is not None:\n            return "free" if self.shipping_cost == 0 else "paid"\n        if self.free_shipping is True:\n            return "free"\n        return None\n''',
+)
+
+replace_once(
+    provider,
+    '''        conflict = _marketplace_conflict(payload, recovery.proof)\n        if conflict:\n            return _mark_page_recovery(payload, "marketplace_conflict", conflict)\n\n        api_price = _api_selected_item_price(payload)\n''',
+    '''        seller_conflict = _seller_identity_conflict(payload, recovery.proof)\n        if seller_conflict:\n            return _mark_page_recovery(payload, "seller_conflict", seller_conflict)\n\n        conflict = _marketplace_conflict(payload, recovery.proof)\n        if conflict:\n            return _mark_page_recovery(payload, "marketplace_conflict", conflict)\n\n        api_price = _api_selected_item_price(payload)\n''',
+)
+
+replace_once(
+    provider,
+    '''        source = _clean_text(item.get(PAGE_RECOVERY_SOURCE_KEY))\n        if source:\n            attrs["pageIdentityRecoverySource"] = source\n        price = _positive_float(item.get(PAGE_RECOVERY_PRICE_KEY))\n        if price is not None:\n            attrs["pageIdentityRecoveryPrice"] = f"{price:.2f}"\n        candidate.variant_attributes = attrs\n        if status == "verified_identity":\n            signal = "Walmart seller/offer identity recovered from exact product-page structured data"\n        else:\n            signal = f"Walmart product-page identity recovery: {status.replace('_', ' ')}"\n''',
+    '''        source = _clean_text(item.get(PAGE_RECOVERY_SOURCE_KEY))\n        if source:\n            attrs["pageIdentityRecoverySource"] = source\n        detail = _clean_text(item.get(PAGE_RECOVERY_DETAIL_KEY))\n        if detail:\n            attrs["pageIdentityRecoveryDetail"] = detail\n        price = _positive_float(item.get(PAGE_RECOVERY_PRICE_KEY))\n        if price is not None:\n            attrs["pageIdentityRecoveryPrice"] = f"{price:.2f}"\n        shipping_cost = _nonnegative_float(item.get(PAGE_RECOVERY_SHIPPING_COST_KEY))\n        if shipping_cost is not None:\n            attrs["pageIdentityRecoveryShippingCost"] = f"{shipping_cost:.2f}"\n        shipping_status = _clean_text(item.get(PAGE_RECOVERY_SHIPPING_STATUS_KEY))\n        if shipping_status:\n            attrs["pageIdentityRecoveryShippingStatus"] = shipping_status\n        candidate.variant_attributes = attrs\n        if status == "verified_identity":\n            signal = "Walmart seller/offer buy-box proof recovered from exact product-page structured data"\n        else:\n            signal = f"Walmart product-page identity recovery: {status.replace('_', ' ')}"\n''',
+)
+
+replace_once(
+    provider,
+    '''def needs_page_identity_recovery(payload: Any) -> bool:\n    if not isinstance(payload, dict):\n        return False\n    seller_name, seller_id = _raw_seller_identity(payload)\n    if seller_name or seller_id:\n        return False\n    marketplace = _raw_marketplace(payload)\n    return marketplace is not False\n''',
+    '''def needs_page_identity_recovery(payload: Any) -> bool:\n    if not isinstance(payload, dict):\n        return False\n    seller_name, seller_id = _raw_seller_identity(payload)\n    attrs = selected_offer_delivery_attributes(payload)\n    marketplace = _first_bool(\n        attrs.get("selectedOfferMarketplace"),\n        _raw_marketplace(payload),\n    )\n    if not seller_name and not seller_id:\n        return marketplace is not False\n    return (\n        marketplace is True\n        and str(attrs.get("selectedOfferShippingStatus") or "").strip().lower()\n        == "unknown"\n    )\n''',
+)
+
+replace_once(
+    provider,
+    '''            if proof.offer_id:\n                score += 10\n            if _is_walmart_seller(proof.seller_name, proof.seller_id):\n                score += 5\n            candidates.append((score, proof))\n''',
+    '''            if proof.offer_id:\n                score += 10\n            if proof.shipping_status:\n                score += 8\n            if _is_walmart_seller(proof.seller_name, proof.seller_id):\n                score += 5\n            candidates.append((score, proof))\n''',
+)
+
+replace_once(
+    provider,
+    '''            proof.marketplace,\n        )\n        for proof in top\n''',
+    '''            proof.marketplace,\n            _price_to_cents(proof.shipping_cost) if proof.shipping_cost is not None else None,\n            proof.shipping_status,\n        )\n        for proof in top\n''',
+)
+
+replace_once(
+    provider,
+    '''def _node_matches_item(node: dict[str, Any], item_id: str) -> bool:\n    for key in ("itemId", "usItemId", "productId", "productID", "sku"):\n        if _digits(node.get(key)) == item_id:\n            return True\n''',
+    '''def _node_matches_item(node: dict[str, Any], item_id: str) -> bool:\n    for key in (\n        "itemId",\n        "usItemId",\n        "productId",\n        "productID",\n        "sku",\n        "item_id",\n        "us_item_id",\n        "walmartItemId",\n        "catalogItemId",\n    ):\n        if _digits(node.get(key)) == item_id:\n            return True\n''',
+)
+
+replace_once(
+    provider,
+    '''    priorities = (\n        ("selectedOffer", 120),\n        ("buyBoxOffer", 115),\n        ("primaryOffer", 110),\n        ("offer", 100),\n        ("offers", 90),\n    )\n''',
+    '''    priorities = (\n        ("selectedOffer", 120),\n        ("buyBoxOffer", 118),\n        ("buyBox", 116),\n        ("buybox", 116),\n        ("buyBoxWinner", 114),\n        ("primaryOffer", 110),\n        ("offer", 100),\n        ("offerInfo", 96),\n        ("offers", 90),\n    )\n''',
+)
+
+replace_once(
+    provider,
+    '''    stack: list[tuple[Any, str, int]] = [(product, path, 0)]\n    scanned = 0\n    while stack and scanned < 400:\n        current, current_path, depth = stack.pop()\n        scanned += 1\n        if depth > 5:\n            continue\n''',
+    '''    stack: list[tuple[Any, str, int]] = [(product, path, 0)]\n    scanned = 0\n    while stack and scanned < 2_500:\n        current, current_path, depth = stack.pop()\n        scanned += 1\n        if depth > 12:\n            continue\n''',
+)
+
+replace_once(
+    provider,
+    '''    return WalmartPageIdentityProof(\n        item_id=item_id,\n        seller_name=seller_name,\n        seller_id=seller_id,\n        offer_id=offer_id,\n        current_price=_node_price(offer) or _node_price(product),\n        marketplace=marketplace,\n        source=source,\n    )\n''',
+    '''    shipping_cost, free_shipping = _selected_shipping_evidence(offer)\n\n    return WalmartPageIdentityProof(\n        item_id=item_id,\n        seller_name=seller_name,\n        seller_id=seller_id,\n        offer_id=offer_id,\n        current_price=_node_price(offer) or _node_price(product),\n        marketplace=marketplace,\n        shipping_cost=shipping_cost,\n        free_shipping=free_shipping,\n        source=source,\n    )\n''',
+)
+
+replace_once(
+    provider,
+    '''def _raw_seller_identity_shallow(value: dict[str, Any]) -> tuple[str | None, str | None]:\n    seller_name = _first_text(value.get("sellerName"), value.get("sellerDisplayName"))\n    seller_id = _first_text(value.get("sellerId"), value.get("sellerID"))\n    seller = value.get("seller")\n    if isinstance(seller, dict):\n        seller_name = seller_name or _first_text(seller.get("name"), seller.get("sellerName"))\n        seller_id = seller_id or _first_text(seller.get("id"), seller.get("sellerId"))\n    elif isinstance(seller, str):\n        seller_name = seller_name or _clean_text(seller)\n    return seller_name, seller_id\n''',
+    '''def _raw_seller_identity_shallow(value: dict[str, Any]) -> tuple[str | None, str | None]:\n    seller_name = _first_text(value.get("sellerName"), value.get("sellerDisplayName"))\n    seller_id = _first_text(value.get("sellerId"), value.get("sellerID"))\n    for key in ("seller", "sellerInfo", "merchant", "merchantInfo"):\n        seller = value.get(key)\n        if isinstance(seller, dict):\n            seller_name = seller_name or _first_text(\n                seller.get("name"),\n                seller.get("sellerName"),\n                seller.get("sellerDisplayName"),\n                seller.get("displayName"),\n                seller.get("merchantName"),\n            )\n            seller_id = seller_id or _first_text(\n                seller.get("id"),\n                seller.get("sellerId"),\n                seller.get("sellerID"),\n                seller.get("merchantId"),\n            )\n        elif isinstance(seller, str):\n            seller_name = seller_name or _clean_text(seller)\n    return seller_name, seller_id\n''',
+)
+
+replace_once(
+    provider,
+    '''def _money(value: Any) -> float | None:\n    if isinstance(value, dict):\n        for key in ("amount", "price", "value", "currencyAmount", "currencyValue"):\n            parsed = _positive_float(value.get(key))\n            if parsed is not None:\n                return parsed\n        return None\n    return _positive_float(value)\n\n\ndef _raw_seller_identity(value: dict[str, Any]) -> tuple[str | None, str | None]:\n''',
+    '''def _money(value: Any) -> float | None:\n    if isinstance(value, dict):\n        for key in ("amount", "price", "value", "currencyAmount", "currencyValue"):\n            parsed = _positive_float(value.get(key))\n            if parsed is not None:\n                return parsed\n        return None\n    return _positive_float(value)\n\n\ndef _money_allow_zero(value: Any) -> float | None:\n    if isinstance(value, dict):\n        for key in ("amount", "price", "value", "currencyAmount", "currencyValue"):\n            parsed = _nonnegative_float(value.get(key))\n            if parsed is not None:\n                return parsed\n        return None\n    return _nonnegative_float(value)\n\n\ndef _selected_shipping_evidence(node: dict[str, Any]) -> tuple[float | None, bool | None]:\n    """Extract explicit shipping evidence from this selected-offer subtree only."""\n\n    costs: list[float] = []\n    free_flags: list[bool] = []\n    stack: list[tuple[Any, str, int]] = [(node, "offer", 0)]\n    scanned = 0\n    while stack and scanned < 240:\n        current, path, depth = stack.pop()\n        scanned += 1\n        if depth > 6:\n            continue\n        if isinstance(current, dict):\n            for key, value in current.items():\n                normalized = str(key).strip().lower()\n                child_path = f"{path}.{normalized}"\n                if normalized in {\n                    "shippingprice",\n                    "shippingcost",\n                    "shippingfee",\n                    "shipprice",\n                    "shipcost",\n                }:\n                    parsed = _money_allow_zero(value)\n                    if parsed is not None:\n                        costs.append(parsed)\n                elif normalized in {\n                    "freeshipping",\n                    "isfreeshipping",\n                    "shippingisfree",\n                }:\n                    flag = _first_bool(value)\n                    if flag is not None:\n                        free_flags.append(flag)\n                elif normalized in {"price", "cost", "fee"} and "shipping" in path:\n                    parsed = _money_allow_zero(value)\n                    if parsed is not None:\n                        costs.append(parsed)\n                if isinstance(value, (dict, list)):\n                    stack.append((value, child_path, depth + 1))\n        elif isinstance(current, list):\n            for index, child in enumerate(current[:30]):\n                if isinstance(child, (dict, list)):\n                    stack.append((child, f"{path}[{index}]", depth + 1))\n\n    if any(flag is True for flag in free_flags):\n        costs.append(0.0)\n    if costs:\n        cost = round(min(costs), 2)\n        return cost, cost == 0\n    if free_flags and all(flag is False for flag in free_flags):\n        return None, False\n    return None, None\n\n\ndef _raw_seller_identity(value: dict[str, Any]) -> tuple[str | None, str | None]:\n''',
+)
+
+replace_once(
+    provider,
+    '''def _marketplace_conflict(\n    payload: dict[str, Any],\n    proof: WalmartPageIdentityProof,\n) -> str:\n''',
+    '''def _seller_identity_conflict(\n    payload: dict[str, Any],\n    proof: WalmartPageIdentityProof,\n) -> str:\n    api_name, api_id = _raw_seller_identity(payload)\n    page_name = _clean_text(proof.seller_name)\n    page_id = _clean_text(proof.seller_id)\n    if api_id and page_id and api_id.strip().lower() != page_id.strip().lower():\n        return "official exact-detail seller ID disagreed with the price-aligned product-page buy box"\n    if (\n        api_name\n        and page_name\n        and " ".join(api_name.lower().split()) != " ".join(page_name.lower().split())\n    ):\n        return "official exact-detail seller name disagreed with the price-aligned product-page buy box"\n    return ""\n\n\ndef _marketplace_conflict(\n    payload: dict[str, Any],\n    proof: WalmartPageIdentityProof,\n) -> str:\n''',
+)
+
+replace_once(
+    provider,
+    '''    if proof.marketplace is not None:\n        merged["marketplace"] = proof.marketplace\n        merged["isMarketPlaceItem"] = proof.marketplace\n        merged["isMarketplaceItem"] = proof.marketplace\n\n    for key in ("selectedOffer", "buyBoxOffer", "primaryOffer", "offer"):\n''',
+    '''    if proof.marketplace is not None:\n        merged["marketplace"] = proof.marketplace\n        merged["isMarketPlaceItem"] = proof.marketplace\n        merged["isMarketplaceItem"] = proof.marketplace\n    if proof.shipping_cost is not None:\n        merged.setdefault("shippingCost", proof.shipping_cost)\n    elif proof.free_shipping is True:\n        merged.setdefault("freeShipping", True)\n\n    for key in ("selectedOffer", "buyBoxOffer", "primaryOffer", "offer"):\n''',
+)
+
+replace_once(
+    provider,
+    '''        if proof.marketplace is not None:\n            child.setdefault("isMarketPlaceItem", proof.marketplace)\n        break\n\n    merged[PAGE_RECOVERY_STATUS_KEY] = "verified_identity"\n    merged[PAGE_RECOVERY_SOURCE_KEY] = proof.source\n    merged[PAGE_RECOVERY_PRICE_KEY] = (\n        f"{proof.current_price:.2f}" if proof.current_price is not None else ""\n    )\n    return merged\n''',
+    '''        if proof.marketplace is not None:\n            child.setdefault("isMarketPlaceItem", proof.marketplace)\n        if proof.shipping_cost is not None:\n            child.setdefault("shippingCost", proof.shipping_cost)\n        elif proof.free_shipping is True:\n            child.setdefault("freeShipping", True)\n        break\n\n    merged[PAGE_RECOVERY_STATUS_KEY] = "verified_identity"\n    merged[PAGE_RECOVERY_SOURCE_KEY] = proof.source\n    merged[PAGE_RECOVERY_PRICE_KEY] = (\n        f"{proof.current_price:.2f}" if proof.current_price is not None else ""\n    )\n    merged[PAGE_RECOVERY_SHIPPING_COST_KEY] = (\n        f"{proof.shipping_cost:.2f}" if proof.shipping_cost is not None else ""\n    )\n    merged[PAGE_RECOVERY_SHIPPING_STATUS_KEY] = proof.shipping_status or "unknown"\n    return merged\n''',
+)
+
+replace_once(
+    provider,
+    '''def _mark_page_recovery(payload: dict[str, Any], status: str, detail: str = "") -> dict[str, Any]:\n    marked = copy.deepcopy(payload)\n    marked[PAGE_RECOVERY_STATUS_KEY] = status\n    if detail:\n        marked["sniperplugPageRecoveryDetail"] = _compact(detail, 300)\n    return marked\n''',
+    '''def _mark_page_recovery(payload: dict[str, Any], status: str, detail: str = "") -> dict[str, Any]:\n    marked = copy.deepcopy(payload)\n    marked[PAGE_RECOVERY_STATUS_KEY] = status\n    if detail:\n        marked[PAGE_RECOVERY_DETAIL_KEY] = _compact(detail, 300)\n    return marked\n''',
+)
+
+replace_once(
+    provider,
+    '''def _positive_float(value: Any) -> float | None:\n    if value in (None, ""):\n        return None\n    try:\n        if isinstance(value, str):\n            text = value.replace("$", "").replace(",", "").strip()\n            match = re.search(r"-?\\d+(?:\\.\\d+)?", text)\n            if not match:\n                return None\n            value = match.group(0)\n        parsed = float(value)\n    except (TypeError, ValueError, OverflowError):\n        return None\n    return round(parsed, 2) if parsed > 0 else None\n\n\ndef _digits(value: Any) -> str:\n''',
+    '''def _positive_float(value: Any) -> float | None:\n    parsed = _nonnegative_float(value)\n    return parsed if parsed is not None and parsed > 0 else None\n\n\ndef _nonnegative_float(value: Any) -> float | None:\n    if value in (None, ""):\n        return None\n    try:\n        if isinstance(value, str):\n            text = value.replace("$", "").replace(",", "").strip()\n            match = re.search(r"-?\\d+(?:\\.\\d+)?", text)\n            if not match:\n                return None\n            value = match.group(0)\n        parsed = float(value)\n    except (TypeError, ValueError, OverflowError):\n        return None\n    return round(parsed, 2) if parsed >= 0 else None\n\n\ndef _digits(value: Any) -> str:\n''',
+)
+
+replace_once(
+    runtime,
+    '''def _exact_identity_failure_reason(candidate: SourceCandidate) -> str:\n    attrs = dict(getattr(candidate, "variant_attributes", None) or {})\n    if str(attrs.get("exactDetailPriceProof") or "").strip().lower() != "yes":\n        return "missing exact price proof"\n''',
+    '''def _exact_identity_failure_reason(candidate: SourceCandidate) -> str:\n    attrs = dict(getattr(candidate, "variant_attributes", None) or {})\n    page_context = _page_recovery_failure_context(attrs)\n    if str(attrs.get("exactDetailPriceProof") or "").strip().lower() != "yes":\n        return "missing exact price proof" + page_context\n''',
+)
+
+replace_once(
+    runtime,
+    '''    if not item_id or not exact_item_id or item_id != exact_item_id:\n        return "exact item identity mismatch"\n\n    offer_id = str(getattr(candidate, "selected_offer_id", None) or "").strip()\n    if not offer_id or offer_id.lower() in {"none", "unknown", "null"}:\n        return "missing selected offer identity"\n''',
+    '''    if not item_id or not exact_item_id or item_id != exact_item_id:\n        return "exact item identity mismatch" + page_context\n\n    offer_id = str(getattr(candidate, "selected_offer_id", None) or "").strip()\n    if not offer_id or offer_id.lower() in {"none", "unknown", "null"}:\n        return "missing selected offer identity" + page_context\n''',
+)
+
+replace_once(
+    runtime,
+    '''    if not seller_id and not seller_name and not walmart_seller:\n        return "missing seller identity"\n\n    return "incomplete exact offer identity"\n\n\ndef _identity_error_bucket(*, status: str, error: str) -> str:\n''',
+    '''    if not seller_id and not seller_name and not walmart_seller:\n        return "missing seller identity" + page_context\n\n    return "incomplete exact offer identity" + page_context\n\n\ndef _page_recovery_failure_context(attrs: dict[str, Any]) -> str:\n    status = str(attrs.get("pageIdentityRecoveryStatus") or "").strip()\n    if not status:\n        return ""\n    detail = str(attrs.get("pageIdentityRecoveryDetail") or "").strip()\n    context = f"; page recovery={status}"\n    if detail:\n        context += f" ({_compact_text(detail, 220)})"\n    return context\n\n\ndef _identity_error_bucket(*, status: str, error: str) -> str:\n''',
+)
+
+append = r'''
+
+
+def test_live_redswing_shape_recovers_deep_seller_info_and_free_shipping() -> None:
+    provider = FixturePageProvider(
+        {
+            "itemId": 17549068871,
+            "name": "RedSwing Camping Tent Stove",
+            "selectedOffer": {
+                "offerId": "offer-redswing-live",
+                "currentPrice": 56.99,
+                "wasPrice": 99.99,
+                "isMarketPlaceItem": True,
+            },
+            "availableOnline": True,
+        },
+        [
+            json.dumps(
+                {
+                    "props": {
+                        "pageProps": {
+                            "initialData": {
+                                "data": {
+                                    "product": {
+                                        "usItemId": "17549068871",
+                                        "buyBox": {
+                                            "priceInfo": {"currentPrice": {"amount": 56.99}},
+                                            "sellerInfo": {
+                                                "sellerDisplayName": "Merry Li",
+                                                "sellerId": "seller-merry-li",
+                                            },
+                                            "fulfillment": {
+                                                "shippingOption": {"price": {"amount": 0.0}}
+                                            },
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        ],
+    )
+
+    payload = asyncio.run(provider.fetch_product_detail_payload("17549068871"))
+    candidate = provider._candidate_from_item(
+        payload,
+        ProviderScanRequest(source_key="test", query="17549068871", max_results=1),
+    )
+
+    assert candidate is not None
+    assert candidate.selected_offer_id == "offer-redswing-live"
+    assert candidate.seller_name == "Merry Li"
+    assert candidate.shipping_status == "free"
+    assert candidate.shipping_cost == 0.0
+    assert candidate.current_price == 56.99
+    assert candidate.api_current_price == 56.99
+    assert candidate.typical_price == 99.99
+    assert candidate.variant_attributes["pageIdentityRecoveryShippingStatus"] == "free"
+
+
+def test_live_grill_shape_recovers_paid_shipping_and_uses_delivered_price() -> None:
+    provider = FixturePageProvider(
+        {
+            "itemId": 2368146027,
+            "name": "Upgraded Gas Grill 4 Burner",
+            "selectedOffer": {
+                "offerId": "offer-seizeen-live",
+                "currentPrice": 149.99,
+                "wasPrice": 289.99,
+                "isMarketPlaceItem": True,
+            },
+            "availableOnline": True,
+        },
+        [
+            json.dumps(
+                {
+                    "product": {
+                        "item_id": "2368146027",
+                        "buyBoxWinner": {
+                            "currentPrice": 149.99,
+                            "merchantInfo": {
+                                "merchantName": "Seizeen",
+                                "merchantId": "seller-seizeen",
+                            },
+                            "shippingFee": 49.99,
+                        },
+                    }
+                }
+            )
+        ],
+    )
+
+    payload = asyncio.run(provider.fetch_product_detail_payload("2368146027"))
+    candidate = provider._candidate_from_item(
+        payload,
+        ProviderScanRequest(source_key="test", query="2368146027", max_results=1),
+    )
+
+    assert candidate is not None
+    assert candidate.seller_name == "Seizeen"
+    assert candidate.shipping_status == "paid"
+    assert candidate.shipping_cost == 49.99
+    assert candidate.item_price == 149.99
+    assert candidate.delivered_price == 199.98
+    assert candidate.current_price == 199.98
+    assert candidate.api_discount_percent is not None
+    assert 31.0 <= candidate.api_discount_percent <= 31.1
+    assert candidate.variant_attributes["pageIdentityRecoveryShippingStatus"] == "paid"
+
+
+def test_existing_marketplace_seller_with_unknown_shipping_still_triggers_page_recovery() -> None:
+    provider = FixturePageProvider(
+        {
+            "itemId": 2001,
+            "name": "Marketplace seller already known",
+            "selectedOffer": {
+                "offerId": "offer-2001",
+                "sellerName": "Known Seller",
+                "currentPrice": 20.0,
+                "wasPrice": 50.0,
+                "isMarketPlaceItem": True,
+            },
+        },
+        [
+            json.dumps(
+                {
+                    "product": {
+                        "usItemId": "2001",
+                        "buyBox": {
+                            "currentPrice": 20.0,
+                            "sellerInfo": {"sellerName": "Known Seller"},
+                            "freeShipping": True,
+                        },
+                    }
+                }
+            )
+        ],
+    )
+
+    payload = asyncio.run(provider.fetch_product_detail_payload("2001"))
+    candidate = provider._candidate_from_item(
+        payload,
+        ProviderScanRequest(source_key="test", query="2001", max_results=1),
+    )
+
+    assert provider.page_calls == 1
+    assert candidate is not None
+    assert candidate.shipping_status == "free"
+    assert candidate.current_price == 20.0
+
+
+def test_large_next_data_script_is_not_dropped_before_live_buybox_data() -> None:
+    from sniperplug.providers import walmart_page_recovery as page_recovery
+
+    parser = page_recovery._StructuredScriptParser()
+    payload = json.dumps(
+        {
+            "padding": "x" * (2 * 1024 * 1024 + 64 * 1024),
+            "product": {
+                "usItemId": "3001",
+                "buyBox": {
+                    "currentPrice": 10.0,
+                    "sellerInfo": {"sellerName": "Large State Seller"},
+                },
+            },
+        }
+    )
+    parser.feed('<script id="__NEXT_DATA__" type="application/json">')
+    parser.feed(payload)
+    parser.feed("</script>")
+    parser.close()
+
+    assert len(parser.scripts) == 1
+    result = page_recovery.recover_page_identity_from_scripts(
+        parser.scripts,
+        item_id="3001",
+        api_item_price=10.0,
+    )
+    assert result.proof is not None
+    assert result.proof.seller_name == "Large State Seller"
+
+
+def test_page_recovery_failure_reason_is_preserved_in_terminal_identity_error() -> None:
+    from sniperplug.models.candidate import SourceCandidate
+    from sniperplug.services.walmart_exact_queue_runtime import _exact_identity_failure_reason
+
+    candidate = SourceCandidate(
+        source_key="walmart_exact_detail_queue",
+        retailer="Walmart",
+        title="Blocked item",
+        product_url="https://www.walmart.com/ip/4001",
+        direct_product_url="https://www.walmart.com/ip/4001",
+        product_id="4001",
+        product_id_type="sku",
+        sku="4001",
+        selected_offer_id="offer-4001",
+        variant_attributes={
+            "exactDetailPriceProof": "yes",
+            "exactDetailItemId": "4001",
+            "pageIdentityRecoveryStatus": "no_price_aligned_seller",
+            "pageIdentityRecoveryDetail": "matching product existed but seller-bearing buy box was not price aligned",
+        },
+    )
+
+    reason = _exact_identity_failure_reason(candidate)
+    assert reason.startswith("missing seller identity")
+    assert "page recovery=no_price_aligned_seller" in reason
+    assert "seller-bearing buy box" in reason
+'''
+
+existing = tests.read_text(encoding="utf-8")
+marker = "def test_live_redswing_shape_recovers_deep_seller_info_and_free_shipping"
+if marker in existing:
+    raise SystemExit("live buy-box tests already present unexpectedly")
+tests.write_text(existing.rstrip() + append + "\n", encoding="utf-8")

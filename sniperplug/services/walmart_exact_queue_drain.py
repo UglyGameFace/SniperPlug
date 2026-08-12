@@ -11,6 +11,7 @@ from sniperplug.services.walmart_exact_price_enrichment import (
     _trusted_reference,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
+    PAGE_RETRY_STATUS,
     QUEUE_LEASE_SECONDS,
     QUEUE_RETENTION_DAYS,
     QUEUE_TABLE,
@@ -60,6 +61,7 @@ async def claim_due_rows_batched(
         now_utc - timedelta(days=QUEUE_RETENTION_DAYS)
     ).isoformat()
     bounded_limit = max(1, int(limit))
+    page_retry_status = PAGE_RETRY_STATUS
     batch_token = uuid.uuid4().hex
     lease_until = (
         now_utc + timedelta(seconds=QUEUE_LEASE_SECONDS)
@@ -81,13 +83,14 @@ async def claim_due_rows_batched(
                 WHEN 'pending' THEN 0
                 WHEN 'retry' THEN 1
                 WHEN 'failed' THEN 2
-                WHEN 'verifying' THEN 3
-                WHEN 'verified_markdown' THEN 4
-                WHEN 'verified_under_threshold' THEN 5
-                WHEN 'verified_no_reference' THEN 6
-                WHEN 'verified_reference' THEN 7
-                WHEN 'not_buyable' THEN 8
-                ELSE 9
+                WHEN '{page_retry_status}' THEN 3
+                WHEN 'verifying' THEN 4
+                WHEN 'verified_markdown' THEN 5
+                WHEN 'verified_under_threshold' THEN 6
+                WHEN 'verified_no_reference' THEN 7
+                WHEN 'verified_reference' THEN 8
+                WHEN 'not_buyable' THEN 9
+                ELSE 10
             END,
             priority_score DESC,
             last_seen_at DESC

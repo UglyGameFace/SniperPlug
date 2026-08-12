@@ -63,6 +63,10 @@ _WALMART_SELLER_NAMES = {
 class WalmartPageRecoveryTransientError(RuntimeError):
     """A product-page proof attempt failed in a way that should be retried."""
 
+    def __init__(self, message: str, *, reason_code: str = "page_transient") -> None:
+        super().__init__(message)
+        self.reason_code = str(reason_code or "page_transient").strip() or "page_transient"
+
 
 @dataclass(frozen=True)
 class WalmartPageIdentityProof:
@@ -145,7 +149,8 @@ class WalmartPageRecoveryProvider(WalmartProvider):
             except WalmartPageRecoveryTransientError as exc:
                 raise WalmartProviderError(
                     "Walmart product-page identity recovery temporarily unavailable "
-                    f"for {clean_item_id}: {exc}"
+                    f"for {clean_item_id}: {exc}",
+                    retry_kind=exc.reason_code,
                 ) from exc
 
         recovery = recover_page_identity_from_scripts(
@@ -158,7 +163,8 @@ class WalmartPageRecoveryProvider(WalmartProvider):
                 raise WalmartProviderError(
                     "Walmart product-page identity recovery saw a price mismatch for "
                     f"{clean_item_id}: {recovery.detail or 'selected offer changed'}; "
-                    "retrying instead of binding a seller"
+                    "retrying instead of binding a seller",
+                    retry_kind="page_price_mismatch",
                 )
             return _mark_page_recovery(payload, recovery.status, recovery.detail)
 
@@ -183,7 +189,8 @@ class WalmartPageRecoveryProvider(WalmartProvider):
                 raise WalmartProviderError(
                     "Walmart product-page identity recovery saw an API/page selected-offer "
                     f"price mismatch for {clean_item_id}: api=${api_price:.2f} "
-                    f"page=${page_price:.2f}; retrying instead of binding a seller"
+                    f"page=${page_price:.2f}; retrying instead of binding a seller",
+                    retry_kind="page_price_mismatch",
                 )
 
         return _merge_verified_page_identity(payload, recovery.proof)
@@ -404,7 +411,7 @@ async def rearm_recent_identity_rows_for_page_recovery(db: Any) -> int:
             PAGE_RECOVERY_REARM_LIMIT,
         ),
     )
-    rearmed = _safe_rowcount(update_cursor)
+    rearmed = await _affected_rows(conn, update_cursor)
     await conn.execute(
         f"""
         INSERT INTO {PAGE_RECOVERY_REARM_TABLE} (
@@ -444,7 +451,8 @@ def _request_product_page_scripts(item_id: str, timeout: float) -> list[str]:
             final_host = (urllib.parse.urlparse(final_url).hostname or "").lower().rstrip(".")
             if final_host != "walmart.com" and not final_host.endswith(".walmart.com"):
                 raise WalmartPageRecoveryTransientError(
-                    "product page redirected away from walmart.com"
+                    "product page redirected away from walmart.com",
+                    reason_code="page_redirect",
                 )
             while True:
                 chunk = response.read(64 * 1024)
@@ -453,7 +461,8 @@ def _request_product_page_scripts(item_id: str, timeout: float) -> list[str]:
                 total_wire += len(chunk)
                 if total_wire > PAGE_RECOVERY_MAX_WIRE_BYTES:
                     raise WalmartPageRecoveryTransientError(
-                        "product page exceeded bounded recovery response size"
+                        "product page exceeded bounded recovery response size",
+                        reason_code="page_response_too_large",
                     )
                 text = chunk.decode("utf-8", errors="replace")
                 if sum(len(part) for part in sample_parts) < 512 * 1024:
@@ -462,18 +471,35 @@ def _request_product_page_scripts(item_id: str, timeout: float) -> list[str]:
             parser.close()
     except urllib.error.HTTPError as exc:
         if exc.code in _TRANSIENT_HTTP_CODES:
-            raise WalmartPageRecoveryTransientError(f"HTTP {exc.code}") from exc
+            raise WalmartPageRecoveryTransientError(
+                f"HTTP {exc.code}",
+                reason_code=f"page_http_{int(exc.code)}",
+            ) from exc
         if exc.code == 404:
             return []
-        raise WalmartPageRecoveryTransientError(f"HTTP {exc.code}") from exc
+        raise WalmartPageRecoveryTransientError(
+            f"HTTP {exc.code}",
+            reason_code=f"page_http_{int(exc.code)}",
+        ) from exc
     except urllib.error.URLError as exc:
-        raise WalmartPageRecoveryTransientError(f"network error: {exc.reason}") from exc
+        reason = getattr(exc, "reason", None)
+        retry_kind = "page_timeout" if isinstance(reason, TimeoutError) else "page_network"
+        raise WalmartPageRecoveryTransientError(
+            f"network error: {reason}",
+            reason_code=retry_kind,
+        ) from exc
     except TimeoutError as exc:
-        raise WalmartPageRecoveryTransientError("request timed out") from exc
+        raise WalmartPageRecoveryTransientError(
+            "request timed out",
+            reason_code="page_timeout",
+        ) from exc
 
     sample = " ".join(sample_parts).lower()
     if not parser.scripts and any(marker in sample for marker in _CHALLENGE_MARKERS):
-        raise WalmartPageRecoveryTransientError("Walmart returned a challenge page without structured product data")
+        raise WalmartPageRecoveryTransientError(
+            "Walmart returned a challenge page without structured product data",
+            reason_code="page_challenge",
+        )
     return parser.scripts
 
 
@@ -1057,12 +1083,25 @@ def _bounded_float_env(name: str, *, default: float, minimum: float, maximum: fl
     return max(float(minimum), min(float(maximum), parsed))
 
 
-def _safe_rowcount(cursor: Any) -> int:
+async def _affected_rows(conn: Any, cursor: Any) -> int:
     try:
-        value = int(getattr(cursor, "rowcount", 0) or 0)
+        value = int(getattr(cursor, "rowcount", -1))
     except (TypeError, ValueError, OverflowError):
+        value = -1
+    if value >= 0:
+        return value
+
+    changes_cursor = await conn.execute("SELECT changes()")
+    row = await changes_cursor.fetchone()
+    if row is None:
         return 0
-    return max(0, value)
+    try:
+        return max(0, int(row[0] or 0))
+    except (TypeError, ValueError, KeyError, IndexError):
+        try:
+            return max(0, int(row["changes()"] or 0))
+        except Exception:
+            return 0
 
 
 def _compact(value: Any, limit: int) -> str:

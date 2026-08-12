@@ -7,13 +7,14 @@ import threading
 import aiosqlite
 
 from sniperplug.models.candidate import SourceCandidate
-from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
+from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider, WalmartProviderError
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
 from sniperplug.services.walmart_exact_queue_runtime import (
     maintain_terminal_identity_rows,
     process_actionable_walmart_exact_queue_batch,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
+    PAGE_RETRY_STATUS,
     QUEUE_TABLE,
     _claim_due_rows,
     enqueue_walmart_exact_verification_candidates,
@@ -116,6 +117,54 @@ def test_exact_candidate_building_runs_off_discord_event_loop() -> None:
         assert result.verified == 1
         assert provider.inner.thread_ids
         assert all(thread_id != event_loop_thread for thread_id in provider.inner.thread_ids)
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_page_recovery_transient_uses_nonfresh_retry_lane() -> None:
+    class PageRetryProvider(FakeDetailProvider):
+        async def fetch_product_detail_payload(self, item_id: str) -> dict:
+            self.calls.append(item_id)
+            raise WalmartProviderError(
+                "Walmart product-page identity recovery temporarily unavailable: HTTP 403",
+                retry_kind="page_http_403",
+            )
+
+    async def run() -> None:
+        conn = await aiosqlite.connect(":memory:")
+        db = FakeDatabase(conn)
+        await enqueue_walmart_exact_verification_candidates(
+            db,
+            [search_candidate("444444")],
+            min_discount=50,
+            source_label="global:test",
+        )
+        provider = PageRetryProvider({})
+
+        result = await process_actionable_walmart_exact_queue_batch(
+            db,
+            provider=provider,
+            limit=1,
+            concurrency=1,
+            min_discount=50,
+        )
+
+        assert result.claimed == 1
+        assert result.failed == 1
+        assert result.retry_page == 1
+        cursor = await conn.execute(
+            f"SELECT status, last_error, next_attempt_at FROM {QUEUE_TABLE} WHERE item_id = ?",
+            ("444444",),
+        )
+        status, last_error, next_attempt_at = await cursor.fetchone()
+        assert status == PAGE_RETRY_STATUS
+        assert "retry_kind=page_http_403" in last_error
+        assert datetime.fromisoformat(next_attempt_at) >= datetime.now(timezone.utc) + timedelta(minutes=55)
+
+        health = await load_walmart_exact_queue_health(db)
+        assert health.initial_due_now == 0
+        assert health.delayed_recovery_retries == 1
         await conn.close()
 
     asyncio.run(run())

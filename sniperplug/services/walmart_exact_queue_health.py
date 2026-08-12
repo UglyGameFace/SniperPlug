@@ -10,6 +10,7 @@ from sniperplug.services.walmart_exact_verification_queue import QUEUE_RETENTION
 QUEUE_TABLE = "walmart_exact_detail_queue"
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
 INITIAL_WORK_STATUSES = ("pending", "retry", "failed", "verifying")
+RECOVERY_RETRY_STATUSES = ("page_retry",)
 RECHECK_STATUSES = (
     "verified_markdown",
     "verified_under_threshold",
@@ -24,8 +25,10 @@ class WalmartExactQueueHealth:
     total: int = 0
     due_now: int = 0
     initial_due_now: int = 0
+    recovery_due_now: int = 0
     recheck_due_now: int = 0
     delayed_retries: int = 0
+    delayed_recovery_retries: int = 0
     identity_blocked: int = 0
     verified: int = 0
     verifying: int = 0
@@ -37,8 +40,10 @@ class WalmartExactQueueHealth:
         return (
             "queue health: "
             f"total **{self.total}** • actionable due now **{self.due_now}** "
-            f"(new/retry **{self.initial_due_now}** • scheduled rechecks **{self.recheck_due_now}**) • "
-            f"delayed transient retries **{self.delayed_retries}** • "
+            f"(new/retry **{self.initial_due_now}** • page recovery **{self.recovery_due_now}** • "
+            f"scheduled rechecks **{self.recheck_due_now}**) • "
+            f"delayed transient retries **{self.delayed_retries}** "
+            f"(page recovery **{self.delayed_recovery_retries}**) • "
             f"identity unavailable / safely blocked **{self.identity_blocked}** (terminal) • "
             f"verified **{self.verified}** • actively verifying **{self.verifying}** • "
             f"pending **{self.pending}** • unavailable **{self.unavailable}** • "
@@ -86,6 +91,12 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                     THEN 1 ELSE 0 END) AS initial_due_now,
                 SUM(CASE
                     WHEN is_recent = 1
+                     AND status = 'page_retry'
+                     AND next_attempt_at <= ?
+                     AND (lease_until IS NULL OR lease_until < ?)
+                    THEN 1 ELSE 0 END) AS recovery_due_now,
+                SUM(CASE
+                    WHEN is_recent = 1
                      AND status IN (
                          'verified_markdown',
                          'verified_under_threshold',
@@ -98,9 +109,14 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                     THEN 1 ELSE 0 END) AS recheck_due_now,
                 SUM(CASE
                     WHEN is_recent = 1
-                     AND status IN ('retry', 'failed')
+                     AND status IN ('retry', 'failed', 'page_retry')
                      AND next_attempt_at > ?
                     THEN 1 ELSE 0 END) AS delayed_retries,
+                SUM(CASE
+                    WHEN is_recent = 1
+                     AND status = 'page_retry'
+                     AND next_attempt_at > ?
+                    THEN 1 ELSE 0 END) AS delayed_recovery_retries,
                 SUM(CASE
                     WHEN is_recent = 1
                      AND status IN ('incomplete_identity', 'identity_mismatch')
@@ -134,6 +150,9 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 now_iso,
                 now_iso,
                 now_iso,
+                now_iso,
+                now_iso,
+                now_iso,
             ),
         )
         row = await cursor.fetchone()
@@ -144,14 +163,16 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
         total=_as_int(_row_get(row, "total", 0)),
         due_now=_as_int(_row_get(row, "due_now", 1)),
         initial_due_now=_as_int(_row_get(row, "initial_due_now", 2)),
-        recheck_due_now=_as_int(_row_get(row, "recheck_due_now", 3)),
-        delayed_retries=_as_int(_row_get(row, "delayed_retries", 4)),
-        identity_blocked=_as_int(_row_get(row, "identity_blocked", 5)),
-        verified=_as_int(_row_get(row, "verified", 6)),
-        verifying=_as_int(_row_get(row, "verifying", 7)),
-        pending=_as_int(_row_get(row, "pending", 8)),
-        unavailable=_as_int(_row_get(row, "unavailable", 9)),
-        stale=_as_int(_row_get(row, "stale", 10)),
+        recovery_due_now=_as_int(_row_get(row, "recovery_due_now", 3)),
+        recheck_due_now=_as_int(_row_get(row, "recheck_due_now", 4)),
+        delayed_retries=_as_int(_row_get(row, "delayed_retries", 5)),
+        delayed_recovery_retries=_as_int(_row_get(row, "delayed_recovery_retries", 6)),
+        identity_blocked=_as_int(_row_get(row, "identity_blocked", 7)),
+        verified=_as_int(_row_get(row, "verified", 8)),
+        verifying=_as_int(_row_get(row, "verifying", 9)),
+        pending=_as_int(_row_get(row, "pending", 10)),
+        unavailable=_as_int(_row_get(row, "unavailable", 11)),
+        stale=_as_int(_row_get(row, "stale", 12)),
     )
 
 

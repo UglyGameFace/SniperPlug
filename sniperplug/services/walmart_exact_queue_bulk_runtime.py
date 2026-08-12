@@ -20,10 +20,12 @@ from sniperplug.services.walmart_exact_queue_pressure import (
 from sniperplug.services.walmart_exact_queue_runtime import (
     DRAIN_BATCH_SIZE,
     DRAIN_CONCURRENCY,
+    EXACT_FETCH_HARD_TIMEOUT_SECONDS,
     TERMINAL_IDENTITY_STATUSES,
     ExactQueueRuntimeResult,
     _fetch_exact_candidate_off_loop,
     _identity_error_bucket,
+    _retry_error_bucket,
 )
 from sniperplug.services.walmart_exact_runtime_schema import (
     ensure_exact_runtime_schema_once,
@@ -54,7 +56,7 @@ async def process_actionable_walmart_exact_queue_batch(
     limit: int = 6,
     concurrency: int = 2,
     min_discount: int = 50,
-    timeout_seconds: float = 8.0,
+    timeout_seconds: float = EXACT_FETCH_HARD_TIMEOUT_SECONDS,
 ) -> ExactQueueRuntimeResult:
     """Run exact verification with bounded bulk persistence.
 
@@ -143,6 +145,12 @@ async def process_actionable_walmart_exact_queue_batch(
         "identity_missing_proof": 0,
         "identity_other": 0,
         "failed": 0,
+        "retry_page": 0,
+        "retry_api": 0,
+        "retry_timeout": 0,
+        "retry_price_change": 0,
+        "retry_candidate": 0,
+        "retry_other": 0,
     }
 
     persistence_outcomes: list[ExactQueuePersistenceOutcome] = []
@@ -165,6 +173,7 @@ async def process_actionable_walmart_exact_queue_batch(
                 counts[bucket] += 1
             else:
                 counts["failed"] += 1
+                counts[_retry_error_bucket(status=status, error=error)] += 1
             continue
 
         counts["verified"] += 1

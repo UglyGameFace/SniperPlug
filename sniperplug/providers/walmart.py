@@ -207,7 +207,11 @@ class WalmartProvider(DealProvider):
             except WalmartProviderError as exc:
                 last_error = exc
 
-        raise WalmartProviderError(f"Walmart detail promo endpoint unavailable for {clean_id}: {last_error}")
+        retry_kind = str(getattr(last_error, "retry_kind", "") or "").strip()
+        raise WalmartProviderError(
+            f"Walmart detail promo endpoint unavailable for {clean_id}: {last_error}",
+            retry_kind=retry_kind or "api_detail",
+        )
 
     def _request_json(self, url: str) -> dict:
         headers = self._signed_headers()
@@ -217,15 +221,34 @@ class WalmartProvider(DealProvider):
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")[:400]
-            raise WalmartProviderError(f"Walmart API HTTP {exc.code}: {body}") from exc
+            raise WalmartProviderError(
+                f"Walmart API HTTP {exc.code}: {body}",
+                retry_kind=f"api_http_{int(exc.code)}",
+            ) from exc
+        except TimeoutError as exc:
+            raise WalmartProviderError(
+                "Walmart API request timed out.",
+                retry_kind="api_timeout",
+            ) from exc
         except urllib.error.URLError as exc:
-            raise WalmartProviderError(f"Walmart API network error: {exc.reason}") from exc
+            reason = getattr(exc, "reason", None)
+            retry_kind = "api_timeout" if isinstance(reason, TimeoutError) else "api_network"
+            raise WalmartProviderError(
+                f"Walmart API network error: {reason}",
+                retry_kind=retry_kind,
+            ) from exc
         try:
             decoded = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise WalmartProviderError("Walmart API returned non-JSON response.") from exc
+            raise WalmartProviderError(
+                "Walmart API returned non-JSON response.",
+                retry_kind="api_non_json",
+            ) from exc
         if not isinstance(decoded, dict):
-            raise WalmartProviderError("Walmart API returned unexpected payload shape.")
+            raise WalmartProviderError(
+                "Walmart API returned unexpected payload shape.",
+                retry_kind="api_payload_shape",
+            )
         return decoded
 
     def _signed_headers(self) -> dict[str, str]:
@@ -437,7 +460,9 @@ class WalmartProvider(DealProvider):
 
 
 class WalmartProviderError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, retry_kind: str | None = None) -> None:
+        super().__init__(message)
+        self.retry_kind = str(retry_kind or "").strip()
 
 
 class ReferenceSignal(str):

@@ -92,6 +92,7 @@ def test_bulk_fanout_replaces_per_event_sql_loops() -> None:
     assert "RETURNING deal_key, snapshot_json" in BULK_SOURCE
     assert "WITH finalized(deal_key, claim_token)" in BULK_SOURCE
     assert "Global Walmart public destination decision" in BULK_SOURCE
+    assert "not_alertable_reasons=%s" in BULK_SOURCE
 
 
 def test_production_runner_uses_bulk_fanout_runtime() -> None:

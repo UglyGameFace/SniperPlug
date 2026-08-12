@@ -37,10 +37,10 @@
 - No CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, alternate-retailer proof substitution, or unrestricted historical queue rearm.
 
 ## Validation
-- Pending implementation.
+- Implementation patch applied on `fix/walmart-page-retry-fanout`; targeted and full validation pending canonical CI.
 
 ## Cleanup / conflict inspection
-- Pending implementation.
+- Runtime retry persistence is being centralized through one failure-storage policy so bulk and compatibility paths cannot drift. Final diff/conflict inspection pending.
 
 ## Blockers
 - None currently. Live logs provide the production failure signature, but exact transient sub-reasons are not yet surfaced by current telemetry.

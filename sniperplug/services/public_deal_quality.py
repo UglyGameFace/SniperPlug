@@ -324,34 +324,53 @@ def walmart_item_id_from_url(url: Any) -> str:
     return match.group(1) if match else ""
 
 
-def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
+def public_deal_rejection_reason(
+    card: Any,
+    *,
+    source_label: str = "",
+    min_discount: int = 50,
+) -> str | None:
     if is_review_or_watchlist(card, source_label=source_label):
-        return False
+        return "review_or_watchlist"
     if has_low_trust_reference(card, source_label=source_label):
-        return False
+        return "low_trust_reference"
     if display_reference_without_proof(card, source_label=source_label):
-        return False
+        return "display_reference_without_structured_proof"
     if not has_real_price(card):
-        return False
+        return "missing_current_price"
     if not direct_product_url(card):
-        return False
+        return "missing_direct_walmart_url"
     lane = normalized_lane(card)
     if lane in PRIVATE_PROMO_LANES:
-        return False
+        return f"private_promo_lane:{lane}"
     discount = structured_discount(card) or 0.0
     if discount < max(1, int(min_discount)):
-        return False
+        return f"below_threshold:{discount:.2f}<{max(1, int(min_discount))}"
     if lane == LANE_PRICE_MEMORY_DROP:
-        return has_global_exact_offer_memory_proof(card)
+        if not has_global_exact_offer_memory_proof(card):
+            return "price_memory_proof_incomplete"
+        return None
     if lane in {LANE_OPEN_BOX_LIKE_NEW, LANE_RESTORED_REFURBISHED}:
         condition = normalized_condition(attr_value(card, "api_condition", "condition"))
-        if not condition or not has_structured_reference_proof(card):
-            return False
+        if not condition:
+            return "condition_missing"
+        if not has_structured_reference_proof(card):
+            return "condition_reference_proof_missing"
         if lane == LANE_OPEN_BOX_LIKE_NEW and not is_open_box_condition(condition):
-            return False
+            return "open_box_condition_mismatch"
         if lane == LANE_RESTORED_REFURBISHED and not is_restored_condition(condition):
-            return False
-    return lane in PUBLIC_PRICE_LANES or lane in {LANE_CLEARANCE, LANE_ROLLBACK}
+            return "restored_condition_mismatch"
+    if lane not in PUBLIC_PRICE_LANES and lane not in {LANE_CLEARANCE, LANE_ROLLBACK}:
+        return f"unsupported_public_lane:{lane or 'unknown'}"
+    return None
+
+
+def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
+    return public_deal_rejection_reason(
+        card,
+        source_label=source_label,
+        min_discount=min_discount,
+    ) is None
 
 
 def is_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:

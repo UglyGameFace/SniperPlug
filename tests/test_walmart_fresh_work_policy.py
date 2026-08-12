@@ -34,6 +34,19 @@ def test_recheck_only_backlog_does_not_starve_fresh_discovery() -> None:
     assert should_use_drain_mode(health) is False
 
 
+def test_page_recovery_retry_backlog_does_not_hit_fresh_pause_threshold() -> None:
+    health = WalmartExactQueueHealth(
+        due_now=200,
+        initial_due_now=0,
+        recovery_due_now=200,
+        recheck_due_now=0,
+        verifying=0,
+    )
+
+    assert catalog_backpressure_reason(health) is None
+    assert should_use_drain_mode(health) is False
+
+
 def test_fresh_work_pauses_catalog_before_aggressive_drain() -> None:
     pause_health = WalmartExactQueueHealth(
         due_now=FRESH_DISCOVERY_PAUSE_THRESHOLD,

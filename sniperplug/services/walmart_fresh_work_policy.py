@@ -20,6 +20,7 @@ def queue_split_is_known(health: WalmartExactQueueHealth) -> bool:
 
     return bool(
         int(getattr(health, "initial_due_now", 0) or 0)
+        or int(getattr(health, "recovery_due_now", 0) or 0)
         or int(getattr(health, "recheck_due_now", 0) or 0)
         or int(getattr(health, "due_now", 0) or 0) == 0
     )
@@ -91,6 +92,7 @@ def catalog_backpressure_reason(
         )
 
     fresh_due = max(0, int(getattr(health, "initial_due_now", 0) or 0))
+    recovery_due = max(0, int(getattr(health, "recovery_due_now", 0) or 0))
     recheck_due = max(0, int(getattr(health, "recheck_due_now", 0) or 0))
     fresh_limit_value = max(1, int(fresh_limit))
     emergency_limit_value = max(
@@ -102,7 +104,8 @@ def catalog_backpressure_reason(
         return (
             "fresh exact-detail backpressure active: "
             f"fresh/retry pressure **{fresh_due}/{fresh_limit_value}** • "
-            f"new/retry due **{fresh_due}** • scheduled rechecks **{recheck_due}** • "
+            f"new/retry due **{fresh_due}** • page recovery **{recovery_due}** • "
+            f"scheduled rechecks **{recheck_due}** • "
             f"verifying **{verifying}** • terminal identity blocks excluded "
             f"**{identity_blocked}**"
         )
@@ -111,7 +114,8 @@ def catalog_backpressure_reason(
         return (
             "exact-detail emergency backpressure active: "
             f"actionable backlog **{total_pressure}/{emergency_limit_value}** • "
-            f"new/retry due **{fresh_due}** • scheduled rechecks **{recheck_due}** • "
+            f"new/retry due **{fresh_due}** • page recovery **{recovery_due}** • "
+            f"scheduled rechecks **{recheck_due}** • "
             f"verifying **{verifying}** • terminal identity blocks excluded "
             f"**{identity_blocked}**"
         )
@@ -125,6 +129,7 @@ def fresh_work_policy_summary(health: Any) -> str:
     return (
         "fresh-work policy: "
         f"new/retry={max(0, int(getattr(health, 'initial_due_now', 0) or 0))} "
+        f"page_recovery={max(0, int(getattr(health, 'recovery_due_now', 0) or 0))} "
         f"rechecks={max(0, int(getattr(health, 'recheck_due_now', 0) or 0))} "
         f"verifying={max(0, int(getattr(health, 'verifying', 0) or 0))}"
     )

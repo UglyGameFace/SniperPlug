@@ -295,6 +295,48 @@ def test_recent_terminal_rearm_is_bounded_and_one_time(monkeypatch) -> None:
     assert conn.commits == 1
 
 
+def test_recent_terminal_rearm_falls_back_to_sql_changes_when_rowcount_missing(monkeypatch) -> None:
+    class Cursor:
+        def __init__(self, row=None, *, rowcount=-1):
+            self.row = row
+            self.rowcount = rowcount
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.marker = False
+            self.changes = 0
+
+        async def execute(self, sql, params=()):
+            text = str(sql)
+            if f"SELECT migration_key FROM {PAGE_RECOVERY_REARM_TABLE}" in text:
+                return Cursor(None, rowcount=-1)
+            if "UPDATE walmart_exact_detail_queue" in text:
+                self.changes = 5
+                return Cursor(rowcount=-1)
+            if text.strip() == "SELECT changes()":
+                return Cursor((self.changes,), rowcount=-1)
+            if f"INSERT INTO {PAGE_RECOVERY_REARM_TABLE}" in text:
+                self.marker = True
+                return Cursor(rowcount=1)
+            return Cursor(rowcount=0)
+
+        async def commit(self):
+            return None
+
+    conn = Connection()
+    db = SimpleNamespace(require_conn=lambda: conn)
+
+    async def no_op(_db):
+        return None
+
+    monkeypatch.setattr(exact_queue, "ensure_walmart_exact_verification_queue", no_op)
+
+    assert asyncio.run(rearm_recent_identity_rows_for_page_recovery(db)) == 5
+
+
 def test_identity_blocked_recovery_item_always_has_open_walmart_link() -> None:
     url = "https://www.walmart.com/ip/123456789"
     item = WalmartRecoveryItem(

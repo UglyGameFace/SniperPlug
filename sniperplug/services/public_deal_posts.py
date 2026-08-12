@@ -10,7 +10,12 @@ from sniperplug.services.deal_feedback import build_deal_feedback_view, build_fe
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_channel_id
 from sniperplug.services.public_posting import normalize_retailer_key
-from sniperplug.services.public_deal_quality import is_public_deal_candidate, prepare_public_deal_candidate, prepare_public_scout_candidate
+from sniperplug.services.public_deal_quality import (
+    is_public_deal_candidate,
+    prepare_public_deal_candidate,
+    prepare_public_scout_candidate,
+    public_deal_rejection_reason,
+)
 
 
 ALERT_DEDUPE_DAYS = 30
@@ -31,6 +36,7 @@ class PublicPostResult:
     skipped_recent_alert_duplicate: int = 0
     skipped_reserved_duplicate: int = 0
     skipped_not_alertable: int = 0
+    not_alertable_reasons: tuple[str, ...] = ()
     skipped_disabled: int = 0
     skipped_wrong_retailer: int = 0
     cached_active: int = 0
@@ -112,6 +118,7 @@ async def maybe_post_public_deal_cards(
     skipped_reserved_duplicate = 0
     skipped_not_alertable = 0
     skipped_wrong_retailer = 0
+    not_alertable_reasons: list[str] = []
     notes: list[str] = []
     cache_after_posting: list[Any] = []
     if channel_note:
@@ -123,10 +130,15 @@ async def maybe_post_public_deal_cards(
 
             category_decision = decide_category(card, category_preferences)
         except Exception as exc:
-            notes.append(f"public category decision failed; card blocked: {clean_error_text(exc)}")
+            cleaned = clean_error_text(exc)
+            notes.append(f"public category decision failed; card blocked: {cleaned}")
+            not_alertable_reasons.append(f"category_error:{cleaned}")
             skipped_not_alertable += 1
             continue
         if category_decision.action == "suppress":
+            not_alertable_reasons.append(
+                f"category_suppress:{category_decision.category_key}:{category_decision.reason}"
+            )
             skipped_not_alertable += 1
             continue
 
@@ -137,12 +149,25 @@ async def maybe_post_public_deal_cards(
 
         if allow_review_scout:
             public_ready = prepare_public_scout_candidate(card, source_label=source_label)
+            if not public_ready:
+                not_alertable_reasons.append("scout_quality_rejected")
         else:
+            quality_reason = public_deal_rejection_reason(
+                card,
+                source_label=source_label,
+                min_discount=min_public_discount,
+            )
+            if quality_reason is not None:
+                not_alertable_reasons.append(f"quality:{quality_reason}")
+                skipped_not_alertable += 1
+                continue
             public_ready = prepare_public_deal_candidate(
                 card,
                 source_label=source_label,
                 min_discount=min_public_discount,
             )
+            if not public_ready:
+                not_alertable_reasons.append("quality:prepare_failed_after_pass")
         if not public_ready:
             skipped_not_alertable += 1
             continue
@@ -151,6 +176,7 @@ async def maybe_post_public_deal_cards(
         if should_alert is None:
             should_alert = int(getattr(card, "score", 0) or 0) >= min_alert_score
         if not bool(should_alert):
+            not_alertable_reasons.append("should_alert=false")
             skipped_not_alertable += 1
             continue
 
@@ -260,6 +286,7 @@ async def maybe_post_public_deal_cards(
         skipped_recent_alert_duplicate=skipped_recent_alert_duplicate,
         skipped_reserved_duplicate=skipped_reserved_duplicate,
         skipped_not_alertable=skipped_not_alertable,
+        not_alertable_reasons=tuple(dict.fromkeys(not_alertable_reasons))[:8],
         skipped_disabled=0,
         skipped_wrong_retailer=skipped_wrong_retailer,
         cached_active=cached_active,

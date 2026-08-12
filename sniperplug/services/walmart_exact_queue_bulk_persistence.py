@@ -12,9 +12,8 @@ from sniperplug.services.walmart_exact_price_enrichment import (
 )
 from sniperplug.services.walmart_exact_queue_drain import tiered_recheck_delay
 from sniperplug.services.walmart_exact_verification_queue import (
-    QUEUE_RETRY_BASE_SECONDS,
-    QUEUE_RETRY_MAX_SECONDS,
     QUEUE_TABLE,
+    _failure_storage_policy,
     _candidate_snapshot,
     _classify_exact_candidate,
     _compact_text,
@@ -305,18 +304,11 @@ def _failure_queue_row(
     observed_at: datetime,
 ) -> tuple[Any, ...]:
     attempts = max(1, int(getattr(claim, "attempt_count", 0) or 0) + 1)
-    if status in {"identity_mismatch", "incomplete_identity"}:
-        delay_seconds = 12 * 60 * 60
-        stored_status = status
-    elif status == "provider_unavailable":
-        delay_seconds = 30 * 60
-        stored_status = "retry"
-    else:
-        delay_seconds = min(
-            QUEUE_RETRY_MAX_SECONDS,
-            QUEUE_RETRY_BASE_SECONDS * (2 ** min(6, attempts - 1)),
-        )
-        stored_status = "retry"
+    stored_status, delay_seconds = _failure_storage_policy(
+        status=status,
+        error=error,
+        attempts=attempts,
+    )
     return (
         str(getattr(claim, "item_id", "") or ""),
         str(getattr(claim, "lease_token", "") or ""),

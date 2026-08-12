@@ -275,29 +275,56 @@ def test_runtime_verifies_fresh_catalog_offer_without_network_and_classifies_no_
 def test_existing_queue_schema_is_migrated_with_discovery_snapshot_columns() -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
-        await conn.execute(
-            f"""
-            CREATE TABLE {QUEUE_TABLE} (
-                item_id TEXT PRIMARY KEY,
-                priority_score INTEGER NOT NULL DEFAULT 0,
-                first_seen_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                next_attempt_at TEXT NOT NULL
+        try:
+            await conn.execute(
+                f"""
+                CREATE TABLE {QUEUE_TABLE} (
+                    item_id TEXT PRIMARY KEY,
+                    priority_score INTEGER NOT NULL DEFAULT 0,
+                    apparent_current_cents INTEGER,
+                    apparent_reference_cents INTEGER,
+                    apparent_discount_bps INTEGER NOT NULL DEFAULT 0,
+                    title TEXT NOT NULL DEFAULT '',
+                    product_url TEXT NOT NULL DEFAULT '',
+                    image_url TEXT NOT NULL DEFAULT '',
+                    route_hint TEXT NOT NULL DEFAULT '',
+                    source_label TEXT NOT NULL DEFAULT '',
+                    discovered_count INTEGER NOT NULL DEFAULT 1,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at TEXT,
+                    next_attempt_at TEXT NOT NULL,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    lease_token TEXT NOT NULL DEFAULT '',
+                    lease_until TEXT,
+                    verified_at TEXT,
+                    exact_current_cents INTEGER,
+                    exact_reference_cents INTEGER,
+                    exact_discount_bps INTEGER NOT NULL DEFAULT 0,
+                    exact_reference_source TEXT NOT NULL DEFAULT '',
+                    exact_offer_id TEXT NOT NULL DEFAULT '',
+                    exact_seller_key TEXT NOT NULL DEFAULT '',
+                    exact_variant_key TEXT NOT NULL DEFAULT '',
+                    exact_condition_key TEXT NOT NULL DEFAULT '',
+                    exact_fulfillment_key TEXT NOT NULL DEFAULT '',
+                    snapshot_json TEXT NOT NULL DEFAULT ''
+                )
+                """
             )
-            """
-        )
-        await conn.commit()
-        db = FakeDatabase(conn)
-        from sniperplug.services.walmart_exact_verification_queue import (
-            ensure_walmart_exact_verification_queue,
-        )
+            await conn.commit()
+            db = FakeDatabase(conn)
+            from sniperplug.services.walmart_exact_verification_queue import (
+                ensure_walmart_exact_verification_queue,
+            )
 
-        await ensure_walmart_exact_verification_queue(db)
-        cursor = await conn.execute(f"PRAGMA table_info({QUEUE_TABLE})")
-        columns = {row[1] for row in await cursor.fetchall()}
-        assert "discovery_snapshot_json" in columns
-        assert "discovery_snapshot_at" in columns
-        await conn.close()
+            await ensure_walmart_exact_verification_queue(db)
+            cursor = await conn.execute(f"PRAGMA table_info({QUEUE_TABLE})")
+            columns = {row[1] for row in await cursor.fetchall()}
+            assert "discovery_snapshot_json" in columns
+            assert "discovery_snapshot_at" in columns
+        finally:
+            await conn.close()
 
     asyncio.run(run())

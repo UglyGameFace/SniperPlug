@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-Code-side implementation and pre-merge Definition-of-Done validation are complete on PR #230 (`hotfix/turso-startup-outage-hold-v2`). Production completion remains unclaimed until the PR is merged, canonical Discloud app `1779293887444` is redeployed, and live startup logs prove a prolonged retryable Turso outage no longer terminates the process.
+Code-side implementation and pre-merge Definition-of-Done validation are complete, and PR #230 (`hotfix/turso-startup-outage-hold-v2`) was merged into `main` on 2026-08-11. Production completion remains unclaimed until canonical Discloud app `1779293887444` is redeployed from merged `main` and live startup logs verify stable Turso readiness or continued bounded waiting through a retryable outage without an unhandled startup exception.
 
 ## Task
 **SP-TURSO-STARTUP — Keep SniperPlug alive through prolonged retryable Turso outages**
@@ -22,6 +22,7 @@ Code-side implementation and pre-merge Definition-of-Done validation are complet
 - This contradicted PR #229's stated goal of keeping the startup process alive and backing off instead of entering a crash loop.
 - `libsql.connect()` creating a connection object is not proof that the selected Turso host/route can execute reads; the remote database path can remain transiently unavailable after the worker itself initializes.
 - The prior retry wrapper only caught `LibsqlWorkerError`; a parent worker timeout or lost worker/pipe during a read could therefore bypass the safe read retry path even though replaying a read-only `SELECT` is safe.
+- PR #230 is now merged into `main`; merge completion is no longer a production blocker.
 
 ## Changes
 - The former 300-second readiness timeout is now a degraded-status reporting window, not a fatal deadline.
@@ -48,21 +49,26 @@ Code-side implementation and pre-merge Definition-of-Done validation are complet
 - The fix modifies the existing readiness/retry implementation; no second startup gate, fallback database, compatibility shim, or duplicate retry service was added.
 - The production database remains the source of truth; there is no unsafe local SQLite failover or split-brain write path.
 - Embedded replicas remain opt-in and unchanged.
-- Branch comparison after validation showed **0 commits behind `main`** and only three intended files changed: this task record, `sniperplug/storage/process_database.py`, and `tests/test_turso_parent_read_retry.py`.
-- PR #230 is mergeable.
-- No inline review threads or submitted reviews exist. The only PR comment is the existing Qodo billing-paused notice; it contains no code finding.
+- Pre-merge branch comparison showed **0 commits behind `main`** and only three intended files changed: this task record, `sniperplug/storage/process_database.py`, and `tests/test_turso_parent_read_retry.py`.
+- PR #230 merged successfully into `main` at commit `23e6d0fd77f3fe35921bb6d0fffcc483c9cb8420`.
+- No inline review threads or submitted reviews existed. The only PR comment was the existing Qodo billing-paused notice; it contained no code finding.
 - Final diff inspection found no duplicate implementation, temporary fallback, alternate database path, or unrelated feature change.
 
 ## Current branch / PR
-- Branch: `hotfix/turso-startup-outage-hold-v2`
-- PR: #230 — `Keep startup alive through prolonged Turso outages`
+- Merged branch: `hotfix/turso-startup-outage-hold-v2`
+- PR: #230 — `Keep startup alive through prolonged Turso outages` — **merged**
+- `main` merge commit: `23e6d0fd77f3fe35921bb6d0fffcc483c9cb8420`
 
 ## Deployment boundary
 - Canonical Discloud app: `1779293887444`.
 - Duplicate app `1785806676351` must never be targeted.
 - Do not claim production completion until merged `main` is deployed and live logs show either stable Turso readiness or continued bounded waiting during a retryable outage without an unhandled startup exception.
 
+## Blocker
+- No post-merge production evidence currently recorded here proves the deployment/live-log boundary above, so the Single Active Task Lock remains on SP-TURSO-STARTUP.
+
 ## Backlog
+- **SP-DM-DIVERSITY — Prevent broad smart DM alerts from being monopolized by apparel/fashion deals.** Root-cause trace on 2026-08-11 found that the DM matcher has no delivery diversity guard, Walmart and verified-retailer fanout consume the shared daily cap in arrival order, and clothing-heavy waves can therefore exhaust alert slots before later tech/home/gaming deals. Preserve intentional single-category/favorite choices; implement one shared durable diversity policy across live Walmart bulk fanout, verified-retailer fanout, and any retained compatibility fanout only after SP-TURSO-STARTUP satisfies Definition of Done.
 - Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` only after this Turso startup task satisfies its Definition of Done.
 - Investigate the high volume of Walmart `seller` identity blocks and transient exact-fetch failures as a separate exact-verification task.
 - Continue verifying PR #223 delivery-health accounting from live post-deploy logs.

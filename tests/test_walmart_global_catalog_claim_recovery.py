@@ -12,7 +12,6 @@ from sniperplug.services.walmart_global_catalog_autoscan import (
     STATE_TABLE,
     claim_next_catalog_routes,
     complete_catalog_claim,
-    load_global_catalog_state,
     release_catalog_claim,
 )
 

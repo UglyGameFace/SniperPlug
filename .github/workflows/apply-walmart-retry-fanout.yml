@@ -1,0 +1,54 @@
+name: Apply Walmart retry fanout fix
+
+on:
+  push:
+    branches:
+      - fix/walmart-page-retry-fanout
+    paths:
+      - .github/scripts/apply_walmart_retry_fanout.py
+      - .github/scripts/prepare_walmart_retry_applicator.py
+      - .github/workflows/apply-walmart-retry-fanout.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/walmart-page-retry-fanout
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare applicator
+        run: python .github/scripts/prepare_walmart_retry_applicator.py
+      - name: Apply implementation
+        run: python .github/scripts/apply_walmart_retry_fanout.py
+      - name: Remove preparer
+        run: rm -f .github/scripts/prepare_walmart_retry_applicator.py
+      - name: Diff check
+        run: git diff --check
+      - name: Compile
+        run: python -m compileall -q sniperplug tests '*.py'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Focused tests
+        run: >-
+          pytest -q
+          tests/test_walmart_page_identity_recovery.py
+          tests/test_walmart_exact_queue_runtime.py
+          tests/test_walmart_exact_queue_pressure.py
+          tests/test_walmart_fresh_work_policy.py
+          tests/test_walmart_global_deal_fanout_bulk.py
+      - name: Commit implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix Walmart page retry backpressure and fanout diagnostics"
+          git push origin HEAD:fix/walmart-page-retry-fanout

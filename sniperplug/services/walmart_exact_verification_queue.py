@@ -92,6 +92,8 @@ class _QueueClaim:
     route_hint: str
     lease_token: str
     attempt_count: int
+    discovery_snapshot_json: str = ""
+    discovery_snapshot_at: str | None = None
 
 
 async def ensure_walmart_exact_verification_queue(db: Any) -> None:
@@ -129,10 +131,25 @@ async def ensure_walmart_exact_verification_queue(db: Any) -> None:
             exact_variant_key TEXT NOT NULL DEFAULT '',
             exact_condition_key TEXT NOT NULL DEFAULT '',
             exact_fulfillment_key TEXT NOT NULL DEFAULT '',
-            snapshot_json TEXT NOT NULL DEFAULT ''
+            snapshot_json TEXT NOT NULL DEFAULT '',
+            discovery_snapshot_json TEXT NOT NULL DEFAULT '',
+            discovery_snapshot_at TEXT
         )
         """
     )
+    column_cursor = await conn.execute(f"PRAGMA table_info({QUEUE_TABLE})")
+    columns = {
+        str(_row_get(row, "name", index=1) or "")
+        for row in await column_cursor.fetchall()
+    }
+    if "discovery_snapshot_json" not in columns:
+        await conn.execute(
+            f"ALTER TABLE {QUEUE_TABLE} ADD COLUMN discovery_snapshot_json TEXT NOT NULL DEFAULT ''"
+        )
+    if "discovery_snapshot_at" not in columns:
+        await conn.execute(
+            f"ALTER TABLE {QUEUE_TABLE} ADD COLUMN discovery_snapshot_at TEXT"
+        )
     await conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{QUEUE_TABLE}_due "
         f"ON {QUEUE_TABLE} (next_attempt_at, priority_score DESC)"
@@ -409,7 +426,8 @@ async def _claim_due_rows(
         SELECT
             item_id, title, product_url, image_url,
             apparent_current_cents, apparent_reference_cents,
-            route_hint, attempt_count
+            route_hint, attempt_count,
+            discovery_snapshot_json, discovery_snapshot_at
         FROM {QUEUE_TABLE}
         WHERE next_attempt_at <= ?
           AND last_seen_at >= ?
@@ -468,6 +486,13 @@ async def _claim_due_rows(
                 route_hint=str(_row_get(row, "route_hint", index=6) or ""),
                 lease_token=token,
                 attempt_count=int(_row_get(row, "attempt_count", index=7) or 0),
+                discovery_snapshot_json=str(
+                    _row_get(row, "discovery_snapshot_json", index=8) or ""
+                ),
+                discovery_snapshot_at=(
+                    str(_row_get(row, "discovery_snapshot_at", index=9) or "")
+                    or None
+                ),
             )
         )
     await conn.commit()

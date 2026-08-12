@@ -134,6 +134,7 @@ async def process_actionable_walmart_exact_queue_batch(
     fetch_seconds = max(0.0, time.monotonic() - fetch_started)
     counts = {
         "verified": 0,
+        "fresh_catalog_verified": 0,
         "official_references": 0,
         "markdowns": 0,
         "no_reference": 0,
@@ -181,6 +182,16 @@ async def process_actionable_walmart_exact_queue_batch(
             continue
 
         counts["verified"] += 1
+        if (
+            str(
+                dict(getattr(candidate, "variant_attributes", None) or {}).get(
+                    "exactDetailPriceProofSource"
+                )
+                or ""
+            ).strip()
+            == "affiliate_catalog_fresh_snapshot"
+        ):
+            counts["fresh_catalog_verified"] += 1
         if _trusted_reference(candidate) is not None:
             counts["official_references"] += 1
         classification = _classify_exact_candidate(

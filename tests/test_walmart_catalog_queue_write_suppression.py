@@ -296,5 +296,5 @@ def test_catalog_enqueue_uses_cached_schema_and_safe_larger_batches() -> None:
 
     assert "ensure_exact_runtime_schema_once" in source
     assert "await ensure_walmart_exact_verification_queue(db)" not in source
-    assert QUEUE_UPSERT_CHUNK_SIZE == 60
-    assert QUEUE_UPSERT_CHUNK_SIZE * 16 <= 999
+    assert QUEUE_UPSERT_CHUNK_SIZE == 55
+    assert QUEUE_UPSERT_CHUNK_SIZE * 18 <= 999

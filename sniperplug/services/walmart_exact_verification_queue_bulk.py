@@ -15,6 +15,10 @@ from sniperplug.services.walmart_exact_price_enrichment import (
 from sniperplug.services.walmart_exact_queue_pressure import (
     load_walmart_exact_queue_pressure,
 )
+from sniperplug.services.walmart_fresh_discovery_proof import (
+    DISCOVERY_PROOF_REFRESH_INTERVAL_SECONDS,
+    build_fresh_discovery_offer_snapshot,
+)
 from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     VerificationQueueEnqueueResult,
@@ -25,13 +29,12 @@ from sniperplug.services.walmart_exact_verification_queue import (
 )
 
 
-# Sixteen parameters per row keeps sixty-row writes below SQLite's conservative
-# historical 999-variable ceiling while reducing a 75-100 item catalog pass to
-# at most two writes when every row is genuinely new or changed.
-QUEUE_UPSERT_CHUNK_SIZE = 60
+# Eighteen parameters per row keeps 55-row writes below SQLite's conservative
+# historical 999-variable ceiling while preserving bounded selected-offer proof.
+QUEUE_UPSERT_CHUNK_SIZE = 55
 QUEUE_EXISTING_LOOKUP_CHUNK_SIZE = 500
 QUEUE_DISCOVERY_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
-_QUEUE_COLUMNS_PER_ROW = 16
+_QUEUE_COLUMNS_PER_ROW = 18
 _REARM_STATUSES = frozenset({"pending", "retry", "failed"})
 
 
@@ -49,6 +52,8 @@ class _ExistingQueueRow:
     last_seen_at: str
     status: str
     next_attempt_at: str
+    discovery_snapshot_json: str
+    discovery_snapshot_at: str
 
 
 @dataclass(frozen=True)
@@ -78,14 +83,18 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
 ) -> VerificationQueueEnqueueResult:
     """Persist globally deduplicated discovery leads without write amplification.
 
-    Search prices remain prioritization hints only. Production catalog passes
+    Ordinary discovery hints remain prioritization-only. When a catalog result
+    contains a complete atomic selected offer, a bounded normalized proof
+    snapshot is persisted separately so the canonical exact worker can reuse it
+    while it is fresh and still revalidate item, price, seller, offer, variant,
+    and marketplace shipping before promotion. Production catalog passes
     repeatedly rediscover many of the same item IDs, so the enqueue path first
     loads one bounded projection for those primary keys and writes only rows
-    that are new, materially changed, due for a pending/retry rearm, or old
-    enough to need a retention heartbeat. Schema initialization is shared with
-    the exact worker's once-per-connection cache.
+    that are new, materially changed, safely rearmed, or old enough to need a
+    retention/proof heartbeat. Schema initialization is shared with the exact
+    worker's once-per-connection cache.
 
-    Sixty rows use 960 parameters, below SQLite's conservative historical
+    Fifty-five rows use 990 parameters, below SQLite's conservative historical
     999-variable limit. A normal 75-100 row pass therefore uses no writes when
     every row is a recent unchanged rediscovery, and at most two statements
     when the complete pass is genuinely new or changed.
@@ -136,6 +145,9 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     refresh_cutoff = (
         now - timedelta(seconds=QUEUE_DISCOVERY_REFRESH_INTERVAL_SECONDS)
     ).isoformat()
+    snapshot_refresh_cutoff = (
+        now - timedelta(seconds=DISCOVERY_PROOF_REFRESH_INTERVAL_SECONDS)
+    ).isoformat()
     rows_to_write = [
         row
         for row in rows
@@ -143,6 +155,7 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
             row,
             existing.get(str(row[0])),
             refresh_cutoff=refresh_cutoff,
+            snapshot_refresh_cutoff=snapshot_refresh_cutoff,
         )
     ]
 
@@ -163,7 +176,8 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
                 apparent_reference_cents, apparent_discount_bps,
                 title, product_url, image_url, route_hint, source_label,
                 discovered_count, first_seen_at, last_seen_at, status,
-                attempt_count, next_attempt_at
+                attempt_count, next_attempt_at,
+                discovery_snapshot_json, discovery_snapshot_at
             ) VALUES {placeholders}
             ON CONFLICT(item_id) DO UPDATE SET
                 priority_score = CASE
@@ -190,8 +204,19 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
                 source_label = excluded.source_label,
                 discovered_count = discovered_count + 1,
                 last_seen_at = excluded.last_seen_at,
+                discovery_snapshot_json = CASE
+                    WHEN excluded.discovery_snapshot_json <> ''
+                    THEN excluded.discovery_snapshot_json
+                    ELSE discovery_snapshot_json END,
+                discovery_snapshot_at = CASE
+                    WHEN excluded.discovery_snapshot_json <> ''
+                    THEN excluded.discovery_snapshot_at
+                    ELSE discovery_snapshot_at END,
                 next_attempt_at = CASE
                     WHEN status IN ('pending', 'retry', 'failed')
+                    THEN MIN(next_attempt_at, excluded.next_attempt_at)
+                    WHEN status = 'page_retry'
+                         AND excluded.discovery_snapshot_json <> ''
                     THEN MIN(next_attempt_at, excluded.next_attempt_at)
                     ELSE next_attempt_at END
             """,
@@ -229,7 +254,8 @@ async def _load_existing_queue_rows(
                 item_id, priority_score, apparent_current_cents,
                 apparent_reference_cents, apparent_discount_bps,
                 title, product_url, image_url, route_hint, source_label,
-                last_seen_at, status, next_attempt_at
+                last_seen_at, status, next_attempt_at,
+                discovery_snapshot_json, discovery_snapshot_at
             FROM {QUEUE_TABLE}
             WHERE item_id IN ({placeholders})
             """,
@@ -262,6 +288,12 @@ async def _load_existing_queue_rows(
                 next_attempt_at=str(
                     _row_get(row, "next_attempt_at", index=12) or ""
                 ),
+                discovery_snapshot_json=str(
+                    _row_get(row, "discovery_snapshot_json", index=13) or ""
+                ),
+                discovery_snapshot_at=str(
+                    _row_get(row, "discovery_snapshot_at", index=14) or ""
+                ),
             )
     return existing
 
@@ -271,6 +303,7 @@ def _queue_row_needs_write(
     existing: _ExistingQueueRow | None,
     *,
     refresh_cutoff: str,
+    snapshot_refresh_cutoff: str,
 ) -> bool:
     if existing is None:
         return True
@@ -303,6 +336,20 @@ def _queue_row_needs_write(
         return True
     if not existing.last_seen_at or existing.last_seen_at <= refresh_cutoff:
         return True
+    incoming_snapshot = str(row[16] or "")
+    if incoming_snapshot:
+        if incoming_snapshot != existing.discovery_snapshot_json:
+            return True
+        if (
+            not existing.discovery_snapshot_at
+            or existing.discovery_snapshot_at <= snapshot_refresh_cutoff
+        ):
+            return True
+        if existing.status == "page_retry" and (
+            not existing.next_attempt_at
+            or existing.next_attempt_at > str(row[15] or "")
+        ):
+            return True
     if (
         existing.status in _REARM_STATUSES
         and (
@@ -335,6 +382,7 @@ def _queue_row(
         or "",
         240,
     )
+    discovery_snapshot = build_fresh_discovery_offer_snapshot(candidate)
     return (
         item_id,
         int(round(_priority(candidate, min_discount=min_discount) * 100)),
@@ -356,6 +404,8 @@ def _queue_row(
         "pending",
         0,
         now_iso,
+        discovery_snapshot,
+        now_iso if discovery_snapshot else None,
     )
 
 

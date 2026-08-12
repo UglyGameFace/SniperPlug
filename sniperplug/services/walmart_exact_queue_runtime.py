@@ -37,6 +37,9 @@ from sniperplug.services.walmart_global_offer_memory import (
     maybe_prune_global_offer_memory,
     observe_exact_offer,
 )
+from sniperplug.services.walmart_fresh_discovery_proof import (
+    promote_fresh_discovery_offer_snapshot,
+)
 
 
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
@@ -52,6 +55,7 @@ EXACT_FETCH_HARD_TIMEOUT_SECONDS = 50.0
 class ExactQueueRuntimeResult:
     claimed: int = 0
     verified: int = 0
+    fresh_catalog_verified: int = 0
     official_references: int = 0
     markdowns: int = 0
     no_reference: int = 0
@@ -108,6 +112,7 @@ class ExactQueueRuntimeResult:
             "Walmart background exact verification: "
             f"mode **{self.mode}** • batch/concurrency **{self.batch_size}/{self.concurrency}** • "
             f"claimed **{self.claimed}** • verified **{self.verified}** • "
+            f"fresh catalog proof **{self.fresh_catalog_verified}** • "
             f"official was prices **{self.official_references}** • "
             f"markdowns **{self.markdowns}** • no reference **{self.no_reference}** • "
             f"under threshold **{self.under_threshold}** • unavailable **{self.unavailable}** • "
@@ -255,6 +260,7 @@ async def process_actionable_walmart_exact_queue_batch(
     fetch_seconds = max(0.0, time.monotonic() - fetch_started)
     counts = {
         "verified": 0,
+        "fresh_catalog_verified": 0,
         "official_references": 0,
         "markdowns": 0,
         "no_reference": 0,
@@ -305,6 +311,16 @@ async def process_actionable_walmart_exact_queue_batch(
             lease_token=claim.lease_token,
         )
         counts["verified"] += 1
+        if (
+            str(
+                dict(getattr(candidate, "variant_attributes", None) or {}).get(
+                    "exactDetailPriceProofSource"
+                )
+                or ""
+            ).strip()
+            == "affiliate_catalog_fresh_snapshot"
+        ):
+            counts["fresh_catalog_verified"] += 1
         if _trusted_reference(candidate) is not None:
             counts["official_references"] += 1
         classification = _classify_exact_candidate(candidate, min_discount=min_discount)
@@ -355,6 +371,15 @@ async def _fetch_exact_candidate_off_loop(
     *,
     timeout_seconds: float,
 ) -> tuple[SourceCandidate | None, str, str]:
+    fresh = promote_fresh_discovery_offer_snapshot(
+        str(getattr(claim, "discovery_snapshot_json", "") or ""),
+        snapshot_at=getattr(claim, "discovery_snapshot_at", None),
+        item_id=str(getattr(claim, "item_id", "") or ""),
+        apparent_current_cents=getattr(claim, "apparent_current_cents", None),
+    )
+    if fresh is not None:
+        return fresh, "verified", ""
+
     detail_fetcher = getattr(provider, "fetch_product_detail_payload", None)
     inner = getattr(provider, "inner", provider)
     candidate_builder = getattr(inner, "_candidate_from_item", None)

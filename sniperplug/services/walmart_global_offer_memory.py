@@ -101,9 +101,11 @@ async def ensure_global_offer_memory_table(db: Any) -> None:
 def exact_offer_identity(candidate: SourceCandidate) -> ExactOfferIdentity | None:
     """Return a fail-closed exact Walmart offer fingerprint.
 
-    Public observed-price proof is allowed only after the exact Walmart detail
-    endpoint verified the item ID. Search-result identity alone is discovery,
-    never historical price proof.
+    Public observed-price proof is allowed only after a current official
+    exact-item proof boundary. That may be the detail endpoint or a tightly
+    bounded fresh Affiliate catalog selected-offer snapshot whose item, payable
+    price, seller, offer, variant, and marketplace shipping were revalidated.
+    Ordinary search-result identity alone remains discovery, never price proof.
     """
 
     attrs = dict(getattr(candidate, "variant_attributes", None) or {})

@@ -730,3 +730,29 @@ def test_exact_affiliate_search_cannot_accept_relevance_neighbor(monkeypatch) ->
         assert exc.retry_kind == "api_exact_search_no_match"
     else:
         raise AssertionError("exact Affiliate fallback must reject a relevance neighbor")
+
+
+def test_detail_fallback_exact_search_is_not_repeated_before_page() -> None:
+    class AlreadyExactSearchProvider(FixturePageProvider):
+        def __init__(self):
+            super().__init__(
+                {
+                    "itemId": 777001,
+                    "name": "Exact search still lacks seller",
+                    "salePrice": 12.00,
+                    "sniperplugOfficialExactSource": "affiliate_search_exact_item",
+                },
+                [jsonld_product(item_id="777001", price=12.00, seller="Walmart.com")],
+            )
+            self.exact_search_calls = 0
+
+        async def _official_exact_search_payload(self, item_id: str) -> dict:
+            self.exact_search_calls += 1
+            raise AssertionError("exact Affiliate fallback must not run twice")
+
+    provider = AlreadyExactSearchProvider()
+    payload = asyncio.run(provider.fetch_product_detail_payload("777001"))
+
+    assert provider.exact_search_calls == 0
+    assert provider.page_calls == 1
+    assert payload["sellerName"] == "Walmart.com"

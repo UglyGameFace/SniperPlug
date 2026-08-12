@@ -149,15 +149,22 @@ class WalmartPageRecoveryProvider(WalmartProvider):
         # The Affiliate search route is already the healthy global-discovery
         # source. Refresh this exact item ID before relying on Walmart HTML. The
         # base provider accepts only an exact returned item ID, so a relevance
-        # neighbor can never donate seller/offer identity.
-        try:
-            search_payload = await self._official_exact_search_payload(clean_item_id)
-        except WalmartProviderError:
-            search_payload = None
-        if isinstance(search_payload, dict):
-            payload = search_payload
-            if not needs_page_identity_recovery(payload):
-                return payload
+        # neighbor can never donate seller/offer identity. If the base detail
+        # fallback already used this exact search, do not issue the same request
+        # twice before falling back to the page.
+        already_exact_search = (
+            _clean_text(payload.get("sniperplugOfficialExactSource"))
+            == "affiliate_search_exact_item"
+        )
+        if not already_exact_search:
+            try:
+                search_payload = await self._official_exact_search_payload(clean_item_id)
+            except WalmartProviderError:
+                search_payload = None
+            if isinstance(search_payload, dict):
+                payload = search_payload
+                if not needs_page_identity_recovery(payload):
+                    return payload
 
         async with self._page_recovery_semaphore:
             try:

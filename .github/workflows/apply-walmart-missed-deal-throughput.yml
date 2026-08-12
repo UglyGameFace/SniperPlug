@@ -1,0 +1,52 @@
+name: Apply Walmart missed-deal throughput patch
+
+on:
+  push:
+    branches:
+      - fix/walmart-missed-deal-throughput
+    paths:
+      - tools/apply_walmart_missed_deal_throughput.py
+      - .github/workflows/apply-walmart-missed-deal-throughput.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/walmart-missed-deal-throughput
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Apply patch
+        run: python tools/apply_walmart_missed_deal_throughput.py
+      - name: Static and focused validation
+        run: |
+          git diff --check
+          python -m compileall -q sniperplug tests
+          pytest -q \
+            tests/test_walmart_page_identity_recovery.py \
+            tests/test_walmart_exact_public_lane.py \
+            tests/test_walmart_exact_queue_runtime.py \
+            tests/test_walmart_exact_queue_pressure.py \
+            tests/test_walmart_exact_runtime_schema.py \
+            tests/test_global_autoscan_architecture.py \
+            tests/test_autoscan_runtime_diagnostics.py
+      - name: Commit validated implementation
+        run: |
+          git config user.name "UglyGameFace"
+          git config user.email "85308991+UglyGameFace@users.noreply.github.com"
+          git rm tools/apply_walmart_missed_deal_throughput.py .github/workflows/apply-walmart-missed-deal-throughput.yml
+          git add sniperplug tests
+          git diff --cached --check
+          git commit -m "Fix Walmart exact recovery throughput and stale watchlist rejection"
+          git push origin HEAD:fix/walmart-missed-deal-throughput

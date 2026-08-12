@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Code-side complete — SP-WM-IDENTITY-RECOVERY satisfied its Definition of Done on PR #233. Production behavior remains unclaimed until the merged code is deployed and live Walmart traffic exercises the fallback.**
+**Complete — SP-WM-IDENTITY-RECOVERY satisfied its Definition of Done, PR #233 was merged into `main` at `d4d4a9beb13dea06679b29ddd501c728959d4c21`, and the merge commit passed the canonical GitHub validation workflows. Production behavior remains intentionally unclaimed until merged `main` is deployed and live Walmart traffic exercises the fallback.**
 
 ## Task
 **SP-WM-IDENTITY-RECOVERY — Recover strict Walmart seller/offer identity when the official exact-detail payload is incomplete, and make every recovery item directly viewable for manual verification.**
@@ -41,28 +41,30 @@
 - Two isolated branch validation runs applied the existing-file changes with exact-match guards, ran targeted checks, and removed their temporary workflow files before committing; no applicator workflow remains in the final diff.
 - Focused regressions cover API-complete skip behavior, exact item + cent-aligned Walmart seller recovery, third-party seller recovery with shipping still blocked, marketplace conflicts, price-change retry behavior, wrong-item structured data, ambiguous offers, cross-offer seller/price contamination, redirect-host validation, bounded one-time terminal-row rearm, recovery manual-link access, and production provider wiring.
 - Targeted Walmart identity/recovery/selected-offer suites passed after both implementation and hardening passes.
-- Normal PR CI on implementation head `86d28b5c130552b0cecc95b27fba8cc5df4d7af6`:
+- Final PR head `321df87d8ed4443de0802a15c79e8a3de004d7cf` passed all required PR workflows:
   - Import smoke check: **PASS**.
-  - Python Check: **PASS** (compile, import smoke, full suite).
+  - Python Check on Python 3.12: **PASS** (compile, import smoke, full suite).
   - Python tests on Python 3.11.15: **PASS**.
   - `pip check`: **PASS — no broken requirements**.
   - `python -m compileall -q sniperplug tests *.py`: **PASS**.
-  - Full suite: **1,173 passed**, one upstream `discord.py` `audioop` deprecation warning.
-- This task-record-only commit must remain green under the same PR workflows before merge/readiness is claimed.
+  - Full Python 3.11 suite: **1,173 passed**, one upstream `discord.py` `audioop` deprecation warning.
+- Merge commit `d4d4a9beb13dea06679b29ddd501c728959d4c21` independently passed the canonical **Import smoke check**, **Python tests**, and **Python Check** workflows on `main`.
 
 ## Cleanup and conflict inspection
-- PR #233 is mergeable and the implementation branch was **0 commits behind `main`** at the final implementation inspection.
-- Final runtime/test scope is limited to `sniperplug/bot.py`, `sniperplug/cogs/canonical_public_alerts.py`, the new `sniperplug/providers/walmart_page_recovery.py`, focused tests, and this task record.
-- Temporary GitHub Actions applicator files removed themselves and are absent from the PR changed-file list.
+- Final branch comparison before merge: **0 commits behind `main`** and mergeable.
+- Final runtime/test scope was limited to `sniperplug/bot.py`, `sniperplug/cogs/canonical_public_alerts.py`, the new `sniperplug/providers/walmart_page_recovery.py`, focused tests, and this task record.
+- Temporary GitHub Actions applicator files removed themselves and are absent from the merged tree.
 - No alternate posting path, relaxed identity gate, raw-page storage, page-derived was-price path, CAPTCHA/challenge bypass, or duplicate Walmart provider remains.
-- PR #233 had no review comments/threads at the final implementation inspection.
+- PR #233 had no review comments/threads at the final inspection.
 
 ## Merge / deployment boundary
-- PR #233: `Recover Walmart seller identity from exact product pages`.
-- Production completion is intentionally unclaimed until the PR is merged, deployed to the canonical SniperPlug Discloud app, and live logs show seller-identity recovery/normal fanout behavior without new queue pressure or Discord lag.
+- PR #233: `Recover Walmart seller identity from exact product pages` — **merged**.
+- Merge commit: `d4d4a9beb13dea06679b29ddd501c728959d4c21`.
+- Code-side task lock is released.
+- Production completion remains intentionally unclaimed until merged `main` is deployed to the canonical SniperPlug Discloud app and live logs show seller-identity recovery/normal fanout behavior without new queue pressure or Discord lag.
 
 ## Backlog
 - Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content`.
-- Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings during Walmart drain-mode exact verification after this task closes.
+- Investigate repeated Discord gateway `Can't keep up ... websocket is 41.5s behind` warnings during Walmart drain-mode exact verification.
 - Continue verifying PR #223 delivery-health accounting from live post-deploy logs.
 - PR #200 remains isolated and must not be mixed into unrelated work.

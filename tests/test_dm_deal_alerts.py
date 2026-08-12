@@ -6,6 +6,8 @@ import discord
 
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
+    UNLIMITED_MAX_ALERTS_PER_DAY,
+    daily_cap_label,
     normalize_categories,
 )
 from sniperplug.services.dm_deal_matching import match_dm_deal
@@ -211,3 +213,20 @@ def test_category_aliases_expand_without_duplicates() -> None:
     assert "gpus" in categories
     assert "walmart_cash" in categories
     assert len(categories) == len(set(categories))
+
+
+def test_unlimited_daily_cap_survives_normalization_and_displays_cleanly() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        max_alerts_per_day=UNLIMITED_MAX_ALERTS_PER_DAY,
+    ).normalized()
+
+    assert preference.max_alerts_per_day == UNLIMITED_MAX_ALERTS_PER_DAY
+    assert daily_cap_label(preference.max_alerts_per_day) == "unlimited"
+    assert any("unlimited" in line.lower() for line in preference.summary_lines())
+
+
+def test_finite_daily_cap_still_clamps_to_supported_range() -> None:
+    assert DmDealAlertPreference(user_id=1, max_alerts_per_day=101).normalized().max_alerts_per_day == 100
+    assert DmDealAlertPreference(user_id=1, max_alerts_per_day=-5).normalized().max_alerts_per_day == 1

@@ -70,7 +70,8 @@ async def claim_due_rows_batched(
         SELECT
             item_id, title, product_url, image_url,
             apparent_current_cents, apparent_reference_cents,
-            route_hint, attempt_count
+            route_hint, attempt_count,
+            discovery_snapshot_json, discovery_snapshot_at
         FROM {QUEUE_TABLE}
         WHERE next_attempt_at <= ?
           AND last_seen_at >= ?
@@ -160,6 +161,13 @@ async def claim_due_rows_batched(
                 route_hint=str(_row_get(row, "route_hint", index=6) or ""),
                 lease_token=batch_token,
                 attempt_count=int(_row_get(row, "attempt_count", index=7) or 0),
+                discovery_snapshot_json=str(
+                    _row_get(row, "discovery_snapshot_json", index=8) or ""
+                ),
+                discovery_snapshot_at=(
+                    str(_row_get(row, "discovery_snapshot_at", index=9) or "")
+                    or None
+                ),
             )
         )
     return claims

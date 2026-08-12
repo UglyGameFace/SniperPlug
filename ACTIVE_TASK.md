@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-WM-MISSED-DEALS-236. PR #236 Milestone 1 is merged into `main` at `9ca3a32b456eb38fff09396e3aac64649dd9b7dd`, and the real merge commit passed all canonical `main` workflows. The overall task is intentionally NOT closed: live production must now prove that exact-verification throughput materially improves and reveal any remaining concrete retry classes. The Single Active Task Lock remains engaged.**
+**Active — SP-WM-MISSED-DEALS-236. PR #236 Milestone 1 passed code validation but FAILED the live throughput gate: production still produced repeated 8/8 transient exact-verification losses, `api_exact_search_no_match` / `page_challenge` dominated, and actionable due climbed to 107. Milestone 2 is implementing bounded fresh official catalog selected-offer proof reuse inside the same canonical exact worker. The Single Active Task Lock remains engaged.**
 
 ## Task
 **SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification so real catalog-discovered deals are not lost to flaky detail/page recovery, use current official seller/offer proof safely, and prevent false public rejection of strict exact-verified cards.**
@@ -27,6 +27,13 @@
 - Exact-search candidates carry bounded proof-source diagnostics without weakening current-price, seller/offer, shipping, condition, variant, reference, threshold, category, or duplicate gates.
 - Exact-worker summaries now include top concrete retry kinds such as `page_http_403`, `page_challenge`, `api_http_429`, and `api_network` in addition to broad buckets.
 - Strict exact Walmart normalization removes stale `watchlist` presentation wording only after the existing exact item/price/offer/reference/URL/threshold proof boundary passes. Non-exact scout/watchlist cards remain blocked.
+
+## Milestone 2 — fresh official catalog selected-offer proof
+- Live production proved the numeric Affiliate keyword-search fallback is not a reliable exact-item lookup: catalog discovery had just returned the item, but later exact searches frequently returned `api_exact_search_no_match`.
+- The catalog `SourceCandidate` already normalizes selected item ID, selected offer, seller, variant, condition, fulfillment, item price, marketplace shipping, delivered total, and same-offer reference proof. The queue currently discards most of that structure.
+- Milestone 2 persists only a bounded normalized selected-offer snapshot (never the raw Walmart payload) and permits a zero-network fast path only while that snapshot is fresh, exact-item matched, cent-for-cent matched to the queued payable price, seller/offer complete, and marketplace shipping complete.
+- Sibling/cross-offer references remain context only. The Aiho 3-Piece Gray production example is `$73.99 + $19.99 shipping = $93.98 delivered`; sibling variant strike-through prices must not become its reference price.
+- Page/API recovery remains the fallback whenever the fresh snapshot is absent, stale, price-conflicting, variant-ambiguous, or otherwise incomplete. No challenge bypass is introduced.
 
 ## Safety invariants
 - Requested item ID must exactly equal the current official item being verified.

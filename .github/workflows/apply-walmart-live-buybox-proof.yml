@@ -23,8 +23,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Apply guarded implementation patch
-        run: python .github/scripts/apply_walmart_live_buybox.py
+      - name: Apply guarded implementation patches
+        run: |
+          python .github/scripts/apply_walmart_live_buybox.py
+          python .github/scripts/fix_walmart_selected_offer_proof.py
 
       - name: Install dependencies
         run: |
@@ -49,10 +51,11 @@ jobs:
       - name: Full regression suite
         run: pytest -q
 
-      - name: Commit implementation and remove applicator
+      - name: Commit implementation and remove applicators
         run: |
           rm -f .github/workflows/apply-walmart-live-buybox-proof.yml
           rm -f .github/scripts/apply_walmart_live_buybox.py
+          rm -f .github/scripts/fix_walmart_selected_offer_proof.py
           git diff --check
           git config user.name "UglyGameFace"
           git config user.email "85308991+UglyGameFace@users.noreply.github.com"

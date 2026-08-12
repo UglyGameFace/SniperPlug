@@ -37,7 +37,10 @@
 - No CAPTCHA/challenge bypass, proxy rotation, raw-page persistence, alternate-retailer proof substitution, or unrestricted historical queue rearm.
 
 ## Validation
-- Implementation patch applied on `fix/walmart-page-retry-fanout`; targeted and full validation pending canonical CI.
+- Implementation patch applied on `fix/walmart-page-retry-fanout`; focused compile/diff/tests passed.
+- First canonical PR run: import smoke **PASS**; full suites exposed four stale architecture assertions that still modeled the pre-`page_retry` health tuple/SQL parameter count/index statement count/claim ordinal. Runtime behavior was inspected before updating those contracts.
+- The regression-contract rerun reduced the suite to one static parity failure: runtime claim SQL interpolated `page_retry` while the expression-index SQL used the literal. The runtime was cleaned up to use the same literal ordering contract instead of weakening the parity test.
+- Canonical full-suite rerun pending after that cleanup.
 
 ## Cleanup / conflict inspection
 - Runtime retry persistence is being centralized through one failure-storage policy so bulk and compatibility paths cannot drift. Final diff/conflict inspection pending.

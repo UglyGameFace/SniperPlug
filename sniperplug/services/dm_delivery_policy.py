@@ -267,9 +267,7 @@ async def record_dm_delivery_receipt(
         INSERT INTO {FAMILY_RECEIPTS_TABLE} (
             user_id, deal_key, category_family, delivered_at
         ) VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id, deal_key) DO UPDATE SET
-            category_family = excluded.category_family,
-            delivered_at = excluded.delivered_at
+        ON CONFLICT(user_id, deal_key) DO NOTHING
         """,
         (user_key, deal, family, delivered_at),
     )

@@ -9,6 +9,7 @@ from sniperplug.cogs.dm_deal_preferences_view import (
     _DmDealRulesModal,
     parse_dm_rule_values,
 )
+from sniperplug.services.dm_deal_alerts import UNLIMITED_MAX_ALERTS_PER_DAY
 
 
 def test_dm_rule_parser_accepts_full_personal_rule_update() -> None:
@@ -27,6 +28,20 @@ def test_dm_rule_parser_accepts_full_personal_rule_update() -> None:
     assert rules.clear_max_price is False
     assert rules.daily_cap == 25
     assert rules.has_updates is True
+
+
+def test_dm_rule_parser_accepts_explicit_unlimited_daily_limit() -> None:
+    for value in ("unlimited", "0", "off", "no limit"):
+        rules = parse_dm_rule_values(
+            threshold_text="",
+            savings_text="",
+            score_text="",
+            max_price_text="",
+            daily_cap_text=value,
+        )
+
+        assert rules.daily_cap == UNLIMITED_MAX_ALERTS_PER_DAY
+        assert rules.has_updates is True
 
 
 def test_dm_rule_parser_blank_fields_mean_keep_everything() -> None:
@@ -113,6 +128,7 @@ def test_dm_rules_modal_does_not_force_every_field() -> None:
     assert ".default =" not in source
     assert "blank keeps" in source.lower()
     assert "type off to remove" in source.lower()
+    assert "unlimited" in source.lower()
 
 
 def test_personal_menu_labels_public_and_flip_thresholds_separately() -> None:
@@ -124,6 +140,7 @@ def test_personal_menu_labels_public_and_flip_thresholds_separately() -> None:
     assert "fill **only what you want to change**" in source
     assert "Flip Profit:" in source
     assert "profit minimum applies **only to Flip Override**" in source
+    assert "Unlimited has no hidden family cap" in source
 
 
 def test_personal_menu_save_persists_normal_dm_rules() -> None:

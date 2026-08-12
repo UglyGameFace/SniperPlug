@@ -16,6 +16,7 @@ DEFAULT_MODE = "smart"
 DEFAULT_MIN_DISCOUNT = 35
 DEFAULT_MIN_SCORE = 78
 DEFAULT_MAX_ALERTS_PER_DAY = 25
+UNLIMITED_MAX_ALERTS_PER_DAY = 0
 MAX_FILTER_TERMS = 12
 RECEIPT_RETENTION_DAYS = 90
 _SCHEMA_READY = False
@@ -82,7 +83,7 @@ class DmDealAlertPreference:
             categories=normalize_categories(self.categories),
             keywords=normalize_terms(self.keywords),
             exclude_keywords=normalize_terms(self.exclude_keywords),
-            max_alerts_per_day=max(1, min(100, int(self.max_alerts_per_day))),
+            max_alerts_per_day=_normalize_daily_cap(self.max_alerts_per_day),
             failure_count=max(0, int(self.failure_count)),
             last_error=_clean_text(self.last_error, limit=500),
         )
@@ -108,7 +109,7 @@ class DmDealAlertPreference:
             f"Must contain: **{keywords}**",
             f"Exclude: **{excluded}**",
             f"Walmart Cash only: **{'yes' if normalized.walmart_cash_only else 'no'}**",
-            f"Daily safety cap: **{normalized.max_alerts_per_day}**",
+            f"Daily safety cap: **{daily_cap_label(normalized.max_alerts_per_day)}**",
         )
 
 
@@ -120,6 +121,7 @@ class DmDealMatchDecision:
     required_discount: int = 0
     savings_cents: int = 0
     walmart_cash_cents: int = 0
+    priority_override: bool = False
 
 
 async def ensure_dm_deal_alert_tables(db: Any) -> None:
@@ -495,6 +497,10 @@ def normalize_terms(values: Iterable[str] | str | None) -> tuple[str, ...]:
     return _dedupe(_split_values(values))[:MAX_FILTER_TERMS]
 
 
+def daily_cap_label(value: int) -> str:
+    return "unlimited" if int(value) == UNLIMITED_MAX_ALERTS_PER_DAY else f"{int(value)}/day"
+
+
 def card_title(card: Any) -> str:
     embed = getattr(card, "embed", None)
     embed_title = str(getattr(embed, "title", "") or "") if embed is not None else ""
@@ -562,13 +568,33 @@ def _preference_from_row(row: Any) -> DmDealAlertPreference:
         keywords=_json_tuple(_row_get(row, "keywords_json", 8)),
         exclude_keywords=_json_tuple(_row_get(row, "exclude_keywords_json", 9)),
         walmart_cash_only=bool(_as_int(_row_get(row, "walmart_cash_only", 10))),
-        max_alerts_per_day=(
-            _as_int(_row_get(row, "max_alerts_per_day", 11))
-            or DEFAULT_MAX_ALERTS_PER_DAY
+        max_alerts_per_day=_daily_cap_from_row(
+            _row_get(row, "max_alerts_per_day", 11)
         ),
         failure_count=_as_int(_row_get(row, "failure_count", 12)),
         last_error=str(_row_get(row, "last_error", 13) or ""),
     )
+
+
+def _normalize_daily_cap(value: Any) -> int:
+    if value in (None, ""):
+        return DEFAULT_MAX_ALERTS_PER_DAY
+    try:
+        cap = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_ALERTS_PER_DAY
+    if cap == UNLIMITED_MAX_ALERTS_PER_DAY:
+        return UNLIMITED_MAX_ALERTS_PER_DAY
+    return max(1, min(100, cap))
+
+
+def _daily_cap_from_row(value: Any) -> int:
+    if value in (None, ""):
+        return DEFAULT_MAX_ALERTS_PER_DAY
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_ALERTS_PER_DAY
 
 
 def _split_values(values: Iterable[str] | str | None) -> list[str]:

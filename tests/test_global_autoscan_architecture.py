@@ -19,6 +19,9 @@ BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 FANOUT = (ROOT / "sniperplug/services/walmart_global_deal_fanout.py").read_text(
     encoding="utf-8"
 )
+DELIVERY_POLICY = (ROOT / "sniperplug/services/dm_delivery_policy.py").read_text(
+    encoding="utf-8"
+)
 STATE = (ROOT / "sniperplug/services/walmart_global_catalog_autoscan.py").read_text(
     encoding="utf-8"
 )
@@ -54,7 +57,9 @@ def test_exact_worker_fans_out_to_guilds_and_personal_dms() -> None:
     assert "maybe_post_public_deal_cards" in FANOUT
     assert "list_enabled_dm_deal_alert_preferences" in FANOUT
     assert "dm_receipt_exists" in FANOUT
-    assert "max_alerts_per_day" in FANOUT
+    assert "evaluate_dm_delivery_gate" in FANOUT
+    assert "record_dm_delivery_receipt" in FANOUT
+    assert "max_alerts_per_day" in DELIVERY_POLICY
     assert "global_catalog_autoscan:exact_verified" in FANOUT
 
 
@@ -83,6 +88,8 @@ def test_dm_schema_initialization_is_one_time_and_receipts_are_bounded() -> None
     assert DM_STORE.count("if _SCHEMA_READY:") >= 2
     assert "RECEIPT_RETENTION_DAYS = 90" in DM_STORE
     assert "DELETE FROM {RECEIPTS_TABLE} WHERE delivered_at < ?" in DM_STORE
+    assert "FAMILY_RECEIPTS_TABLE" in DELIVERY_POLICY
+    assert "DELETE FROM {FAMILY_RECEIPTS_TABLE} WHERE delivered_at < ?" in DELIVERY_POLICY
 
 
 def test_bot_loads_global_runner_and_dm_command() -> None:

@@ -9,12 +9,15 @@ from discord.ext import commands
 from sniperplug.cogs.dm_deal_preferences_view import DmDealPreferencesView
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
+    UNLIMITED_MAX_ALERTS_PER_DAY,
+    daily_cap_label,
     delete_dm_deal_alert_preference,
     dm_alerts_sent_today,
     get_dm_deal_alert_preference,
     normalize_terms,
     save_dm_deal_alert_preference,
 )
+from sniperplug.services.dm_delivery_policy import delete_dm_delivery_history
 from sniperplug.services.dm_delivery_telemetry import (
     UserDmDeliveryTelemetry,
     clear_user_dm_delivery_telemetry,
@@ -49,6 +52,16 @@ MODE_CHOICES = [
     app_commands.Choice(name="Custom — strict manual settings", value="custom"),
 ]
 
+_DAILY_CAP_UNLIMITED_TERMS = {
+    "0",
+    "off",
+    "none",
+    "unlimited",
+    "no limit",
+    "no-limit",
+    "nolimit",
+}
+
 
 class DmDealAlertsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -75,7 +88,7 @@ class DmDealAlertsCog(commands.Cog):
         flip_alerts="Allow exceptional price-error/resell alerts across category mutes.",
         flip_min_profit="Minimum conservative estimated net profit for a flip alert.",
         walmart_cash_only="Only alert when strict Walmart API Cash proof is attached.",
-        daily_cap="Maximum personal deal DMs per UTC day.",
+        daily_cap="Daily DM limit: 1-100, or type unlimited for no cap.",
     )
     @app_commands.choices(action=ACTION_CHOICES, mode=MODE_CHOICES)
     async def dm_deals(
@@ -97,7 +110,7 @@ class DmDealAlertsCog(commands.Cog):
         flip_alerts: bool | None = None,
         flip_min_profit: app_commands.Range[float, 10.0, 100000.0] | None = None,
         walmart_cash_only: bool | None = None,
-        daily_cap: app_commands.Range[int, 1, 100] | None = None,
+        daily_cap: app_commands.Range[str, 1, 12] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         user_id = int(interaction.user.id)
@@ -105,6 +118,7 @@ class DmDealAlertsCog(commands.Cog):
 
         if selected_action == "delete":
             await delete_dm_deal_alert_preference(self.bot.db, user_id)
+            await delete_dm_delivery_history(self.bot.db, user_id=user_id)
             clear_user_dm_delivery_telemetry(user_id)
             await interaction.followup.send(
                 "🗑️ Your SniperPlug DM alert settings and delivery receipts were deleted.",
@@ -181,6 +195,16 @@ class DmDealAlertsCog(commands.Cog):
             )
             return
 
+        try:
+            parsed_daily_cap = (
+                _parse_daily_cap_argument(str(daily_cap))
+                if daily_cap is not None
+                else None
+            )
+        except ValueError as error:
+            await interaction.followup.send(f"⚠️ {error}", ephemeral=True)
+            return
+
         keyword_excludes, legacy_muted = split_exclude_terms(
             preference.exclude_keywords
         )
@@ -254,8 +278,8 @@ class DmDealAlertsCog(commands.Cog):
                 else preference.walmart_cash_only
             ),
             max_alerts_per_day=(
-                int(daily_cap)
-                if daily_cap is not None
+                parsed_daily_cap
+                if parsed_daily_cap is not None
                 else preference.max_alerts_per_day
             ),
             failure_count=0,
@@ -301,6 +325,19 @@ class DmDealAlertsCog(commands.Cog):
             await interaction.followup.send(message, ephemeral=True)
         else:
             await interaction.response.send_message(message, ephemeral=True)
+
+
+def _parse_daily_cap_argument(value: str) -> int:
+    raw = " ".join(str(value or "").strip().lower().split())
+    if raw in _DAILY_CAP_UNLIMITED_TERMS:
+        return UNLIMITED_MAX_ALERTS_PER_DAY
+    try:
+        cap = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Daily DM limit must be 1 to 100, or `unlimited`.") from exc
+    if not 1 <= cap <= 100:
+        raise ValueError("Daily DM limit must be between 1 and 100, or `unlimited`.")
+    return cap
 
 
 def build_dm_settings_embed(
@@ -393,7 +430,8 @@ def build_dm_settings_embed(
         value=(
             "Only exact-item, exact-offer, buyable Walmart deals with trusted current and was prices enter this stream. "
             "Flip Override crosses category boundaries only; explicit floors, maximum price, required/excluded words, "
-            "dedupe, and the daily cap remain hard."
+            "dedupe, and your saved daily-limit policy remain hard. Broad Smart alerts with a finite limit also reserve "
+            "room for category variety; Unlimited removes both the total cap and automatic family quota."
         ),
         inline=False,
     )
@@ -414,13 +452,25 @@ def add_dm_delivery_health_field(
     telemetry: UserDmDeliveryTelemetry,
 ) -> None:
     normalized = preference.normalized()
-    remaining = max(0, normalized.max_alerts_per_day - int(sent_today))
+    if normalized.max_alerts_per_day == UNLIMITED_MAX_ALERTS_PER_DAY:
+        delivery_line = (
+            f"Today (UTC): **{int(sent_today)}** delivered • daily limit **unlimited**."
+        )
+        cap_reached = False
+    else:
+        remaining = max(0, normalized.max_alerts_per_day - int(sent_today))
+        delivery_line = (
+            f"Today (UTC): **{int(sent_today)}/{normalized.max_alerts_per_day}** delivered • "
+            f"**{remaining}** remaining before the daily cap."
+        )
+        cap_reached = int(sent_today) >= normalized.max_alerts_per_day
+
     lines = [
-        f"Today (UTC): **{int(sent_today)}/{normalized.max_alerts_per_day}** delivered • **{remaining}** remaining before the daily cap.",
-        "Process-local audit below resets when the bot restarts; it does not add database writes to deal fanout.",
+        delivery_line,
+        "Process-local audit below resets when the bot restarts; durable delivery receipts still enforce dedupe and finite caps.",
         *telemetry.summary_lines(),
     ]
-    if int(sent_today) >= normalized.max_alerts_per_day:
+    if cap_reached:
         lines.append("⚠️ Your daily cap is currently reached; additional matching deals will be skipped until the next UTC day.")
     embed.add_field(
         name="📬 Delivery health",

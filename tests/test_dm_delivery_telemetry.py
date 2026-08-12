@@ -22,7 +22,7 @@ def test_dm_rejection_buckets_are_stable_for_matcher_reasons() -> None:
     assert dm_rejection_bucket("saves $3.00, below the required $8.00") == "savings"
 
 
-def test_user_telemetry_explains_filter_duplicate_cap_and_send_outcomes() -> None:
+def test_user_telemetry_explains_filter_duplicate_cap_diversity_and_send_outcomes() -> None:
     user_id = 99112233
     clear_user_dm_delivery_telemetry(user_id)
 
@@ -41,6 +41,7 @@ def test_user_telemetry_explains_filter_duplicate_cap_and_send_outcomes() -> Non
     )
     record_user_dm_outcome(user_id, "duplicate")
     record_user_dm_outcome(user_id, "daily_cap")
+    record_user_dm_outcome(user_id, "diversity_cap")
     record_user_dm_outcome(user_id, "sent")
 
     telemetry = get_user_dm_delivery_telemetry(user_id)
@@ -51,6 +52,8 @@ def test_user_telemetry_explains_filter_duplicate_cap_and_send_outcomes() -> Non
     assert telemetry.rejected_discount == 1
     assert telemetry.skipped_duplicate == 1
     assert telemetry.skipped_daily_cap == 1
+    assert telemetry.skipped_diversity == 1
     assert telemetry.sent == 1
     assert telemetry.last_outcome == "sent"
     assert any("discount: 1" in line for line in telemetry.summary_lines())
+    assert any("diversity reserve: **1**" in line for line in telemetry.summary_lines())

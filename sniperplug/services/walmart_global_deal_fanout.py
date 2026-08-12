@@ -17,13 +17,16 @@ from sniperplug.services.autoscan_live_guild_reconciliation import (
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.dm_deal_alerts import (
     clear_dm_delivery_failures,
-    dm_alerts_sent_today,
     dm_receipt_exists,
     list_enabled_dm_deal_alert_preferences,
     record_dm_delivery_failure,
-    record_dm_receipt,
 )
 from sniperplug.services.dm_deal_matching import match_dm_deal
+from sniperplug.services.dm_delivery_policy import (
+    dm_delivery_lock,
+    evaluate_dm_delivery_gate,
+    record_dm_delivery_receipt,
+)
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_deal_posts import (
     card_deal_key,
@@ -246,28 +249,34 @@ async def fanout_recent_exact_walmart_deals(
                     continue
                 totals["dm_matches"] += 1
                 try:
-                    if await dm_receipt_exists(
-                        db,
-                        user_id=preference.user_id,
-                        deal_key=event.deal_key,
-                    ):
-                        continue
-                    sent_today = await dm_alerts_sent_today(db, preference.user_id)
-                    if sent_today >= preference.max_alerts_per_day:
-                        continue
-                    user = bot.get_user(preference.user_id)
-                    if user is None:
-                        user = await bot.fetch_user(preference.user_id)
-                    await user.send(
-                        embed=_personal_dm_embed(event.card, decision.reason)
-                    )
-                    await record_dm_receipt(
-                        db,
-                        user_id=preference.user_id,
-                        deal_key=event.deal_key,
-                    )
-                    await clear_dm_delivery_failures(db, user_id=preference.user_id)
-                    totals["dm_sent"] += 1
+                    async with dm_delivery_lock(preference.user_id):
+                        if await dm_receipt_exists(
+                            db,
+                            user_id=preference.user_id,
+                            deal_key=event.deal_key,
+                        ):
+                            continue
+                        gate = await evaluate_dm_delivery_gate(
+                            db,
+                            preference=preference,
+                            decision=decision,
+                        )
+                        if not gate.allowed:
+                            continue
+                        user = bot.get_user(preference.user_id)
+                        if user is None:
+                            user = await bot.fetch_user(preference.user_id)
+                        await user.send(
+                            embed=_personal_dm_embed(event.card, decision.reason)
+                        )
+                        await record_dm_delivery_receipt(
+                            db,
+                            user_id=preference.user_id,
+                            deal_key=event.deal_key,
+                            category_family=gate.category_family,
+                        )
+                        await clear_dm_delivery_failures(db, user_id=preference.user_id)
+                        totals["dm_sent"] += 1
                 except discord.Forbidden as error:
                     totals["dm_disabled"] += 1
                     await record_dm_delivery_failure(

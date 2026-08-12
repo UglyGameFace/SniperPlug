@@ -17,13 +17,16 @@ from sniperplug.services.autoscan_live_guild_reconciliation import (
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.dm_deal_alerts import (
     clear_dm_delivery_failures,
-    dm_alerts_sent_today,
     dm_receipt_exists,
     list_enabled_dm_deal_alert_preferences,
     record_dm_delivery_failure,
-    record_dm_receipt,
 )
 from sniperplug.services.dm_deal_matching import match_dm_deal
+from sniperplug.services.dm_delivery_policy import (
+    dm_delivery_lock,
+    evaluate_dm_delivery_gate,
+    record_dm_delivery_receipt,
+)
 from sniperplug.services.dm_delivery_telemetry import (
     record_user_dm_decision,
     record_user_dm_outcome,
@@ -89,6 +92,7 @@ class GlobalDealFanoutResult:
     dm_matches: int = 0
     dm_skipped_duplicate: int = 0
     dm_skipped_daily_cap: int = 0
+    dm_skipped_diversity: int = 0
     dm_sent: int = 0
     dm_disabled: int = 0
     dm_errors: int = 0
@@ -115,7 +119,7 @@ class GlobalDealFanoutResult:
             f"not alertable **{self.public_skipped_not_alertable}** • "
             f"disabled **{self.public_skipped_disabled}** • retailer **{self.public_skipped_wrong_retailer}** • "
             f"DM checked/matched/sent **{self.dm_preferences_checked}/{self.dm_matches}/{self.dm_sent}** • "
-            f"DM skips filter/duplicate/cap **{self.dm_filter_rejected}/{self.dm_skipped_duplicate}/{self.dm_skipped_daily_cap}** • "
+            f"DM skips filter/duplicate/cap/diversity **{self.dm_filter_rejected}/{self.dm_skipped_duplicate}/{self.dm_skipped_daily_cap}/{self.dm_skipped_diversity}** • "
             f"DM disabled **{self.dm_disabled}** • errors public/DM **{self.public_errors}/{self.dm_errors}**"
         )
 
@@ -248,6 +252,7 @@ async def fanout_recent_exact_walmart_deals(
             "dm_matches": 0,
             "dm_skipped_duplicate": 0,
             "dm_skipped_daily_cap": 0,
+            "dm_skipped_diversity": 0,
             "dm_sent": 0,
             "dm_disabled": 0,
             "dm_errors": 0,
@@ -349,36 +354,45 @@ async def fanout_recent_exact_walmart_deals(
                     continue
                 totals["dm_matches"] += 1
                 try:
-                    if await dm_receipt_exists(
-                        db,
-                        user_id=preference.user_id,
-                        deal_key=event.deal_key,
-                    ):
-                        totals["dm_skipped_duplicate"] += 1
-                        record_user_dm_outcome(preference.user_id, "duplicate")
-                        continue
-                    sent_today = await dm_alerts_sent_today(db, preference.user_id)
-                    if sent_today >= preference.max_alerts_per_day:
-                        totals["dm_skipped_daily_cap"] += 1
-                        record_user_dm_outcome(preference.user_id, "daily_cap")
-                        continue
-                    user = bot.get_user(preference.user_id)
-                    if user is None:
-                        user = await bot.fetch_user(preference.user_id)
-                    await user.send(
-                        embed=legacy._personal_dm_embed(event.card, decision.reason)
-                    )
-                    await record_dm_receipt(
-                        db,
-                        user_id=preference.user_id,
-                        deal_key=event.deal_key,
-                    )
-                    await clear_dm_delivery_failures(
-                        db,
-                        user_id=preference.user_id,
-                    )
-                    record_user_dm_outcome(preference.user_id, "sent")
-                    totals["dm_sent"] += 1
+                    async with dm_delivery_lock(preference.user_id):
+                        if await dm_receipt_exists(
+                            db,
+                            user_id=preference.user_id,
+                            deal_key=event.deal_key,
+                        ):
+                            totals["dm_skipped_duplicate"] += 1
+                            record_user_dm_outcome(preference.user_id, "duplicate")
+                            continue
+                        gate = await evaluate_dm_delivery_gate(
+                            db,
+                            preference=preference,
+                            decision=decision,
+                        )
+                        if not gate.allowed:
+                            if gate.reason == "daily_cap":
+                                totals["dm_skipped_daily_cap"] += 1
+                            elif gate.reason == "diversity_cap":
+                                totals["dm_skipped_diversity"] += 1
+                            record_user_dm_outcome(preference.user_id, gate.reason)
+                            continue
+                        user = bot.get_user(preference.user_id)
+                        if user is None:
+                            user = await bot.fetch_user(preference.user_id)
+                        await user.send(
+                            embed=legacy._personal_dm_embed(event.card, decision.reason)
+                        )
+                        await record_dm_delivery_receipt(
+                            db,
+                            user_id=preference.user_id,
+                            deal_key=event.deal_key,
+                            category_family=gate.category_family,
+                        )
+                        await clear_dm_delivery_failures(
+                            db,
+                            user_id=preference.user_id,
+                        )
+                        record_user_dm_outcome(preference.user_id, "sent")
+                        totals["dm_sent"] += 1
                 except discord.Forbidden as error:
                     totals["dm_disabled"] += 1
                     record_user_dm_outcome(preference.user_id, "disabled")

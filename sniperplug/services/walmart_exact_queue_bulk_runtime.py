@@ -43,6 +43,9 @@ from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
 from sniperplug.services.walmart_global_offer_memory import (
     maybe_prune_global_offer_memory,
 )
+from sniperplug.services.walmart_page_circuit_queue import (
+    defer_due_page_recovery_for_open_circuit,
+)
 from sniperplug.services.walmart_recheck_schedule_rearm import (
     rearm_legacy_due_rechecks_bounded,
 )
@@ -82,6 +85,13 @@ async def process_actionable_walmart_exact_queue_batch(
     ordinary claims immediately. Scheduling decisions use a tightly bounded
     pressure snapshot rather than rereading the scheduled-recheck backlog.
 
+    When the Walmart product-page challenge circuit is open, already-known
+    ``page_retry`` work is moved just past the circuit close time before claims
+    are selected. Those rows cannot use HTML during the cooldown, so repeatedly
+    leasing them only produced ``page_circuit_open`` failures and Turso churn in
+    production. Fresh catalog rediscovery can still rescue a row immediately by
+    changing it back to ``pending`` with strict selected-offer proof.
+
     Fresh discovery proof and page-challenge circuit state are reported directly
     in the worker summary. This makes a zero-promotion batch explainable without
     weakening proof: the log now distinguishes no snapshot input, strict snapshot
@@ -98,6 +108,14 @@ async def process_actionable_walmart_exact_queue_batch(
     now = datetime.now(timezone.utc)
     await maybe_prune_walmart_exact_queue_bounded(conn, now=now)
     await rearm_legacy_due_rechecks_bounded(conn, now=now)
+
+    page_circuit_remaining = _page_challenge_circuit_remaining_seconds(provider)
+    if page_circuit_remaining > 0:
+        await defer_due_page_recovery_for_open_circuit(
+            conn,
+            now=now,
+            remaining_seconds=page_circuit_remaining,
+        )
 
     pressure_before = await load_walmart_exact_queue_pressure(
         db,

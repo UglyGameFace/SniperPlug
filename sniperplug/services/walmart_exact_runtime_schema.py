@@ -21,7 +21,9 @@ from sniperplug.services.walmart_global_offer_memory import (
 
 TERMINAL_MAINTENANCE_INTERVAL_SECONDS = 15 * 60
 LEGACY_CLAIM_ORDER_INDEX = f"idx_{QUEUE_TABLE}_claim_order"
-CLAIM_ORDER_INDEX = f"idx_{QUEUE_TABLE}_claim_order_v2"
+LEGACY_CLAIM_ORDER_INDEX_V2 = f"idx_{QUEUE_TABLE}_claim_order_v2"
+CLAIM_ORDER_INDEX = f"idx_{QUEUE_TABLE}_claim_order_v3"
+FRESH_PROOF_DUE_INDEX = f"idx_{QUEUE_TABLE}_fresh_proof_due"
 STATUS_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_due"
 _STATE_ATTR = "_sniperplug_walmart_exact_runtime_state"
 _FALLBACK_STATES: dict[int, "_RuntimeState"] = {}
@@ -67,9 +69,11 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
     traffic and competes with queue claims and catalog writes. A newly connected
     database still performs the complete idempotent initialization.
 
-    The claim-order expression index preserves exact work priority. The separate
-    status/due index serves bounded scheduler pressure reads without scanning the
-    complete queue or sorting thousands of terminal rows.
+    The v3 claim-order expression index matches the non-snapshot status ordering
+    used after the new fresh-proof lane. A separate partial fresh-proof index
+    keeps recent discovery snapshots addressable without forcing the page-retry
+    backlog through the normal claim order. The status/due index serves bounded
+    scheduler pressure reads and the page-recovery subquery.
     """
 
     conn = db.require_conn()
@@ -82,6 +86,7 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
             return
         await ensure_walmart_exact_verification_queue(db)
         await conn.execute(f"DROP INDEX IF EXISTS {LEGACY_CLAIM_ORDER_INDEX}")
+        await conn.execute(f"DROP INDEX IF EXISTS {LEGACY_CLAIM_ORDER_INDEX_V2}")
         await conn.execute(
             f"""
             CREATE INDEX IF NOT EXISTS {CLAIM_ORDER_INDEX}
@@ -90,13 +95,13 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
                     WHEN 'pending' THEN 0
                     WHEN 'retry' THEN 1
                     WHEN 'failed' THEN 2
-                    WHEN 'page_retry' THEN 3
-                    WHEN 'verifying' THEN 4
-                    WHEN 'verified_markdown' THEN 5
-                    WHEN 'verified_under_threshold' THEN 6
-                    WHEN 'verified_no_reference' THEN 7
-                    WHEN 'verified_reference' THEN 8
-                    WHEN 'not_buyable' THEN 9
+                    WHEN 'verified_markdown' THEN 3
+                    WHEN 'verified_under_threshold' THEN 4
+                    WHEN 'verified_no_reference' THEN 5
+                    WHEN 'verified_reference' THEN 6
+                    WHEN 'not_buyable' THEN 7
+                    WHEN 'page_retry' THEN 8
+                    WHEN 'verifying' THEN 9
                     ELSE 10
                 END,
                 priority_score DESC,
@@ -105,6 +110,20 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
                 lease_until
             )
             WHERE status NOT IN ('incomplete_identity', 'identity_mismatch')
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS {FRESH_PROOF_DUE_INDEX}
+            ON {QUEUE_TABLE} (
+                discovery_snapshot_at DESC,
+                next_attempt_at,
+                last_seen_at,
+                lease_until,
+                priority_score DESC
+            )
+            WHERE discovery_snapshot_json <> ''
+              AND status NOT IN ('incomplete_identity', 'identity_mismatch')
             """
         )
         await conn.execute(

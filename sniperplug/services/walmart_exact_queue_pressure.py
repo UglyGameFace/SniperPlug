@@ -130,17 +130,42 @@ async def load_walmart_exact_queue_pressure(
     )
 
 
-def bounded_pressure_summary(health: WalmartExactQueueHealth) -> str:
-    """Describe only values actually measured by the bounded snapshot."""
+def bounded_pressure_summary(
+    health: WalmartExactQueueHealth,
+    *,
+    cap: int = DEFAULT_PRESSURE_CAP,
+) -> str:
+    """Describe measured pressure and mark saturated lanes as lower bounds."""
 
+    bounded_cap = max(1, int(cap))
+    fresh_cap = min(bounded_cap, FRESH_PRESSURE_CAP)
+    recovery_cap = min(bounded_cap, RECOVERY_PRESSURE_CAP)
+    recheck_cap = bounded_cap
+    verifying_cap = min(bounded_cap, VERIFYING_PRESSURE_CAP)
+
+    fresh = max(0, int(health.initial_due_now or 0))
+    recovery = max(0, int(health.recovery_due_now or 0))
+    rechecks = max(0, int(health.recheck_due_now or 0))
+    verifying = max(0, int(health.verifying or 0))
+    due = max(0, int(health.due_now or 0))
+
+    due_is_lower_bound = (
+        fresh >= fresh_cap
+        or recovery >= recovery_cap
+        or rechecks >= recheck_cap
+    )
     return (
         "bounded queue pressure: "
-        f"actionable due **{max(0, int(health.due_now or 0))}** "
-        f"(new/retry **{max(0, int(health.initial_due_now or 0))}** • "
-        f"page recovery **{max(0, int(health.recovery_due_now or 0))}** • "
-        f"scheduled rechecks **{max(0, int(health.recheck_due_now or 0))}**) • "
-        f"actively verifying **{max(0, int(health.verifying or 0))}**"
+        f"actionable due **{_bounded_value(due, lower_bound=due_is_lower_bound)}** "
+        f"(new/retry **{_bounded_value(fresh, lower_bound=fresh >= fresh_cap)}** • "
+        f"page recovery **{_bounded_value(recovery, lower_bound=recovery >= recovery_cap)}** • "
+        f"scheduled rechecks **{_bounded_value(rechecks, lower_bound=rechecks >= recheck_cap)}**) • "
+        f"actively verifying **{_bounded_value(verifying, lower_bound=verifying >= verifying_cap)}**"
     )
+
+
+def _bounded_value(value: int, *, lower_bound: bool) -> str:
+    return f">={max(0, int(value))}" if lower_bound else str(max(0, int(value)))
 
 
 def _row_get(row: Any, key: str, index: int) -> Any:

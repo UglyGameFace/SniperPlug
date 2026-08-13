@@ -6,16 +6,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sniperplug.services.walmart_exact_queue_runtime import (
-    TerminalIdentityMaintenance,
-    maintain_terminal_identity_rows,
-)
+from sniperplug.services.walmart_exact_queue_runtime import TerminalIdentityMaintenance
 from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     ensure_walmart_exact_verification_queue,
 )
 from sniperplug.services.walmart_global_offer_memory import (
     ensure_global_offer_memory_table,
+)
+from sniperplug.services.walmart_terminal_identity_maintenance import (
+    maintain_terminal_identity_rows_limited as maintain_terminal_identity_rows,
 )
 
 
@@ -150,13 +150,13 @@ async def maintain_terminal_identity_rows_bounded(
     now: datetime | None = None,
     interval_seconds: float = TERMINAL_MAINTENANCE_INTERVAL_SECONDS,
 ) -> TerminalIdentityMaintenance:
-    """Run terminal identity cleanup at a bounded cadence, not every minute.
+    """Run terminal cleanup at a bounded cadence and bounded row volume.
 
-    Terminal statuses are already excluded from ordinary claims immediately.
-    The maintenance pass only pushes their next-attempt timestamp far forward
-    and performs the low-frequency weekly rediscovery reprobe, so running it
-    every fifteen minutes preserves fail-closed behavior without two remote
-    UPDATE scans on every queue cycle.
+    Terminal statuses are excluded from ordinary claims immediately. The
+    maintenance pass only pushes a limited slice of stale terminal timestamps
+    forward and releases a small limited slice for weekly rediscovery reprobes.
+    Bounding both cadence and row count prevents a maintenance tick from
+    flooding the fresh lane or monopolizing the single isolated Turso worker.
     """
 
     await ensure_exact_runtime_schema_once(db)

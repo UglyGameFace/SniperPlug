@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-WM-MISSED-DEALS-236. PRs #236–#241 are merged; the latest live run proved Discord DM delivery and the user's saved DM policy are healthy, but exposed a durable Walmart fanout-event identity defect that can suppress a newly qualifying same-price deal before personal/public filters ever see it. Branch `fix/walmart-fanout-event-refresh-242` contains the focused fix. The Single Active Task Lock remains engaged until merged production proves exact verification → fanout evaluation → legitimate filter/dedupe → delivery end to end.**
+**Active — SP-WM-MISSED-DEALS-236. PRs #236–#241 are merged; the latest live run proved Discord DM delivery and the user's saved DM policy are healthy, but exposed a durable Walmart fanout-event identity defect that can suppress a newly qualifying same-price deal before personal/public filters ever see it. PR #242 contains the focused fix and is in its canonical CI gate. The Single Active Task Lock remains engaged until merged production proves exact verification → fanout evaluation → legitimate filter/dedupe → delivery end to end.**
 
 ## Task
 **SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification and complete reliable fanout so catalog-discovered deals are not lost to flaky recovery or stale durable event dedupe while all exact item/offer/seller/price/shipping/reference/threshold/category/DM/dedupe gates remain fail-closed.**
@@ -97,28 +97,26 @@ The first v2 deployment also gives current reverified exact markdowns a v2 event
 - `python -m compileall -q sniperplug tests *.py`: **PASS**.
 - `git diff --check`: **PASS**.
 
-## Cleanup / conflict requirements
-Before merge:
-- remove the temporary branch-only applicator script/workflow used to make and validate the focused change;
-- final diff must contain only this task record, the canonical fanout/runtime/telemetry changes, and the focused regression file;
-- branch must remain based on current `main` with no unrelated feature work;
-- inspect canonical PR checks, changed files, reviews, comments, and inline threads before merge.
+## Cleanup / conflict inspection
+- Temporary branch-only applicator script/workflow were removed before PR review.
+- Final PR diff is limited to this task record, canonical fanout/runtime/telemetry changes, and one focused regression file.
+- Branch is **0 commits behind `main`** and GitHub reports PR #242 mergeable.
+- PR conversation inspection found only Qodo's inactive-subscription notice; there are no submitted reviews or inline review threads/findings.
 
 ## Remaining Definition of Done
-1. Remove branch-only applicator files and inspect the final diff against `main`.
-2. Open PR #242 and require canonical Import smoke, Python Check, and Python tests to pass on the final head.
-3. Inspect PR reviews/comments/threads and resolve any real finding; merge only a clean, green head.
-4. Verify the real merge commit on `main` passes push-triggered Import smoke, Python Check, and Python tests.
-5. Deploy merged `main` to canonical SniperPlug app `1779293887444` using the existing-app commit workflow.
-6. In live logs, confirm `new event versions` and/or `deduped versions` telemetry appears after exact markdown verification rather than disappearing silently.
-7. Confirm `/dm_deals` process audit increments `checked` when a new v2 event reaches the subscriber and reports the actual rejection reason when it does not match.
-8. Confirm a newly qualifying 50%+/78+ exact event reaches personal DM `matched/sent` when all saved hard filters pass, while an already-delivered same-price offer remains receipt-deduped.
-9. Confirm public thresholds/dedupe and all exact item/offer/seller/shipping/reference gates remain unchanged.
-10. Continue watching the PR #241 page-circuit live gate; no stale page-retry churn may reappear.
-11. Keep SP-WM-MISSED-DEALS-236 active until these production gates pass.
+1. Require canonical PR #242 Import smoke, Python Check, and Python tests to pass on the final head.
+2. Merge only the clean, green final head.
+3. Verify the real merge commit on `main` passes push-triggered Import smoke, Python Check, and Python tests.
+4. Deploy merged `main` to canonical SniperPlug app `1779293887444` using the existing-app commit workflow.
+5. In live logs, confirm `new event versions` and/or `deduped versions` telemetry appears after exact markdown verification rather than disappearing silently.
+6. Confirm `/dm_deals` process audit increments `checked` when a new v2 event reaches the subscriber and reports the actual rejection reason when it does not match.
+7. Confirm a newly qualifying 50%+/78+ exact event reaches personal DM `matched/sent` when all saved hard filters pass, while an already-delivered same-price offer remains receipt-deduped.
+8. Confirm public thresholds/dedupe and all exact item/offer/seller/shipping/reference gates remain unchanged.
+9. Continue watching the PR #241 page-circuit live gate; no stale page-retry churn may reappear.
+10. Keep SP-WM-MISSED-DEALS-236 active until these production gates pass.
 
 ## Blocker
-**Final PR #242 cleanup/canonical CI plus live merged production proof.** Code-side reproduction and tests are green; production completion remains intentionally unclaimed until the merged deployment proves the corrected event-version → filter → delivery path under real Walmart traffic.
+**Final PR #242 canonical CI plus live merged production proof.** Code-side reproduction and tests are green; production completion remains intentionally unclaimed until the merged deployment proves the corrected event-version → filter → delivery path under real Walmart traffic.
 
 ## Backlog
 - Resume the SniperPlug-Site Whop app-specific content-reader task only after this Walmart task closes.

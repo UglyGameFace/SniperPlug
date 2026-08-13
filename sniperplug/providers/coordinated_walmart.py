@@ -10,9 +10,18 @@ from sniperplug.providers.base import (
 )
 from sniperplug.services.walmart_request_coordinator import (
     EXACT_PRIORITY,
+    INTERACTIVE_SEARCH_PRIORITY,
     SEARCH_PRIORITY,
     walmart_request_slot,
 )
+
+
+def _scan_priority(request: ProviderScanRequest) -> int:
+    metadata = dict(request.metadata or {})
+    requested_by = str(metadata.get("requested_by") or "").strip()
+    if requested_by.isdigit():
+        return INTERACTIVE_SEARCH_PRIORITY
+    return SEARCH_PRIORITY
 
 
 class CoordinatedWalmartProvider(DealProvider):
@@ -44,7 +53,7 @@ class CoordinatedWalmartProvider(DealProvider):
         return await self.delegate.healthcheck()
 
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:
-        async with walmart_request_slot(priority=SEARCH_PRIORITY):
+        async with walmart_request_slot(priority=_scan_priority(request)):
             return await self.delegate.scan(request)
 
     async def fetch_product_detail_payload(self, item_id: str) -> dict:

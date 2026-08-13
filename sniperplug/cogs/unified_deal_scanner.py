@@ -40,6 +40,9 @@ from sniperplug.services.manual_review_share import ManualReviewShareView
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
 
+DEAL_MODE_VIEW_TIMEOUT_SECONDS = 15 * 60
+
+
 class UnifiedDealScannerCog(DealScannerCog):
     """Deal scanner with the unified beginner `/deals` flow wired directly."""
 
@@ -197,7 +200,7 @@ class DealSearchModeView(discord.ui.View):
         cached_rows: list[CachedDealRow] | None = None,
         freshness: ScanFreshness | None = None,
     ):
-        super().__init__(timeout=300)
+        super().__init__(timeout=DEAL_MODE_VIEW_TIMEOUT_SECONDS)
         self.cog = cog
         self.query = query
         self.min_discount = min_discount
@@ -221,7 +224,8 @@ class DealSearchModeView(discord.ui.View):
         self.add_item(NewSinceScanButton(row=2, disabled=not bool(self.freshness and (self.freshness.new_count or self.freshness.price_drop_count))))
 
     async def show_mode(self, interaction: discord.Interaction, mode: str, *, refresh: bool = False) -> None:
-        await interaction.response.defer(ephemeral=True)
+        if not await deal_scanner.safe_defer(interaction, ephemeral=True, thinking=True):
+            return
         if refresh or self.result is None:
             await self.cog._send_unified_deal_search(
                 interaction,
@@ -327,7 +331,8 @@ class NewSinceScanButton(discord.ui.Button):
         if not isinstance(self.view, DealSearchModeView) or self.view.freshness is None:
             await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True)
+        if not await deal_scanner.safe_defer(interaction, ephemeral=True, thinking=True):
+            return
         freshness = self.view.freshness
         cards = [*freshness.price_drop_cards[:5], *freshness.new_cards[:5]][:5]
         await interaction.followup.send(embed=sanitize_embed(build_new_since_scan_embed(self.view.query, freshness)), ephemeral=True)

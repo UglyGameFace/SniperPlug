@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 
 EXACT_PRIORITY = 0
+INTERACTIVE_SEARCH_PRIORITY = 5
 SEARCH_PRIORITY = 10
 DEFAULT_CAPACITY = 3
 DEFAULT_WAIT_TIMEOUT_SECONDS = 45.0
@@ -36,6 +37,7 @@ class WalmartRequestCoordinator:
         self._condition = threading.Condition()
         self._active = 0
         self._waiting_exact = 0
+        self._waiting_interactive = 0
         self._waiting_search = 0
         self._cooldown_until = 0.0
 
@@ -46,19 +48,33 @@ class WalmartRequestCoordinator:
         timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
     ) -> WalmartRequestLease:
         exact = int(priority) <= EXACT_PRIORITY
+        interactive = (
+            not exact and int(priority) < SEARCH_PRIORITY
+        )
         started = time.monotonic()
         deadline = started + max(1.0, float(timeout_seconds))
 
         with self._condition:
             if exact:
                 self._waiting_exact += 1
+            elif interactive:
+                self._waiting_interactive += 1
             else:
                 self._waiting_search += 1
             try:
                 while True:
                     now = time.monotonic()
                     cooldown_ready = now >= self._cooldown_until
-                    exact_has_priority = exact or self._waiting_exact == 0
+                    exact_has_priority = (
+                        exact
+                        or (interactive and self._waiting_exact == 0)
+                        or (
+                            not exact
+                            and not interactive
+                            and self._waiting_exact == 0
+                            and self._waiting_interactive == 0
+                        )
+                    )
                     if (
                         cooldown_ready
                         and self._active < self.capacity
@@ -82,6 +98,8 @@ class WalmartRequestCoordinator:
             finally:
                 if exact:
                     self._waiting_exact = max(0, self._waiting_exact - 1)
+                elif interactive:
+                    self._waiting_interactive = max(0, self._waiting_interactive - 1)
                 else:
                     self._waiting_search = max(0, self._waiting_search - 1)
 
@@ -109,6 +127,7 @@ class WalmartRequestCoordinator:
                 "capacity": self.capacity,
                 "active": self._active,
                 "waiting_exact": self._waiting_exact,
+                "waiting_interactive": self._waiting_interactive,
                 "waiting_search": self._waiting_search,
                 "cooldown_seconds": max(
                     0.0,

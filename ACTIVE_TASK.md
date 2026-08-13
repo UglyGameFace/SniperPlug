@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-WM-MISSED-DEALS-236. PRs #236–#240 are merged. PR #240 passed merge CI and was deployed, but the live production gate exposed one remaining open-circuit scheduling defect. The Single Active Task Lock remains engaged.**
+**Active — SP-WM-MISSED-DEALS-236. PRs #236–#240 are merged and deployed. PR #240 passed multiple live gates but exposed one final open-circuit claim-selection defect. PR #241 implements the focused fix and its canonical branch validation is green. The Single Active Task Lock remains engaged until the merged build passes the live Walmart gate.**
 
 ## Task
 **SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification so catalog-discovered deals are not lost to flaky detail/page recovery while all exact item/offer/seller/price/shipping/reference/threshold/category/DM/dedupe gates remain fail-closed.**
@@ -18,65 +18,70 @@
 
 ## Production findings after PR #240 deployment
 ### Gates that passed
-- Global catalog discovery continues advancing normally with repeated 59–100 item batches.
-- Strict `safe fresh proof` remains active, including high-yield batches such as 80, 82, 75, 72, and 67.
-- Fresh proof continues to promote in the exact worker (`2/2`, `3/3`, `1/1`, etc.) with zero network fetch when promotion succeeds.
-- Official API verification continues while the page circuit is open.
-- Bounded pressure telemetry now correctly renders saturated recovery pressure as `>=64`.
-- Weekly terminal identity reprobes are capped at exactly 4 per maintenance tick in the supplied live window.
+- Global catalog discovery continued advancing normally with repeated 59–100 item batches.
+- Strict `safe fresh proof` remained active, including high-yield batches such as 80, 82, 75, 72, and 67.
+- Fresh proof continued to promote in the exact worker (`2/2`, `3/3`, `1/1`, etc.) with zero network fetch when promotion succeeded.
+- Official API verification continued while the page circuit was open.
+- Bounded pressure telemetry correctly rendered saturated recovery pressure as `>=64`.
+- Weekly terminal identity reprobes were capped at 4 per maintenance tick in the supplied live window.
 - Terminal quarantine writes stayed below the 64-row cap.
 
-### Remaining live failure
-PR #240 deferred at most 64 due `page_retry` rows before each claim cycle. Production then showed a recovery backlog larger than that bounded sweep. After a new two-page challenge opened the 15-minute circuit, telemetry repeatedly showed:
-- `page recovery **>=64**`
-- `claimed **2**` / `claimed **3**`
-- `retry kinds **page_circuit_open=2/3**`
-- the same pattern again every ~20 seconds while the circuit remained open.
+### Remaining live failure isolated
+After two new page challenges reopened the 15-minute circuit, production repeatedly showed `page recovery >=64`, followed by another `claimed 2/3` with `page_circuit_open=2/3` every ~20 seconds.
 
-This proves the bounded deferral itself is working but is not a complete claim guard: once the first 64 rows are moved forward, the normal claim query simply reaches the next due `page_retry` rows and leases up to its hardcoded page-recovery cap of 2.
+PR #240 deferred only a bounded slice of 64 due `page_retry` rows before claim selection. The production claim helper independently allowed a hardcoded two-row no-fresh page-recovery lane. With more than 64 recovery rows due, the deferral moved the first slice forward and the claim query simply reached the next rows. HTML suppression then correctly returned `page_circuit_open`, persistence placed the rows back into `page_retry`, and the same churn repeated.
 
-## Root cause / real execution path
-Production imports `process_actionable_walmart_exact_queue_batch` from `sniperplug.services.walmart_exact_queue_bulk_runtime` in `global_auto_scan_runner.py`.
+## Real production execution path inspected
+`global_auto_scan_runner.py` imports `process_actionable_walmart_exact_queue_batch` from `walmart_exact_queue_bulk_runtime.py`.
 
-The bulk runtime performs this sequence:
-1. compute page-circuit remaining time;
-2. defer up to 64 due `page_retry` rows;
-3. load pressure;
-4. call `claim_due_rows_batched`.
+The bulk runtime performs terminal maintenance → bounded prune/recheck repair → page-circuit inspection → bounded page deferral → bounded pressure → `claim_due_rows_batched` → fresh proof / official detail / exact-search / page fallback → strict exact classification → bulk persistence → offer memory → fanout.
 
-`claim_due_rows_batched` always allows up to `PAGE_RECOVERY_CLAIM_CAP = 2` no-fresh `page_retry` rows. It has no circuit-state input. Therefore a backlog larger than the bounded deferral slice remains claimable during the open circuit.
+The defect was specifically between bounded deferral and claim selection; no seller/offer/price/fanout proof gate needed to change.
 
-The fetch path then correctly suppresses HTML, keeps official detail/exact-search recovery, and when official seller/offer proof is still incomplete returns `PAGE_RETRY_STATUS` with `retry_kind=page_circuit_open`. Persistence places those rows back into the recovery lane, creating repeated lease/failure churn.
+## PR #241 implementation
+- `claim_due_rows_batched` now accepts `page_recovery_claim_cap`, defaulting to the existing closed-circuit value of 2.
+- The production bulk runtime passes a cap of **0** while `page_circuit_remaining > 0`.
+- A backlog larger than the 64-row hygiene sweep can therefore no longer leak stale `page_retry` claims into every worker cycle.
+- Fresh/pending/retry work remains claimable, so current catalog snapshots and official detail/exact-search recovery continue during page cooldown.
+- The bounded 64-row deferral remains in place as database/scheduling hygiene; correctness no longer depends on rewriting the entire recovery backlog.
+- Closed-circuit behavior is unchanged: ordinary page recovery remains capped at 2 per exact batch.
 
-## Current implementation plan — PR #241
-- Add an explicit page-recovery claim-cap argument to `claim_due_rows_batched`, defaulting to the existing cap of 2 so all existing callers/tests retain behavior.
-- When the production bulk runtime sees an open page circuit, pass a page-recovery claim cap of **0**.
-- Keep fresh/pending/retry work claimable so fresh catalog proof and official API/exact-search verification continue during the cooldown.
-- Keep the existing bounded 64-row deferral as database hygiene so recovery timestamps move toward the circuit close time without requiring an unbounded rewrite.
-- Add a regression reproducing the live condition: more than 64 due `page_retry` rows, one bounded deferral sweep, open-circuit claim cap 0, and no stale page-recovery rows leased afterward.
-- Add a production-path regression proving the bulk runtime passes the zero cap only while the circuit is open.
+## Regression coverage
+- Reproduces the live condition with **70 due `page_retry` rows**.
+- Defers only 64, proving 6 recovery rows remain due.
+- With open-circuit claim cap 0, asserts none of those remaining page rows are leased while normal pending/API work is still claimed.
+- Confirms the default closed-circuit claim path still leases exactly the bounded two page-recovery rows.
+- Confirms the production bulk runtime wires cap 0 only while the circuit has remaining cooldown.
 
-## Validation required
-- Targeted Walmart live-gate tests.
-- Full Python test suite.
-- `pip check`.
-- `python -m compileall -q sniperplug tests *.py`.
-- Import smoke, Python Check, and Python tests workflows on the final PR head.
-- Changed-file/conflict/review-thread cleanup before merge.
-- Real merge-commit workflows on `main` after merge.
+## Validation completed on PR #241 implementation head
+- Python 3.11 full suite: **1,208 passed**, one upstream `discord.py` `audioop` deprecation warning.
+- `pip check`: **PASS — no broken requirements**.
+- `python -m compileall -q sniperplug tests *.py`: **PASS**.
+- Import smoke: **PASS**.
+- Python Check: **PASS**.
+- Python tests: **PASS**.
 
-## Remaining live Definition of Done
-1. Deploy merged PR #241.
-2. Open a real Walmart page challenge circuit.
-3. Confirm a large existing `page_retry` backlog is not leased while the circuit is open; isolated `page_circuit_open` may still occur once for newly pending work that successfully attempted official recovery first, but the old recovery backlog must not churn every 20 seconds.
-4. Confirm fresh proof and official API verification continue during the cooldown.
-5. Confirm `page recovery >=64` may remain as deferred backlog telemetry but does not translate into repeated old-page claim/failure batches.
-6. Confirm weekly reprobes remain <=4 and quarantine maintenance <=64 per tick.
-7. Confirm exact markdowns still reach fanout and are rejected only by legitimate configured/safety gates.
-8. Keep SP-WM-MISSED-DEALS-236 active until this live gate passes.
+## Cleanup / conflict inspection
+- Source diff is limited to the canonical bulk exact runtime and its shared bounded claim selector; one focused regression file was added plus this active-task record.
+- `walmart_exact_queue_drain.py` patch contains only the new configurable page-recovery cap and parameter wiring; no unrelated source deletion occurred.
+- `walmart_exact_queue_bulk_runtime.py` patch contains only the open-circuit cap wiring/import/doc update; no proof/classification/persistence logic changed.
+- Branch is **0 commits behind `main`**.
+- PR conversation contains only Qodo's inactive-subscription notice; there are no submitted reviews or inline review threads/findings.
+
+## Remaining Definition of Done
+1. Wait for canonical CI on this final task-record head and merge PR #241 only if all checks remain green and GitHub reports mergeable.
+2. Verify the real PR #241 merge commit on `main` passes push-triggered Import smoke, Python Check, and Python tests.
+3. Deploy merged `main` to the canonical SniperPlug Discloud app using the existing update workflow.
+4. Open/observe a real Walmart page challenge circuit.
+5. Confirm a large existing `page_retry` backlog no longer generates repeated old `page_circuit_open=2/3` batches every 20 seconds. An isolated `page_circuit_open` may still occur once for newly pending work after its official API attempt; that is expected and must not become recovery-lane churn.
+6. Confirm fresh proof and official API verification continue during cooldown.
+7. Confirm `page recovery >=64` may remain as deferred backlog telemetry but does not translate into repeated stale page claims.
+8. Confirm weekly reprobes remain <=4 and quarantine maintenance <=64 per tick.
+9. Confirm exact markdowns still reach fanout and are rejected only by legitimate configured/safety gates.
+10. Keep SP-WM-MISSED-DEALS-236 active until this live gate passes.
 
 ## Blocker
-**Open-circuit page-recovery claim selection still ignores circuit state once the bounded 64-row deferral slice is exhausted.**
+**Final PR #241 head/merge CI plus live production validation.** The code-side root cause is implemented and the implementation-head suite is green; the task is not called production-complete until the merged deployment proves the no-churn behavior under a real open circuit.
 
 ## Backlog
 - Resume the SniperPlug-Site Whop app-specific content-reader task only after this Walmart task closes.

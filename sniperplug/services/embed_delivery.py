@@ -117,6 +117,22 @@ def _shrink_last_field(data: dict[str, Any], shrink_by: int) -> bool:
     return False
 
 
+async def send_followup_with_optional_view(
+    interaction: discord.Interaction,
+    *,
+    view: discord.ui.View | None = None,
+    **kwargs: Any,
+) -> None:
+    """Send a follow-up without passing `view=None` to discord.py.
+
+    Newer discord.py webhook validation accepts a concrete View/LayoutView or an
+    omitted parameter, but rejects an explicit None in the send path.
+    """
+    if view is None:
+        await interaction.followup.send(**kwargs)
+        return
+    await interaction.followup.send(view=view, **kwargs)
+
 
 def should_split_embeds(embeds: Any) -> bool:
     if not embeds or not isinstance(embeds, Sequence):
@@ -127,6 +143,7 @@ def should_split_embeds(embeds: Any) -> bool:
         return False
     total = sum(embed_text_size(embed) for embed in embeds)
     return total > SAFE_EMBED_MESSAGE_LIMIT
+
 
 def batch_embeds_for_limit(embeds: list[discord.Embed], *, limit: int = SAFE_EMBED_MESSAGE_LIMIT) -> list[list[discord.Embed]]:
     safe_embeds = [sanitize_embed(embed) for embed in embeds if isinstance(embed, discord.Embed)]
@@ -186,7 +203,12 @@ async def send_summary_and_card_batches(
     for index, batch in enumerate(batches):
         embeds = [sanitize_embed(card.embed) for card in batch]
         view = view_factory(batch) if view_factory and index == len(batches) - 1 else None
-        await interaction.followup.send(embeds=embeds, view=view, ephemeral=ephemeral)
+        await send_followup_with_optional_view(
+            interaction,
+            embeds=embeds,
+            view=view,
+            ephemeral=ephemeral,
+        )
 
 
 async def send_summary_and_embeds(
@@ -200,4 +222,10 @@ async def send_summary_and_embeds(
     await interaction.followup.send(embed=sanitize_embed(summary), ephemeral=ephemeral)
     batches = batch_embeds_for_limit(embeds)
     for index, batch in enumerate(batches):
-        await interaction.followup.send(embeds=batch, view=view if index == len(batches) - 1 else None, ephemeral=ephemeral)
+        batch_view = view if index == len(batches) - 1 else None
+        await send_followup_with_optional_view(
+            interaction,
+            embeds=batch,
+            view=batch_view,
+            ephemeral=ephemeral,
+        )

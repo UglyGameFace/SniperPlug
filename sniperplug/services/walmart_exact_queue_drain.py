@@ -65,9 +65,11 @@ async def claim_due_rows_batched(
 
     Fresh bounded catalog proof is ranked before network recovery. A no-snapshot
     ``page_retry`` lane is capped to two rows per batch so a Walmart challenge
-    wave cannot crowd out current official proof or ordinary exact work. The cap
-    never promotes a row: every fresh snapshot still passes the strict item,
-    price, seller, offer, variant, shipping, and freshness checks in the worker.
+    wave cannot consume the batch. The bounded page lane still runs before
+    scheduled verified-item rechecks, preserving recovery progress without
+    starving known-good rechecks. The cap never promotes a row: every fresh
+    snapshot still passes the strict item, price, seller, offer, variant,
+    shipping, and freshness checks in the worker.
 
     A shared lease token still protects all final writes. If another process
     races between the two statements, the UPDATE guards and returned IDs prevent
@@ -300,12 +302,12 @@ def _due_rows_select_sql(
                 WHEN 'pending' THEN 0
                 WHEN 'retry' THEN 1
                 WHEN 'failed' THEN 2
-                WHEN 'verified_markdown' THEN 3
-                WHEN 'verified_under_threshold' THEN 4
-                WHEN 'verified_no_reference' THEN 5
-                WHEN 'verified_reference' THEN 6
-                WHEN 'not_buyable' THEN 7
-                WHEN 'page_retry' THEN 8
+                WHEN 'page_retry' THEN 3
+                WHEN 'verified_markdown' THEN 4
+                WHEN 'verified_under_threshold' THEN 5
+                WHEN 'verified_no_reference' THEN 6
+                WHEN 'verified_reference' THEN 7
+                WHEN 'not_buyable' THEN 8
                 WHEN 'verifying' THEN 9
                 ELSE 10
             END,

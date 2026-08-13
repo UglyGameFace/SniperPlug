@@ -1,10 +1,10 @@
 # Active Task
 
 ## Status
-**Active — SP-WM-MISSED-DEALS-236. Milestones 1–4 are merged through PR #239. The merged Milestone 4 build passed several real production gates: global catalog discovery stayed healthy, safe fresh proof was generated and promoted, page retries were rescued by rediscovery, the product-page challenge circuit opened, exact verification continued through official API/fresh proof, and exact events reached fanout. The same live run exposed two remaining runtime scheduling/write-amplification defects now addressed by PR #240. The task remains intentionally OPEN until PR #240 is merged, deployed, and live production proves the remaining gates. The Single Active Task Lock remains engaged.**
+**Active — SP-WM-MISSED-DEALS-236. PRs #236–#240 are merged. PR #240 passed merge CI and was deployed, but the live production gate exposed one remaining open-circuit scheduling defect. The Single Active Task Lock remains engaged.**
 
 ## Task
-**SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification so real catalog-discovered deals are not lost to flaky detail/page recovery, use current official selected-offer proof safely, and prevent valid exact deals from being discarded by stale presentation state.**
+**SP-WM-MISSED-DEALS-236 — Restore high-throughput Walmart exact verification so catalog-discovered deals are not lost to flaky detail/page recovery while all exact item/offer/seller/price/shipping/reference/threshold/category/DM/dedupe gates remain fail-closed.**
 
 ## Scope / safety invariants
 - Requested Walmart item ID must exactly match the official item being verified.
@@ -16,104 +16,70 @@
 - Product-page structured data remains a later identity/shipping fallback only; it cannot replace official item/current-price proof or choose a cheaper seller.
 - No CAPTCHA/challenge bypass, proxy rotation, browser fingerprint spoofing, seller guessing, relevance-neighbor borrowing, sibling/cross-offer reference borrowing, or alternate-retailer proof substitution.
 
-## Changes already merged
-### Milestone 1 — PR #236
-- Added strict exact-ID Affiliate search fallback after incomplete/failed item-detail recovery and before product-page HTML.
-- Exact search accepts only a returned `itemId`/`usItemId` equal to the requested ID.
-- Added concrete retry-kind telemetry.
-- Removed stale exact-card `watchlist` presentation text only after strict exact proof passes.
-
-### Milestone 2 — PR #237
-- Persisted a bounded normalized selected-offer snapshot from current Affiliate catalog discovery.
-- Added strict zero-refetch promotion while the snapshot is fresh and item/price/seller/offer/variant/shipping checks pass.
-- Preserved marketplace delivered-price truth and same-selected-offer reference isolation.
-
-### Milestone 3 — PR #238
-- Reduced abandoned durable catalog-claim recovery from the historical 15-minute starvation window to a 3-minute maximum claim age/lease.
-- Added token-guarded stale-claim takeover, cooperative claim release, awaited worker shutdown, and bounded claim-contention telemetry.
-- Preserved cursor ownership: recovery repeats the same route slice rather than skipping catalog coverage.
-
-### Milestone 4 — PR #239
-- Prioritized current bounded fresh catalog proof ahead of network recovery.
-- Persisted/reused strict selected-offer proof and rearmed challenged `page_retry` rows to `pending` when a safe current catalog snapshot rediscovered them.
-- Capped no-fresh page-recovery claims and added a provider-scoped challenge circuit that suppresses only Walmart HTML while official detail/exact search continue.
-- Added `safe fresh proof`, `page retries rescued`, promoted/input fresh-proof counts, rejection reasons, page-circuit state, suppressed-page counts, and cooldown telemetry.
-- PR #239 branch and real merge-commit CI passed before deployment.
-
-## Milestone 4 live production result
+## Production findings after PR #240 deployment
 ### Gates that passed
-- Global catalog producer remained healthy after deployment and continued advancing route/pass state.
-- Catalog batches repeatedly produced nonzero strict `safe fresh proof`, including high-yield batches such as 59, 68, and 80 safe snapshots.
-- Fresh proof actually promoted in the exact worker, including observed `2/2`, `6/6`, `1/1`, and `2/2` promoted/input batches.
-- `page retries rescued **2**` appeared in production, proving rediscovery can move challenged rows back to immediately useful strict work.
-- The page challenge circuit opened and suppressed Walmart HTML while official/fresh verification continued.
-- Exact verification produced real markdown/no-reference/unavailable classifications instead of remaining stuck at `verified 0`.
-- Exact fanout ran successfully. A supplied VTech event at 24.46% was rejected for the correct server-rule reason (`below_threshold` against 40%/50%), not for stale watchlist or identity state.
+- Global catalog discovery continues advancing normally with repeated 59–100 item batches.
+- Strict `safe fresh proof` remains active, including high-yield batches such as 80, 82, 75, 72, and 67.
+- Fresh proof continues to promote in the exact worker (`2/2`, `3/3`, `1/1`, etc.) with zero network fetch when promotion succeeds.
+- Official API verification continues while the page circuit is open.
+- Bounded pressure telemetry now correctly renders saturated recovery pressure as `>=64`.
+- Weekly terminal identity reprobes are capped at exactly 4 per maintenance tick in the supplied live window.
+- Terminal quarantine writes stayed below the 64-row cap.
 
-### Remaining failures exposed by the same live run
-1. **Open-circuit page backlog churn.** While the page circuit was already open, existing due `page_retry` rows remained immediately claimable. The worker repeatedly leased them every 20 seconds even though HTML was deliberately unavailable, producing `page_circuit_open` failures and unnecessary Turso writes. One live cycle still consumed all 8 claims as suppressed page work (`claimed 8 • verified 0 • page_circuit_open=8`).
-2. **Terminal maintenance bursts.** The 15-minute terminal-maintenance cadence was bounded in time but not row volume. Production rearmed batches of 5 and later 15 weekly identity reprobes and quarantined batches of 30/15 rows, creating avoidable fresh-lane and database-write bursts.
-3. **Pressure telemetry ambiguity.** `page recovery **64**` was a saturated bounded measurement, not an exact total. The old summary omitted the lower-bound marker and could falsely imply the backlog was exactly 64.
-4. One Discord gateway `Can't keep up` warning occurred in the supplied window. Nearby isolated-Turso warnings also showed multi-second remote/lock waits. Native libSQL already runs in a child process, so this single warning is not being falsely attributed to one operation; PR #240 removes the confirmed unnecessary queue/write churn first and the live follow-up will determine whether gateway lag repeats.
+### Remaining live failure
+PR #240 deferred at most 64 due `page_retry` rows before each claim cycle. Production then showed a recovery backlog larger than that bounded sweep. After a new two-page challenge opened the 15-minute circuit, telemetry repeatedly showed:
+- `page recovery **>=64**`
+- `claimed **2**` / `claimed **3**`
+- `retry kinds **page_circuit_open=2/3**`
+- the same pattern again every ~20 seconds while the circuit remained open.
 
-## Milestone 5 — PR #240 implementation
-### Do not lease work that cannot use the page
-- Added a bounded open-circuit deferral step before exact pressure/claim selection.
-- While the page circuit has remaining cooldown, up to 64 currently due `page_retry` rows are moved just past the circuit close time instead of being leased and failed again.
-- The deferral is scheduling only: no seller, offer, price, reference, shipping, threshold, category, DM, or dedupe proof is created or weakened.
-- Fresh catalog rediscovery remains immediate: the existing safe-snapshot enqueue path changes a rescued row to `pending`, and the circuit deferral intentionally touches only `page_retry`.
-- A newly discovered/pending row may still use official API/fresh proof while the circuit is open; only repeated already-known page-recovery churn is removed.
+This proves the bounded deferral itself is working but is not a complete claim guard: once the first 64 rows are moved forward, the normal claim query simply reaches the next due `page_retry` rows and leases up to its hardcoded page-recovery cap of 2.
 
-### Bound terminal maintenance by row volume
-- Production terminal maintenance now uses a row-limited implementation in addition to its existing 15-minute cadence.
-- Weekly rediscovery reprobes are capped at **4 rows per maintenance tick**.
-- Terminal quarantine timestamp repairs are capped at **64 rows per maintenance tick**.
-- The strict reprobe eligibility rule is unchanged: terminal status, last attempt at least seven days old, and a later rediscovery (`last_seen_at > last_attempt_at`).
-- Terminal rows remain excluded from ordinary claims while waiting.
+## Root cause / real execution path
+Production imports `process_actionable_walmart_exact_queue_batch` from `sniperplug.services.walmart_exact_queue_bulk_runtime` in `global_auto_scan_runner.py`.
 
-### Make bounded pressure telemetry truthful
-- Saturated bounded lanes are now labeled as lower bounds.
-- A capped page-recovery measurement renders as `page recovery **>=64**`; actionable total is also marked `>=` when any contributing lane is saturated.
-- Unsaturated values remain ordinary exact measured numbers.
+The bulk runtime performs this sequence:
+1. compute page-circuit remaining time;
+2. defer up to 64 due `page_retry` rows;
+3. load pressure;
+4. call `claim_due_rows_batched`.
 
-## PR #240 validation completed so far
-- Regression: open-circuit page deferral is bounded and leaves `pending` rescued work untouched.
-- Regression: terminal reprobe and quarantine operations obey explicit row caps.
-- Regression: production exact runtime performs page-backlog deferral before pressure and claim selection.
-- Regression: production runtime schema uses the row-limited terminal-maintenance implementation.
-- Regression: saturated pressure telemetry is marked as a lower bound and unsaturated telemetry remains exact.
-- Canonical Python 3.11 suite on current PR head: **1,205 passed**, one upstream `discord.py` `audioop` deprecation warning.
-- `pip check`: **PASS — no broken requirements**.
-- `python -m compileall -q sniperplug tests *.py`: **PASS**.
-- Import smoke: **PASS**.
-- Python Check: **PASS**.
-- Python tests: **PASS**.
+`claim_due_rows_batched` always allows up to `PAGE_RECOVERY_CLAIM_CAP = 2` no-fresh `page_retry` rows. It has no circuit-state input. Therefore a backlog larger than the bounded deferral slice remains claimable during the open circuit.
 
-## Cleanup / conflict gate still required before merge
-- Re-check the final changed-file set after this task-record commit.
-- Confirm the branch is not behind `main` and GitHub still reports mergeable.
-- Inspect PR conversation, reviews, and inline review threads for actionable findings.
-- Wait for canonical CI on the final task-record head; merge only when all final-head checks are green.
-- Verify the real merge commit on `main` passes push-triggered Import smoke, Python Check, and Python tests.
+The fetch path then correctly suppresses HTML, keeps official detail/exact-search recovery, and when official seller/offer proof is still incomplete returns `PAGE_RETRY_STATUS` with `retry_kind=page_circuit_open`. Persistence places those rows back into the recovery lane, creating repeated lease/failure churn.
 
-## Remaining Definition of Done
-1. Complete PR #240 final-head cleanup/review/conflict/CI gate and merge only from a green head.
-2. Verify the real PR #240 merge commit on `main` passes all canonical push workflows.
-3. Deploy merged `main` to the canonical SniperPlug Discloud app using the existing update workflow.
-4. Confirm global Walmart catalog batches continue completing and producing safe fresh proof where available.
-5. During an open page circuit, confirm the already-known page-recovery lane is deferred instead of repeatedly producing `page_circuit_open` claim/failure batches; fresh/API verification must continue.
-6. Confirm bounded pressure telemetry reports `>=64` when the recovery lane is saturated and then falls or stays deferred during cooldown rather than being rewritten every 20 seconds.
-7. Confirm weekly identity reprobes never exceed 4 per 15-minute maintenance tick and terminal quarantine repairs never exceed 64 per tick.
-8. Confirm strong exact markdowns continue reaching fanout and are rejected only by legitimate configured threshold/category/DM/dedupe/safety rules.
-9. Confirm marketplace cards continue preserving mandatory delivered-price shipping truth and same-selected-offer reference isolation.
-10. Watch for another gateway-lag warning. If it repeats, use the event-loop watchdog phase/active-worker/request-state evidence to isolate the remaining blocker instead of guessing.
-11. Keep SP-WM-MISSED-DEALS-236 active until these production checks pass.
+## Current implementation plan — PR #241
+- Add an explicit page-recovery claim-cap argument to `claim_due_rows_batched`, defaulting to the existing cap of 2 so all existing callers/tests retain behavior.
+- When the production bulk runtime sees an open page circuit, pass a page-recovery claim cap of **0**.
+- Keep fresh/pending/retry work claimable so fresh catalog proof and official API/exact-search verification continue during the cooldown.
+- Keep the existing bounded 64-row deferral as database hygiene so recovery timestamps move toward the circuit close time without requiring an unbounded rewrite.
+- Add a regression reproducing the live condition: more than 64 due `page_retry` rows, one bounded deferral sweep, open-circuit claim cap 0, and no stale page-recovery rows leased afterward.
+- Add a production-path regression proving the bulk runtime passes the zero cap only while the circuit is open.
+
+## Validation required
+- Targeted Walmart live-gate tests.
+- Full Python test suite.
+- `pip check`.
+- `python -m compileall -q sniperplug tests *.py`.
+- Import smoke, Python Check, and Python tests workflows on the final PR head.
+- Changed-file/conflict/review-thread cleanup before merge.
+- Real merge-commit workflows on `main` after merge.
+
+## Remaining live Definition of Done
+1. Deploy merged PR #241.
+2. Open a real Walmart page challenge circuit.
+3. Confirm a large existing `page_retry` backlog is not leased while the circuit is open; isolated `page_circuit_open` may still occur once for newly pending work that successfully attempted official recovery first, but the old recovery backlog must not churn every 20 seconds.
+4. Confirm fresh proof and official API verification continue during the cooldown.
+5. Confirm `page recovery >=64` may remain as deferred backlog telemetry but does not translate into repeated old-page claim/failure batches.
+6. Confirm weekly reprobes remain <=4 and quarantine maintenance <=64 per tick.
+7. Confirm exact markdowns still reach fanout and are rejected only by legitimate configured/safety gates.
+8. Keep SP-WM-MISSED-DEALS-236 active until this live gate passes.
 
 ## Blocker
-**Final PR #240 merge/deploy and live production validation.** The code-side fixes and current regression suite are green, but this task is not being called 100% production-complete until the final merged build proves the remaining runtime gates under real Walmart traffic.
+**Open-circuit page-recovery claim selection still ignores circuit state once the bounded 64-row deferral slice is exhausted.**
 
 ## Backlog
-- Resume the SniperPlug-Site Whop app-specific content-reader task for Hidden Files experiences such as `Make Money Here`, `Content`, and `Better Content` only after this Walmart task closes.
-- Investigate repeated Discord gateway `Can't keep up` / websocket-behind warnings after this active Walmart task closes unless new evidence directly ties them to this Walmart execution path.
+- Resume the SniperPlug-Site Whop app-specific content-reader task only after this Walmart task closes.
+- Investigate repeated Discord gateway `Can't keep up` warnings after this active Walmart task closes unless new evidence directly ties them to this Walmart execution path.
 - Continue verifying PR #223 delivery-health accounting after this task closes.
 - PR #200 remains isolated and must not be mixed into this task.

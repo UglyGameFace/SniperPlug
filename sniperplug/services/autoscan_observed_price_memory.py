@@ -321,7 +321,7 @@ async def collect_verified_discount_cards_with_observed_memory(
             if inline_recorded or queued_exact_candidates:
                 warnings.append(
                     "Global exact-detail queue results: "
-                    f"foreground saved **{inline_recorded}** • current-search overflow verified added **{len(queued_exact_candidates)}**."
+                    f"foreground saved **{inline_recorded}** • true overflow verified added **{len(queued_exact_candidates)}** (current-search item IDs only)."
                 )
         except Exception as error:  # noqa: BLE001 - exact foreground cards remain usable.
             warnings.append(

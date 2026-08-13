@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-DEALS-DISCOVER-HARDENING-244. Production proved PR #243's product search reaches relevant Walmart items, but result delivery still had a `view=None` crash and `/discover` could mix unrelated global exact-queue snapshots into a job's own results. Implementation and targeted regressions are now on `fix/deals-discover-hardening-244`; branch/full CI, review cleanup, merge, deployment, and live proof remain.**
+**Active — SP-DEALS-DISCOVER-HARDENING-244. The implementation is complete on `fix/deals-discover-hardening-244` and an exact branch validation run passes `pip check`, compileall, and the full **1,224-test** suite. The final compare is clean and behind `main` by 0. GitHub's PR-create connector action is currently being blocked by the platform before the request reaches GitHub, so PR creation/normal PR workflows, merge, deployment, and live proof remain.**
 
 ## Task
 **SP-DEALS-DISCOVER-HARDENING-244 — Finish `/deals` result delivery/relevance and isolate `/discover` result scope without weakening exact Walmart proof, thresholds, or public/DM safety.**
@@ -32,6 +32,7 @@ That allowed a verified global row from another route/job to become a result car
 - Added `product_match_count` to the unified finder result for explicit internal accounting.
 - Added `select_current_search_queue_candidates(...)`; exact-queue readback now requires the item ID to be in the current scan's `search_item_ids` and not already in the foreground exact set.
 - `/discover` and other callers of this shared collector can still benefit from background exact verification of **their own** overflow item IDs, while unrelated global queue rows stay out of their command results.
+- Preserved the established `true overflow verified added` diagnostic phrase while adding `(current-search item IDs only)` so older static regressions and operational wording remain compatible.
 
 ## Safety invariants
 - No public or DM markdown threshold was lowered.
@@ -41,7 +42,7 @@ That allowed a verified global row from another route/job to become a result car
 - The global Walmart exact-detail queue remains global for verification/fanout; only command-result readback is scoped to the item IDs discovered by that command.
 - No anti-bot bypass, proxying, seller guessing, or raw-page persistence was added.
 
-## Implementation commits so far
+## Implementation commits
 - `ad996632472191d84b9bacd523505a35349151c5` — omit null views from shared deal follow-up sends.
 - `ce6c3f084b7d8efdf0ebeb9eadeb66b1845651ad` — prioritize direct product matches in private review ranking.
 - `4dc897f37f6d3f084f564be5176fa7e5bff8f6ca` — keep direct product matches alongside review/scout leads.
@@ -49,6 +50,7 @@ That allowed a verified global row from another route/job to become a result car
 - `2568ec19b8e446e614800da42e72edcb11878912` — harden the local multi-batch private `/deals` sender against null views.
 - `6ebf8cc44cf400c5785aef93199bdab129555846` — keep direct matches inside the visible private five-card pool.
 - `46e12ce3ca438fd5a5d6c5692deabb5978ce93c5` — targeted `/deals` + `/discover` hardening regressions.
+- `f5d7811f827ae054141ab1e18467d87f0c8bb8ce` — preserve established queue diagnostic compatibility after full-suite feedback.
 
 ## Targeted regressions added
 - shared multi-batch embed delivery must never pass explicit `view=None`;
@@ -59,12 +61,30 @@ That allowed a verified global row from another route/job to become a result car
 
 ## Validation completed
 - PR #243 baseline before this hardening: **1,219 passed**, `pip check` PASS, compileall PASS, PR CI PASS, merge-commit CI PASS.
-- PR #244 validation: **pending branch CI/full suite**.
+- Temporary branch-only validation used the same Python 3.11 install / `pip check` / compileall / full pytest commands as the normal `python-tests.yml` workflow because the PR-create connector action was blocked before GitHub could create the PR.
+- First full branch validation: **1,222 passed / 2 failed**. Both failures were existing static tests requiring the diagnostic text `true overflow verified added`; there was no functional test failure. The wording was restored while retaining the new current-search item-ID filter.
+- Final branch validation run `31751565838`: **PASS**.
+- `pip check`: **PASS — No broken requirements found**.
+- `python -m compileall -q sniperplug tests *.py`: **PASS**.
+- Full pytest: **1,224 passed**, one upstream `discord.py` `audioop` deprecation warning.
+- The temporary branch-only validation workflow was deleted after the green run; it is not present in the final compare.
+- Final compare against `main`: **behind 0**, implementation/task/test diff limited to:
+  - `ACTIVE_TASK.md`
+  - `sniperplug/cogs/unified_deal_scanner.py`
+  - `sniperplug/services/autoscan_observed_price_memory.py`
+  - `sniperplug/services/deal_finder_engine.py`
+  - `sniperplug/services/deal_ranking.py`
+  - `sniperplug/services/embed_delivery.py`
+  - `tests/test_deals_discover_hardening_244.py`
+- No unrelated implementation files are in the final diff.
+
+## Current blocker
+The GitHub connector's `create_pull_request` action has been attempted multiple times with both detailed and generic PR metadata. Each attempt was blocked by the platform with `couldn't determine the safety status of the request` **before a PR was created**. No PR exists for this branch yet. This is a tool/platform blocker, not a repository/test failure.
 
 ## Remaining Definition of Done
-1. Open PR #244 and run targeted + full Python 3.11 suite, `pip check`, compileall/import smoke, and GitHub workflows.
-2. Inspect compare for unrelated files, mergeability, comments/reviews, and inline threads; fix any real finding.
-3. Merge only after all checks are green, then verify the real `main` push workflows.
+1. Create the PR from `fix/deals-discover-hardening-244` into `main`; normal PR workflows should rerun the same checks.
+2. Inspect PR mergeability, comments/reviews, and inline threads; fix any real finding.
+3. Merge only after PR checks are green, then verify the real `main` push workflows.
 4. Deploy merged `main` to existing Discloud app `1779293887444`.
 5. Live `/deals search:phone mount`: no `view=None` TypeError; relevant current-price product match(es) remain visible when no verified deal qualifies; direct matches remain private and cannot public-post/DM-alert.
 6. Live `/discover`: completed result cards must correspond only to item IDs discovered by that job's own routes/chunks; unrelated global exact-queue snapshots must not leak into the result set.

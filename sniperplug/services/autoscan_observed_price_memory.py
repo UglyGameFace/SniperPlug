@@ -113,6 +113,30 @@ def _walmart_item_id(candidate: Any) -> str:
     return ""
 
 
+def select_current_search_queue_candidates(
+    candidates: list[Any],
+    *,
+    search_item_ids: set[str],
+    foreground_item_ids: set[str],
+    limit: int = AUTOSCAN_QUEUE_SURFACE_LIMIT,
+) -> list[Any]:
+    """Keep queue readback scoped to item IDs discovered by this scan.
+
+    The global queue is shared across autoscan and manual discovery. A verified
+    snapshot from another route/job may be useful to global fanout, but it must
+    not become a result card for a different `/discover` or category scan.
+    """
+    selected: list[Any] = []
+    for candidate in candidates:
+        item_id = _walmart_item_id(candidate)
+        if not item_id or item_id in foreground_item_ids or item_id not in search_item_ids:
+            continue
+        selected.append(candidate)
+        if len(selected) >= max(1, int(limit)):
+            break
+    return selected
+
+
 async def collect_verified_discount_cards_with_observed_memory(
     *,
     requested_by: str,
@@ -127,9 +151,10 @@ async def collect_verified_discount_cards_with_observed_memory(
     Search responses are candidate discovery only. Every candidate is placed in
     one globally deduplicated exact-detail queue. The first 24 are verified in
     the foreground; overflow candidates are verified by the background worker
-    and can re-enter later scans through a fresh compact exact-detail snapshot.
-    Walmart search parsing and foreground exact-detail proof merging run on
-    dedicated worker event loops so Discord gateway heartbeats remain responsive.
+    and can re-enter this scan only when their item ID was discovered by the
+    current search routes. Walmart search parsing and foreground exact-detail
+    proof merging run on dedicated worker event loops so Discord gateway
+    heartbeats remain responsive.
     """
 
     preset = preset or hunt.ALL_VERIFIED_PRESET
@@ -287,15 +312,16 @@ async def collect_verified_discount_cards_with_observed_memory(
                 db,
                 limit=AUTOSCAN_QUEUE_SURFACE_LIMIT + len(foreground_item_ids),
             )
-            queued_exact_candidates = [
-                candidate
-                for candidate in queue_snapshot_pool
-                if _walmart_item_id(candidate) not in foreground_item_ids
-            ][:AUTOSCAN_QUEUE_SURFACE_LIMIT]
+            queued_exact_candidates = select_current_search_queue_candidates(
+                queue_snapshot_pool,
+                search_item_ids=search_item_ids,
+                foreground_item_ids=foreground_item_ids,
+                limit=AUTOSCAN_QUEUE_SURFACE_LIMIT,
+            )
             if inline_recorded or queued_exact_candidates:
                 warnings.append(
                     "Global exact-detail queue results: "
-                    f"foreground saved **{inline_recorded}** • true overflow verified added **{len(queued_exact_candidates)}**."
+                    f"foreground saved **{inline_recorded}** • current-search overflow verified added **{len(queued_exact_candidates)}**."
                 )
         except Exception as error:  # noqa: BLE001 - exact foreground cards remain usable.
             warnings.append(

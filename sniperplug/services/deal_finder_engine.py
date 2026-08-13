@@ -5,14 +5,17 @@ from dataclasses import dataclass
 
 from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import DealCard, HuntPreset
+from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
 from sniperplug.services.deal_route_memory import RETAILER_WALMART, memory_boost_queries, record_route_memory, top_route_memory, update_from_route_stats
+from sniperplug.services.direct_search_rescue import direct_match_score, meaningful_tokens, normalize_text
 from sniperplug.services.low_price_scout import scout_low_price_leads
+from sniperplug.services.price_proof import verified_deal_value
 from sniperplug.services.scan_result_accelerator import cached_provider_scan_or_run
 from sniperplug.services.search_expansion import SearchPlan, expand_walmart_query
-from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_candidate_cards
+from sniperplug.services.walmart_review_candidates import ReviewCandidateResult, build_review_card, build_review_candidate_cards
 
 
 QUERY_RESULTS_PER_PAGE = 25
@@ -24,6 +27,8 @@ QUERY_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = (
     ("bestseller", None),
     ("new", None),
 )
+DIRECT_PRODUCT_MATCH_MIN_SCORE = 0.66
+DIRECT_PRODUCT_MATCH_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -61,11 +66,16 @@ async def find_walmart_deals_for_query(
     guild_id: int | None = None,
     force_refresh: bool = False,
 ) -> DealFinderResult:
-    """Run a deep Walmart query search and return verified + review/flip/scout cards.
+    """Run a deep Walmart query search and return verified + private result cards.
 
     Uses a short DB-backed exact-route cache so repeated scans and mode buttons
     can reuse fresh provider responses without going blind to new glitches.
     `force_refresh=True` bypasses the cache for the explicit Fresh Scan path.
+
+    If no verified/review/scout deal card survives, the exact user query gets a
+    final private product-match fallback. That fallback can show a current-price
+    Walmart result, but it never upgrades the item into verified deal proof or a
+    public/DM-alert-eligible card.
     """
     memory_records = await top_route_memory(db, guild_id=guild_id, retailer=RETAILER_WALMART, limit=8)
     boosted_routes = memory_boost_queries(memory_records, limit=3)
@@ -162,6 +172,12 @@ async def find_walmart_deals_for_query(
     review = build_review_candidate_cards(list(deduped), query=query)
     scout_cards = scout_low_price_leads(deduped, limit=8, search_query=query)
     review = merge_scout_review_cards(review, scout_cards)
+    review = apply_direct_product_fallback(
+        verified_cards=verified,
+        review=review,
+        candidates=deduped,
+        query=query,
+    )
     review = rank_review_candidate_result(review)
 
     return DealFinderResult(
@@ -221,6 +237,115 @@ async def find_walmart_discovery_deals(*, requested_by: str, db=None, guild_id: 
     )
 
 
+def apply_direct_product_fallback(
+    *,
+    verified_cards: list[DealCard],
+    review: ReviewCandidateResult,
+    candidates: list[SourceCandidate],
+    query: str,
+    limit: int = DIRECT_PRODUCT_MATCH_LIMIT,
+) -> ReviewCandidateResult:
+    """Use private direct product matches only when every deal lane is empty."""
+    if verified_cards or review.cards:
+        return review
+    fallback_cards = build_direct_product_match_cards(candidates, query=query, limit=limit)
+    if not fallback_cards:
+        return review
+    return copy_review_result(review, cards=fallback_cards)
+
+
+def build_direct_product_match_cards(
+    candidates: list[SourceCandidate],
+    *,
+    query: str,
+    limit: int = DIRECT_PRODUCT_MATCH_LIMIT,
+    min_match_score: float = DIRECT_PRODUCT_MATCH_MIN_SCORE,
+) -> list[DealCard]:
+    """Render closest current-price Walmart matches without inventing a deal."""
+    scored: list[tuple[float, int, DealCard]] = []
+    seen: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        deal = candidate.to_normalized_deal()
+        if deal.current_price is None or deal.current_price <= 0 or not deal.product_url or not deal.title:
+            continue
+        match_score = private_product_match_score(
+            query,
+            deal.title,
+            sku=deal.sku,
+            upc=deal.upc,
+            product_id=candidate.product_id,
+        )
+        if match_score < min_match_score:
+            continue
+        key = candidate.selected_offer_id or candidate.product_id or deal.sku or deal.upc or deal.product_url or deal.title
+        if key in seen:
+            continue
+        seen.add(key)
+
+        proof = verified_deal_value(deal)
+        card = build_review_card(
+            candidate,
+            deal,
+            proof,
+            context_price=None,
+            context_discount=None,
+            ignored_context_price=None,
+            coupon=0.0,
+            cash=0.0,
+            direct_match_score=match_score,
+        )
+        card.should_alert = False
+        card.manual_share_allowed = False
+        card.product_search_match = True
+        card.product_match_score = match_score
+        card.deal_lane = "product_search_match"
+        scored.append((match_score, -index, card))
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [card for _, _, card in scored[: max(1, int(limit))]]
+
+
+def private_product_match_score(
+    query: str,
+    title: str,
+    *,
+    sku: str | None = None,
+    upc: str | None = None,
+    product_id: str | None = None,
+) -> float:
+    """Private product-search relevance; never used as public deal proof."""
+    score = direct_match_score(query, title, sku=sku, upc=upc, product_id=product_id)
+    if score > 0:
+        return score
+
+    query_text = normalize_text(query)
+    title_text = normalize_text(title)
+    identifiers = {normalize_text(value) for value in (sku, upc, product_id) if value}
+    if query_text and query_text in identifiers:
+        return 1.0
+
+    query_tokens = meaningful_tokens(query_text)
+    title_tokens = meaningful_tokens(title_text)
+    if len(query_tokens) == 1 and query_tokens.issubset(title_tokens):
+        return 1.0
+    return 0.0
+
+
+def copy_review_result(review: ReviewCandidateResult, *, cards: list[DealCard]) -> ReviewCandidateResult:
+    return ReviewCandidateResult(
+        cards=cards,
+        under_threshold_count=review.under_threshold_count,
+        missing_reference_count=review.missing_reference_count,
+        weak_reference_count=review.weak_reference_count,
+        missing_current_count=review.missing_current_count,
+        no_value_signal_count=review.no_value_signal_count,
+        rejected_bad_value_count=review.rejected_bad_value_count,
+        exact_match_count=review.exact_match_count,
+        ignored_reference_sources=review.ignored_reference_sources,
+        no_value_reasons=review.no_value_reasons,
+    )
+
+
 def merge_scout_review_cards(review: ReviewCandidateResult, scout_cards: list[DealCard], *, limit: int = 10) -> ReviewCandidateResult:
     merged: list[DealCard] = []
     seen: set[str] = set()
@@ -239,6 +364,8 @@ def merge_scout_review_cards(review: ReviewCandidateResult, scout_cards: list[De
         no_value_signal_count=review.no_value_signal_count,
         rejected_bad_value_count=review.rejected_bad_value_count,
         exact_match_count=getattr(review, "exact_match_count", 0),
+        ignored_reference_sources=review.ignored_reference_sources,
+        no_value_reasons=review.no_value_reasons,
     )
 
 
@@ -252,6 +379,8 @@ def rank_review_candidate_result(review: ReviewCandidateResult) -> ReviewCandida
         no_value_signal_count=review.no_value_signal_count,
         rejected_bad_value_count=review.rejected_bad_value_count,
         exact_match_count=getattr(review, "exact_match_count", 0),
+        ignored_reference_sources=review.ignored_reference_sources,
+        no_value_reasons=review.no_value_reasons,
     )
 
 

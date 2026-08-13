@@ -22,12 +22,20 @@ from sniperplug.services.walmart_exact_verification_queue import (
     _price_to_cents,
     _row_get,
 )
+from sniperplug.services.walmart_fresh_discovery_proof import (
+    DISCOVERY_PROOF_MAX_AGE_SECONDS,
+)
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 
 
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
 PUBLIC_ALERT_RECHECK_PERCENT = 50.0
 MID_TIER_RECHECK_PERCENT = 30.0
+# Product-page recovery itself is already limited to two concurrent requests.
+# Do not let a backlog of distinct challenged pages consume an entire 8/24-item
+# exact batch. Fresh catalog snapshots are exempt because they are attempted
+# without page I/O first and remain subject to the normal strict promotion gate.
+PAGE_RECOVERY_CLAIM_CAP = 2
 _DISCOVERY_SNAPSHOT_COLUMNS = (
     "discovery_snapshot_json, discovery_snapshot_at"
 )
@@ -55,6 +63,12 @@ async def claim_due_rows_batched(
     2. a guarded UPDATE leases only those item IDs and RETURNING confirms which
        rows this process actually acquired.
 
+    Fresh bounded catalog proof is ranked before network recovery. A no-snapshot
+    ``page_retry`` lane is capped to two rows per batch so a Walmart challenge
+    wave cannot crowd out current official proof or ordinary exact work. The cap
+    never promotes a row: every fresh snapshot still passes the strict item,
+    price, seller, offer, variant, shipping, and freshness checks in the worker.
+
     A shared lease token still protects all final writes. If another process
     races between the two statements, the UPDATE guards and returned IDs prevent
     this worker from processing rows it did not lease.
@@ -70,6 +84,9 @@ async def claim_due_rows_batched(
     discovery_cutoff = (
         now_utc - timedelta(days=QUEUE_RETENTION_DAYS)
     ).isoformat()
+    snapshot_cutoff = (
+        now_utc - timedelta(seconds=DISCOVERY_PROOF_MAX_AGE_SECONDS)
+    ).isoformat()
     bounded_limit = max(1, int(limit))
     batch_token = uuid.uuid4().hex
     lease_until = (
@@ -80,6 +97,7 @@ async def claim_due_rows_batched(
         conn,
         now_iso=now_iso,
         discovery_cutoff=discovery_cutoff,
+        snapshot_cutoff=snapshot_cutoff,
         bounded_limit=bounded_limit,
     )
     if not selected_rows:
@@ -162,25 +180,108 @@ async def _select_due_rows_with_optional_discovery_snapshot(
     *,
     now_iso: str,
     discovery_cutoff: str,
+    snapshot_cutoff: str,
     bounded_limit: int,
 ) -> list[Any]:
-    params = (now_iso, discovery_cutoff, now_iso, bounded_limit)
     try:
         cursor = await conn.execute(
-            _due_rows_select_sql(_DISCOVERY_SNAPSHOT_COLUMNS),
-            params,
+            _due_rows_select_sql(
+                _DISCOVERY_SNAPSHOT_COLUMNS,
+                has_snapshot_columns=True,
+            ),
+            (
+                now_iso,
+                discovery_cutoff,
+                now_iso,
+                snapshot_cutoff,
+                now_iso,
+                discovery_cutoff,
+                now_iso,
+                snapshot_cutoff,
+                PAGE_RECOVERY_CLAIM_CAP,
+                snapshot_cutoff,
+                bounded_limit,
+            ),
         )
     except Exception as exc:
         if not _is_missing_discovery_snapshot_column(exc):
             raise
         cursor = await conn.execute(
-            _due_rows_select_sql(_LEGACY_DISCOVERY_SNAPSHOT_PROJECTION),
-            params,
+            _due_rows_select_sql(
+                _LEGACY_DISCOVERY_SNAPSHOT_PROJECTION,
+                has_snapshot_columns=False,
+            ),
+            (
+                now_iso,
+                discovery_cutoff,
+                now_iso,
+                now_iso,
+                discovery_cutoff,
+                now_iso,
+                PAGE_RECOVERY_CLAIM_CAP,
+                bounded_limit,
+            ),
         )
     return list(await cursor.fetchall())
 
 
-def _due_rows_select_sql(snapshot_projection: str) -> str:
+def _due_rows_select_sql(
+    snapshot_projection: str,
+    *,
+    has_snapshot_columns: bool,
+) -> str:
+    if has_snapshot_columns:
+        page_guard = f"""
+          AND (
+              status <> 'page_retry'
+              OR (
+                  discovery_snapshot_json <> ''
+                  AND discovery_snapshot_at IS NOT NULL
+                  AND discovery_snapshot_at >= ?
+              )
+              OR item_id IN (
+                  SELECT item_id
+                  FROM {QUEUE_TABLE}
+                  WHERE status = 'page_retry'
+                    AND next_attempt_at <= ?
+                    AND last_seen_at >= ?
+                    AND (lease_until IS NULL OR lease_until < ?)
+                    AND NOT (
+                        discovery_snapshot_json <> ''
+                        AND discovery_snapshot_at IS NOT NULL
+                        AND discovery_snapshot_at >= ?
+                    )
+                  ORDER BY priority_score DESC, last_seen_at DESC
+                  LIMIT ?
+              )
+          )
+        """
+        freshness_order = """
+            CASE
+                WHEN discovery_snapshot_json <> ''
+                     AND discovery_snapshot_at IS NOT NULL
+                     AND discovery_snapshot_at >= ?
+                THEN 0 ELSE 1
+            END,
+        """
+    else:
+        page_guard = f"""
+          AND (
+              status <> 'page_retry'
+              OR item_id IN (
+                  SELECT item_id
+                  FROM {QUEUE_TABLE}
+                  WHERE status = 'page_retry'
+                    AND next_attempt_at <= ?
+                    AND last_seen_at >= ?
+                    AND (lease_until IS NULL OR lease_until < ?)
+                  ORDER BY priority_score DESC, last_seen_at DESC
+                  LIMIT ?
+              )
+          )
+        """
+        freshness_order = ""
+
     return f"""
         SELECT
             item_id, title, product_url, image_url,
@@ -192,18 +293,20 @@ def _due_rows_select_sql(snapshot_projection: str) -> str:
           AND last_seen_at >= ?
           AND status NOT IN ('incomplete_identity', 'identity_mismatch')
           AND (lease_until IS NULL OR lease_until < ?)
+          {page_guard}
         ORDER BY
+            {freshness_order}
             CASE status
                 WHEN 'pending' THEN 0
                 WHEN 'retry' THEN 1
                 WHEN 'failed' THEN 2
-                WHEN 'page_retry' THEN 3
-                WHEN 'verifying' THEN 4
-                WHEN 'verified_markdown' THEN 5
-                WHEN 'verified_under_threshold' THEN 6
-                WHEN 'verified_no_reference' THEN 7
-                WHEN 'verified_reference' THEN 8
-                WHEN 'not_buyable' THEN 9
+                WHEN 'verified_markdown' THEN 3
+                WHEN 'verified_under_threshold' THEN 4
+                WHEN 'verified_no_reference' THEN 5
+                WHEN 'verified_reference' THEN 6
+                WHEN 'not_buyable' THEN 7
+                WHEN 'page_retry' THEN 8
+                WHEN 'verifying' THEN 9
                 ELSE 10
             END,
             priority_score DESC,

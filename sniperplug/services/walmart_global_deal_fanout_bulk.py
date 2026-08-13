@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
 import uuid
@@ -16,12 +18,15 @@ from sniperplug.services.autoscan_live_guild_reconciliation import (
 )
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.dm_deal_alerts import (
+    card_search_text,
     clear_dm_delivery_failures,
     dm_receipt_exists,
     list_enabled_dm_deal_alert_preferences,
     record_dm_delivery_failure,
+    walmart_cash_cents,
 )
 from sniperplug.services.dm_deal_matching import match_dm_deal
+from sniperplug.services.dm_personal_categories import category_key_for_card
 from sniperplug.services.dm_delivery_policy import (
     dm_delivery_lock,
     evaluate_dm_delivery_gate,
@@ -42,6 +47,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
 
 
 FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+FANOUT_EVENT_KEY_VERSION = "v2"
 FANOUT_CURSOR_INDEX = f"idx_{QUEUE_TABLE}_fanout_cursor"
 FANOUT_CURSOR_INDEX_SQL = f"""
 CREATE INDEX IF NOT EXISTS {FANOUT_CURSOR_INDEX}
@@ -108,11 +114,16 @@ class GlobalDealFanoutResult:
     def dm_filter_rejected(self) -> int:
         return max(0, int(self.dm_preferences_checked) - int(self.dm_matches))
 
+    @property
+    def deduped_event_versions(self) -> int:
+        return max(0, int(self.exact_cards) - int(self.new_events))
+
     def summary_line(self) -> str:
         return (
             "global exact-deal fanout: "
             f"loaded **{self.candidates_loaded}** • exact cards **{self.exact_cards}** • "
-            f"new events **{self.new_events}** • processed **{self.events_processed}** • "
+            f"new event versions **{self.new_events}** • deduped versions **{self.deduped_event_versions}** • "
+            f"processed **{self.events_processed}** • "
             f"guild checks/posts **{self.guilds_checked}/{self.public_posts}** • "
             f"public skips duplicate **{self.public_skipped_duplicate}** "
             f"(recent **{self.public_skipped_recent_duplicate}** • reserved **{self.public_skipped_reserved_duplicate}**) • "
@@ -342,6 +353,7 @@ async def fanout_recent_exact_walmart_deals(
                     getattr(event.card, "current_price", None),
                 )
 
+            delivery_deal_key = _delivery_deal_key(event.card)
             for preference in preferences:
                 totals["dm_preferences_checked"] += 1
                 decision = match_dm_deal(preference, event.card)
@@ -358,7 +370,7 @@ async def fanout_recent_exact_walmart_deals(
                         if await dm_receipt_exists(
                             db,
                             user_id=preference.user_id,
-                            deal_key=event.deal_key,
+                            deal_key=delivery_deal_key,
                         ):
                             totals["dm_skipped_duplicate"] += 1
                             record_user_dm_outcome(preference.user_id, "duplicate")
@@ -384,7 +396,7 @@ async def fanout_recent_exact_walmart_deals(
                         await record_dm_delivery_receipt(
                             db,
                             user_id=preference.user_id,
-                            deal_key=event.deal_key,
+                            deal_key=delivery_deal_key,
                             category_family=gate.category_family,
                         )
                         await clear_dm_delivery_failures(
@@ -484,7 +496,7 @@ async def _ingest_verified_queue_events_bulk(
             continue
         exact_cards += 1
         retailer = str(getattr(card, "retailer", None) or "walmart")
-        deal_key = card_deal_key(card, retailer=retailer)
+        deal_key = _fanout_event_key(card, retailer=retailer)
         event_rows[deal_key] = (
             deal_key,
             snapshot_json,
@@ -740,6 +752,93 @@ async def _finalize_claimed_events_bulk(
         )
     await conn.commit()
 
+
+
+def _delivery_deal_key(card: Any) -> str:
+    retailer = str(getattr(card, "retailer", None) or "walmart")
+    return card_deal_key(card, retailer=retailer)
+
+
+def _fanout_event_key(card: Any, *, retailer: str) -> str:
+    """Version a fanout event by fields that can change alert eligibility.
+
+    Delivery dedupe deliberately remains the legacy current-price key. This
+    versioned event key only controls whether a newly verified proof state is
+    re-evaluated by public and personal filters. A subscriber who already
+    received the same offer at the same current price therefore remains
+    deduped, while a previously rejected same-price offer can be reconsidered
+    when its trusted reference, score, category/search text, Walmart Cash, or
+    exact selected-offer presentation materially changes.
+    """
+
+    delivery_key = card_deal_key(card, retailer=retailer)
+    payload = {
+        "current_cents": _money_cents(
+            getattr(card, "api_current_price", None)
+            or getattr(card, "current_price", None)
+        ),
+        "reference_cents": _money_cents(
+            getattr(card, "api_reference_price", None)
+            or getattr(card, "typical_price", None)
+        ),
+        "discount_bps": _percent_bps(
+            getattr(card, "api_discount_percent", None)
+            or getattr(card, "discount", None)
+        ),
+        "score": _int_value(getattr(card, "score", None)),
+        "category": str(category_key_for_card(card) or "uncategorized"),
+        "walmart_cash_cents": int(walmart_cash_cents(card)),
+        "search_text": " ".join(card_search_text(card).split())[:8000],
+        "should_alert": _optional_bool(getattr(card, "should_alert", None)),
+        "seller": _compact(getattr(card, "seller_name", None), 240),
+        "variant": _compact(getattr(card, "variant_label", None), 240),
+        "condition": _compact(getattr(card, "condition", None), 120),
+        "fulfillment": _compact(getattr(card, "fulfillment_type", None), 120),
+        "stock": _compact(getattr(card, "stock_status", None), 120),
+        "can_add_to_cart": _optional_bool(getattr(card, "can_add_to_cart", None)),
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()[:20]
+    return f"{delivery_key}:proof:{FANOUT_EVENT_KEY_VERSION}:{digest}"
+
+
+def _money_cents(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        amount = float(str(value).replace("$", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    if amount <= 0:
+        return None
+    return int(round(amount * 100))
+
+
+def _percent_bps(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(round(float(value) * 100))
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
 
 def _log_public_skip(
     *,

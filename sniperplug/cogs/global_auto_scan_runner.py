@@ -429,6 +429,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         or fanout.events_processed
                         or fanout.public_posts
                         or fanout.dm_sent
+                        or (health_due and fanout.exact_cards)
                     ):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()

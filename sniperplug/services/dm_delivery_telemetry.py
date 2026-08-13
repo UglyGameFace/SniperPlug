@@ -50,7 +50,7 @@ class UserDmDeliveryTelemetry:
     def summary_lines(self) -> tuple[str, ...]:
         if self.checked <= 0:
             return (
-                "No exact deal events have been evaluated for your personal filter since this bot process started.",
+                "No new exact fanout event versions have reached your personal filter since this bot process started. Reverified deals already seen at the same alert proof are deduped before per-user filtering.",
             )
         reasons = []
         for bucket in _REJECTION_BUCKETS:

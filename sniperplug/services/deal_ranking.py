@@ -21,7 +21,7 @@ def rank_verified_cards(cards: list[DealCard]) -> list[DealCard]:
 
 
 def rank_review_cards(cards: list[DealCard]) -> list[DealCard]:
-    """Rank private review cards, including flip-comp leads, without public posting them."""
+    """Rank private review cards, including exact product matches and flip-comp leads."""
     return sorted(cards, key=review_card_score, reverse=True)
 
 
@@ -37,6 +37,8 @@ def review_card_score(card: DealCard) -> tuple[float, float, float]:
     text = str(card.embed.to_dict()).lower()
     flip_bonus = 35.0 if "flip estimate" in text or "marketplace comp" in text else 0.0
     value_bonus = 20.0 if "coupon from api" in text or "walmart cash from api" in text else 0.0
+    direct_match_score = float(getattr(card, "product_match_score", 0.0) or 0.0)
+    direct_match_bonus = 120.0 * max(0.0, min(1.0, direct_match_score)) if getattr(card, "product_search_match", False) else 0.0
     current_price = float(getattr(card, "current_price", 0.0) or 0.0)
     discount = float(getattr(card, "discount", 0.0) or 0.0)
-    return (flip_bonus + value_bonus + discount, -current_price, float(getattr(card, "score", 0.0) or 0.0))
+    return (direct_match_bonus + flip_bonus + value_bonus + discount, -current_price, float(getattr(card, "score", 0.0) or 0.0))

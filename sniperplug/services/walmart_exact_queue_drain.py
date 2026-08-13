@@ -49,6 +49,7 @@ async def claim_due_rows_batched(
     *,
     now: datetime,
     limit: int,
+    page_recovery_claim_cap: int = PAGE_RECOVERY_CLAIM_CAP,
 ) -> list[_QueueClaim]:
     """Select an ordered slice, then lease only those rows with one small update.
 
@@ -64,12 +65,13 @@ async def claim_due_rows_batched(
        rows this process actually acquired.
 
     Fresh bounded catalog proof is ranked before network recovery. A no-snapshot
-    ``page_retry`` lane is capped to two rows per batch so a Walmart challenge
-    wave cannot consume the batch. The bounded page lane still runs before
-    scheduled verified-item rechecks, preserving recovery progress without
-    starving known-good rechecks. The cap never promotes a row: every fresh
-    snapshot still passes the strict item, price, seller, offer, variant,
-    shipping, and freshness checks in the worker.
+    ``page_retry`` lane is capped to two rows per batch by default so a Walmart
+    challenge wave cannot consume the batch. Callers may pass a cap of zero
+    while the page circuit is open; fresh snapshot/pending/API work remains
+    claimable and every promotion still passes the strict item, price, seller,
+    offer, variant, shipping, and freshness checks in the worker. The bounded
+    page lane otherwise runs before scheduled verified-item rechecks, preserving
+    recovery progress without starving known-good rechecks.
 
     A shared lease token still protects all final writes. If another process
     races between the two statements, the UPDATE guards and returned IDs prevent
@@ -90,6 +92,7 @@ async def claim_due_rows_batched(
         now_utc - timedelta(seconds=DISCOVERY_PROOF_MAX_AGE_SECONDS)
     ).isoformat()
     bounded_limit = max(1, int(limit))
+    bounded_page_recovery_claim_cap = max(0, int(page_recovery_claim_cap))
     batch_token = uuid.uuid4().hex
     lease_until = (
         now_utc + timedelta(seconds=QUEUE_LEASE_SECONDS)
@@ -101,6 +104,7 @@ async def claim_due_rows_batched(
         discovery_cutoff=discovery_cutoff,
         snapshot_cutoff=snapshot_cutoff,
         bounded_limit=bounded_limit,
+        page_recovery_claim_cap=bounded_page_recovery_claim_cap,
     )
     if not selected_rows:
         return []
@@ -184,6 +188,7 @@ async def _select_due_rows_with_optional_discovery_snapshot(
     discovery_cutoff: str,
     snapshot_cutoff: str,
     bounded_limit: int,
+    page_recovery_claim_cap: int,
 ) -> list[Any]:
     try:
         cursor = await conn.execute(
@@ -200,7 +205,7 @@ async def _select_due_rows_with_optional_discovery_snapshot(
                 discovery_cutoff,
                 now_iso,
                 snapshot_cutoff,
-                PAGE_RECOVERY_CLAIM_CAP,
+                page_recovery_claim_cap,
                 snapshot_cutoff,
                 bounded_limit,
             ),
@@ -220,7 +225,7 @@ async def _select_due_rows_with_optional_discovery_snapshot(
                 now_iso,
                 discovery_cutoff,
                 now_iso,
-                PAGE_RECOVERY_CLAIM_CAP,
+                page_recovery_claim_cap,
                 bounded_limit,
             ),
         )

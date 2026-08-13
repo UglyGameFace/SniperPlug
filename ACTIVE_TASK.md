@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — FORCE SWITCH accepted on 2026-08-13. SP-DEALS-PRODUCT-FALLBACK-243 is now the only active implementation task. PR #243 is open, mergeable, and branch CI is green. The code gate is passing; production `/deals search:phone mount` remains the final live gate after merge/deploy.**
+**Active — SP-DEALS-PRODUCT-FALLBACK-243. PR #243 merged to `main` at `e4e3012628ff36f6208f6ce5a6f097835670fc36`. Branch CI and the real merge-commit Import smoke, Python Check, and Python tests all pass. The only remaining gate is production deployment plus `/deals search:phone mount` live behavior.**
 
 ## Task
 **SP-DEALS-PRODUCT-FALLBACK-243 — Make `/deals search:<product>` return useful current-price Walmart product matches when no verified/review/scout deal survives, without weakening any public/DM deal-proof gate.**
@@ -37,24 +37,23 @@ The unified finder can scan many Walmart results successfully but only returns c
 - Product fallback stays private and cannot auto-post, auto-DM, or become manually shareable through the deal-review flow.
 - Existing seller/offer/variant/shipping/current-price/reference/dedupe/category gates are unchanged.
 
-## Validation completed on PR #243
+## Validation completed
 - Targeted regressions added for two-word `phone mount`, single-word searches, weak partial-match rejection, missing-price rejection, fallback priority, audit preservation, and private wiring.
-- Full Python 3.11 suite: **1,219 passed**, one upstream `discord.py` `audioop` deprecation warning.
+- Full Python 3.11 suite on PR #243: **1,219 passed**, one upstream `discord.py` `audioop` deprecation warning.
 - `pip check`: **PASS** — no broken requirements.
 - `python -m compileall -q sniperplug tests *.py`: **PASS**.
-- Import smoke check workflow: **PASS**.
-- Python Check workflow: **PASS**.
-- Python tests workflow: **PASS**.
-- PR compare is limited to `ACTIVE_TASK.md`, `sniperplug/services/deal_finder_engine.py`, and `tests/test_deals_product_fallback.py`; no unrelated implementation files changed.
-- PR #243 currently reports **mergeable=true** and has no inline review threads.
+- PR branch Import smoke check: **PASS**.
+- PR branch Python Check: **PASS**.
+- PR branch Python tests: **PASS**.
+- PR compare was limited to `ACTIVE_TASK.md`, `sniperplug/services/deal_finder_engine.py`, and `tests/test_deals_product_fallback.py`; no unrelated implementation files changed.
+- PR #243 merged cleanly with no inline review threads.
+- Real `main` merge commit `e4e3012628ff36f6208f6ce5a6f097835670fc36`: **Import smoke PASS • Python Check PASS • Python tests PASS**.
 
 ## Remaining Definition of Done
-1. Final diff/cleanup inspection and merge PR #243.
-2. Confirm the real `main` merge commit passes Import smoke, Python Check, and Python tests.
-3. Deploy the merged `main` build.
-4. Production live test: `/deals search:phone mount` must return relevant current-price product cards when no verified/review/scout deal qualifies, clearly labeled as non-deal search matches.
-5. Confirm those fallback cards do not public-post or trigger personal DM deal alerts.
-6. Then close SP-DEALS-PRODUCT-FALLBACK-243 and resume the suspended Walmart DM live-proof task only if desired.
+1. Deploy merged `main` to the existing Discloud app.
+2. Production live test: `/deals search:phone mount` must return relevant current-price product cards when no verified/review/scout deal qualifies, clearly labeled as non-deal search matches.
+3. Confirm those fallback cards do not public-post or trigger personal DM deal alerts.
+4. Then close SP-DEALS-PRODUCT-FALLBACK-243 and resume the suspended Walmart DM live-proof task only if desired.
 
 ## Suspended task
 **SP-WM-MISSED-DEALS-236 is suspended, not closed.** PR #242 had already proven v2 fanout evaluation and stable duplicate behavior; its only remaining live gate was one newly qualifying 50%+/78+ Walmart event with no existing same-price receipt producing `DM ... sent=1`, followed by receipt dedupe on re-verification. Resume only after this `/deals` task closes or another explicit FORCE SWITCH.

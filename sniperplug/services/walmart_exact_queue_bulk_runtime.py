@@ -24,7 +24,11 @@ from sniperplug.services.walmart_exact_queue_runtime import (
     TERMINAL_IDENTITY_STATUSES,
     ExactQueueRuntimeResult,
     _fetch_exact_candidate_off_loop,
+    _fresh_snapshot_rejection_reason,
     _identity_error_bucket,
+    _is_fresh_snapshot_candidate,
+    _page_challenge_circuit_open,
+    _page_challenge_circuit_remaining_seconds,
     _retry_error_bucket,
     _retry_kind_from_error,
 )
@@ -77,6 +81,12 @@ async def process_actionable_walmart_exact_queue_batch(
     fifteen-minute cadence because terminal rows are already excluded from
     ordinary claims immediately. Scheduling decisions use a tightly bounded
     pressure snapshot rather than rereading the scheduled-recheck backlog.
+
+    Fresh discovery proof and page-challenge circuit state are reported directly
+    in the worker summary. This makes a zero-promotion batch explainable without
+    weakening proof: the log now distinguishes no snapshot input, strict snapshot
+    rejection, ordinary API/page retries, and page requests suppressed by the
+    challenge circuit.
     """
 
     if db is None or provider is None or limit <= 0:
@@ -117,6 +127,8 @@ async def process_actionable_walmart_exact_queue_batch(
             batch_size=effective_limit,
             concurrency=effective_concurrency,
             claim_seconds=claim_seconds,
+            page_circuit_open=_page_challenge_circuit_open(provider),
+            page_circuit_remaining_seconds=_page_challenge_circuit_remaining_seconds(provider),
         )
 
     semaphore = asyncio.Semaphore(effective_concurrency)
@@ -157,6 +169,14 @@ async def process_actionable_walmart_exact_queue_batch(
 
     persistence_outcomes: list[ExactQueuePersistenceOutcome] = []
     retry_reason_counts: dict[str, int] = {}
+    fresh_rejection_counts: dict[str, int] = {}
+    fresh_snapshot_inputs = sum(
+        1
+        for claim in claims
+        if str(getattr(claim, "discovery_snapshot_json", "") or "")
+    )
+    page_circuit_suppressed = 0
+
     for claim, outcome in outcomes:
         candidate, status, error = outcome
         observed_at = datetime.now(timezone.utc)
@@ -169,6 +189,16 @@ async def process_actionable_walmart_exact_queue_batch(
                 observed_at=observed_at,
             )
         )
+
+        is_fresh = _is_fresh_snapshot_candidate(candidate)
+        if str(getattr(claim, "discovery_snapshot_json", "") or "") and not is_fresh:
+            reason = _fresh_snapshot_rejection_reason(claim, now=observed_at)
+            fresh_rejection_counts[reason] = fresh_rejection_counts.get(reason, 0) + 1
+
+        retry_kind = _retry_kind_from_error(error)
+        if retry_kind == "page_circuit_open":
+            page_circuit_suppressed += 1
+
         if candidate is None:
             if status in TERMINAL_IDENTITY_STATUSES:
                 counts["identity_blocked"] += 1
@@ -177,20 +207,11 @@ async def process_actionable_walmart_exact_queue_batch(
             else:
                 counts["failed"] += 1
                 counts[_retry_error_bucket(status=status, error=error)] += 1
-                retry_kind = _retry_kind_from_error(error)
                 retry_reason_counts[retry_kind] = retry_reason_counts.get(retry_kind, 0) + 1
             continue
 
         counts["verified"] += 1
-        if (
-            str(
-                dict(getattr(candidate, "variant_attributes", None) or {}).get(
-                    "exactDetailPriceProofSource"
-                )
-                or ""
-            ).strip()
-            == "affiliate_catalog_fresh_snapshot"
-        ):
+        if is_fresh:
             counts["fresh_catalog_verified"] += 1
         if _trusted_reference(candidate) is not None:
             counts["official_references"] += 1
@@ -245,5 +266,15 @@ async def process_actionable_walmart_exact_queue_batch(
                 key=lambda item: (-item[1], item[0]),
             )[:6]
         ),
+        fresh_snapshot_inputs=fresh_snapshot_inputs,
+        fresh_snapshot_rejections=tuple(
+            sorted(
+                fresh_rejection_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:6]
+        ),
+        page_circuit_open=_page_challenge_circuit_open(provider),
+        page_circuit_suppressed=page_circuit_suppressed,
+        page_circuit_remaining_seconds=_page_challenge_circuit_remaining_seconds(provider),
         **counts,
     )

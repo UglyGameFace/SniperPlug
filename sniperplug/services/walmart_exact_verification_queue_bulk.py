@@ -63,11 +63,15 @@ class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
     persisted_rows: int = 0
     unchanged_rows: int = 0
     write_statements: int = 0
+    safe_snapshot_rows: int = 0
+    page_retry_rearmed: int = 0
 
     def summary_line(self) -> str:
         return (
             "Walmart exact-detail queue: "
             f"discovered **{self.discovered}** • unique item IDs this pass **{self.queued_unique}** • "
+            f"safe fresh proof **{self.safe_snapshot_rows}** • "
+            f"page retries rescued **{self.page_retry_rearmed}** • "
             f"persisted/unchanged **{self.persisted_rows}/{self.unchanged_rows}** • "
             f"write statements **{self.write_statements}** • "
             f"actionable due (bounded) **{self.pending_total}**"
@@ -93,6 +97,12 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     that are new, materially changed, safely rearmed, or old enough to need a
     retention/proof heartbeat. Schema initialization is shared with the exact
     worker's once-per-connection cache.
+
+    A page-retry row that receives a new complete safe snapshot is explicitly
+    rearmed to ``pending``. The old implementation only moved its due time while
+    leaving the row classified as page recovery, so stale high-priority page
+    work could continue to dominate the exact worker even after catalog proof
+    had become available.
 
     Fifty-five rows use 990 parameters, below SQLite's conservative historical
     999-variable limit. A normal 75-100 row pass therefore uses no writes when
@@ -158,6 +168,14 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
             snapshot_refresh_cutoff=snapshot_refresh_cutoff,
         )
     ]
+    safe_snapshot_rows = sum(1 for row in rows if str(row[16] or ""))
+    page_retry_rearmed = sum(
+        1
+        for row in rows_to_write
+        if str(row[16] or "")
+        and existing.get(str(row[0])) is not None
+        and existing[str(row[0])].status == "page_retry"
+    )
 
     write_statements = 0
     for offset in range(0, len(rows_to_write), QUEUE_UPSERT_CHUNK_SIZE):
@@ -212,6 +230,11 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
                     WHEN excluded.discovery_snapshot_json <> ''
                     THEN excluded.discovery_snapshot_at
                     ELSE discovery_snapshot_at END,
+                status = CASE
+                    WHEN status = 'page_retry'
+                         AND excluded.discovery_snapshot_json <> ''
+                    THEN 'pending'
+                    ELSE status END,
                 next_attempt_at = CASE
                     WHEN status IN ('pending', 'retry', 'failed')
                     THEN MIN(next_attempt_at, excluded.next_attempt_at)
@@ -235,6 +258,8 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
         persisted_rows=len(rows_to_write),
         unchanged_rows=max(0, len(rows) - len(rows_to_write)),
         write_statements=write_statements,
+        safe_snapshot_rows=safe_snapshot_rows,
+        page_retry_rearmed=page_retry_rearmed,
     )
 
 

@@ -69,18 +69,25 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
         await runtime_schema.ensure_exact_runtime_schema_once(second)
 
         assert calls == {"queue": 2, "offer": 2}
-        assert first_conn.execute_count == 3
+        assert first_conn.execute_count == 5
         assert first_conn.commit_count == 1
-        assert second_conn.execute_count == 3
+        assert second_conn.execute_count == 5
         assert second_conn.commit_count == 1
-        drop_legacy_sql, claim_sql, pressure_sql = first_conn.sql
-        assert runtime_schema.LEGACY_CLAIM_ORDER_INDEX in drop_legacy_sql
-        assert "DROP INDEX IF EXISTS" in drop_legacy_sql
+        drop_v1_sql, drop_v2_sql, claim_sql, fresh_sql, pressure_sql = first_conn.sql
+        assert runtime_schema.LEGACY_CLAIM_ORDER_INDEX in drop_v1_sql
+        assert runtime_schema.LEGACY_CLAIM_ORDER_INDEX_V2 in drop_v2_sql
+        assert "DROP INDEX IF EXISTS" in drop_v1_sql
+        assert "DROP INDEX IF EXISTS" in drop_v2_sql
         assert runtime_schema.CLAIM_ORDER_INDEX in claim_sql
         assert "CASE status" in claim_sql
+        assert "WHEN 'page_retry' THEN 3" in claim_sql
+        assert "WHEN 'verified_markdown' THEN 4" in claim_sql
         assert "priority_score DESC" in claim_sql
         assert "last_seen_at DESC" in claim_sql
         assert "WHERE status NOT IN" in claim_sql
+        assert runtime_schema.FRESH_PROOF_DUE_INDEX in fresh_sql
+        assert "discovery_snapshot_at DESC" in fresh_sql
+        assert "discovery_snapshot_json <> ''" in fresh_sql
         assert runtime_schema.STATUS_DUE_INDEX in pressure_sql
         assert "status," in pressure_sql
         assert "next_attempt_at" in pressure_sql
@@ -130,19 +137,29 @@ def test_terminal_identity_maintenance_is_bounded(monkeypatch) -> None:
     asyncio.run(run())
 
 
-def test_claim_query_order_matches_claim_order_index() -> None:
+def test_claim_query_prioritizes_fresh_proof_and_keeps_bounded_recovery_order() -> None:
+    schema_source = (
+        ROOT / "sniperplug/services/walmart_exact_runtime_schema.py"
+    ).read_text(encoding="utf-8")
     for fragment in (
-        "CASE status",
+        "discovery_snapshot_at >= ?",
+        "LIMIT ?",
         "WHEN 'pending' THEN 0",
         "WHEN 'page_retry' THEN 3",
-        "WHEN 'verified_markdown' THEN 5",
+        "WHEN 'verified_markdown' THEN 4",
         "priority_score DESC",
         "last_seen_at DESC",
     ):
         assert fragment in DRAIN
-        assert fragment in (
-            ROOT / "sniperplug/services/walmart_exact_runtime_schema.py"
-        ).read_text(encoding="utf-8")
+    for fragment in (
+        "WHEN 'pending' THEN 0",
+        "WHEN 'page_retry' THEN 3",
+        "WHEN 'verified_markdown' THEN 4",
+        "priority_score DESC",
+        "last_seen_at DESC",
+        "discovery_snapshot_at DESC",
+    ):
+        assert fragment in schema_source
 
 
 def test_bulk_runtime_uses_cached_schema_and_bounded_maintenance() -> None:

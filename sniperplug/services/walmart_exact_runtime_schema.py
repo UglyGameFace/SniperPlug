@@ -70,10 +70,11 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
     database still performs the complete idempotent initialization.
 
     The v3 claim-order expression index matches the non-snapshot status ordering
-    used after the new fresh-proof lane. A separate partial fresh-proof index
-    keeps recent discovery snapshots addressable without forcing the page-retry
-    backlog through the normal claim order. The status/due index serves bounded
-    scheduler pressure reads and the page-recovery subquery.
+    used after the new fresh-proof lane. The capped page-recovery lane remains
+    ahead of scheduled verified-item rechecks, while a separate partial
+    fresh-proof index keeps recent discovery snapshots addressable without
+    forcing the page-retry backlog through the normal claim order. The status/due
+    index serves bounded scheduler pressure reads and the page-recovery subquery.
     """
 
     conn = db.require_conn()
@@ -95,12 +96,12 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
                     WHEN 'pending' THEN 0
                     WHEN 'retry' THEN 1
                     WHEN 'failed' THEN 2
-                    WHEN 'verified_markdown' THEN 3
-                    WHEN 'verified_under_threshold' THEN 4
-                    WHEN 'verified_no_reference' THEN 5
-                    WHEN 'verified_reference' THEN 6
-                    WHEN 'not_buyable' THEN 7
-                    WHEN 'page_retry' THEN 8
+                    WHEN 'page_retry' THEN 3
+                    WHEN 'verified_markdown' THEN 4
+                    WHEN 'verified_under_threshold' THEN 5
+                    WHEN 'verified_no_reference' THEN 6
+                    WHEN 'verified_reference' THEN 7
+                    WHEN 'not_buyable' THEN 8
                     WHEN 'verifying' THEN 9
                     ELSE 10
                 END,

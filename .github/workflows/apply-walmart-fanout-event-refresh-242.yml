@@ -1,0 +1,46 @@
+name: Apply Walmart fanout event refresh 242
+
+on:
+  push:
+    branches:
+      - fix/walmart-fanout-event-refresh-242
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[fanout-242-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Apply focused source changes
+        run: python tools/apply_walmart_fanout_event_refresh_242.py
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Focused regressions
+        run: pytest -q tests/test_walmart_fanout_event_refresh.py tests/test_walmart_fanout_cursor_read.py
+      - name: Dependency check
+        run: pip check
+      - name: Compile
+        run: python -m compileall -q sniperplug tests *.py
+      - name: Full suite
+        run: pytest -q
+      - name: Diff check
+        run: git diff --check
+      - name: Commit applied changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sniperplug/cogs/global_auto_scan_runner.py sniperplug/services/walmart_global_deal_fanout_bulk.py sniperplug/services/dm_delivery_telemetry.py tests/test_walmart_fanout_event_refresh.py
+          git commit -m "Refresh Walmart fanout when alert proof changes [fanout-242-applied]"
+          git push origin HEAD:${GITHUB_REF_NAME}

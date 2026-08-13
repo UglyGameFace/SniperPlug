@@ -1,0 +1,73 @@
+name: Apply deals live timeout 245 r2
+
+on:
+  push:
+    branches: [fix/deals-live-timeout-245]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/deals-live-timeout-245
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Apply original focused implementation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/apply-deals-live-timeout-245.yml').read_text()
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "          PY\n      - name: Install dependencies"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          body = workflow[start:end]
+          lines = []
+          for line in body.splitlines():
+              if line.startswith('          '):
+                  line = line[10:]
+              lines.append(line)
+          script = '\n'.join(lines) + '\n'
+          exec(compile(script, 'apply-deals-live-timeout-245', 'exec'), {'__name__': '__main__'})
+
+          coordinator = Path('sniperplug/services/walmart_request_coordinator.py')
+          text = coordinator.read_text()
+          if text.count('priority_ready') != 2:
+              raise SystemExit('expected generated priority_ready definition/use exactly twice')
+          text = text.replace('priority_ready', 'exact_has_priority')
+          coordinator.write_text(text)
+          PY
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Targeted regression tests
+        run: pytest -q tests/test_deals_live_timeout_245.py tests/test_deals_discover_hardening_244.py tests/test_walmart_request_coordinator.py tests/test_walmart_exact_verification_queue_bulk.py
+      - name: Static validation
+        run: |
+          pip check
+          python -m compileall -q sniperplug tests *.py
+          git diff --check
+      - name: Full test suite
+        run: pytest -q
+      - name: Commit validated implementation and remove applicators
+        shell: bash
+        run: |
+          rm .github/workflows/apply-deals-live-timeout-245.yml
+          rm .github/workflows/apply-deals-live-timeout-245-r2.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ACTIVE_TASK.md sniperplug tests .github/workflows/apply-deals-live-timeout-245.yml .github/workflows/apply-deals-live-timeout-245-r2.yml
+          git commit -m "Fix live /deals latency and expired result buttons"
+          git push origin HEAD:fix/deals-live-timeout-245

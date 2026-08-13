@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from sniperplug.cogs.deal_scanner import DealCard
 
 
+DIRECT_MATCH_VISIBLE_LIMIT = 5
+
+
 @dataclass(frozen=True)
 class RankedCards:
     verified: list[DealCard]
@@ -21,8 +24,11 @@ def rank_verified_cards(cards: list[DealCard]) -> list[DealCard]:
 
 
 def rank_review_cards(cards: list[DealCard]) -> list[DealCard]:
-    """Rank private review cards, including exact product matches and flip-comp leads."""
-    return sorted(cards, key=review_card_score, reverse=True)
+    """Rank private review cards, keeping strong direct search matches visible."""
+    ranked = sorted(cards, key=review_card_score, reverse=True)
+    if any(getattr(card, "product_search_match", False) for card in ranked):
+        return ranked[:DIRECT_MATCH_VISIBLE_LIMIT]
+    return ranked
 
 
 def verified_card_score(card: DealCard) -> tuple[float, float, float, float]:

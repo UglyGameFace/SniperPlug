@@ -19,14 +19,10 @@ from sniperplug.services.walmart_review_candidates import ReviewCandidateResult,
 
 
 QUERY_RESULTS_PER_PAGE = 25
-QUERY_PAGES = 5
-QUERY_CONCURRENCY = 8
-QUERY_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = (
-    (None, None),
-    ("price", "ascending"),
-    ("bestseller", None),
-    ("new", None),
-)
+QUERY_PAGES = 2
+QUERY_CONCURRENCY = 4
+INTERACTIVE_MAX_QUERIES = 5
+INTERACTIVE_MAX_ROUTES = 8
 DIRECT_PRODUCT_MATCH_MIN_SCORE = 0.66
 DIRECT_PRODUCT_MATCH_LIMIT = 5
 
@@ -56,12 +52,52 @@ class DealFinderResult:
         return bool(self.verified_cards or self.review_candidates.cards)
 
 
+def interactive_query_routes(
+    plan: SearchPlan,
+    *,
+    pages_per_query: int = QUERY_PAGES,
+    max_routes: int = INTERACTIVE_MAX_ROUTES,
+) -> tuple[tuple[str, int, str | None, str | None], ...]:
+    """Build a small, recall-aware route set for a user waiting in Discord.
+
+    The exact user query gets two relevance pages plus price and bestseller
+    coverage. Remaining route budget goes to the highest-priority expanded
+    queries on page one. This deliberately prevents `/deals` from behaving like
+    the deep `/discover` crawler.
+    """
+    queries = [str(value or "").strip() for value in plan.queries if str(value or "").strip()]
+    if not queries:
+        return ()
+
+    bounded_routes = max(1, int(max_routes))
+    primary_pages = max(1, min(2, int(pages_per_query)))
+    routes: list[tuple[str, int, str | None, str | None]] = []
+
+    def add(query: str, page: int, sort_value: str | None, order_value: str | None) -> None:
+        route = (query, page, sort_value, order_value)
+        if route not in routes and len(routes) < bounded_routes:
+            routes.append(route)
+
+    primary = queries[0]
+    for page in range(1, primary_pages + 1):
+        add(primary, page, None, None)
+    add(primary, 1, "price", "ascending")
+    add(primary, 1, "bestseller", None)
+
+    for expanded in queries[1:]:
+        add(expanded, 1, None, None)
+        if len(routes) >= bounded_routes:
+            break
+
+    return tuple(routes)
+
+
 async def find_walmart_deals_for_query(
     *,
     query: str,
     requested_by: str,
     min_discount: int = 50,
-    max_queries: int = 10,
+    max_queries: int = INTERACTIVE_MAX_QUERIES,
     pages_per_query: int = QUERY_PAGES,
     db=None,
     guild_id: int | None = None,
@@ -110,11 +146,14 @@ async def find_walmart_deals_for_query(
                 searches_attempted += 1
             return search_query, outcome.result, outcome.cache_hit
 
+    routes = interactive_query_routes(
+        plan,
+        pages_per_query=pages_per_query,
+        max_routes=INTERACTIVE_MAX_ROUTES,
+    )
     tasks = [
         scan_one(search_query, page, sort_value, order_value)
-        for search_query in plan.queries
-        for sort_value, order_value in QUERY_SORT_PASSES
-        for page in range(1, pages_per_query + 1)
+        for search_query, page, sort_value, order_value in routes
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
@@ -163,6 +202,7 @@ async def find_walmart_deals_for_query(
             "cache_hits": str(cache_hits),
             "cache_misses": str(cache_misses),
             "force_refresh": "yes" if force_refresh else "no",
+            "interactive_route_budget": str(len(routes)),
         },
     )
     verified = deal_scanner.build_walmart_cards(aggregate, min_discount=min_discount, alerts_only=False)

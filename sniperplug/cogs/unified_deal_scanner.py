@@ -30,7 +30,12 @@ from sniperplug.services.deal_search_modes import (
 )
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.deal_category_preferences import apply_category_preferences, get_category_preferences
-from sniperplug.services.embed_delivery import batch_cards_for_limit, sanitize_embed, send_summary_and_embeds
+from sniperplug.services.embed_delivery import (
+    batch_cards_for_limit,
+    sanitize_embed,
+    send_followup_with_optional_view,
+    send_summary_and_embeds,
+)
 from sniperplug.services.manual_review_share import ManualReviewShareView
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
@@ -346,10 +351,16 @@ async def send_private_card_batches(
     batches = batch_cards_for_limit(cards)
     if not batches:
         if content or view is not None:
-            await interaction.followup.send(content=content, view=view, ephemeral=True)
+            await send_followup_with_optional_view(
+                interaction,
+                content=content,
+                view=view,
+                ephemeral=True,
+            )
         return
     for index, batch in enumerate(batches):
-        await interaction.followup.send(
+        await send_followup_with_optional_view(
+            interaction,
             content=content if index == 0 else None,
             embeds=[sanitize_embed(card.embed) for card in batch],
             view=view if index == len(batches) - 1 else None,

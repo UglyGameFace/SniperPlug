@@ -10,7 +10,10 @@ from sniperplug.services.walmart_exact_queue_bulk_persistence import (
     ExactQueuePersistenceOutcome,
     persist_exact_queue_outcomes_bulk,
 )
-from sniperplug.services.walmart_exact_queue_drain import claim_due_rows_batched
+from sniperplug.services.walmart_exact_queue_drain import (
+    PAGE_RECOVERY_CLAIM_CAP,
+    claim_due_rows_batched,
+)
 from sniperplug.services.walmart_exact_queue_maintenance import (
     maybe_prune_walmart_exact_queue_bounded,
 )
@@ -87,10 +90,10 @@ async def process_actionable_walmart_exact_queue_batch(
 
     When the Walmart product-page challenge circuit is open, already-known
     ``page_retry`` work is moved just past the circuit close time before claims
-    are selected. Those rows cannot use HTML during the cooldown, so repeatedly
-    leasing them only produced ``page_circuit_open`` failures and Turso churn in
-    production. Fresh catalog rediscovery can still rescue a row immediately by
-    changing it back to ``pending`` with strict selected-offer proof.
+    are selected. The claim selector also disables the stale page-recovery lane
+    entirely while the circuit is open, so a backlog larger than the bounded
+    deferral sweep cannot leak another two known page retries into every worker
+    cycle. Fresh/pending/API work remains claimable and can verify without HTML.
 
     Fresh discovery proof and page-challenge circuit state are reported directly
     in the worker summary. This makes a zero-promotion batch explainable without
@@ -128,12 +131,16 @@ async def process_actionable_walmart_exact_queue_batch(
         effective_limit = max(effective_limit, DRAIN_BATCH_SIZE)
         effective_concurrency = max(effective_concurrency, DRAIN_CONCURRENCY)
     mode = "drain" if drain_mode else "normal"
+    page_recovery_claim_cap = (
+        0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP
+    )
 
     claim_started = time.monotonic()
     claims = await claim_due_rows_batched(
         conn,
         now=now,
         limit=effective_limit,
+        page_recovery_claim_cap=page_recovery_claim_cap,
     )
     claim_seconds = max(0.0, time.monotonic() - claim_started)
     if not claims:

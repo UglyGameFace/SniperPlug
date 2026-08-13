@@ -46,6 +46,7 @@ class DealFinderResult:
     route_stats: tuple[SearchRouteStats, ...] = ()
     boosted_routes: tuple[str, ...] = ()
     scout_lead_count: int = 0
+    product_match_count: int = 0
     cache_hits: int = 0
     cache_misses: int = 0
     force_refresh: bool = False
@@ -72,10 +73,9 @@ async def find_walmart_deals_for_query(
     can reuse fresh provider responses without going blind to new glitches.
     `force_refresh=True` bypasses the cache for the explicit Fresh Scan path.
 
-    If no verified/review/scout deal card survives, the exact user query gets a
-    final private product-match fallback. That fallback can show a current-price
-    Walmart result, but it never upgrades the item into verified deal proof or a
-    public/DM-alert-eligible card.
+    Strong direct product matches stay private and can coexist with review/scout
+    leads so a normal product search is not buried just because a weaker value
+    lead also survived. Search relevance never becomes public deal proof.
     """
     memory_records = await top_route_memory(db, guild_id=guild_id, retailer=RETAILER_WALMART, limit=8)
     boosted_routes = memory_boost_queries(memory_records, limit=3)
@@ -172,12 +172,19 @@ async def find_walmart_deals_for_query(
     review = build_review_candidate_cards(list(deduped), query=query)
     scout_cards = scout_low_price_leads(deduped, limit=8, search_query=query)
     review = merge_scout_review_cards(review, scout_cards)
+    direct_match_cards = build_direct_product_match_cards(
+        deduped,
+        query=query,
+        limit=DIRECT_PRODUCT_MATCH_LIMIT,
+    )
     review = apply_direct_product_fallback(
         verified_cards=verified,
         review=review,
         candidates=deduped,
         query=query,
+        direct_match_cards=direct_match_cards,
     )
+    review = merge_direct_product_matches(review, direct_match_cards)
     review = rank_review_candidate_result(review)
 
     return DealFinderResult(
@@ -194,6 +201,7 @@ async def find_walmart_deals_for_query(
         route_stats=merged_route_stats,
         boosted_routes=boosted_routes,
         scout_lead_count=len(scout_cards),
+        product_match_count=len(direct_match_cards),
         cache_hits=cache_hits,
         cache_misses=cache_misses,
         force_refresh=force_refresh,
@@ -244,14 +252,17 @@ def apply_direct_product_fallback(
     candidates: list[SourceCandidate],
     query: str,
     limit: int = DIRECT_PRODUCT_MATCH_LIMIT,
+    direct_match_cards: list[DealCard] | None = None,
 ) -> ReviewCandidateResult:
-    """Use private direct product matches only when every deal lane is empty."""
+    """Use private direct product matches when every deal lane is empty."""
     if verified_cards or review.cards:
         return review
-    fallback_cards = build_direct_product_match_cards(candidates, query=query, limit=limit)
+    fallback_cards = direct_match_cards
+    if fallback_cards is None:
+        fallback_cards = build_direct_product_match_cards(candidates, query=query, limit=limit)
     if not fallback_cards:
         return review
-    return copy_review_result(review, cards=fallback_cards)
+    return copy_review_result(review, cards=fallback_cards[: max(1, int(limit))])
 
 
 def build_direct_product_match_cards(
@@ -344,6 +355,26 @@ def copy_review_result(review: ReviewCandidateResult, *, cards: list[DealCard]) 
         ignored_reference_sources=review.ignored_reference_sources,
         no_value_reasons=review.no_value_reasons,
     )
+
+
+def merge_direct_product_matches(
+    review: ReviewCandidateResult,
+    direct_match_cards: list[DealCard],
+    *,
+    limit: int = 10,
+) -> ReviewCandidateResult:
+    """Keep strong private search matches even when review/scout leads also exist."""
+    if not direct_match_cards:
+        return review
+    merged: list[DealCard] = []
+    seen: set[str] = set()
+    for card in [*direct_match_cards, *review.cards]:
+        key = getattr(card, "selected_offer_id", None) or getattr(card, "sku", None) or getattr(card, "upc", None) or card.url or card.label
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(card)
+    return copy_review_result(review, cards=merged[: max(1, int(limit))])
 
 
 def merge_scout_review_cards(review: ReviewCandidateResult, scout_cards: list[DealCard], *, limit: int = 10) -> ReviewCandidateResult:

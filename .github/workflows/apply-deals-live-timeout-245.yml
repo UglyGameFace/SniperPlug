@@ -1,0 +1,181 @@
+name: Apply deals live timeout 245
+
+on:
+  push:
+    branches: [fix/deals-live-timeout-245]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/deals-live-timeout-245
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Apply focused implementation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          # 1) Give real Discord-user searches a priority lane between exact proof
+          # and background catalog/search traffic. Exact verification still wins.
+          replace_once(
+              "sniperplug/services/walmart_request_coordinator.py",
+              "EXACT_PRIORITY = 0\nSEARCH_PRIORITY = 10\nDEFAULT_CAPACITY = 3\n",
+              "EXACT_PRIORITY = 0\nINTERACTIVE_SEARCH_PRIORITY = 5\nSEARCH_PRIORITY = 10\nDEFAULT_CAPACITY = 3\n",
+          )
+          replace_once(
+              "sniperplug/services/walmart_request_coordinator.py",
+              "        self._waiting_exact = 0\n        self._waiting_search = 0\n",
+              "        self._waiting_exact = 0\n        self._waiting_interactive = 0\n        self._waiting_search = 0\n",
+          )
+          replace_once(
+              "sniperplug/services/walmart_request_coordinator.py",
+              "        exact = int(priority) <= EXACT_PRIORITY\n        started = time.monotonic()\n",
+              "        exact = int(priority) <= EXACT_PRIORITY\n        interactive = (\n            not exact and int(priority) < SEARCH_PRIORITY\n        )\n        started = time.monotonic()\n",
+          )
+          replace_once(
+              "sniperplug/services/walmart_request_coordinator.py",
+              "            if exact:\n                self._waiting_exact += 1\n            else:\n                self._waiting_search += 1\n",
+              "            if exact:\n                self._waiting_exact += 1\n            elif interactive:\n                self._waiting_interactive += 1\n            else:\n                self._waiting_search += 1\n",
+          )
+          replace_once(
+              "sniperplug/services/walmart_request_coordinator.py",
+              "                    exact_has_priority = exact or self._waiting_exact == 0\n                    if (\n                        cooldown_ready\n                        and self._active < self.capacity\n                        and exact_has_priority\n                    ):\n",
+              "                    priority_ready = (\n                        exact\n                        or (interactive and self._waiting_exact == 0)\n                        or (\n                            not exact\n                            and not interactive\n                            and self._waiting_exact == 0\n                            and self._waiting_interactive == 0\n                        )\n                    )\n                    if (\n                        cooldown_ready\n                        and self._active < self.capacity\n                        and priority_ready\n                    ):\n",
+          )
+          replace_once(
+              "sniperplug/services/walmart_request_coordinator.py",
+              "                if exact:\n                    self._waiting_exact = max(0, self._waiting_exact - 1)\n                else:\n                    self._waiting_search = max(0, self._waiting_search - 1)\n",
+              "                if exact:\n                    self._waiting_exact = max(0, self._waiting_exact - 1)\n                elif interactive:\n                    self._waiting_interactive = max(0, self._waiting_interactive - 1)\n                else:\n                    self._waiting_search = max(0, self._waiting_search - 1)\n",
+          )
+          replace_once(
+              "sniperplug/services/walmart_request_coordinator.py",
+              "                \"waiting_exact\": self._waiting_exact,\n                \"waiting_search\": self._waiting_search,\n",
+              "                \"waiting_exact\": self._waiting_exact,\n                \"waiting_interactive\": self._waiting_interactive,\n                \"waiting_search\": self._waiting_search,\n",
+          )
+
+          replace_once(
+              "sniperplug/providers/coordinated_walmart.py",
+              "    EXACT_PRIORITY,\n    SEARCH_PRIORITY,\n",
+              "    EXACT_PRIORITY,\n    INTERACTIVE_SEARCH_PRIORITY,\n    SEARCH_PRIORITY,\n",
+          )
+          marker = "\n\nclass CoordinatedWalmartProvider(DealProvider):\n"
+          provider_path = Path("sniperplug/providers/coordinated_walmart.py")
+          provider_text = provider_path.read_text()
+          if marker not in provider_text:
+              raise SystemExit("coordinated_walmart.py: class marker missing")
+          helper = '''\n\ndef _scan_priority(request: ProviderScanRequest) -> int:\n    metadata = dict(request.metadata or {})\n    requested_by = str(metadata.get("requested_by") or "").strip()\n    if requested_by.isdigit():\n        return INTERACTIVE_SEARCH_PRIORITY\n    return SEARCH_PRIORITY\n'''
+          provider_path.write_text(provider_text.replace(marker, helper + marker, 1))
+          replace_once(
+              "sniperplug/providers/coordinated_walmart.py",
+              "    async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:\n        async with walmart_request_slot(priority=SEARCH_PRIORITY):\n            return await self.delegate.scan(request)\n",
+              "    async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:\n        async with walmart_request_slot(priority=_scan_priority(request)):\n            return await self.delegate.scan(request)\n",
+          )
+
+          # 2) /deals is an interactive search, not a 200-route crawler. Keep the
+          # exact user query strong, sample a few expansions, and cap the request
+          # budget to eight routes. /discover retains the deep crawling path.
+          replace_once(
+              "sniperplug/services/deal_finder_engine.py",
+              '''QUERY_RESULTS_PER_PAGE = 25\nQUERY_PAGES = 5\nQUERY_CONCURRENCY = 8\nQUERY_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = (\n    (None, None),\n    ("price", "ascending"),\n    ("bestseller", None),\n    ("new", None),\n)\nDIRECT_PRODUCT_MATCH_MIN_SCORE = 0.66\n''',
+              '''QUERY_RESULTS_PER_PAGE = 25\nQUERY_PAGES = 2\nQUERY_CONCURRENCY = 4\nINTERACTIVE_MAX_QUERIES = 5\nINTERACTIVE_MAX_ROUTES = 8\nDIRECT_PRODUCT_MATCH_MIN_SCORE = 0.66\n''',
+          )
+          replace_once(
+              "sniperplug/services/deal_finder_engine.py",
+              "    max_queries: int = 10,\n",
+              "    max_queries: int = INTERACTIVE_MAX_QUERIES,\n",
+          )
+          engine_path = Path("sniperplug/services/deal_finder_engine.py")
+          engine_text = engine_path.read_text()
+          marker = "\n\nasync def find_walmart_deals_for_query(\n"
+          if marker not in engine_text:
+              raise SystemExit("deal_finder_engine.py: finder marker missing")
+          route_helper = '''\n\ndef interactive_query_routes(\n    plan: SearchPlan,\n    *,\n    pages_per_query: int = QUERY_PAGES,\n    max_routes: int = INTERACTIVE_MAX_ROUTES,\n) -> tuple[tuple[str, int, str | None, str | None], ...]:\n    """Build a small, recall-aware route set for a user waiting in Discord.\n\n    The exact user query gets two relevance pages plus price and bestseller\n    coverage. Remaining route budget goes to the highest-priority expanded\n    queries on page one. This deliberately prevents `/deals` from behaving like\n    the deep `/discover` crawler.\n    """\n    queries = [str(value or "").strip() for value in plan.queries if str(value or "").strip()]\n    if not queries:\n        return ()\n\n    bounded_routes = max(1, int(max_routes))\n    primary_pages = max(1, min(2, int(pages_per_query)))\n    routes: list[tuple[str, int, str | None, str | None]] = []\n\n    def add(query: str, page: int, sort_value: str | None, order_value: str | None) -> None:\n        route = (query, page, sort_value, order_value)\n        if route not in routes and len(routes) < bounded_routes:\n            routes.append(route)\n\n    primary = queries[0]\n    for page in range(1, primary_pages + 1):\n        add(primary, page, None, None)\n    add(primary, 1, "price", "ascending")\n    add(primary, 1, "bestseller", None)\n\n    for expanded in queries[1:]:\n        add(expanded, 1, None, None)\n        if len(routes) >= bounded_routes:\n            break\n\n    return tuple(routes)\n'''
+          engine_path.write_text(engine_text.replace(marker, route_helper + marker, 1))
+          replace_once(
+              "sniperplug/services/deal_finder_engine.py",
+              '''    tasks = [\n        scan_one(search_query, page, sort_value, order_value)\n        for search_query in plan.queries\n        for sort_value, order_value in QUERY_SORT_PASSES\n        for page in range(1, pages_per_query + 1)\n    ]\n\n    results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []\n''',
+              '''    routes = interactive_query_routes(\n        plan,\n        pages_per_query=pages_per_query,\n        max_routes=INTERACTIVE_MAX_ROUTES,\n    )\n    tasks = [\n        scan_one(search_query, page, sort_value, order_value)\n        for search_query, page, sort_value, order_value in routes\n    ]\n\n    results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []\n''',
+          )
+          replace_once(
+              "sniperplug/services/deal_finder_engine.py",
+              '            "force_refresh": "yes" if force_refresh else "no",\n',
+              '            "force_refresh": "yes" if force_refresh else "no",\n            "interactive_route_budget": str(len(routes)),\n',
+          )
+
+          # 3) Keep the ephemeral mode menu alive for Discord's practical
+          # interaction window and make deferred button acknowledgement safe.
+          unified_path = Path("sniperplug/cogs/unified_deal_scanner.py")
+          unified_text = unified_path.read_text()
+          class_marker = "\n\nclass UnifiedDealScannerCog(DealScannerCog):\n"
+          if class_marker not in unified_text:
+              raise SystemExit("unified_deal_scanner.py: class marker missing")
+          unified_path.write_text(
+              unified_text.replace(
+                  class_marker,
+                  "\n\nDEAL_MODE_VIEW_TIMEOUT_SECONDS = 15 * 60\n" + class_marker,
+                  1,
+              )
+          )
+          replace_once(
+              "sniperplug/cogs/unified_deal_scanner.py",
+              "        super().__init__(timeout=300)\n",
+              "        super().__init__(timeout=DEAL_MODE_VIEW_TIMEOUT_SECONDS)\n",
+          )
+          replace_once(
+              "sniperplug/cogs/unified_deal_scanner.py",
+              "    async def show_mode(self, interaction: discord.Interaction, mode: str, *, refresh: bool = False) -> None:\n        await interaction.response.defer(ephemeral=True)\n",
+              "    async def show_mode(self, interaction: discord.Interaction, mode: str, *, refresh: bool = False) -> None:\n        if not await deal_scanner.safe_defer(interaction, ephemeral=True, thinking=True):\n            return\n",
+          )
+          replace_once(
+              "sniperplug/cogs/unified_deal_scanner.py",
+              "        await interaction.response.defer(ephemeral=True)\n        freshness = self.view.freshness\n",
+              "        if not await deal_scanner.safe_defer(interaction, ephemeral=True, thinking=True):\n            return\n        freshness = self.view.freshness\n",
+          )
+
+          # Regression coverage for the exact live failure.
+          Path("tests/test_deals_live_timeout_245.py").write_text('''from __future__ import annotations\n\nimport threading\nimport time\nfrom types import SimpleNamespace\n\nimport pytest\n\nfrom sniperplug.cogs.unified_deal_scanner import (\n    DEAL_MODE_VIEW_TIMEOUT_SECONDS,\n    DealSearchModeView,\n)\nfrom sniperplug.providers.base import ProviderScanRequest\nfrom sniperplug.providers.coordinated_walmart import _scan_priority\nfrom sniperplug.services.deal_finder_engine import (\n    INTERACTIVE_MAX_ROUTES,\n    interactive_query_routes,\n)\nfrom sniperplug.services.deal_search_modes import MODE_BEST\nfrom sniperplug.services.search_expansion import SearchPlan\nfrom sniperplug.services.walmart_request_coordinator import (\n    INTERACTIVE_SEARCH_PRIORITY,\n    SEARCH_PRIORITY,\n    WalmartRequestCoordinator,\n)\n\n\ndef test_interactive_deals_route_budget_is_bounded_and_exact_query_first() -> None:\n    plan = SearchPlan(\n        original_query="phone mount",\n        queries=(\n            "phone mount",\n            "car phone mount",\n            "magnetic phone mount",\n            "phone mount rollback",\n            "phone mount clearance",\n            "dashboard phone mount",\n            "vent phone mount",\n            "wireless phone mount",\n            "phone holder",\n            "magsafe mount",\n        ),\n    )\n\n    routes = interactive_query_routes(plan)\n\n    assert len(routes) == INTERACTIVE_MAX_ROUTES == 8\n    assert routes[0] == ("phone mount", 1, None, None)\n    assert routes[1] == ("phone mount", 2, None, None)\n    assert ("phone mount", 1, "price", "ascending") in routes\n    assert ("phone mount", 1, "bestseller", None) in routes\n    assert all(page == 1 for query, page, _sort, _order in routes if query != "phone mount")\n\n\ndef test_real_discord_user_id_gets_interactive_walmart_search_priority() -> None:\n    interactive = ProviderScanRequest(\n        source_key="walmart",\n        query="phone mount",\n        metadata={"requested_by": "123456789012345678"},\n    )\n    background = ProviderScanRequest(\n        source_key="walmart",\n        query="clearance",\n        metadata={"requested_by": "autoscan"},\n    )\n\n    assert _scan_priority(interactive) == INTERACTIVE_SEARCH_PRIORITY\n    assert _scan_priority(background) == SEARCH_PRIORITY\n\n\ndef test_interactive_search_waiter_beats_background_search_waiter() -> None:\n    coordinator = WalmartRequestCoordinator(capacity=1)\n    coordinator.acquire(priority=SEARCH_PRIORITY)\n    order: list[str] = []\n\n    def wait(label: str, priority: int) -> None:\n        coordinator.acquire(priority=priority, timeout_seconds=3)\n        try:\n            order.append(label)\n            time.sleep(0.02)\n        finally:\n            coordinator.release()\n\n    background = threading.Thread(target=wait, args=("background", SEARCH_PRIORITY))\n    interactive = threading.Thread(\n        target=wait,\n        args=("interactive", INTERACTIVE_SEARCH_PRIORITY),\n    )\n    background.start()\n    time.sleep(0.03)\n    interactive.start()\n\n    deadline = time.monotonic() + 2\n    while time.monotonic() < deadline:\n        snapshot = coordinator.snapshot()\n        if (\n            snapshot["waiting_search"] == 1\n            and snapshot["waiting_interactive"] == 1\n        ):\n            break\n        time.sleep(0.01)\n\n    coordinator.release()\n    background.join(timeout=3)\n    interactive.join(timeout=3)\n\n    assert order == ["interactive", "background"]\n\n\n@pytest.mark.asyncio\nasync def test_deal_mode_menu_stays_alive_for_fifteen_minutes() -> None:\n    view = DealSearchModeView(\n        cog=SimpleNamespace(),\n        query="phone mount",\n        min_discount=50,\n        max_results=10,\n        sort_value=None,\n        order_value=None,\n        alerts_only=False,\n        simple_mode=True,\n        mode=MODE_BEST,\n    )\n    try:\n        assert DEAL_MODE_VIEW_TIMEOUT_SECONDS == 15 * 60\n        assert view.timeout == DEAL_MODE_VIEW_TIMEOUT_SECONDS\n    finally:\n        view.stop()\n''')
+
+          Path("ACTIVE_TASK.md").write_text('''# Active Task\n\n## Status\n**Active — SP-DEALS-DISCOVER-HARDENING-244 live follow-up. PR #244 merged and its merge checks passed, but the production `/deals search:phone mount` gate failed. Branch `fix/deals-live-timeout-245` addresses the live latency and dead-button failure before #244 can close.**\n\n## Scope\nFinish the existing `/deals` + `/discover` hardening task. Do not start the suspended Walmart missed-deals backlog until this live gate passes.\n\n## Live findings\n- The `/deals search:phone mount` result menu took more than ten minutes to arrive.\n- The mode menu then showed Discord `SniperPlug didn't respond in time`; by the screenshot the menu was 13 minutes old.\n- `DealSearchModeView` used a hard-coded 300-second timeout, so the visible buttons became dead after five minutes.\n- `find_walmart_deals_for_query` built up to 200 provider routes: 10 expanded queries × 4 sort passes × 5 pages, then awaited the entire gather before rendering the menu.\n- Manual `/deals` searches and background Walmart catalog searches shared the same search-priority lane. Live logs showed Walmart capacity 3 saturated with 5-6 waiting searches plus Discord gateway/event-loop lag.\n\n## Current implementation\n- Bound interactive `/deals` to at most eight provider routes while keeping the exact query first, two exact-query relevance pages, price/bestseller coverage, and top expanded routes. `/discover` remains the deep crawler.\n- Reduce `/deals` local fanout concurrency from 8 to 4 so one command cannot flood the shared Walmart request gate.\n- Add an interactive Walmart search priority between exact verification and background catalog/search work. Real Discord user IDs use it; exact verification still has highest priority.\n- Extend the mode menu lifetime from five minutes to fifteen minutes.\n- Use safe interaction defer handling for mode and New/Drops callbacks.\n- Add regressions for the eight-route budget, user-vs-background request priority, interactive waiter ordering, and 15-minute view lifetime.\n\n## Definition of Done\n1. Targeted regressions pass.\n2. `pip check`, compileall, and the full pytest suite pass.\n3. Temporary applicator workflow is absent from the final branch diff.\n4. Branch is clean against current `main`; inspect conflicts and duplicate/obsolete implementations.\n5. Create PR, require canonical PR checks green, inspect comments/reviews/inline threads, then merge.\n6. Verify the merge commit checks on `main`.\n7. Deploy merged `main` to Discloud app `1779293887444`.\n8. Live `/deals search:phone mount` must render in a reasonable interactive window, not 10+ minutes; mode buttons must work after the menu appears; Fresh Scan remains bounded.\n9. Live `/discover` must still return only current-job item IDs as established by PR #244.\n10. Only then close SP-DEALS-DISCOVER-HARDENING-244.\n\n## Cleanup status\nPending validation. No duplicate verifier or alternate `/deals` command is being added. The deep `/discover` path is intentionally left separate.\n\n## Suspended task\n**SP-WM-MISSED-DEALS-236 remains suspended, not closed.** Resume only after this active task closes or an explicit FORCE SWITCH.\n\n## Backlog\n- Resume Walmart exact-verification/page-recovery throughput work after #244 closes.\n- Investigate remaining Discord gateway lag only if it persists after interactive `/deals` request volume is bounded.\n- Resume SniperPlug-Site Whop content-reader work later.\n''')
+          PY
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Targeted regression tests
+        run: pytest -q tests/test_deals_live_timeout_245.py tests/test_deals_discover_hardening_244.py tests/test_walmart_request_coordinator.py
+      - name: Static validation
+        run: |
+          pip check
+          python -m compileall -q sniperplug tests *.py
+          git diff --check
+      - name: Full test suite
+        run: pytest -q
+      - name: Commit validated implementation and remove applicator
+        shell: bash
+        run: |
+          rm .github/workflows/apply-deals-live-timeout-245.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ACTIVE_TASK.md sniperplug tests .github/workflows/apply-deals-live-timeout-245.yml
+          git commit -m "Fix live /deals latency and expired result buttons"
+          git push origin HEAD:fix/deals-live-timeout-245

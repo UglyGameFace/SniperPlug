@@ -80,7 +80,8 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
         assert "DROP INDEX IF EXISTS" in drop_v2_sql
         assert runtime_schema.CLAIM_ORDER_INDEX in claim_sql
         assert "CASE status" in claim_sql
-        assert "WHEN 'page_retry' THEN 8" in claim_sql
+        assert "WHEN 'page_retry' THEN 3" in claim_sql
+        assert "WHEN 'verified_markdown' THEN 4" in claim_sql
         assert "priority_score DESC" in claim_sql
         assert "last_seen_at DESC" in claim_sql
         assert "WHERE status NOT IN" in claim_sql
@@ -136,23 +137,24 @@ def test_terminal_identity_maintenance_is_bounded(monkeypatch) -> None:
     asyncio.run(run())
 
 
-def test_claim_query_prioritizes_fresh_proof_and_keeps_indexed_status_order() -> None:
+def test_claim_query_prioritizes_fresh_proof_and_keeps_bounded_recovery_order() -> None:
     schema_source = (
         ROOT / "sniperplug/services/walmart_exact_runtime_schema.py"
     ).read_text(encoding="utf-8")
     for fragment in (
         "discovery_snapshot_at >= ?",
+        "LIMIT ?",
         "WHEN 'pending' THEN 0",
-        "WHEN 'verified_markdown' THEN 3",
-        "WHEN 'page_retry' THEN 8",
+        "WHEN 'page_retry' THEN 3",
+        "WHEN 'verified_markdown' THEN 4",
         "priority_score DESC",
         "last_seen_at DESC",
     ):
         assert fragment in DRAIN
     for fragment in (
         "WHEN 'pending' THEN 0",
-        "WHEN 'verified_markdown' THEN 3",
-        "WHEN 'page_retry' THEN 8",
+        "WHEN 'page_retry' THEN 3",
+        "WHEN 'verified_markdown' THEN 4",
         "priority_score DESC",
         "last_seen_at DESC",
         "discovery_snapshot_at DESC",

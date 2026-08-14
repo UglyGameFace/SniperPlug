@@ -31,7 +31,9 @@ def test_storage_maintenance_deletes_only_terminal_hot_deal_rows_in_bounded_batc
     assert "status IN ('stale', 'expired') AND last_seen_at < ?" in MAINTENANCE
     assert "old_inactive_active_deals" in MAINTENANCE
     assert "async def delete_bounded_rows(" in MAINTENANCE
-    assert "SELECT rowid FROM {table}" in MAINTENANCE
+    assert "SELECT rowid AS {_MAINTENANCE_ROWID_ALIAS}" in MAINTENANCE
+    assert '_MAINTENANCE_ROWID_ALIAS = "__sniperplug_rowid"' in MAINTENANCE
+    assert "value = _row_value(row, _MAINTENANCE_ROWID_ALIAS, 0)" in MAINTENANCE
     assert "if not rowids:" in MAINTENANCE
 
 

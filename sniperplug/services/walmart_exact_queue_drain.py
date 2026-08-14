@@ -122,7 +122,10 @@ async def claim_due_rows_batched(
 
     Direct compatibility callers that have the current columns but have not run
     runtime index initialization fall back to the historical bounded selector.
-    Production always initializes the indexed runtime schema before claiming.
+    Older pre-snapshot/pre-verified-at callers retain the original legacy
+    selector after that current-schema fallback reports its missing optional
+    columns. Production always initializes the indexed runtime schema before
+    claiming.
     """
 
     now_utc = now.astimezone(timezone.utc)
@@ -243,6 +246,33 @@ async def _select_due_rows_with_optional_discovery_snapshot(
     bounded_limit: int,
     page_recovery_claim_cap: int,
 ) -> list[Any]:
+    current_params = (
+        now_iso,
+        discovery_cutoff,
+        now_iso,
+        markdown_recheck_cutoff,
+        reference_recheck_cutoff,
+        low_signal_recheck_cutoff,
+        snapshot_cutoff,
+        now_iso,
+        discovery_cutoff,
+        now_iso,
+        snapshot_cutoff,
+        page_recovery_claim_cap,
+        snapshot_cutoff,
+        bounded_limit,
+    )
+    legacy_params = (
+        now_iso,
+        discovery_cutoff,
+        now_iso,
+        now_iso,
+        discovery_cutoff,
+        now_iso,
+        page_recovery_claim_cap,
+        bounded_limit,
+    )
+
     try:
         cursor = await conn.execute(
             _indexed_due_rows_select_sql(),
@@ -259,29 +289,26 @@ async def _select_due_rows_with_optional_discovery_snapshot(
         )
     except Exception as exc:
         if _is_missing_runtime_claim_index(exc):
-            cursor = await conn.execute(
-                _due_rows_select_sql(
-                    _DISCOVERY_SNAPSHOT_COLUMNS,
-                    has_snapshot_columns=True,
-                    has_verified_at=True,
-                ),
-                (
-                    now_iso,
-                    discovery_cutoff,
-                    now_iso,
-                    markdown_recheck_cutoff,
-                    reference_recheck_cutoff,
-                    low_signal_recheck_cutoff,
-                    snapshot_cutoff,
-                    now_iso,
-                    discovery_cutoff,
-                    now_iso,
-                    snapshot_cutoff,
-                    page_recovery_claim_cap,
-                    snapshot_cutoff,
-                    bounded_limit,
-                ),
-            )
+            try:
+                cursor = await conn.execute(
+                    _due_rows_select_sql(
+                        _DISCOVERY_SNAPSHOT_COLUMNS,
+                        has_snapshot_columns=True,
+                        has_verified_at=True,
+                    ),
+                    current_params,
+                )
+            except Exception as fallback_exc:
+                if not _is_missing_optional_claim_column(fallback_exc):
+                    raise
+                cursor = await conn.execute(
+                    _due_rows_select_sql(
+                        _LEGACY_DISCOVERY_SNAPSHOT_PROJECTION,
+                        has_snapshot_columns=False,
+                        has_verified_at=False,
+                    ),
+                    legacy_params,
+                )
         elif _is_missing_optional_claim_column(exc):
             cursor = await conn.execute(
                 _due_rows_select_sql(
@@ -289,16 +316,7 @@ async def _select_due_rows_with_optional_discovery_snapshot(
                     has_snapshot_columns=False,
                     has_verified_at=False,
                 ),
-                (
-                    now_iso,
-                    discovery_cutoff,
-                    now_iso,
-                    now_iso,
-                    discovery_cutoff,
-                    now_iso,
-                    page_recovery_claim_cap,
-                    bounded_limit,
-                ),
+                legacy_params,
             )
         else:
             raise

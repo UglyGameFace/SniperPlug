@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-TURSO-READ-AMPLIFICATION.** PR #251 was already squash-merged as `374a5d3cbd0b050a7378c3325d5cf572c78f3366` and removed the major broad Walmart exact-queue claim/pressure scan. The deployed exact worker now claims in roughly 0.03-0.18s in the supplied live sample while continuing to verify real work. However, the clean Turso dashboard checkpoints still showed SniperPlug rising from **465,010,750 rows read at 4:39 PM** to **466,177,322 at 5:19 PM**: **+1,166,572 rows in 40 minutes (~1.75M/hour)**. That is still too expensive at 94% account quota. PR #252 now contains the second evidence-based hardening pass for stale operational history and cleanup/restore paths; its final head is CI-green and review-thread clean. The task remains open through merge/deploy and a new Turso rows-read slope check.
+**Active — SP-TURSO-READ-AMPLIFICATION is now at the post-deploy quota-slope gate.** PR #251 was squash-merged as `374a5d3cbd0b050a7378c3325d5cf572c78f3366` and removed the major broad Walmart exact-queue claim/pressure scan. The deployed exact worker then claimed in roughly 0.03-0.18s while continuing to verify real work, but the clean Turso dashboard checkpoints still rose from **465,010,750 rows read at 4:39 PM** to **466,177,322 at 5:19 PM**: **+1,166,572 rows in 40 minutes (~1.75M/hour)** at 94% account quota. PR #252 has now been squash-merged to `main` as `68ec064125205f8591062ab2a8df95e1303e8172`; its PR checks and all three post-merge `main` workflows passed. The second hardening pass removes stale operational data and makes cleanup/restore reads bounded and index-seeking. Remaining acceptance is deployment plus a fresh live Turso rows-read slope measurement.
 
 ## Scope
 Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-quota emergency while preserving Walmart exact-verification correctness, price intelligence, dedupe safety, user preferences, and useful learning. Remove operational data that is expired, terminal, redundant, or no longer reachable by runtime behavior. Cleanup itself must be bounded and index-seeking so it does not create another quota spike.
@@ -9,7 +9,7 @@ Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-qu
 ## Root cause / findings
 - Turso's Aug 14 baseline was account-critical: **92% rows-read quota**, with SniperPlug at **455,545,327 rows read**. Later checkpoints reached **94%**.
 - PR #251 fixed the repeated exact-queue selector/pressure amplification. Mature verified rows with legacy-due schedules no longer force broad status scans; live claim timings confirm that path is now fast.
-- The remaining clean post-deploy slope is still high enough to justify inspecting other real readers rather than reopening the solved exact selector.
+- The remaining clean post-deploy slope was still high enough to justify inspecting other real readers rather than reopening the solved exact selector.
 - Startup `run_storage_maintenance` was still using generic `SELECT rowid ... WHERE ... ORDER BY rowid LIMIT ?` selectors. Even though deletes were capped at 500 rows, `ORDER BY rowid` did not align with expiry/time predicates and could force avoidable scans before finding old rows.
 - `/storage_maintenance_now` performed a full server-specific `storage_counts()` sweep **before and after** cleanup. Those decorative `COUNT(*)` reads were unnecessary during a quota emergency because the cleanup result already knows exact changed-row counts.
 - `scan_runs` is execution telemetry, not price intelligence, yet was retained for 30 days. Startup already hit the exact 500-row cleanup cap, proving a backlog exists. Seven days is sufficient for current diagnostics.
@@ -21,10 +21,10 @@ Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-qu
 - Feedback target rows were set to a 10-year expiry. Startup restored at most 250 persistent feedback views but fetched up to 750 targets first; the live log showed **250 registered / 501 skipped_old**. Rows beyond the bounded restore surface are not useful after restart. The new cleanup keeps a 500-row buffer and restoration now queries only the capacity it can register.
 - Global `prune_active_deal_history` and `prune_walmart_recheck_audit` each used a correlated `COUNT(*)` per candidate row to enforce per-guild caps. That is unnecessary at startup and can grow toward quadratic work. Global startup maintenance only needs a bounded age prune; per-guild caps can be enforced selectively when that guild's history is explicitly opened.
 - DM receipts keep their existing 90-day dedupe semantics, but stale receipt cleanup now gets a standalone `delivered_at` cleanup index when the table exists.
-- A final conflict/safety inspection found one lifecycle edge case before merge: optional tables such as retailer autoscan history or DM receipts can be created after the first startup maintenance call. The cleanup-index initialization now tracks base/optional index groups independently, so a later maintenance pass can install the missing selective index instead of returning early and scanning the newly-created table without one.
+- A final conflict/safety inspection found one lifecycle edge case before merge: optional tables such as retailer autoscan history or DM receipts can be created after the first startup maintenance call. Cleanup-index initialization now tracks base/optional index groups independently, so a later maintenance pass can install the missing selective index instead of returning early and scanning the newly-created table without one.
 - Price observations, product identity, exact Walmart verification queue state, exact Walmart offer-price memory, feedback summaries/votes, live dedupe rows, user DM settings, and clearance seeds are explicitly outside this purge scope.
 
-## Changes in PR #252
+## Changes live in `main` from PR #252
 - Reworked storage maintenance selectors to use bounded rowid batches ordered by the same expiry/timestamp columns used by their retention predicates.
 - Added quota-safe cleanup indexes for feedback targets/events, active deal terminal rows, autoscan reports, public-post ledger rows, store-cache expiry, scan-run age, optional retailer autoscan run age, and optional DM receipt age.
 - Cleanup index installation is connection/group aware: base indexes initialize once, while optional retailer-autoscan and DM-receipt indexes can still be installed later if those tables appear after startup.
@@ -39,25 +39,27 @@ Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-qu
 ## Validation completed
 - PR #251 final Python 3.12 suite: **1,246 passed, 1 warning** (discord/audioop deprecation only); dependency check, compileall, and import smoke passed, and all post-merge `main` workflows passed.
 - Post-deploy exact-worker claim timing after #251 stayed fast and exact verification remained active; no recurrence of the prior 4.03s queue-claim warning appeared in the supplied window.
-- PR #252 final head `17dd9d9f9a653c96e62b519db11df1f60f11e364` is **16 commits ahead / 0 behind** its current `main` merge base and changes **13 files**, all scoped to the task record, storage cleanup/admin behavior, bounded history/audit pruning, bounded feedback restoration, and regressions.
+- PR #252 final branch was **0 commits behind** its `main` merge base and changed **13 files**, all scoped to the task record, storage cleanup/admin behavior, bounded history/audit pruning, bounded feedback restoration, and regressions.
 - The first PR #252 full-suite pass exposed one stale static regression that still required the old in-memory `targets[:remaining]` slice. The production optimization intentionally moved that bound into the database query itself, so the stale test was updated narrowly rather than restoring the wasteful fetch-and-discard behavior.
 - Final Python 3.12 `Python Check` passed **1,259 tests, 1 warning** (discord/audioop deprecation only).
 - `pip check` passed.
 - `python -m compileall -q sniperplug scripts tests` passed.
 - Import smoke passed **37 modules / 22 symbols**.
 - The separate `Python tests` workflow passed.
-- All three final PR #252 workflows are green: Python Check, Python tests, and Import smoke check.
-- PR #252 has **no inline review threads** or submitted review blockers. The only discussion item is Qodo's inactive-subscription notice, not a code finding.
+- All three final PR #252 workflows passed: Python Check, Python tests, and Import smoke check.
+- PR #252 had **no inline review threads** or submitted review blockers. The only discussion item was Qodo's inactive-subscription notice, not a code finding.
+- PR #252 squash-merged as `68ec064125205f8591062ab2a8df95e1303e8172`.
+- All three push workflows on merged `main` passed: Python Check, Python tests, and Import smoke check.
 - No temporary workflow, alternate database/runtime, unbounded wipe, `VACUUM`, monkey patch, or relaxed Walmart proof behavior was introduced.
 
 ## Validation pending / Definition of Done
-- Squash-merge PR #252 and verify the merged `main` workflows remain green.
-- Deploy merged `main` to Discloud.
+- Deploy merged `main` commit `68ec064125205f8591062ab2a8df95e1303e8172` to Discloud.
 - Confirm startup cleanup completes with bounded changed-row counts and without broad/slow maintenance SELECT warnings.
 - Confirm persistent feedback restoration now reads/registers only the bounded capacity instead of loading hundreds of discarded targets.
 - Confirm Walmart catalog discovery, exact verification, fanout, and DM/public dedupe remain active after cleanup.
-- Obtain a new clean Turso dashboard rows-read slope after deployment and compare it with the pre-#252 **~1.75M rows/hour** clean rate.
-- The task closes only when actual quota growth is acceptably flattened; CI/merge alone are not production acceptance.
+- Use the first Turso dashboard reading after deployment as the new clean slope anchor, then obtain another checkpoint after a meaningful interval.
+- Compare the new clean rows-read rate with the pre-#252 **~1.75M rows/hour** rate.
+- The task closes only when actual quota growth is acceptably flattened; merge/CI alone are not production acceptance.
 
 ## Cleanup / safety constraints
 - No `VACUUM`, unbounded emergency wipe, alternate database, stale safety-critical cache, monkey patch, or disabled Walmart verification.

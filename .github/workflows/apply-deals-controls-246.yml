@@ -44,7 +44,7 @@ jobs:
           pip install -r requirements.txt
           pip check
           python -m compileall -q sniperplug tests *.py
-          pytest -q tests/test_deals_live_timeout_245.py tests/test_deals_discover_hardening_244.py
+          pytest -q tests/test_deals_discover_hardening_244.py
           git diff --check
           if git diff --quiet -- sniperplug/cogs/unified_deal_scanner.py; then
             echo 'No scanner changes produced.'

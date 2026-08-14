@@ -66,10 +66,12 @@ def test_bounded_pressure_returns_only_scheduling_counts() -> None:
     assert conn.sql.count("LIMIT ?") == 4
     assert conn.params[3] == 64
     assert conn.params[7] == 64
-    assert conn.params[12] == 600
-    assert conn.params[14] == 64
-    assert conn.params[11] < conn.params[8]
-    assert "verified_at IS NULL OR verified_at <= ?" in conn.sql
+    assert conn.params[14] == 600
+    assert conn.params[16] == 64
+    assert conn.params[13] < conn.params[12] < conn.params[11] < conn.params[8]
+    assert "status IN ('verified_markdown')" in conn.sql
+    assert "'verified_under_threshold', 'verified_reference'" in conn.sql
+    assert "'verified_no_reference', 'not_buyable'" in conn.sql
     assert "SELECT *" not in conn.sql.upper()
     assert "identity_mismatch" not in conn.sql
 
@@ -81,9 +83,9 @@ def test_exact_worker_can_request_a_tighter_all_lane_cap() -> None:
 
     assert conn.params[3] == 64
     assert conn.params[7] == 64
-    assert conn.params[12] == 64
     assert conn.params[14] == 64
-    assert conn.params[11] < conn.params[8]
+    assert conn.params[16] == 64
+    assert conn.params[13] < conn.params[12] < conn.params[11] < conn.params[8]
 
 
 def test_bounded_pressure_summary_does_not_claim_unmeasured_totals() -> None:
@@ -120,6 +122,8 @@ def test_pressure_query_is_capped_to_policy_useful_work() -> None:
     assert "RECOVERY_PRESSURE_CAP = 64" in PRESSURE
     assert "VERIFYING_PRESSURE_CAP = 64" in PRESSURE
     assert "status IN ('pending', 'retry', 'failed', 'verifying')" in PRESSURE
-    assert "'verified_markdown'" in PRESSURE
-    assert "verified_at IS NULL OR verified_at <= ?" in PRESSURE
+    assert "VERIFIED_MARKDOWN_RECHECK_STATUSES" in PRESSURE
+    assert "VERIFIED_REFERENCE_RECHECK_STATUSES" in PRESSURE
+    assert "VERIFIED_LOW_SIGNAL_RECHECK_STATUSES" in PRESSURE
+    assert "verified_at IS NULL" in PRESSURE
     assert "lease_until >= ?" in PRESSURE

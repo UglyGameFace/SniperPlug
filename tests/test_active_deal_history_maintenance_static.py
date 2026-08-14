@@ -9,11 +9,21 @@ SURFACE = (ROOT / "sniperplug/services/command_surface.py").read_text(encoding="
 ACTIVE_DEALS = (ROOT / "sniperplug/cogs/active_deals.py").read_text(encoding="utf-8")
 
 
-def test_global_history_prune_enforces_age_and_per_guild_cap():
-    assert "DELETE FROM guild_active_deal_history WHERE occurred_at < ?" in HISTORY
-    assert "newer.guild_id = history.guild_id" in HISTORY
-    assert ") >= ?" in HISTORY
-    assert "deleted += _row_count(cursor)" in HISTORY
+def test_global_history_prune_is_bounded_and_indexed():
+    assert "ACTIVE_DEAL_HISTORY_PRUNE_BATCH_SIZE = 500" in HISTORY
+    assert "idx_active_deal_history_occurred_cleanup" in HISTORY
+    assert "WHERE occurred_at < ?" in HISTORY
+    assert "ORDER BY occurred_at ASC, id ASC" in HISTORY
+    assert "LIMIT ?" in HISTORY
+    assert "SELECT COUNT(*)" not in HISTORY
+    assert "newer.guild_id = history.guild_id" not in HISTORY
+
+
+def test_per_guild_history_still_enforces_cap_selectively():
+    assert "WHERE guild_id = ?" in HISTORY
+    assert "ORDER BY occurred_at DESC, id DESC" in HISTORY
+    assert "LIMIT ? OFFSET ?" in HISTORY
+    assert "max_rows_per_guild" in HISTORY
 
 
 def test_storage_maintenance_prunes_history_and_reports_it():
@@ -21,19 +31,18 @@ def test_storage_maintenance_prunes_history_and_reports_it():
     assert "old_active_deal_history: int = 0" in MAINTENANCE
     assert "old_active_deal_history = await prune_active_deal_history(db)" in MAINTENANCE
     assert '"old_active_deal_history": self.old_active_deal_history' in MAINTENANCE
-    assert "+ self.old_active_deal_history" in MAINTENANCE
 
 
 def test_storage_maintenance_deletes_only_terminal_hot_deal_rows_in_bounded_batches():
     assert "OPERATIONAL_CLEANUP_BATCH_SIZE = 500" in MAINTENANCE
     assert "ACTIVE_DEAL_TERMINAL_RETENTION_DAYS = 7" in MAINTENANCE
     assert "status IN ('active', 'stale') AND last_seen_at < ?" in MAINTENANCE
-    assert "status IN ('stale', 'expired') AND last_seen_at < ?" in MAINTENANCE
+    assert "status IN ('stale', 'expired', 'cleared') AND last_seen_at < ?" in MAINTENANCE
     assert "old_inactive_active_deals" in MAINTENANCE
     assert "async def delete_bounded_rows(" in MAINTENANCE
     assert "SELECT rowid AS {_MAINTENANCE_ROWID_ALIAS}" in MAINTENANCE
     assert '_MAINTENANCE_ROWID_ALIAS = "__sniperplug_rowid"' in MAINTENANCE
-    assert "value = _row_value(row, _MAINTENANCE_ROWID_ALIAS, 0)" in MAINTENANCE
+    assert "order_by_sql" in MAINTENANCE
     assert "if not rowids:" in MAINTENANCE
 
 

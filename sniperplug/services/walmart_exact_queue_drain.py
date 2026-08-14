@@ -57,6 +57,9 @@ _DISCOVERY_SNAPSHOT_COLUMNS = (
 _LEGACY_DISCOVERY_SNAPSHOT_PROJECTION = (
     "'' AS discovery_snapshot_json, NULL AS discovery_snapshot_at"
 )
+STATUS_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_due"
+FRESH_PROOF_DUE_INDEX = f"idx_{QUEUE_TABLE}_fresh_proof_due"
+STATUS_VERIFIED_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_verified_due"
 
 
 def verified_recheck_cutoffs(now: datetime) -> tuple[str, str, str]:
@@ -99,41 +102,27 @@ async def claim_due_rows_batched(
 ) -> list[_QueueClaim]:
     """Select an ordered slice, then lease only those rows with one small update.
 
-    The former MATERIALIZED CTE plus UPDATE ... RETURNING scanned and rewrote the
-    remote Turso queue in one native libSQL call. With roughly 12k rows and a
-    large scheduled-recheck backlog, that statement took 48-66 seconds and
-    starved Discord's heartbeat even though it ran through ``asyncio.to_thread``.
+    Turso bills rows scanned rather than only rows returned. The old single
+    all-status SELECT could therefore inspect most of a mature queue every 20
+    seconds even though ``LIMIT 8`` returned almost nothing. That became
+    especially expensive after status-aware recheck floors intentionally stopped
+    rewriting legacy early ``next_attempt_at`` timestamps.
 
-    Two bounded statements are intentionally safer here:
-
-    1. an indexed SELECT returns at most ``limit`` candidate snapshots;
-    2. a guarded UPDATE leases only those item IDs and RETURNING confirms which
-       rows this process actually acquired.
-
-    Verified rows have a status-aware claim-time age floor. Legacy early
-    ``next_attempt_at`` values are ignored without repair writes until the last
-    exact verification is old enough for that status: one day for verified
-    markdowns, three days for reference/under-threshold states, and seven days
-    for no-reference/unavailable states. A material catalog change changes the
-    row back to ``pending`` and bypasses this verified-only floor immediately.
-
-    Fresh bounded catalog proof is ranked before network recovery. A no-snapshot
-    ``page_retry`` lane is capped to two rows per batch by default so a Walmart
-    challenge wave cannot consume the batch. Callers may pass a cap of zero
-    while the page circuit is open; fresh snapshot/pending/API work remains
-    claimable and every promotion still passes the strict item, price, seller,
-    offer, variant, shipping, and freshness checks in the worker. The bounded
-    page lane otherwise runs before scheduled verified-item rechecks, preserving
-    recovery progress without starving known-good rechecks.
+    Production now builds one bounded candidate pool from index-seekable lanes:
+    fresh proof, each initial/retry status, capped page recovery, each verified
+    age band, missing verified timestamps, and expired verifying leases. Each
+    lane can contribute only the batch-sized amount the worker can actually use,
+    then the original global freshness/status/priority order chooses the final
+    slice. This keeps the same durable lease, status priority, page cap, and
+    verified-age semantics without a broad queue scan.
 
     A shared lease token still protects all final writes. If another process
-    races between the two statements, the UPDATE guards and returned IDs prevent
-    this worker from processing rows it did not lease.
+    races between the SELECT and UPDATE, the UPDATE guards and returned IDs
+    prevent this worker from processing rows it did not lease.
 
-    Production initializes the current queue schema before calling this helper.
-    Direct legacy callers with a pre-snapshot/pre-verified-at test schema remain
-    supported fail-closed through one bounded compatibility retry. Production's
-    current schema always uses the verified-age floor.
+    Direct compatibility callers that have the current columns but have not run
+    runtime index initialization fall back to the historical bounded selector.
+    Production always initializes the indexed runtime schema before claiming.
     """
 
     now_utc = now.astimezone(timezone.utc)
@@ -256,49 +245,319 @@ async def _select_due_rows_with_optional_discovery_snapshot(
 ) -> list[Any]:
     try:
         cursor = await conn.execute(
-            _due_rows_select_sql(
-                _DISCOVERY_SNAPSHOT_COLUMNS,
-                has_snapshot_columns=True,
-                has_verified_at=True,
-            ),
-            (
-                now_iso,
-                discovery_cutoff,
-                now_iso,
-                markdown_recheck_cutoff,
-                reference_recheck_cutoff,
-                low_signal_recheck_cutoff,
-                snapshot_cutoff,
-                now_iso,
-                discovery_cutoff,
-                now_iso,
-                snapshot_cutoff,
-                page_recovery_claim_cap,
-                snapshot_cutoff,
-                bounded_limit,
+            _indexed_due_rows_select_sql(),
+            _indexed_due_rows_select_params(
+                now_iso=now_iso,
+                discovery_cutoff=discovery_cutoff,
+                snapshot_cutoff=snapshot_cutoff,
+                markdown_recheck_cutoff=markdown_recheck_cutoff,
+                reference_recheck_cutoff=reference_recheck_cutoff,
+                low_signal_recheck_cutoff=low_signal_recheck_cutoff,
+                bounded_limit=bounded_limit,
+                page_recovery_claim_cap=page_recovery_claim_cap,
             ),
         )
     except Exception as exc:
-        if not _is_missing_optional_claim_column(exc):
+        if _is_missing_runtime_claim_index(exc):
+            cursor = await conn.execute(
+                _due_rows_select_sql(
+                    _DISCOVERY_SNAPSHOT_COLUMNS,
+                    has_snapshot_columns=True,
+                    has_verified_at=True,
+                ),
+                (
+                    now_iso,
+                    discovery_cutoff,
+                    now_iso,
+                    markdown_recheck_cutoff,
+                    reference_recheck_cutoff,
+                    low_signal_recheck_cutoff,
+                    snapshot_cutoff,
+                    now_iso,
+                    discovery_cutoff,
+                    now_iso,
+                    snapshot_cutoff,
+                    page_recovery_claim_cap,
+                    snapshot_cutoff,
+                    bounded_limit,
+                ),
+            )
+        elif _is_missing_optional_claim_column(exc):
+            cursor = await conn.execute(
+                _due_rows_select_sql(
+                    _LEGACY_DISCOVERY_SNAPSHOT_PROJECTION,
+                    has_snapshot_columns=False,
+                    has_verified_at=False,
+                ),
+                (
+                    now_iso,
+                    discovery_cutoff,
+                    now_iso,
+                    now_iso,
+                    discovery_cutoff,
+                    now_iso,
+                    page_recovery_claim_cap,
+                    bounded_limit,
+                ),
+            )
+        else:
             raise
-        cursor = await conn.execute(
-            _due_rows_select_sql(
-                _LEGACY_DISCOVERY_SNAPSHOT_PROJECTION,
-                has_snapshot_columns=False,
-                has_verified_at=False,
-            ),
-            (
-                now_iso,
-                discovery_cutoff,
-                now_iso,
-                now_iso,
-                discovery_cutoff,
-                now_iso,
-                page_recovery_claim_cap,
-                bounded_limit,
-            ),
-        )
     return list(await cursor.fetchall())
+
+
+def _indexed_due_rows_select_sql() -> str:
+    projection = """
+            item_id, title, product_url, image_url,
+            apparent_current_cents, apparent_reference_cents,
+            route_hint, attempt_count,
+            discovery_snapshot_json, discovery_snapshot_at
+    """.strip()
+    nonfresh = """
+            NOT (
+                discovery_snapshot_json <> ''
+                AND discovery_snapshot_at IS NOT NULL
+                AND discovery_snapshot_at >= ?
+            )
+    """.strip()
+
+    def ordinary_cte(name: str, status: str, rank: int) -> str:
+        return f"""
+        {name} AS (
+            SELECT
+                {projection},
+                1 AS freshness_rank,
+                {rank} AS status_rank,
+                priority_score,
+                last_seen_at
+            FROM {QUEUE_TABLE} INDEXED BY {STATUS_DUE_INDEX}
+            WHERE status = '{status}'
+              AND next_attempt_at <= ?
+              AND last_seen_at >= ?
+              AND (lease_until IS NULL OR lease_until < ?)
+              AND {nonfresh}
+            ORDER BY priority_score DESC, last_seen_at DESC
+            LIMIT ?
+        )
+        """
+
+    def verified_cte(name: str, status: str, rank: int) -> str:
+        return f"""
+        {name} AS (
+            SELECT
+                {projection},
+                1 AS freshness_rank,
+                {rank} AS status_rank,
+                priority_score,
+                last_seen_at
+            FROM {QUEUE_TABLE} INDEXED BY {STATUS_VERIFIED_DUE_INDEX}
+            WHERE status = '{status}'
+              AND verified_at <= ?
+              AND next_attempt_at <= ?
+              AND last_seen_at >= ?
+              AND (lease_until IS NULL OR lease_until < ?)
+              AND {nonfresh}
+            ORDER BY priority_score DESC, last_seen_at DESC
+            LIMIT ?
+        )
+        """
+
+    verified_statuses = ", ".join(
+        f"'{status}'" for status in VERIFIED_RECHECK_STATUSES
+    )
+    ctes = [
+        f"""
+        fresh_candidates AS (
+            SELECT
+                {projection},
+                0 AS freshness_rank,
+                CASE status
+                    WHEN 'pending' THEN 0
+                    WHEN 'retry' THEN 1
+                    WHEN 'failed' THEN 2
+                    WHEN 'page_retry' THEN 3
+                    WHEN 'verified_markdown' THEN 4
+                    WHEN 'verified_under_threshold' THEN 5
+                    WHEN 'verified_no_reference' THEN 6
+                    WHEN 'verified_reference' THEN 7
+                    WHEN 'not_buyable' THEN 8
+                    WHEN 'verifying' THEN 9
+                    ELSE 10
+                END AS status_rank,
+                priority_score,
+                last_seen_at
+            FROM {QUEUE_TABLE} INDEXED BY {FRESH_PROOF_DUE_INDEX}
+            WHERE discovery_snapshot_json <> ''
+              AND discovery_snapshot_at IS NOT NULL
+              AND discovery_snapshot_at >= ?
+              AND next_attempt_at <= ?
+              AND last_seen_at >= ?
+              AND status NOT IN ('incomplete_identity', 'identity_mismatch')
+              AND (lease_until IS NULL OR lease_until < ?)
+              AND (
+                  status NOT IN ({verified_statuses})
+                  OR verified_at IS NULL
+                  OR (status = 'verified_markdown' AND verified_at <= ?)
+                  OR (
+                      status IN ('verified_under_threshold', 'verified_reference')
+                      AND verified_at <= ?
+                  )
+                  OR (
+                      status IN ('verified_no_reference', 'not_buyable')
+                      AND verified_at <= ?
+                  )
+              )
+            ORDER BY status_rank, priority_score DESC, last_seen_at DESC
+            LIMIT ?
+        )
+        """,
+        ordinary_cte("pending_candidates", "pending", 0),
+        ordinary_cte("retry_candidates", "retry", 1),
+        ordinary_cte("failed_candidates", "failed", 2),
+        ordinary_cte("page_candidates", "page_retry", 3),
+        verified_cte("verified_markdown_candidates", "verified_markdown", 4),
+        verified_cte(
+            "verified_under_threshold_candidates",
+            "verified_under_threshold",
+            5,
+        ),
+        verified_cte(
+            "verified_no_reference_candidates",
+            "verified_no_reference",
+            6,
+        ),
+        verified_cte("verified_reference_candidates", "verified_reference", 7),
+        verified_cte("not_buyable_candidates", "not_buyable", 8),
+        f"""
+        missing_verified_candidates AS (
+            SELECT
+                {projection},
+                1 AS freshness_rank,
+                CASE status
+                    WHEN 'verified_markdown' THEN 4
+                    WHEN 'verified_under_threshold' THEN 5
+                    WHEN 'verified_no_reference' THEN 6
+                    WHEN 'verified_reference' THEN 7
+                    WHEN 'not_buyable' THEN 8
+                    ELSE 10
+                END AS status_rank,
+                priority_score,
+                last_seen_at
+            FROM {QUEUE_TABLE} INDEXED BY {STATUS_VERIFIED_DUE_INDEX}
+            WHERE status IN ({verified_statuses})
+              AND verified_at IS NULL
+              AND next_attempt_at <= ?
+              AND last_seen_at >= ?
+              AND (lease_until IS NULL OR lease_until < ?)
+              AND {nonfresh}
+            ORDER BY status_rank, priority_score DESC, last_seen_at DESC
+            LIMIT ?
+        )
+        """,
+        ordinary_cte("verifying_candidates", "verifying", 9),
+    ]
+    names = (
+        "fresh_candidates",
+        "pending_candidates",
+        "retry_candidates",
+        "failed_candidates",
+        "page_candidates",
+        "verified_markdown_candidates",
+        "verified_under_threshold_candidates",
+        "verified_no_reference_candidates",
+        "verified_reference_candidates",
+        "not_buyable_candidates",
+        "missing_verified_candidates",
+        "verifying_candidates",
+    )
+    pool = "\n                UNION ALL\n".join(
+        f"SELECT * FROM {name}" for name in names
+    )
+    return f"""
+        WITH
+        {", ".join(ctes)},
+        candidate_pool AS (
+            {pool}
+        )
+        SELECT
+            {projection}
+        FROM candidate_pool
+        ORDER BY
+            freshness_rank,
+            status_rank,
+            priority_score DESC,
+            last_seen_at DESC
+        LIMIT ?
+    """
+
+
+def _indexed_due_rows_select_params(
+    *,
+    now_iso: str,
+    discovery_cutoff: str,
+    snapshot_cutoff: str,
+    markdown_recheck_cutoff: str,
+    reference_recheck_cutoff: str,
+    low_signal_recheck_cutoff: str,
+    bounded_limit: int,
+    page_recovery_claim_cap: int,
+) -> tuple[Any, ...]:
+    params: list[Any] = [
+        snapshot_cutoff,
+        now_iso,
+        discovery_cutoff,
+        now_iso,
+        markdown_recheck_cutoff,
+        reference_recheck_cutoff,
+        low_signal_recheck_cutoff,
+        bounded_limit,
+    ]
+    for _ in range(3):
+        params.extend(
+            (now_iso, discovery_cutoff, now_iso, snapshot_cutoff, bounded_limit)
+        )
+    params.extend(
+        (
+            now_iso,
+            discovery_cutoff,
+            now_iso,
+            snapshot_cutoff,
+            page_recovery_claim_cap,
+        )
+    )
+    for cutoff in (
+        markdown_recheck_cutoff,
+        reference_recheck_cutoff,
+        low_signal_recheck_cutoff,
+        reference_recheck_cutoff,
+        low_signal_recheck_cutoff,
+    ):
+        params.extend(
+            (
+                cutoff,
+                now_iso,
+                discovery_cutoff,
+                now_iso,
+                snapshot_cutoff,
+                bounded_limit,
+            )
+        )
+    params.extend(
+        (now_iso, discovery_cutoff, now_iso, snapshot_cutoff, bounded_limit)
+    )
+    params.extend(
+        (now_iso, discovery_cutoff, now_iso, snapshot_cutoff, bounded_limit)
+    )
+    params.append(bounded_limit)
+    return tuple(params)
+
+
+def _is_missing_runtime_claim_index(exc: BaseException) -> bool:
+    message = str(exc or "").lower()
+    return "no such index" in message and (
+        STATUS_DUE_INDEX.lower() in message
+        or FRESH_PROOF_DUE_INDEX.lower() in message
+        or STATUS_VERIFIED_DUE_INDEX.lower() in message
+    )
 
 
 def _due_rows_select_sql(

@@ -14,7 +14,16 @@ def test_recheck_audit_schema_is_guild_scoped_and_bounded():
     assert "guild_id INTEGER NOT NULL" in AUDIT
     assert "WALMART_RECHECK_AUDIT_RETENTION_DAYS = 30" in AUDIT
     assert "WALMART_RECHECK_AUDIT_MAX_ROWS_PER_GUILD = 2000" in AUDIT
-    assert "newer.guild_id = audit.guild_id" in AUDIT
+    assert "WALMART_RECHECK_AUDIT_PRUNE_BATCH_SIZE = 500" in AUDIT
+    assert "idx_walmart_recheck_audit_occurred_cleanup" in AUDIT
+    assert "SELECT COUNT(*)" not in AUDIT
+    assert "newer.guild_id = audit.guild_id" not in AUDIT
+
+
+def test_per_guild_audit_cap_remains_selective():
+    assert "ORDER BY occurred_at DESC, id DESC" in AUDIT
+    assert "LIMIT ? OFFSET ?" in AUDIT
+    assert "max_rows_per_guild" in AUDIT
 
 
 def test_audit_preserves_source_actor_result_and_proof_values():

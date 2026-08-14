@@ -1,40 +1,44 @@
 # Active Task
 
 ## Status
-**Active — SP-DEALS-DISCOVER-HARDENING-244 live follow-up. PR #245 merged, main CI passed, and the merged build was deployed. The second live `/deals` test improved initial response time but still failed the button gate: some mode controls returned Discord `SniperPlug didn't respond in time`, and the result presentation remained too dense. Focused follow-up implementation is in progress on `fix/deals-live-timeout-245`.**
+**Active — SP-DEALS-DISCOVER-HARDENING-244 live follow-up. PR #245 merged and deployed; the second live `/deals` test proved the initial latency improvement but exposed remaining component timeouts and dense result presentation. The focused follow-up implementation is now code-complete and locally/CI validated on `fix/deals-live-timeout-245`; PR/merge/deploy/live validation still remain.**
 
 ## Scope
 Finish the existing `/deals` + `/discover` hardening task. Do not start the suspended Walmart missed-deals backlog until this live gate passes.
 
-## Current live findings
-- Merged commit `84db8b9` deployed successfully and startup was healthy.
-- `/deals` now renders without the previous 10+ minute wait, so the bounded interactive-search work helped.
-- Mode controls are still not reliable: Hidden Gems and additional mode buttons can produce Discord `SniperPlug didn't respond in time`.
-- The current View creates another control message after every mode switch while reusing the same static custom IDs across all menus; this creates unnecessary competing View instances and a stale-dispatch surface.
-- Button acknowledgement is split across individual callbacks instead of one earliest View-level path; failed acknowledgement currently returns silently with no task-specific diagnostic.
-- The user-facing summary/menu and Walmart proof cards expose too much internal API/audit detail for the normal `/deals` shopping flow even though the price data itself is useful.
+## Root cause / findings
+- The original post-#245 `/deals` result View acknowledged interactions inside individual callbacks rather than at the earliest View boundary.
+- Mode changes spawned another controls message while every View reused the same static component custom IDs, creating unnecessary competing/stale dispatch surfaces.
+- ACK failures were swallowed without task-specific component diagnostics.
+- Normal `/deals` output reused dense Walmart proof/audit cards intended for deeper verification surfaces.
+- `New / Drops` can contain both verified cards and private review/search leads, so presentation status must come from actual `DealFinderResult.verified_cards` membership rather than a generic card flag.
 
-## Focused follow-up implementation
-- Give each `/deals` result menu a unique token in every component custom ID.
-- Acknowledge every component in `DealSearchModeView.interaction_check` using the component-native deferred message update before any button-specific work.
-- Add task-specific acknowledgement and callback-error logs instead of swallowing component failures.
-- Keep one control-panel message: mode changes edit the existing menu instead of spawning duplicate menus.
-- Make the selected mode visually obvious; only the selected mode is primary/disabled.
-- Keep Fresh Scan bounded and reuse the same menu token/owner across refreshes.
-- Add `/deals`-only compact result embeds that preserve price, seller, delivery, links, verified/private status and thumbnails while omitting internal identity/evidence noise. Autoscan/public proof rendering is unchanged.
-- Compress the normal finder summary and controls menu; deep diagnostics remain available in diagnostic/health surfaces rather than the beginner command.
+## Implemented follow-up
+- Each result menu now receives a unique token embedded in every component custom ID.
+- `DealSearchModeView.interaction_check` acknowledges components with `response.defer(thinking=False)` before button-specific work and enforces menu ownership.
+- Component ACK failures and callback exceptions now have task-specific logs.
+- Mode switches and Fresh Scan preserve the menu token/owner and replace the existing controls message instead of stacking duplicate control panels.
+- Selected mode is primary/disabled; other modes remain selectable.
+- `/deals` now uses compact shopping-focused embeds preserving price, seller, delivery, links, thumbnails, and verified/private status while removing internal identity/evidence noise.
+- Normal finder summary and mode menu are compact; diagnostic/public proof renderers and autoscan safety gates were not weakened or replaced.
+- `New / Drops` determines verified/private presentation from actual verified-result membership so review leads cannot be mislabeled as verified.
 
-## Validation required
-1. Focused control/UX regressions pass.
-2. Existing PR #244/#245 deal/discover regressions pass.
-3. `pip check`, compileall, and diff/static validation pass.
-4. Full Python 3.11 test suite passes.
-5. Final branch conflict/cleanup inspection shows no temporary workflow or duplicate implementation.
-6. PR checks pass, review/comments/threads are clean, squash merge, and post-merge `main` checks pass.
-7. Deploy merged main to Discloud app `1779293887444`.
-8. Live `/deals search:phone mount`: initial result is responsive; every enabled mode button responds; Fresh Scan responds; one control panel remains current; compact embeds are readable.
-9. Live `/discover` still returns only current-job item IDs as established by PR #244.
-10. Only then close SP-DEALS-DISCOVER-HARDENING-244.
+## Validation completed
+- Focused #244/#245/control/presentation regressions: **15 passed**.
+- Full Python 3.11 regression suite: **1,234 passed, 1 warning** (discord.py/audioop deprecation only).
+- `pip check`: passed.
+- `python -m compileall -q sniperplug tests *.py`: passed.
+- `git diff --check origin/main...HEAD`: passed.
+- Temporary patch/validation workflows were removed after use.
+
+## Remaining Definition of Done
+1. Final branch conflict/redundancy inspection shows only intended files and no temporary workflow/duplicate implementation.
+2. Open PR; PR checks pass; review/comments/threads contain no unresolved code findings.
+3. Squash merge and confirm post-merge `main` checks pass.
+4. Deploy merged `main` to Discloud app `1779293887444`.
+5. Live `/deals search:phone mount`: initial result responsive; every enabled mode button responds; Fresh Scan responds; one control panel remains current; compact embeds are readable; private leads remain private.
+6. Live `/discover` still returns only current-job item IDs as established by PR #244.
+7. Only then close SP-DEALS-DISCOVER-HARDENING-244.
 
 ## Suspended task
 **SP-WM-MISSED-DEALS-236 remains suspended, not closed.** Resume only after this active task closes or an explicit FORCE SWITCH.

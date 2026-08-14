@@ -56,6 +56,13 @@ log = logging.getLogger("sniperplug.autoscan.write_telemetry")
 # rereading hundreds/thousands of scheduled rechecks before and after each batch.
 EXACT_WORKER_PRESSURE_CAP = 64
 
+# The HTML challenge circuit must stop Walmart product-page requests, not stop
+# official API recovery entirely. Keep the already-bounded page lane alive at the
+# same two-row cap while the circuit is open; _fetch_exact_candidate_off_loop()
+# then forces those claims through official detail/exact-search only and never
+# calls the challenged page loader.
+API_ONLY_PAGE_RECOVERY_CLAIM_CAP = min(2, PAGE_RECOVERY_CLAIM_CAP)
+
 
 async def process_actionable_walmart_exact_queue_batch(
     db: Any,
@@ -86,13 +93,13 @@ async def process_actionable_walmart_exact_queue_batch(
     ordinary claims immediately. Scheduling decisions use a tightly bounded
     pressure snapshot rather than rereading the scheduled-recheck backlog.
 
-    When the Walmart product-page challenge circuit is open, the claim selector
-    sets the page-recovery lane cap to zero. Already-known ``page_retry`` rows are
-    therefore left untouched instead of rewriting batches of 64 next-attempt
-    timestamps every circuit. Recovery pressure is bounded at 64 for diagnostics
-    and cannot by itself hit the 600-row catalog emergency stop. Fresh/pending/API
-    work remains claimable, and a newly safe catalog snapshot can still change a
-    page-retry row to ``pending`` immediately.
+    When the Walmart product-page challenge circuit is open, HTML remains fully
+    suppressed. A tiny two-row page-recovery lane is still claimable, however,
+    because the shared fetcher switches those claims to official item-detail and
+    exact Affiliate-search recovery only. This lets previously challenged rows
+    recover when Walmart's structured API now exposes complete seller/offer
+    identity without probing another blocked page. Rows still missing official
+    identity return to ``page_retry`` on the normal bounded delay.
 
     Fresh discovery proof and page-challenge circuit state are reported directly
     in the worker summary. This makes a zero-promotion batch explainable without
@@ -124,7 +131,9 @@ async def process_actionable_walmart_exact_queue_batch(
         effective_concurrency = max(effective_concurrency, DRAIN_CONCURRENCY)
     mode = "drain" if drain_mode else "normal"
     page_recovery_claim_cap = (
-        0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP
+        API_ONLY_PAGE_RECOVERY_CLAIM_CAP
+        if page_circuit_remaining > 0
+        else PAGE_RECOVERY_CLAIM_CAP
     )
 
     claim_started = time.monotonic()

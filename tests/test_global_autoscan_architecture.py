@@ -226,9 +226,13 @@ def test_health_counts_only_actively_leased_verifying_rows() -> None:
     assert "status = 'verifying'" in conn.sql
     assert "AND lease_until IS NOT NULL" in conn.sql
     assert "AND lease_until >= ?" in conn.sql
+    assert "verified_at <= ?" in conn.sql
     assert "scheduled rechecks" in health.summary_line()
-    assert len(conn.params) == 12
-    assert all(value == conn.params[1] for value in conn.params[1:])
+    assert len(conn.params) == 14
+    assert conn.params[3] == conn.params[10]
+    assert conn.params[3] < conn.params[1]
+    for index in (1, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13):
+        assert conn.params[index] == conn.params[1]
 
 
 def test_global_state_is_durable_and_not_wall_clock_rotation() -> None:

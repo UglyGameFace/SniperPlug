@@ -86,6 +86,8 @@ class FakeConnection:
                     }
                 ]
             )
+        if "FROM walmart_guild_fanout_decisions" in sql:
+            return FakeCursor([])
         raise AssertionError(sql)
 
 
@@ -111,7 +113,7 @@ def _card(snapshot: str):
     )
 
 
-def test_walmart_delivery_health_classifies_current_rules(monkeypatch) -> None:
+def test_walmart_delivery_health_classifies_legacy_current_rules_without_overclaiming(monkeypatch) -> None:
     async def run() -> None:
         monkeypatch.setattr(health, "_candidate_from_snapshot", lambda value: value)
         monkeypatch.setattr(health.legacy, "_exact_card_for_candidate", _card)
@@ -148,14 +150,16 @@ def test_walmart_delivery_health_classifies_current_rules(monkeypatch) -> None:
         assert result.below_threshold == 1
         assert result.category_muted == 1
         assert result.quality_blocked == 1
-        assert result.eligible_without_post == 1
+        assert result.eligible_without_post == 0
+        assert result.legacy_without_decision == 1
+        assert result.historical_decisions == 0
         assert result.total_event_rows == 42
         assert result.total_pending_rows == 3
-        assert result.has_delivery_problem is True
-        assert "below **40%** **1**" in result.summary_line(threshold=40)
-        assert "eligible events without a durable post receipt" in result.summary_line(
-            threshold=40
-        )
+        assert result.has_delivery_problem is False
+        summary = result.summary_line(threshold=40)
+        assert "below **40%** **1**" in summary
+        assert "Older processed events without stored per-server decision provenance" in summary
+        assert "real delivery gaps" not in summary
 
     asyncio.run(run())
 

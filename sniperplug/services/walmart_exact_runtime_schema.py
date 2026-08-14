@@ -25,6 +25,7 @@ LEGACY_CLAIM_ORDER_INDEX_V2 = f"idx_{QUEUE_TABLE}_claim_order_v2"
 CLAIM_ORDER_INDEX = f"idx_{QUEUE_TABLE}_claim_order_v3"
 FRESH_PROOF_DUE_INDEX = f"idx_{QUEUE_TABLE}_fresh_proof_due"
 STATUS_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_due"
+STATUS_VERIFIED_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_verified_due"
 _STATE_ATTR = "_sniperplug_walmart_exact_runtime_state"
 _FALLBACK_STATES: dict[int, "_RuntimeState"] = {}
 
@@ -69,12 +70,14 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
     traffic and competes with queue claims and catalog writes. A newly connected
     database still performs the complete idempotent initialization.
 
-    The v3 claim-order expression index matches the non-snapshot status ordering
-    used after the new fresh-proof lane. The capped page-recovery lane remains
-    ahead of scheduled verified-item rechecks, while a separate partial
-    fresh-proof index keeps recent discovery snapshots addressable without
-    forcing the page-retry backlog through the normal claim order. The status/due
-    index serves bounded scheduler pressure reads and the page-recovery subquery.
+    The v3 claim-order expression index matches the historical non-snapshot
+    status ordering and remains available for compatibility. Production claim
+    reads now use lane-specific bounded access paths: the fresh-proof and
+    status/due indexes serve fresh/retry/page work, while the verified-age index
+    lets scheduled recheck reads seek directly to rows old enough for the shared
+    24h/72h/7d floors instead of scanning legacy early schedules. The one-time
+    index build is intentionally small compared with repeatedly scanning the
+    mature queue every 20 seconds.
     """
 
     conn = db.require_conn()
@@ -132,6 +135,19 @@ async def ensure_exact_runtime_schema_once(db: Any) -> None:
             CREATE INDEX IF NOT EXISTS {STATUS_DUE_INDEX}
             ON {QUEUE_TABLE} (
                 status,
+                next_attempt_at,
+                last_seen_at,
+                lease_until,
+                priority_score DESC
+            )
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS {STATUS_VERIFIED_DUE_INDEX}
+            ON {QUEUE_TABLE} (
+                status,
+                verified_at,
                 next_attempt_at,
                 last_seen_at,
                 lease_until,

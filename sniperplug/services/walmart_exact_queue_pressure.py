@@ -25,6 +25,8 @@ DEFAULT_PRESSURE_CAP = 600
 FRESH_PRESSURE_CAP = 64
 RECOVERY_PRESSURE_CAP = 64
 VERIFYING_PRESSURE_CAP = 64
+STATUS_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_due"
+STATUS_VERIFIED_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_verified_due"
 
 
 def _sql_statuses(statuses: tuple[str, ...]) -> str:
@@ -36,15 +38,25 @@ async def load_walmart_exact_queue_pressure(
     *,
     cap: int = DEFAULT_PRESSURE_CAP,
 ) -> WalmartExactQueueHealth:
-    """Load bounded scheduling counts without repeatedly scanning the queue.
+    """Load policy-bounded scheduling counts through selective queue indexes.
+
+    Turso charges rows scanned, not rows returned. A LIMIT therefore does not
+    protect quota when SQLite has to walk thousands of legacy rows before it
+    finds work that also satisfies the verified-age floor. The mature queue can
+    contain rows whose old ``next_attempt_at`` is already due while their newer
+    ``verified_at`` correctly keeps them below the 24h/72h/7d safety cadence.
+
+    Fresh/retry, page recovery, and active-lease lanes seek the existing
+    status/due index. Scheduled rechecks are split by their verified-age cutoff
+    and forced through the status/verified/due index, so recent verified rows are
+    skipped by an index range instead of scanned and post-filtered every 20s.
+    Missing ``verified_at`` rows remain recoverable through a narrow NULL seek.
 
     ``cap`` controls the scheduled-recheck lane because total emergency
     backpressure can depend on it. Fresh/retry and active-lease lanes are capped
     more tightly at the maximum information current scheduling policy can use.
-    Verified rows whose legacy ``next_attempt_at`` is early are not counted until
-    the status-aware fallback age is truly claimable. Counts at a cap are lower
-    bounds; callers use this snapshot for scheduling and bounded logging, never
-    owner-facing exact totals.
+    Counts at a cap are lower bounds; callers use this snapshot for scheduling
+    and bounded logging, never owner-facing exact totals.
     """
 
     if db is None:
@@ -68,11 +80,18 @@ async def load_walmart_exact_queue_pressure(
     markdown_statuses = _sql_statuses(VERIFIED_MARKDOWN_RECHECK_STATUSES)
     reference_statuses = _sql_statuses(VERIFIED_REFERENCE_RECHECK_STATUSES)
     low_signal_statuses = _sql_statuses(VERIFIED_LOW_SIGNAL_RECHECK_STATUSES)
+    all_verified_statuses = _sql_statuses(
+        (
+            *VERIFIED_MARKDOWN_RECHECK_STATUSES,
+            *VERIFIED_REFERENCE_RECHECK_STATUSES,
+            *VERIFIED_LOW_SIGNAL_RECHECK_STATUSES,
+        )
+    )
     cursor = await conn.execute(
         f"""
         WITH fresh_due AS (
             SELECT item_id
-            FROM {QUEUE_TABLE}
+            FROM {QUEUE_TABLE} INDEXED BY {STATUS_DUE_INDEX}
             WHERE status IN ('pending', 'retry', 'failed', 'verifying')
               AND next_attempt_at <= ?
               AND last_seen_at >= ?
@@ -81,7 +100,7 @@ async def load_walmart_exact_queue_pressure(
         ),
         recovery_due AS (
             SELECT item_id
-            FROM {QUEUE_TABLE}
+            FROM {QUEUE_TABLE} INDEXED BY {STATUS_DUE_INDEX}
             WHERE status = 'page_retry'
               AND next_attempt_at <= ?
               AND last_seen_at >= ?
@@ -90,28 +109,44 @@ async def load_walmart_exact_queue_pressure(
         ),
         recheck_due AS (
             SELECT item_id
-            FROM {QUEUE_TABLE}
-            WHERE status IN (
-                'verified_markdown',
-                'verified_under_threshold',
-                'verified_no_reference',
-                'verified_reference',
-                'not_buyable'
+            FROM (
+                SELECT item_id
+                FROM {QUEUE_TABLE} INDEXED BY {STATUS_VERIFIED_DUE_INDEX}
+                WHERE status IN ({markdown_statuses})
+                  AND verified_at <= ?
+                  AND next_attempt_at <= ?
+                  AND last_seen_at >= ?
+                  AND (lease_until IS NULL OR lease_until < ?)
+                UNION ALL
+                SELECT item_id
+                FROM {QUEUE_TABLE} INDEXED BY {STATUS_VERIFIED_DUE_INDEX}
+                WHERE status IN ({reference_statuses})
+                  AND verified_at <= ?
+                  AND next_attempt_at <= ?
+                  AND last_seen_at >= ?
+                  AND (lease_until IS NULL OR lease_until < ?)
+                UNION ALL
+                SELECT item_id
+                FROM {QUEUE_TABLE} INDEXED BY {STATUS_VERIFIED_DUE_INDEX}
+                WHERE status IN ({low_signal_statuses})
+                  AND verified_at <= ?
+                  AND next_attempt_at <= ?
+                  AND last_seen_at >= ?
+                  AND (lease_until IS NULL OR lease_until < ?)
+                UNION ALL
+                SELECT item_id
+                FROM {QUEUE_TABLE} INDEXED BY {STATUS_VERIFIED_DUE_INDEX}
+                WHERE status IN ({all_verified_statuses})
+                  AND verified_at IS NULL
+                  AND next_attempt_at <= ?
+                  AND last_seen_at >= ?
+                  AND (lease_until IS NULL OR lease_until < ?)
             )
-              AND next_attempt_at <= ?
-              AND last_seen_at >= ?
-              AND (lease_until IS NULL OR lease_until < ?)
-              AND (
-                  verified_at IS NULL
-                  OR (status IN ({markdown_statuses}) AND verified_at <= ?)
-                  OR (status IN ({reference_statuses}) AND verified_at <= ?)
-                  OR (status IN ({low_signal_statuses}) AND verified_at <= ?)
-              )
             LIMIT ?
         ),
         active_verifying AS (
             SELECT item_id
-            FROM {QUEUE_TABLE}
+            FROM {QUEUE_TABLE} INDEXED BY {STATUS_DUE_INDEX}
             WHERE status = 'verifying'
               AND lease_until IS NOT NULL
               AND lease_until >= ?
@@ -132,12 +167,21 @@ async def load_walmart_exact_queue_pressure(
             discovery_cutoff,
             now_iso,
             recovery_cap,
+            markdown_recheck_cutoff,
             now_iso,
             discovery_cutoff,
             now_iso,
-            markdown_recheck_cutoff,
             reference_recheck_cutoff,
+            now_iso,
+            discovery_cutoff,
+            now_iso,
             low_signal_recheck_cutoff,
+            now_iso,
+            discovery_cutoff,
+            now_iso,
+            now_iso,
+            discovery_cutoff,
+            now_iso,
             recheck_cap,
             now_iso,
             verifying_cap,

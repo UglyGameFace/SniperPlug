@@ -15,6 +15,9 @@ from sniperplug.services.walmart_exact_queue_drain import (
 from sniperplug.services.walmart_exact_queue_health import (
     load_walmart_exact_queue_health,
 )
+from sniperplug.services.walmart_exact_runtime_schema import (
+    ensure_exact_runtime_schema_once,
+)
 from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     enqueue_walmart_exact_verification_candidates,
@@ -100,7 +103,7 @@ def exact_payload(item_id: str, *, current: float = 20.0, reference: float = 100
 def test_batch_claim_uses_bounded_select_and_guarded_lease_update() -> None:
     async def run() -> None:
         inner = await aiosqlite.connect(":memory:")
-        await ensure_walmart_exact_verification_queue(FakeDatabase(inner))
+        await ensure_exact_runtime_schema_once(FakeDatabase(inner))
         now = datetime.now(timezone.utc)
         due = (now - timedelta(minutes=1)).isoformat()
         for item_id, status, priority in (
@@ -127,7 +130,10 @@ def test_batch_claim_uses_bounded_select_and_guarded_lease_update() -> None:
         assert conn.execute_count == 2
         assert conn.commit_count == 1
         assert "MATERIALIZED" not in "\n".join(conn.sql)
-        assert conn.sql[0].lstrip().startswith("SELECT")
+        assert conn.sql[0].lstrip().startswith("WITH")
+        assert "candidate_pool" in conn.sql[0]
+        assert "INDEXED BY idx_walmart_exact_detail_queue_status_due" in conn.sql[0]
+        assert "INDEXED BY idx_walmart_exact_detail_queue_status_verified_due" in conn.sql[0]
         assert "UPDATE" in conn.sql[1]
         assert "RETURNING item_id" in conn.sql[1]
 

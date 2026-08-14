@@ -22,7 +22,7 @@ class FakeDatabase:
         return self.conn
 
 
-def test_legacy_early_verified_recheck_is_ignored_without_repair_write() -> None:
+def test_status_aware_verified_rechecks_are_ignored_until_their_real_floor() -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
         conn.row_factory = aiosqlite.Row
@@ -33,23 +33,20 @@ def test_legacy_early_verified_recheck_is_ignored_without_repair_write() -> None
         due = (now - timedelta(minutes=5)).isoformat()
         last_seen = now.isoformat()
         rows = (
-            (
-                "recent-verified",
-                "verified_markdown",
-                (now - timedelta(hours=4)).isoformat(),
-            ),
-            (
-                "old-verified",
-                "verified_markdown",
-                (now - timedelta(hours=25)).isoformat(),
-            ),
-            (
-                "fresh-pending",
-                "pending",
-                None,
-            ),
+            ("recent-markdown", "verified_markdown", now - timedelta(hours=23)),
+            ("old-markdown", "verified_markdown", now - timedelta(hours=25)),
+            ("recent-under", "verified_under_threshold", now - timedelta(hours=70)),
+            ("old-under", "verified_under_threshold", now - timedelta(hours=73)),
+            ("recent-reference", "verified_reference", now - timedelta(hours=70)),
+            ("old-reference", "verified_reference", now - timedelta(hours=73)),
+            ("recent-no-reference", "verified_no_reference", now - timedelta(days=6)),
+            ("old-no-reference", "verified_no_reference", now - timedelta(days=8)),
+            ("recent-unavailable", "not_buyable", now - timedelta(days=6)),
+            ("old-unavailable", "not_buyable", now - timedelta(days=8)),
+            ("fresh-pending", "pending", None),
         )
         for item_id, status, verified_at in rows:
+            verified_text = verified_at.isoformat() if verified_at is not None else None
             await conn.execute(
                 f"""
                 INSERT INTO {QUEUE_TABLE} (
@@ -59,11 +56,11 @@ def test_legacy_early_verified_recheck_is_ignored_without_repair_write() -> None
                 """,
                 (
                     item_id,
-                    (now - timedelta(days=2)).isoformat(),
+                    (now - timedelta(days=10)).isoformat(),
                     last_seen,
                     status,
-                    verified_at,
-                    verified_at,
+                    verified_text,
+                    verified_text,
                     due,
                 ),
             )
@@ -71,31 +68,41 @@ def test_legacy_early_verified_recheck_is_ignored_without_repair_write() -> None
 
         pressure = await load_walmart_exact_queue_pressure(db, cap=64)
         assert pressure.initial_due_now == 1
-        assert pressure.recheck_due_now == 1
-        assert pressure.due_now == 2
+        assert pressure.recheck_due_now == 5
+        assert pressure.due_now == 6
 
         health = await load_walmart_exact_queue_health(db)
         assert health.initial_due_now == 1
-        assert health.recheck_due_now == 1
-        assert health.due_now == 2
+        assert health.recheck_due_now == 5
+        assert health.due_now == 6
 
-        claims = await claim_due_rows_batched(conn, now=now, limit=10)
+        claims = await claim_due_rows_batched(conn, now=now, limit=20)
         assert [claim.item_id for claim in claims] == [
             "fresh-pending",
-            "old-verified",
+            "old-markdown",
+            "old-under",
+            "old-no-reference",
+            "old-reference",
+            "old-unavailable",
         ]
 
         cursor = await conn.execute(
             f"""
-            SELECT status, next_attempt_at, lease_token
+            SELECT item_id, status, next_attempt_at, lease_token
             FROM {QUEUE_TABLE}
-            WHERE item_id = 'recent-verified'
+            WHERE item_id IN (
+                'recent-markdown', 'recent-under', 'recent-reference',
+                'recent-no-reference', 'recent-unavailable'
+            )
+            ORDER BY item_id
             """
         )
-        recent = await cursor.fetchone()
-        assert recent["status"] == "verified_markdown"
-        assert recent["next_attempt_at"] == due
-        assert recent["lease_token"] == ""
+        suppressed = await cursor.fetchall()
+        assert len(suppressed) == 5
+        for row in suppressed:
+            assert row["next_attempt_at"] == due
+            assert row["lease_token"] == ""
+            assert row["status"] != "verifying"
         await conn.close()
 
     asyncio.run(run())
@@ -114,7 +121,7 @@ def test_verified_row_without_verified_timestamp_remains_recoverable() -> None:
             INSERT INTO {QUEUE_TABLE} (
                 item_id, first_seen_at, last_seen_at,
                 status, verified_at, next_attempt_at
-            ) VALUES ('missing-timestamp', ?, ?, 'verified_markdown', NULL, ?)
+            ) VALUES ('missing-timestamp', ?, ?, 'verified_no_reference', NULL, ?)
             """,
             (
                 (now - timedelta(days=2)).isoformat(),

@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-DEALS-DISCOVER-HARDENING-244 live acceptance gate. PRs #244-#246 are already merged, but the Aug 14 live `/discover coverage:Quick` acceptance run exposed one additional canonical-path failure: `/discover` said progress/final results would use DMs while silently defaulting to `max_public_posts=10`, so fresh verified cards could still publish to `#walmart-deals`. The focused follow-up is PR #247 from `fix/discover-public-optin-244`; implementation and pre-merge CI are green, but the task remains open until final PR-head checks, merge/deploy, and live private/public acceptance all pass.**
+**Active — SP-DEALS-DISCOVER-HARDENING-244 live acceptance gate. PR #247 was squash-merged to `main` as `3d1787e79eb2c04379c4e8f48df613c577b85fc8`. Final PR-head CI, review/thread inspection, cleanup/conflict inspection, and all three post-merge `main` workflows passed. The remaining blockers are Discloud deployment of the merged build and live `/deals` + private/public `/discover` acceptance.**
 
 ## Scope
 Finish the existing `/deals` + `/discover` hardening task. Do not start a new implementation task until this live gate passes or the user explicitly FORCE SWITCHes.
@@ -13,7 +13,7 @@ Finish the existing `/deals` + `/discover` hardening task. Do not start a new im
 - Normal `/deals` output reused dense Walmart proof/audit cards intended for deeper verification surfaces.
 - `New / Drops` can contain both verified cards and private review/search leads, so presentation status must come from actual `DealFinderResult.verified_cards` membership rather than a generic card flag.
 - Final `/discover` queue-isolation reinspection remains clean. The #244 regression `test_discover_queue_readback_only_allows_current_search_item_ids` rejects unrelated global queue rows and only allows exact rows whose item IDs came from that discovery search.
-- **Aug 14 live `/discover` failure:** the canonical slash command defaulted `max_public_posts` to 10 with no separate public-post opt-in. `_finish_discovery_job` unconditionally sliced fresh cards into `public_cards` and called `maybe_post_public_deal_cards`. The DM status destination controlled progress/private-result delivery only; it never disabled the public lane. The public helper was behaving as designed, so weakening or bypassing its safety/config gates is not the fix.
+- **Aug 14 live `/discover` failure:** the canonical slash command defaulted `max_public_posts` to 10 with no separate public-post opt-in. `_finish_discovery_job` unconditionally sliced fresh cards into `public_cards` and called `maybe_post_public_deal_cards`. The DM status destination controlled progress/private-result delivery only; it never disabled the public lane. The public helper was behaving as designed, so weakening or bypassing its safety/config gates was not the fix.
 - `select_fresh_deal_cards` was reinspected after the public opt-in change. It performs public-quality/duplicate/reservation/cache preflight reads and annotates cards, but it does not reserve or publish a deal. Keeping that reporting preflight on private discovery runs therefore does not secretly create a public post/reservation.
 
 ## Implemented follow-up
@@ -25,8 +25,8 @@ Finish the existing `/deals` + `/discover` hardening task. Do not start a new im
 - `/deals` uses compact shopping-focused embeds preserving price, seller, delivery, links, thumbnails, and verified/private status while removing internal identity/evidence noise.
 - Normal finder summary and mode menu are compact; diagnostic/public proof renderers and autoscan safety gates were not weakened or replaced.
 - `New / Drops` determines verified/private presentation from actual verified-result membership so review leads cannot be mislabeled as verified.
-- **Current `/discover` follow-up:** added an explicit `public_posts` per-run option that defaults to `False`; `max_public_posts` is only a cap when public posting is opted in. A private run selects zero public cards and never calls the public-post helper. Opted-in runs still use the existing `maybe_post_public_deal_cards` guard unchanged.
-- `/discover` start/status/final messaging now states Public Posts ON/OFF explicitly, and DM-closed fallback messaging follows the selected public mode instead of implying that every discovery run publishes.
+- `/discover` now has an explicit `public_posts` per-run option that defaults to `False`; `max_public_posts` is only a cap when public posting is opted in. A private run selects zero public cards and never calls the public-post helper. Opted-in runs still use the existing `maybe_post_public_deal_cards` guard unchanged.
+- `/discover` start/status/final messaging states Public Posts ON/OFF explicitly, and DM-closed fallback messaging follows the selected public mode instead of implying that every discovery run publishes.
 - Added a pure `select_public_discovery_cards` policy helper and regression coverage proving private-by-default selection and capped public opt-in behavior.
 - Updated the existing deal-feed command coverage guard so it requires category-filtered discovery cards, explicit public-policy selection, and the guarded public-helper call instead of requiring the old unconditional slice implementation.
 
@@ -35,23 +35,27 @@ Finish the existing `/deals` + `/discover` hardening task. Do not start a new im
 - Prior full Python 3.11 regression suite: **1,234 passed, 1 warning** (discord.py/audioop deprecation only).
 - PR #246 checks/review/cleanup and post-merge `main` checks passed; Discloud deployment of PR #246 was confirmed by live tokenized component ACK logs.
 - `/discover` current-search item-ID queue isolation remains directly regression-tested and has no competing implementation.
-- PR #247 started from current `main`; no rebase/conflict gap was present.
+- PR #247 started from then-current `main`; no rebase/conflict gap was present.
 - First PR #247 Python 3.11 run: dependency and compile checks passed; full suite reached **1,234 passed / 1 failed**. The sole failure was an existing static assertion that required the old `public_cards = fresh_cards[:]` implementation string. The guard was updated to validate the new explicit opt-in path rather than restoring unsafe behavior.
-- Revised PR #247 Python 3.11 workflow: **1,235 passed, 1 warning**; `pip check` passed; `python -m compileall -q sniperplug tests *.py` passed.
-- Revised PR #247 Python 3.12 `Python Check`: dependency check, compile, import smoke, and full test suite all passed.
-- Revised PR #247 separate `Import smoke check`: passed.
+- Revised/final PR #247 Python 3.11 workflow: **1,235 passed, 1 warning**; `pip check` passed; `python -m compileall -q sniperplug tests *.py` passed.
+- Revised/final PR #247 Python 3.12 `Python Check`: dependency check, compile, import smoke, and full test suite all passed.
+- Revised/final PR #247 separate `Import smoke check`: passed.
+- Final PR #247 review/thread inspection found no unresolved review threads or code-review blockers.
 - Public-freshness preflight reinspection confirmed it does not create public posts/reservations; the actual publishing helper remains behind `if public_cards:` and is unreachable when `public_posts=False`.
-- Cleanup/conflict inspection: current diff contains only `ACTIVE_TASK.md`, `sniperplug/cogs/auto_discovery.py`, `tests/test_exact_discover_coverage.py`, and `tests/test_deal_feed_controls_command_coverage.py`; no temporary runner/applicator or alternate discovery implementation was added.
+- Cleanup/conflict inspection: PR #247 changed only `ACTIVE_TASK.md`, `sniperplug/cogs/auto_discovery.py`, `tests/test_exact_discover_coverage.py`, and `tests/test_deal_feed_controls_command_coverage.py`; no temporary runner/applicator or alternate discovery implementation was added.
+- PR #247 squash merge succeeded as `3d1787e79eb2c04379c4e8f48df613c577b85fc8`.
+- Post-merge `main` workflows for `3d1787e79eb2c04379c4e8f48df613c577b85fc8`: **Import smoke check passed**, **Python Check passed**, and **Python tests passed**.
 
-## Validation pending for current follow-up
-- Final CI pass for the PR head containing this validation-record update.
-- Final PR review/thread inspection, merge, post-merge checks, Discloud deployment, and live acceptance.
+## Validation pending
+- CI for this documentation-only active-task record refresh.
+- Discloud deployment of merged `main`.
+- Live acceptance below.
 
 ## Remaining Definition of Done
 1. Complete live `/deals search:phone mount` sweep: every enabled mode button responds; Fresh Scan responds; one control panel remains current; compact embeds are readable; private leads remain private.
-2. Merge/deploy the `/discover` public opt-in follow-up with all targeted/full regression and cleanup/conflict checks passing.
+2. Deploy merged `main` containing `3d1787e79eb2c04379c4e8f48df613c577b85fc8` to Discloud.
 3. Live `/discover coverage:Quick` with **Public Posts off/default** completes privately and publishes **zero** discovery cards to the public deal lane; its private/final result contains only current-search job items.
-4. Live `/discover coverage:Quick public_posts:True` proves the explicit public option still sends only eligible verified cards through the unchanged public safety/threshold/category/duplicate guard and respects the configured cap.
+4. Live `/discover coverage:Quick public_posts:True max_public_posts:1` proves the explicit public option still sends only eligible verified cards through the unchanged public safety/threshold/category/duplicate guard and respects the one-card cap.
 5. Only then close SP-DEALS-DISCOVER-HARDENING-244.
 
 ## Suspended task

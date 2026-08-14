@@ -14,6 +14,7 @@ from sniperplug.services.walmart_recheck_audit import prune_walmart_recheck_audi
 OPERATIONAL_CLEANUP_BATCH_SIZE = 500
 ACTIVE_DEAL_TERMINAL_RETENTION_DAYS = 7
 SCAN_RUN_RETENTION_DAYS = 30
+_MAINTENANCE_ROWID_ALIAS = "__sniperplug_rowid"
 
 
 @dataclass(frozen=True)
@@ -178,7 +179,23 @@ async def run_storage_maintenance(
         limit=batch_size,
     )
 
-    await conn.commit()
+    operational_changed = sum(
+        (
+            expired_feedback_targets,
+            old_feedback_events,
+            stale_active_deals_marked_expired,
+            old_inactive_active_deals,
+            old_autoscan_reports,
+            old_public_post_reservations,
+            expired_provider_cache,
+            expired_scan_result_cache,
+            expired_alert_dedupe,
+            expired_store_cache,
+            old_scan_runs,
+        )
+    )
+    if operational_changed:
+        await conn.commit()
     old_active_deal_history = await prune_active_deal_history(db)
     old_walmart_recheck_audit = await prune_walmart_recheck_audit(db)
     return MaintenanceCleanupResult(
@@ -206,25 +223,47 @@ async def _bounded_rowids(
     params: tuple[Any, ...],
     limit: int,
 ) -> list[int]:
+    """Select rowids through a stable alias across SQLite/libSQL row shapes.
+
+    Tables with ``INTEGER PRIMARY KEY`` may expose ``SELECT rowid`` under the
+    primary-key column name after the process-isolated libSQL worker normalizes
+    result metadata into mappings. An explicit alias keeps the wire shape
+    deterministic while the positional fallback preserves local aiosqlite use.
+    """
+
     safe_limit = max(1, min(int(limit), 5_000))
     cursor = await conn.execute(
-        f"SELECT rowid FROM {table} WHERE {where_sql} ORDER BY rowid LIMIT ?",
+        f"SELECT rowid AS {_MAINTENANCE_ROWID_ALIAS} "
+        f"FROM {table} WHERE {where_sql} ORDER BY rowid LIMIT ?",
         (*params, safe_limit),
     )
     rows = await cursor.fetchall()
     rowids: list[int] = []
     for row in rows:
-        try:
-            value = row["rowid"]
-        except Exception:
-            value = row[0]
+        value = _row_value(row, _MAINTENANCE_ROWID_ALIAS, 0)
         try:
             rowid = int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if rowid not in rowids:
             rowids.append(rowid)
     return rowids
+
+
+def _row_value(row: Any, key: str, index: int) -> Any:
+    if row is None:
+        return None
+    try:
+        return row[key]
+    except Exception:
+        pass
+    try:
+        return row[index]
+    except Exception:
+        pass
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key, None)
 
 
 async def delete_bounded_rows(

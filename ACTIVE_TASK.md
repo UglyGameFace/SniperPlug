@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-TURSO-WRITE-AMPLIFICATION. PR #248 and PR #249 are merged. The startup `rowid` crash and catalog rediscovery write storm are live-validated fixed, and the scheduled-recheck write reduction is now on `main` as `1ef9d05dce3dc24b92f4b6c69bb317c5881139a1` with post-merge workflows green. Discloud deployment plus live exact-write/Turso-rate acceptance remain before this task can close.**
+**Active — SP-TURSO-WRITE-AMPLIFICATION. PR #248 and PR #249 are merged and deployed. The startup `rowid` crash and catalog rediscovery write storm are live-validated fixed. PR #249 is also showing the intended live queue behavior: legacy scheduled rechecks are draining rapidly instead of replenishing, but the worker is still saturating its 8-row batch while that finite backlog plus fresh/retry work remains. Final exact-write and Turso-rate acceptance remain before this task can close.**
 
 ## Scope
 Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart proof, delivery dedupe, durable leases, crash recovery, or price history. Fix the storage-maintenance startup crash and remove needless catalog/exact-worker writes. Do not stack a second persistence layer or relax item/seller/offer/variant/reference proof.
@@ -17,6 +17,8 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 - The global catalog rotates 265 routes two at a time on a one-minute cadence, so a full catalog pass is roughly 2.2 hours when not backpressured. The safer low-write model is event-driven: a material catalog price/reference/selected-offer change wakes a verified row immediately, while unchanged verified rows use a low-frequency exact safety sweep.
 - Reinspection of the former `walmart_recheck_schedule_rearm` migration found it was the wrong mechanism for the new policy: it spent writes moving due timestamps and marked a connection complete, so future legacy 4/12-hour rows could still leak one early exact cycle. The final implementation enforces the verified-age floor at claim time without writing anything.
 - Queue pressure and owner health use the same verified-age rule as the claim selector so suppressed legacy timestamps cannot create false scheduled pressure and pause catalog discovery.
+- PR #249 live telemetry now shows the old scheduled lane **draining rather than replenishing**: bounded pressure reported scheduled rechecks **84 → 64 → 34 → 13** from 11:07 to 11:14 while actionable due fell **144 → 139 → 124 → 114 → 93 → 72**. This is the opposite of the pre-#249 steady ~164-167 scheduled floor and is strong evidence the 24-hour claim floor is working in production.
+- The worker still emitted `lease_rows=8 outcome_rows=8 offer_memory_rows=7-8` every ~20 seconds during that sample because there was still finite claimable work: `new/retry=16` plus the shrinking scheduled backlog. `page recovery >=64` remained visible in pressure accounting while the page circuit was open, but `page_circuit_reschedule_rows=0` and the open-circuit claim cap continue to prevent the old write-based page-row churn.
 
 ## Changes live from PR #248
 - Stable aliased maintenance rowid extraction (`rowid AS __sniperplug_rowid`) with mapping/positional-safe reads.
@@ -53,16 +55,16 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 - PR #249 had no review threads or submitted review blockers and was mergeable on its final head.
 - PR #249 was squash-merged to `main` as `1ef9d05dce3dc24b92f4b6c69bb317c5881139a1`.
 - Post-merge `main` validation passed: Python tests, Python Check, compilation/dependency validation, and import smoke all succeeded.
+- The documentation-only merge/live-gate record on `main` also passed Python tests, Python Check, compilation/dependency validation, and import smoke.
+- PR #249 deployment is live. The supplied 11:07-11:15 production sample shows scheduled rechecks collapsing from **84 to 13** rather than remaining at the former ~164-167 floor; actionable due falls in parallel, while page-circuit reschedule writes remain zero.
 
 ## Validation pending / Definition of Done
-- Validate this documentation-only active-task record commit on `main`.
-- Deploy current merged `main` to Discloud.
-- Confirm startup still reaches `Storage maintenance completed` and `SniperPlug online`; there must be no regression of the old rowid crash.
+- Continue live logs until the current finite `scheduled rechecks` backlog reaches or approaches zero and the `new/retry` lane settles.
+- At that point, confirm exact telemetry no longer remains saturated at `lease_rows=8 outcome_rows=8 offer_memory_rows=7-8` every ~20 seconds. Batch demand should materially fall or become intermittent when there is no real fresh/retry/material-change work.
+- Confirm startup remains healthy and there is no regression of the old rowid crash.
 - Confirm there is no `Walmart legacy recheck schedule repair deferred=...` activity; the write-based repair path is deleted.
-- Live queue pressure should no longer report legacy 4/12-hour timestamps as actionable scheduled rechecks before `verified_at + 24h`.
-- Live exact telemetry must show a materially lower sustained lease/outcome/offer-memory row rate than the pre-change ~8-row-every-20-second saturation once fresh work is zero.
 - Catalog logs should show `verified changes rearmed` only when material catalog price/reference/selected-offer proof changes require exact revalidation; ordinary unchanged rediscovery should remain mostly write-free.
-- Turso dashboard rows-written slope must be checked after deployment. The task is not complete until the monthly-rate risk is demonstrably reduced.
+- Turso dashboard rows-written slope must be checked after the finite backlog drain. The task is not complete until the monthly-rate risk is demonstrably reduced.
 
 ## Cleanup status
 - No startup exception swallow, monkey patch, alternate database, duplicate queue runtime, or relaxed proof gate was added.
@@ -72,7 +74,7 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 - The implementation changes the existing shared recheck policy, claim selector, pressure/health accounting, and catalog UPSERT; it does not add a parallel scheduler.
 
 ## Blockers
-- Direct Turso organization/top-query metrics are not exposed through the connected tools. Final quota-rate acceptance requires the user's Turso usage view after the new deployment.
+- Direct Turso organization/top-query metrics are not exposed through the connected tools. Final quota-rate acceptance requires the user's Turso usage view after the new deployment and finite backlog drain.
 
 ## Suspended task
 **SP-DEALS-DISCOVER-HARDENING-244 is suspended at its live acceptance gate, not closed.** PR #247 is already merged and CI-green. Resume only after this Turso task closes or another explicit FORCE SWITCH.

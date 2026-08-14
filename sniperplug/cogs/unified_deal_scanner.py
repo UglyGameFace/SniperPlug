@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import discord
 
 from sniperplug.cogs import deal_scanner
@@ -41,6 +43,8 @@ from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
 
 DEAL_MODE_VIEW_TIMEOUT_SECONDS = 15 * 60
+
+log = logging.getLogger(__name__)
 
 
 class UnifiedDealScannerCog(DealScannerCog):
@@ -97,7 +101,12 @@ class UnifiedDealScannerCog(DealScannerCog):
         simple_mode: bool,
         mode: str,
         force_refresh: bool = False,
+        replace_controls: bool = False,
+        menu_token: str | None = None,
+        owner_id: int | None = None,
     ) -> None:
+        menu_token = menu_token or str(interaction.id)[-12:]
+        owner_id = owner_id or getattr(interaction.user, "id", None)
         provider = provider_registry.get("walmart")
         if provider is None:
             await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
@@ -149,6 +158,8 @@ class UnifiedDealScannerCog(DealScannerCog):
             ranked=ranked,
             cached_rows=cached_rows,
             freshness=freshness,
+            menu_token=menu_token,
+            owner_id=owner_id,
         )
 
         if ranked.has_verified:
@@ -169,17 +180,17 @@ class UnifiedDealScannerCog(DealScannerCog):
                     content="🟨 Extra review/raw/flip/scout leads — private only. Staff can manually publish one after checking it.",
                     view=ManualReviewShareView(ranked.review),
                 )
-            await send_deal_mode_controls(interaction, view, ranked, freshness)
+            await send_deal_mode_controls(interaction, view, ranked, freshness, replace_existing=replace_controls)
             return
 
         if ranked.has_review:
             await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.review], ephemeral=True)
-            await send_deal_mode_controls(interaction, view, ranked, freshness)
+            await send_deal_mode_controls(interaction, view, ranked, freshness, replace_existing=replace_controls)
             return
 
         summary.add_field(name="Nothing useful found yet", value=deal_scanner.no_match_help(query, starting_discount, page, simple_mode), inline=False)
         await interaction.followup.send(embed=sanitize_embed(summary), ephemeral=True)
-        await send_deal_mode_controls(interaction, view, ranked, freshness)
+        await send_deal_mode_controls(interaction, view, ranked, freshness, replace_existing=replace_controls)
 
 
 class DealSearchModeView(discord.ui.View):
@@ -199,6 +210,8 @@ class DealSearchModeView(discord.ui.View):
         ranked: ModeRankedCards | None = None,
         cached_rows: list[CachedDealRow] | None = None,
         freshness: ScanFreshness | None = None,
+        menu_token: str | None = None,
+        owner_id: int | None = None,
     ):
         super().__init__(timeout=DEAL_MODE_VIEW_TIMEOUT_SECONDS)
         self.cog = cog
@@ -214,18 +227,75 @@ class DealSearchModeView(discord.ui.View):
         self.ranked = ranked
         self.cached_rows = cached_rows or []
         self.freshness = freshness
-        self.add_item(DealModeButton(MODE_BEST, row=0, disabled=self.mode == MODE_BEST))
-        self.add_item(DealModeButton(MODE_POPULAR, row=0, disabled=self.mode == MODE_POPULAR))
-        self.add_item(DealModeButton(MODE_HIDDEN, row=0, disabled=self.mode == MODE_HIDDEN))
-        self.add_item(DealModeButton(MODE_CHEAPEST, row=1, disabled=self.mode == MODE_CHEAPEST))
-        self.add_item(DealModeButton(MODE_MARKDOWN, row=1, disabled=self.mode == MODE_MARKDOWN))
-        self.add_item(RefreshDealModeButton(row=1))
-        self.add_item(CachedActiveButton(row=2, disabled=not bool(self.cached_rows)))
-        self.add_item(NewSinceScanButton(row=2, disabled=not bool(self.freshness and (self.freshness.new_count or self.freshness.price_drop_count))))
+        self.menu_token = menu_token or "legacy"
+        self.owner_id = owner_id
+        self.add_item(DealModeButton(MODE_BEST, row=0, active=self.mode == MODE_BEST, menu_token=self.menu_token))
+        self.add_item(DealModeButton(MODE_POPULAR, row=0, active=self.mode == MODE_POPULAR, menu_token=self.menu_token))
+        self.add_item(DealModeButton(MODE_HIDDEN, row=0, active=self.mode == MODE_HIDDEN, menu_token=self.menu_token))
+        self.add_item(DealModeButton(MODE_CHEAPEST, row=1, active=self.mode == MODE_CHEAPEST, menu_token=self.menu_token))
+        self.add_item(DealModeButton(MODE_MARKDOWN, row=1, active=self.mode == MODE_MARKDOWN, menu_token=self.menu_token))
+        self.add_item(RefreshDealModeButton(row=1, menu_token=self.menu_token))
+        self.add_item(CachedActiveButton(row=2, disabled=not bool(self.cached_rows), menu_token=self.menu_token))
+        self.add_item(NewSinceScanButton(row=2, disabled=not bool(self.freshness and (self.freshness.new_count or self.freshness.price_drop_count)), menu_token=self.menu_token))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.owner_id is not None and getattr(interaction.user, "id", None) != self.owner_id:
+            await deal_scanner.safe_send_interaction(
+                interaction,
+                "Run your own `/deals` search to use these controls.",
+                ephemeral=True,
+            )
+            return False
+        if interaction.response.is_done():
+            return True
+        try:
+            await interaction.response.defer(thinking=False)
+            log.info(
+                "Deal result interaction acknowledged custom_id=%s interaction_id=%s message_id=%s mode=%s",
+                (getattr(interaction, "data", None) or {}).get("custom_id"),
+                getattr(interaction, "id", None),
+                getattr(getattr(interaction, "message", None), "id", None),
+                self.mode,
+            )
+            return True
+        except discord.InteractionResponded:
+            return True
+        except (discord.NotFound, discord.HTTPException) as exc:
+            log.warning(
+                "Deal result interaction acknowledgement failed custom_id=%s interaction_id=%s message_id=%s mode=%s error=%r",
+                (getattr(interaction, "data", None) or {}).get("custom_id"),
+                getattr(interaction, "id", None),
+                getattr(getattr(interaction, "message", None), "id", None),
+                self.mode,
+                exc,
+            )
+            return False
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+        /,
+    ) -> None:
+        log.error(
+            "Deal result control failed custom_id=%s interaction_id=%s message_id=%s mode=%s",
+            getattr(item, "custom_id", None),
+            getattr(interaction, "id", None),
+            getattr(getattr(interaction, "message", None), "id", None),
+            self.mode,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        await deal_scanner.safe_send_interaction(
+            interaction,
+            "That result button hit an internal error. It was logged; run `/deals` again if the retry also fails.",
+            ephemeral=True,
+        )
 
     async def show_mode(self, interaction: discord.Interaction, mode: str, *, refresh: bool = False) -> None:
-        if not await deal_scanner.safe_defer(interaction, ephemeral=True, thinking=True):
-            return
+        if not interaction.response.is_done():
+            if not await deal_scanner.safe_defer(interaction, ephemeral=False, thinking=False):
+                return
         if refresh or self.result is None:
             await self.cog._send_unified_deal_search(
                 interaction,
@@ -239,6 +309,9 @@ class DealSearchModeView(discord.ui.View):
                 simple_mode=self.simple_mode,
                 mode=mode,
                 force_refresh=refresh,
+                replace_controls=True,
+                menu_token=self.menu_token,
+                owner_id=self.owner_id,
             )
             return
 
@@ -266,6 +339,8 @@ class DealSearchModeView(discord.ui.View):
             ranked=ranked,
             cached_rows=self.cached_rows,
             freshness=self.freshness,
+            menu_token=self.menu_token,
+            owner_id=self.owner_id,
         )
         if ranked.has_verified:
             summary.add_field(name="Mode switched", value="Re-ranked the same scan results without spending another API search.", inline=False)
@@ -277,73 +352,121 @@ class DealSearchModeView(discord.ui.View):
                     content="🟨 Extra review/raw/flip/scout leads — private only. Staff can manually publish one after checking it.",
                     view=ManualReviewShareView(ranked.review),
                 )
-            await send_deal_mode_controls(interaction, view, ranked, self.freshness)
+            await send_deal_mode_controls(interaction, view, ranked, self.freshness, replace_existing=True)
             return
         if ranked.has_review:
             await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.review], ephemeral=True)
-            await send_deal_mode_controls(interaction, view, ranked, self.freshness)
+            await send_deal_mode_controls(interaction, view, ranked, self.freshness, replace_existing=True)
             return
         summary.add_field(name="No cards for this mode", value="Try another mode or refresh the search.", inline=False)
         await interaction.followup.send(embed=sanitize_embed(summary), ephemeral=True)
-        await send_deal_mode_controls(interaction, view, ranked, self.freshness)
+        await send_deal_mode_controls(interaction, view, ranked, self.freshness, replace_existing=True)
 
 
 class DealModeButton(discord.ui.Button):
-    def __init__(self, mode: str, *, row: int, disabled: bool = False):
+    def __init__(self, mode: str, *, row: int, active: bool = False, menu_token: str):
         info = DEAL_SEARCH_MODES[mode]
-        super().__init__(label=info.label, emoji=info.emoji, style=discord.ButtonStyle.primary if mode == MODE_BEST else discord.ButtonStyle.secondary, row=row, disabled=disabled, custom_id=f"deal_mode:{mode}")
+        super().__init__(
+            label=info.label,
+            emoji=info.emoji,
+            style=discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary,
+            row=row,
+            disabled=active,
+            custom_id=f"deal_mode:{menu_token}:{mode}",
+        )
         self.mode = mode
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(self.view, DealSearchModeView):
-            await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
+            await deal_scanner.safe_send_interaction(interaction, "This result menu is no longer active.", ephemeral=True)
             return
         await self.view.show_mode(interaction, self.mode)
 
 
 class RefreshDealModeButton(discord.ui.Button):
-    def __init__(self, *, row: int):
-        super().__init__(label="Fresh Scan", emoji="🔄", style=discord.ButtonStyle.secondary, row=row, custom_id="deal_mode:refresh")
+    def __init__(self, *, row: int, menu_token: str):
+        super().__init__(
+            label="Fresh Scan",
+            emoji="🔄",
+            style=discord.ButtonStyle.secondary,
+            row=row,
+            custom_id=f"deal_mode:{menu_token}:refresh",
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(self.view, DealSearchModeView):
-            await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
+            await deal_scanner.safe_send_interaction(interaction, "This result menu is no longer active.", ephemeral=True)
             return
         await self.view.show_mode(interaction, self.view.mode, refresh=True)
 
 
 class CachedActiveButton(discord.ui.Button):
-    def __init__(self, *, row: int, disabled: bool = False):
-        super().__init__(label="Cached Active", emoji="⚡", style=discord.ButtonStyle.success, row=row, disabled=disabled, custom_id="deal_mode:cached_active")
+    def __init__(self, *, row: int, disabled: bool = False, menu_token: str):
+        super().__init__(
+            label="Cached Active",
+            emoji="⚡",
+            style=discord.ButtonStyle.success,
+            row=row,
+            disabled=disabled,
+            custom_id=f"deal_mode:{menu_token}:cached_active",
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(self.view, DealSearchModeView):
-            await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
+            await deal_scanner.safe_send_interaction(interaction, "This result menu is no longer active.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=sanitize_embed(build_cached_active_embed(self.view.query, self.view.cached_rows)), ephemeral=True)
+        await interaction.followup.send(
+            embed=sanitize_embed(build_cached_active_embed(self.view.query, self.view.cached_rows)),
+            ephemeral=True,
+        )
 
 
 class NewSinceScanButton(discord.ui.Button):
-    def __init__(self, *, row: int, disabled: bool = False):
-        super().__init__(label="New / Drops", emoji="🆕", style=discord.ButtonStyle.danger, row=row, disabled=disabled, custom_id="deal_mode:new_since_scan")
+    def __init__(self, *, row: int, disabled: bool = False, menu_token: str):
+        super().__init__(
+            label="New / Drops",
+            emoji="🆕",
+            style=discord.ButtonStyle.danger,
+            row=row,
+            disabled=disabled,
+            custom_id=f"deal_mode:{menu_token}:new_since_scan",
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(self.view, DealSearchModeView) or self.view.freshness is None:
-            await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
-            return
-        if not await deal_scanner.safe_defer(interaction, ephemeral=True, thinking=True):
+            await deal_scanner.safe_send_interaction(interaction, "This result menu is no longer active.", ephemeral=True)
             return
         freshness = self.view.freshness
         cards = [*freshness.price_drop_cards[:5], *freshness.new_cards[:5]][:5]
-        await interaction.followup.send(embed=sanitize_embed(build_new_since_scan_embed(self.view.query, freshness)), ephemeral=True)
-        if not cards:
-            return
+        await interaction.followup.send(
+            embed=sanitize_embed(build_new_since_scan_embed(self.view.query, freshness)),
+            ephemeral=True,
+        )
         for card in cards:
             await interaction.followup.send(embed=sanitize_embed(card.embed), ephemeral=True)
 
 
-async def send_deal_mode_controls(interaction: discord.Interaction, view: DealSearchModeView, ranked: ModeRankedCards, freshness: ScanFreshness | None = None) -> None:
-    await interaction.followup.send(embed=sanitize_embed(build_deal_mode_menu_embed(view.query, ranked, freshness)), view=view, ephemeral=True)
+async def send_deal_mode_controls(
+    interaction: discord.Interaction,
+    view: DealSearchModeView,
+    ranked: ModeRankedCards,
+    freshness: ScanFreshness | None = None,
+    *,
+    replace_existing: bool = False,
+) -> None:
+    embed = sanitize_embed(build_deal_mode_menu_embed(view.query, ranked, freshness))
+    if replace_existing:
+        try:
+            await interaction.edit_original_response(embed=embed, view=view)
+            return
+        except (discord.NotFound, discord.HTTPException) as exc:
+            log.warning(
+                "Deal result menu edit failed; sending replacement menu interaction_id=%s message_id=%s error=%r",
+                getattr(interaction, "id", None),
+                getattr(getattr(interaction, "message", None), "id", None),
+                exc,
+            )
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 async def send_private_card_batches(

@@ -40,6 +40,15 @@ QUEUE_EXISTING_LOOKUP_CHUNK_SIZE = 500
 QUEUE_DISCOVERY_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
 _QUEUE_COLUMNS_PER_ROW = 18
 _REARM_STATUSES = frozenset({"pending", "retry", "failed"})
+_VERIFIED_REARM_STATUSES = frozenset(
+    {
+        "verified_markdown",
+        "verified_under_threshold",
+        "verified_no_reference",
+        "verified_reference",
+        "not_buyable",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -69,6 +78,7 @@ class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
     write_statements: int = 0
     safe_snapshot_rows: int = 0
     page_retry_rearmed: int = 0
+    verified_change_rearmed: int = 0
     snapshot_refresh_skipped: int = 0
 
     def summary_line(self) -> str:
@@ -77,6 +87,7 @@ class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
             f"discovered **{self.discovered}** • unique item IDs this pass **{self.queued_unique}** • "
             f"safe fresh proof **{self.safe_snapshot_rows}** • "
             f"page retries rescued **{self.page_retry_rearmed}** • "
+            f"verified changes rearmed **{self.verified_change_rearmed}** • "
             f"stale proof refresh skipped **{self.snapshot_refresh_skipped}** • "
             f"persisted/unchanged **{self.persisted_rows}/{self.unchanged_rows}** • "
             f"write statements **{self.write_statements}** • "
@@ -106,6 +117,12 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     of an identical fifteen-minute proof for a verified row whose next recheck is
     hours away is intentionally suppressed: that proof would expire before it
     could be consumed and the write has no correctness value.
+
+    Verified rows use a low-write daily exact fallback. A material catalog
+    price/reference/selected-offer proof change therefore wakes the existing row
+    to ``pending`` immediately, preserving fast exact revalidation without the
+    old four-hour database heartbeat. Cosmetic title/URL/source changes may still
+    refresh stored discovery metadata but do not wake a verified row by themselves.
 
     A page-retry row that receives a complete safe snapshot is explicitly
     rearmed to ``pending`` so fresh catalog proof can bypass an HTML challenge.
@@ -199,6 +216,14 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
         and existing.get(str(row[0])) is not None
         and existing[str(row[0])].status == "page_retry"
     )
+    verified_change_rearmed = sum(
+        1
+        for row in rows_to_write
+        if _verified_material_change(
+            row,
+            existing.get(str(row[0])),
+        )
+    )
 
     write_statements = 0
     for offset in range(0, len(rows_to_write), QUEUE_UPSERT_CHUNK_SIZE):
@@ -257,12 +282,56 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
                     WHEN status = 'page_retry'
                          AND excluded.discovery_snapshot_json <> ''
                     THEN 'pending'
+                    WHEN status IN (
+                        'verified_markdown',
+                        'verified_under_threshold',
+                        'verified_no_reference',
+                        'verified_reference',
+                        'not_buyable'
+                    ) AND (
+                        (
+                            excluded.apparent_current_cents IS NOT NULL
+                            AND excluded.apparent_current_cents IS NOT apparent_current_cents
+                        )
+                        OR (
+                            excluded.apparent_reference_cents IS NOT NULL
+                            AND excluded.apparent_reference_cents IS NOT apparent_reference_cents
+                        )
+                        OR (
+                            excluded.discovery_snapshot_json <> ''
+                            AND excluded.discovery_snapshot_json
+                                <> COALESCE(discovery_snapshot_json, '')
+                        )
+                    )
+                    THEN 'pending'
                     ELSE status END,
                 next_attempt_at = CASE
                     WHEN status IN ('pending', 'retry', 'failed')
                     THEN MIN(next_attempt_at, excluded.next_attempt_at)
                     WHEN status = 'page_retry'
                          AND excluded.discovery_snapshot_json <> ''
+                    THEN MIN(next_attempt_at, excluded.next_attempt_at)
+                    WHEN status IN (
+                        'verified_markdown',
+                        'verified_under_threshold',
+                        'verified_no_reference',
+                        'verified_reference',
+                        'not_buyable'
+                    ) AND (
+                        (
+                            excluded.apparent_current_cents IS NOT NULL
+                            AND excluded.apparent_current_cents IS NOT apparent_current_cents
+                        )
+                        OR (
+                            excluded.apparent_reference_cents IS NOT NULL
+                            AND excluded.apparent_reference_cents IS NOT apparent_reference_cents
+                        )
+                        OR (
+                            excluded.discovery_snapshot_json <> ''
+                            AND excluded.discovery_snapshot_json
+                                <> COALESCE(discovery_snapshot_json, '')
+                        )
+                    )
                     THEN MIN(next_attempt_at, excluded.next_attempt_at)
                     ELSE next_attempt_at END
             """,
@@ -283,6 +352,7 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
         write_statements=write_statements,
         safe_snapshot_rows=safe_snapshot_rows,
         page_retry_rearmed=page_retry_rearmed,
+        verified_change_rearmed=verified_change_rearmed,
         snapshot_refresh_skipped=snapshot_refresh_skipped,
     )
 
@@ -417,6 +487,25 @@ def _queue_row_needs_write(
     ):
         return True
     return False
+
+
+def _verified_material_change(
+    row: tuple[Any, ...],
+    existing: _ExistingQueueRow | None,
+) -> bool:
+    """Return whether discovery changed proof that a verified row must recheck."""
+
+    if existing is None or existing.status not in _VERIFIED_REARM_STATUSES:
+        return False
+    if row[2] is not None and int(row[2]) != existing.apparent_current_cents:
+        return True
+    if row[3] is not None and int(row[3]) != existing.apparent_reference_cents:
+        return True
+    incoming_snapshot = str(row[16] or "")
+    return bool(
+        incoming_snapshot
+        and incoming_snapshot != existing.discovery_snapshot_json
+    )
 
 
 def _snapshot_refresh_can_be_consumed(

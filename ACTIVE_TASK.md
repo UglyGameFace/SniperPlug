@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-DEALS-DISCOVER-HARDENING-244 live acceptance gate. PR #246 was squash-merged to `main` as `961956325eaf7ac45a3cf2b5c4acbac018488d55`; all PR checks, review/thread inspection, cleanup inspection, and all three post-merge `main` checks passed. The merged build is now live on Discloud: runtime logs contain the new tokenized `Deal result interaction acknowledged custom_id=deal_mode:...` path. The only remaining blockers are the complete live `/deals` button sweep and `/discover` acceptance check.**
+**Active — SP-DEALS-DISCOVER-HARDENING-244 live acceptance gate. PRs #244-#246 are already merged, but the Aug 14 live `/discover coverage:Quick` acceptance run exposed one additional canonical-path failure: `/discover` said progress/final results would use DMs while silently defaulting to `max_public_posts=10`, so fresh verified cards could still publish to `#walmart-deals`. A focused follow-up is in progress on `fix/discover-public-optin-244`; the task remains open until implementation, regression/CI checks, merge/deploy, and live private/public acceptance all pass.**
 
 ## Scope
 Finish the existing `/deals` + `/discover` hardening task. Do not start a new implementation task until this live gate passes or the user explicitly FORCE SWITCHes.
@@ -12,10 +12,11 @@ Finish the existing `/deals` + `/discover` hardening task. Do not start a new im
 - ACK failures were swallowed without task-specific component diagnostics.
 - Normal `/deals` output reused dense Walmart proof/audit cards intended for deeper verification surfaces.
 - `New / Drops` can contain both verified cards and private review/search leads, so presentation status must come from actual `DealFinderResult.verified_cards` membership rather than a generic card flag.
-- Final `/discover` conflict reinspection found no competing implementation. The #244 regression `test_discover_queue_readback_only_allows_current_search_item_ids` explicitly rejects unrelated global queue item `9999`, excludes a foreground duplicate, and admits only a current-search overflow item. No additional code patch is justified without a live failure.
+- Final `/discover` queue-isolation reinspection remains clean. The #244 regression `test_discover_queue_readback_only_allows_current_search_item_ids` rejects unrelated global queue rows and only allows exact rows whose item IDs came from that discovery search.
+- **Aug 14 live `/discover` failure:** the canonical slash command defaulted `max_public_posts` to 10 with no separate public-post opt-in. `_finish_discovery_job` unconditionally sliced fresh cards into `public_cards` and called `maybe_post_public_deal_cards`. The DM status destination controlled progress/private-result delivery only; it never disabled the public lane. The public helper was behaving as designed, so weakening or bypassing its safety/config gates is not the fix.
 
 ## Implemented follow-up
-- Each result menu receives a unique token embedded in every component custom ID.
+- Each `/deals` result menu receives a unique token embedded in every component custom ID.
 - `DealSearchModeView.interaction_check` acknowledges components with `response.defer(thinking=False)` before button-specific work and enforces menu ownership.
 - Component ACK failures and callback exceptions have task-specific logs.
 - Mode switches and Fresh Scan preserve the menu token/owner and replace the existing controls message instead of stacking duplicate control panels.
@@ -23,30 +24,39 @@ Finish the existing `/deals` + `/discover` hardening task. Do not start a new im
 - `/deals` uses compact shopping-focused embeds preserving price, seller, delivery, links, thumbnails, and verified/private status while removing internal identity/evidence noise.
 - Normal finder summary and mode menu are compact; diagnostic/public proof renderers and autoscan safety gates were not weakened or replaced.
 - `New / Drops` determines verified/private presentation from actual verified-result membership so review leads cannot be mislabeled as verified.
+- **Current `/discover` follow-up:** added an explicit `public_posts` per-run option that defaults to `False`; `max_public_posts` is only a cap when public posting is opted in. A private run selects zero public cards and never calls the public-post helper. Opted-in runs still use the existing `maybe_post_public_deal_cards` guard unchanged.
+- `/discover` start/status/final messaging now states Public Posts ON/OFF explicitly, and DM-closed fallback messaging follows the selected public mode instead of implying that every discovery run publishes.
+- Added a pure `select_public_discovery_cards` policy helper and regression coverage proving private-by-default selection and capped public opt-in behavior.
 
 ## Validation completed
-- Focused #244/#245/control/presentation regressions: **15 passed**.
-- Full Python 3.11 regression suite: **1,234 passed, 1 warning** (discord.py/audioop deprecation only).
-- `pip check`: passed.
-- `python -m compileall -q sniperplug tests *.py`: passed.
-- `git diff --check origin/main...HEAD`: passed before merge.
-- Final pre-PR diff contained only `ACTIVE_TASK.md`, `sniperplug/cogs/unified_deal_scanner.py`, and `tests/test_deals_live_timeout_245.py`; temporary patch/validation workflows were removed.
-- PR #246 checks: passed.
-- PR #246 reviews/threads: no code findings; Qodo only reported inactive billing.
-- PR #246 squash merge: passed, code commit `961956325eaf7ac45a3cf2b5c4acbac018488d55`.
-- Post-merge `main`: all three canonical checks passed.
-- Discloud live deployment: confirmed by the new `sniperplug.cogs.unified_deal_scanner | Deal result interaction acknowledged custom_id=deal_mode:<token>:markdown` runtime log.
-- Final `/discover` code/test reinspection: current-search item-ID isolation is still present and directly regression-tested; no duplicate or stale alternative path was found.
+- Prior focused #244/#245/control/presentation regressions: **15 passed**.
+- Prior full Python 3.11 regression suite: **1,234 passed, 1 warning** (discord.py/audioop deprecation only).
+- Prior `pip check`: passed.
+- Prior `python -m compileall -q sniperplug tests *.py`: passed.
+- Prior `git diff --check origin/main...HEAD`: passed before PR #246 merge.
+- PR #246 checks/review/cleanup and post-merge `main` checks passed.
+- Discloud deployment of PR #246 was confirmed by live tokenized component ACK logs.
+- `/discover` current-search item-ID queue isolation remains directly regression-tested and has no competing implementation.
+- Current follow-up branch conflict inspection: branch started from current `main`; initial diff contains only `sniperplug/cogs/auto_discovery.py`, `tests/test_exact_discover_coverage.py`, and this active-task record.
+
+## Validation pending for current follow-up
+- Targeted `/discover` public-policy/coverage tests.
+- Existing #244 queue-isolation and #245/#246 `/deals` control regressions.
+- Full Python regression suite, compile/static validation, dependency check where CI provides it, and diff/cleanup inspection.
+- PR checks/review inspection, merge, Discloud deployment, and live acceptance.
 
 ## Remaining Definition of Done
 1. Complete live `/deals search:phone mount` sweep: every enabled mode button responds; Fresh Scan responds; one control panel remains current; compact embeds are readable; private leads remain private.
-2. Live `/discover coverage:Quick` completes and its private/final result contains only items from that job's current search set; no unrelated global-queue product may leak in.
-3. Only then close SP-DEALS-DISCOVER-HARDENING-244.
+2. Merge/deploy the `/discover` public opt-in follow-up with all targeted/full regression and cleanup/conflict checks passing.
+3. Live `/discover coverage:Quick` with **Public Posts off/default** completes privately and publishes **zero** discovery cards to the public deal lane; its private/final result contains only current-search job items.
+4. Live `/discover coverage:Quick public_posts:True` proves the explicit public option still sends only eligible verified cards through the unchanged public safety/threshold/category/duplicate guard and respects the configured cap.
+5. Only then close SP-DEALS-DISCOVER-HARDENING-244.
 
 ## Suspended task
 **SP-WM-MISSED-DEALS-236 remains suspended, not closed.** Resume only after this active task closes or an explicit FORCE SWITCH.
 
 ## Backlog
+- **SP-SETUP-DELIVERY-UX:** Align `/setup_sniperplug_here` with the clearer `/dm_deals` setup experience. Make public delivery an explicit understandable option, show the selected public channel/status, separate public-post controls from personal DM controls, keep only essential choices mandatory, and make the resulting configuration easy to review/change without hidden defaults. Do not implement until #244 closes unless explicitly FORCE SWITCHed.
 - **SP-DM-DELIVERY-STARVATION:** Investigate why personal DM alerts are producing `checked/matched/sent 2/1/0` with `DM disabled 0` and `errors 0`; current evidence shows matching deals are being lost to filter and duplicate suppression (`filter/duplicate/cap/diversity 1/1/0/0`) rather than Discord DM delivery being disabled. Inspect the real DM rule evaluation, dedupe key/lifetime, event-version semantics, per-user thresholds/categories, and whether a legitimate new price/version is being incorrectly treated as already delivered before changing behavior.
 - **SP-DM-NEW-LOW-ALERT:** When the exact same item reaches a genuinely lower price, emit a distinct user-facing “New Lower Price” event instead of suppressing it as a duplicate or resending the original card. Preserve the item’s price timeline and show previous observed price → new price, dollars saved since the last alert, percentage drop since the last alert, and discount versus the highest trusted observed/reference price. Clearly distinguish official Walmart was/list price from SniperPlug-observed history and estimated market reference. Re-alert only for meaningful new lows; same-price repeats remain deduped. Prefer updating/replacing the prior active DM card when practical, or send a compact follow-up that visually emphasizes the new low and links back to the product.
 - **SP-WM-REFERENCE-PRICE-RECOVERY:** Improve Walmart exact verification when the API omits current/reference/was price. Current logs show `api_price_missing`, `api_exact_search_no_match`, `page_challenge`, and long `page_circuit_open` windows, while page retries can occasionally rescue candidates. Inspect the current API → PDP/page → memory path first. Desired hierarchy: official Walmart strike/list/was price when available; same-item historical price observed by SniperPlug; exact same variant/condition Walmart offer context; conservative cross-seller/market reference only as clearly labeled estimated/reference context, never falsely presented as an official Walmart “was” price. Reject outliers and variant/condition mismatches, retain provenance/confidence, and keep public markdown proof stricter than private review/scout context.

@@ -3,12 +3,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import discord
+
 from sniperplug.cogs.auto_discovery import (
     DISCOVERY_CHUNK_ROUTES,
     chunk_discovery_queries,
     resolve_discovery_plan,
     select_discovery_notes,
+    select_public_discovery_cards,
 )
+from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.services.walmart_catalog_coverage import catalog_route_pool
 
 
@@ -82,12 +86,38 @@ def test_discover_notes_prioritize_exact_queue_and_hide_internal_chatter() -> No
     ]
 
 
+def test_discover_public_selection_is_private_by_default_and_capped_when_opted_in() -> None:
+    cards = [
+        DealCard(
+            embed=discord.Embed(title=str(index)),
+            url=f"https://example.com/{index}",
+            label=str(index),
+        )
+        for index in range(5)
+    ]
+
+    assert select_public_discovery_cards(
+        cards,
+        public_posts=False,
+        max_public_posts=3,
+    ) == []
+    assert select_public_discovery_cards(
+        cards,
+        public_posts=True,
+        max_public_posts=3,
+    ) == cards[:3]
+
+
 def test_discover_uses_exact_collector_not_legacy_search_only_path() -> None:
     assert "collect_verified_discount_cards_with_observed_memory" in AUTO_DISCOVERY
     assert "normalize_exact_verified_walmart_cards" in AUTO_DISCOVERY
     assert "catalog_route_pool" in AUTO_DISCOVERY
     assert "find_walmart_discovery_deals" not in AUTO_DISCOVERY
+    assert 'public_posts: bool = False' in AUTO_DISCOVERY
     assert 'max_public_posts: app_commands.Range[int, 1, 20] = 10' in AUTO_DISCOVERY
+    assert 'public_posts=bool(public_posts)' in AUTO_DISCOVERY
+    assert 'public_result = PublicPostResult()' in AUTO_DISCOVERY
+    assert 'if public_cards:' in AUTO_DISCOVERY
     assert 'user_id=0' in AUTO_DISCOVERY
     assert "Search-only rows cannot become deal cards" in AUTO_DISCOVERY
 
@@ -109,14 +139,15 @@ def test_discover_shares_walmart_runtime_gates_for_long_sweeps() -> None:
     assert "discover_" in AUTO_DISCOVERY
 
 
-def test_discover_shows_exact_cards_privately_but_caps_fresh_public_cards() -> None:
+def test_discover_shows_exact_cards_privately_and_public_posts_require_opt_in() -> None:
     assert (
         "shown_cards, category_suppressed_cards, category_notes = "
         "apply_category_preferences" in AUTO_DISCOVERY
     )
     assert "cards=shown_cards" in AUTO_DISCOVERY
     assert "fresh_cards = list(fresh_selection.fresh)" in AUTO_DISCOVERY
-    assert "public_cards = fresh_cards[: job.max_public_posts]" in AUTO_DISCOVERY
+    assert "public_cards = select_public_discovery_cards(" in AUTO_DISCOVERY
+    assert "public_posts=job.public_posts" in AUTO_DISCOVERY
     assert "cards=public_cards" in AUTO_DISCOVERY
     assert "including already-posted duplicates when present" in AUTO_DISCOVERY
     assert "batch_cards_for_limit(private_cards)" in AUTO_DISCOVERY
@@ -128,13 +159,15 @@ def test_discover_status_is_one_edited_message_with_cancel_control() -> None:
     assert "response.edit_message" in AUTO_DISCOVERY
     assert "One status message is edited in place" in AUTO_DISCOVERY
     assert "completed chunk" in AUTO_DISCOVERY.lower()
+    assert "Public posting only runs when this discovery job opts in" in AUTO_DISCOVERY
 
 
 def test_discover_slash_metadata_fits_discord_limits() -> None:
     descriptions = (
         "Start a broad exact-verified Walmart catalog discovery job.",
         "Quick: 16 routes. Deep: 64. Full: every route in a durable background job.",
-        "Fresh verified deals sent publicly; extra exact cards are delivered privately.",
+        "Also publish verified finds to the server deal channel. Off keeps this run private.",
+        "When public posts are on, cap how many verified deals can be published.",
     )
     for description in descriptions:
         assert description in AUTO_DISCOVERY

@@ -23,8 +23,10 @@ def test_public_posting_uses_filtered_cards_for_hunt_and_discover():
     assert "cards=posted_cards" in HUNT
     assert "cards=shown_cards" in DISCOVER
     assert "fresh_cards = list(fresh_selection.fresh)" in DISCOVER
-    assert "public_cards = fresh_cards[:" in DISCOVER
+    assert "public_cards = select_public_discovery_cards(" in DISCOVER
+    assert "public_posts=job.public_posts" in DISCOVER
     assert "cards=public_cards" in DISCOVER
+    assert "if public_cards:" in DISCOVER
     assert DISCOVER.index("apply_category_preferences(") < DISCOVER.index(
         "fresh_cards = list(fresh_selection.fresh)"
     )

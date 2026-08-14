@@ -40,6 +40,9 @@ QUEUE_EXISTING_LOOKUP_CHUNK_SIZE = 500
 QUEUE_DISCOVERY_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
 _QUEUE_COLUMNS_PER_ROW = 18
 _REARM_STATUSES = frozenset({"pending", "retry", "failed"})
+_TERMINAL_IDENTITY_REARM_STATUSES = frozenset(
+    {"incomplete_identity", "identity_mismatch"}
+)
 _VERIFIED_REARM_STATUSES = frozenset(
     {
         "verified_markdown",
@@ -78,6 +81,7 @@ class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
     write_statements: int = 0
     safe_snapshot_rows: int = 0
     page_retry_rearmed: int = 0
+    terminal_identity_rearmed: int = 0
     verified_change_rearmed: int = 0
     snapshot_refresh_skipped: int = 0
 
@@ -87,6 +91,7 @@ class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
             f"discovered **{self.discovered}** • unique item IDs this pass **{self.queued_unique}** • "
             f"safe fresh proof **{self.safe_snapshot_rows}** • "
             f"page retries rescued **{self.page_retry_rearmed}** • "
+            f"terminal identity rescued **{self.terminal_identity_rearmed}** • "
             f"verified changes rearmed **{self.verified_change_rearmed}** • "
             f"stale proof refresh skipped **{self.snapshot_refresh_skipped}** • "
             f"persisted/unchanged **{self.persisted_rows}/{self.unchanged_rows}** • "
@@ -118,16 +123,19 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     hours away is intentionally suppressed: that proof would expire before it
     could be consumed and the write has no correctness value.
 
-    Verified rows use a low-write daily exact fallback. A material catalog
+    Verified rows use a low-write fallback cadence. A material catalog
     price/reference/selected-offer proof change therefore wakes the existing row
-    to ``pending`` immediately, preserving fast exact revalidation without the
-    old four-hour database heartbeat. Cosmetic title/URL/source changes may still
+    to ``pending`` immediately. Cosmetic title/URL/source changes may still
     refresh stored discovery metadata but do not wake a verified row by themselves.
 
     A page-retry row that receives a complete safe snapshot is explicitly
     rearmed to ``pending`` so fresh catalog proof can bypass an HTML challenge.
-    New/changed prices, references, identity proof, titles, URLs, source changes,
-    priority increases, and retry rearming remain immediate writes.
+    The same strict proof also re-arms terminal identity rows immediately: once
+    the current official catalog response contains an exact item ID, payable
+    price, selected offer, seller, variant, and required marketplace shipping,
+    waiting a week to retry an old missing-identity result has no safety value.
+    Weak/incomplete catalog rows have an empty snapshot and cannot escape terminal
+    quarantine through this path.
 
     Fifty-five rows use 990 parameters, below SQLite's conservative historical
     999-variable limit. A normal 75-100 row pass therefore uses no writes when
@@ -216,6 +224,13 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
         and existing.get(str(row[0])) is not None
         and existing[str(row[0])].status == "page_retry"
     )
+    terminal_identity_rearmed = sum(
+        1
+        for row in rows_to_write
+        if str(row[16] or "")
+        and existing.get(str(row[0])) is not None
+        and existing[str(row[0])].status in _TERMINAL_IDENTITY_REARM_STATUSES
+    )
     verified_change_rearmed = sum(
         1
         for row in rows_to_write
@@ -279,8 +294,11 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
                     THEN excluded.discovery_snapshot_at
                     ELSE discovery_snapshot_at END,
                 status = CASE
-                    WHEN status = 'page_retry'
-                         AND excluded.discovery_snapshot_json <> ''
+                    WHEN status IN (
+                        'page_retry',
+                        'incomplete_identity',
+                        'identity_mismatch'
+                    ) AND excluded.discovery_snapshot_json <> ''
                     THEN 'pending'
                     WHEN status IN (
                         'verified_markdown',
@@ -308,8 +326,11 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
                 next_attempt_at = CASE
                     WHEN status IN ('pending', 'retry', 'failed')
                     THEN MIN(next_attempt_at, excluded.next_attempt_at)
-                    WHEN status = 'page_retry'
-                         AND excluded.discovery_snapshot_json <> ''
+                    WHEN status IN (
+                        'page_retry',
+                        'incomplete_identity',
+                        'identity_mismatch'
+                    ) AND excluded.discovery_snapshot_json <> ''
                     THEN MIN(next_attempt_at, excluded.next_attempt_at)
                     WHEN status IN (
                         'verified_markdown',
@@ -352,6 +373,7 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
         write_statements=write_statements,
         safe_snapshot_rows=safe_snapshot_rows,
         page_retry_rearmed=page_retry_rearmed,
+        terminal_identity_rearmed=terminal_identity_rearmed,
         verified_change_rearmed=verified_change_rearmed,
         snapshot_refresh_skipped=snapshot_refresh_skipped,
     )
@@ -462,10 +484,10 @@ def _queue_row_needs_write(
         if incoming_snapshot != existing.discovery_snapshot_json:
             return True
 
-        # Any complete fresh catalog snapshot can rescue page recovery. This is
-        # a semantic status change, not a heartbeat, and remains immediate even
-        # while the HTML circuit is open.
-        if existing.status == "page_retry":
+        # Any complete fresh catalog snapshot can rescue page recovery or an old
+        # terminal identity result. This is a semantic status change, not a
+        # heartbeat, and remains immediate even while HTML is circuit-blocked.
+        if existing.status == "page_retry" or existing.status in _TERMINAL_IDENTITY_REARM_STATUSES:
             return True
 
         snapshot_stale = (
@@ -536,7 +558,7 @@ def _stale_snapshot_refresh_was_suppressed(
     incoming_snapshot = str(row[16] or "")
     if not incoming_snapshot or incoming_snapshot != existing.discovery_snapshot_json:
         return False
-    if existing.status == "page_retry":
+    if existing.status == "page_retry" or existing.status in _TERMINAL_IDENTITY_REARM_STATUSES:
         return False
     if existing.discovery_snapshot_at and existing.discovery_snapshot_at > snapshot_refresh_cutoff:
         return False

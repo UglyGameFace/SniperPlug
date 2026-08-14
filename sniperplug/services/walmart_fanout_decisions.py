@@ -8,6 +8,7 @@ from typing import Any, Iterable
 DECISION_TABLE = "walmart_guild_fanout_decisions"
 DECISION_RETENTION_DAYS = 31
 DECISION_UPSERT_CHUNK_SIZE = 100
+_SCHEMA_CONNECTIONS: dict[int, Any] = {}
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,11 @@ class WalmartGuildFanoutDecision:
 
 
 async def ensure_walmart_fanout_decision_table(db: Any) -> None:
+    """Install the small provenance schema once per live DB connection."""
+
     conn = db.require_conn()
+    if _SCHEMA_CONNECTIONS.get(id(conn)) is conn:
+        return
     await conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {DECISION_TABLE} (
@@ -40,6 +45,7 @@ async def ensure_walmart_fanout_decision_table(db: Any) -> None:
         f"ON {DECISION_TABLE} (guild_id, decided_at DESC)"
     )
     await conn.commit()
+    _SCHEMA_CONNECTIONS[id(conn)] = conn
 
 
 async def record_walmart_fanout_decisions(

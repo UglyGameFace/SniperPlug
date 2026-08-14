@@ -105,7 +105,8 @@ def test_total_backlog_pauses_catalog_without_forcing_drain() -> None:
     assert should_use_drain_mode(health) is False
 
 
-def test_recheck_cadence_is_sustainable() -> None:
-    assert tiered_recheck_delay("verified_markdown", 70) == timedelta(hours=4)
-    assert tiered_recheck_delay("verified_markdown", 40) == timedelta(hours=12)
+def test_verified_recheck_fallback_is_daily() -> None:
+    assert tiered_recheck_delay("verified_markdown", 70) == timedelta(hours=24)
+    assert tiered_recheck_delay("verified_markdown", 40) == timedelta(hours=24)
     assert tiered_recheck_delay("verified_markdown", 20) == timedelta(hours=24)
+    assert tiered_recheck_delay("verified_reference", 0) == timedelta(hours=24)

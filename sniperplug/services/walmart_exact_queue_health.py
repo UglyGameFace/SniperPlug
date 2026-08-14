@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sniperplug.services.walmart_exact_queue_drain import (
+    PAGE_RECOVERY_CLAIM_CAP,
     VERIFIED_LOW_SIGNAL_RECHECK_STATUSES,
     VERIFIED_MARKDOWN_RECHECK_STATUSES,
     VERIFIED_REFERENCE_RECHECK_STATUSES,
@@ -49,13 +50,37 @@ class WalmartExactQueueHealth:
     pending: int = 0
     unavailable: int = 0
     stale: int = 0
+    page_recovery_mode: str = "unknown"
+    page_recovery_batch_cap: int = PAGE_RECOVERY_CLAIM_CAP
+    page_circuit_remaining_seconds: int = 0
+
+    @property
+    def page_recovery_claimable_this_batch(self) -> int:
+        return min(
+            max(0, int(self.recovery_due_now)),
+            max(0, int(self.page_recovery_batch_cap)),
+        )
 
     def summary_line(self) -> str:
+        if self.page_recovery_mode == "api_only":
+            recovery_mode = (
+                "API-only while Walmart HTML challenge circuit is open"
+            )
+            if self.page_circuit_remaining_seconds > 0:
+                recovery_mode += f" ({self.page_circuit_remaining_seconds}s HTML cooldown left)"
+        elif self.page_recovery_mode == "normal":
+            recovery_mode = "official API + bounded product-page recovery"
+        else:
+            recovery_mode = "runtime mode unavailable"
+
         return (
             "queue health: "
-            f"total **{self.total}** • actionable due now **{self.due_now}** "
+            f"total **{self.total}** • due backlog now **{self.due_now}** "
             f"(new/retry **{self.initial_due_now}** • page recovery **{self.recovery_due_now}** • "
             f"scheduled rechecks **{self.recheck_due_now}**) • "
+            f"page recovery worker **{recovery_mode}** • "
+            f"claimable this batch **{self.page_recovery_claimable_this_batch}**/"
+            f"**{self.recovery_due_now}** (cap **{self.page_recovery_batch_cap}**) • "
             f"delayed transient retries **{self.delayed_retries}** "
             f"(page recovery **{self.delayed_recovery_retries}**) • "
             f"identity unavailable / safely blocked **{self.identity_blocked}** (terminal) • "
@@ -66,16 +91,21 @@ class WalmartExactQueueHealth:
 
 
 async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
-    """Return queue state using the same retention and lease rules as the worker.
+    """Return full owner-facing queue state plus current recovery availability.
 
-    ``due_now`` includes both first-time/retry work and truly claimable scheduled
-    exact rechecks. Legacy early timestamps are ignored until each status reaches
-    its shared fallback age: one day for verified markdowns, three days for
+    ``due_now`` is a backlog count, not a promise that every row can be leased in
+    one worker cycle. Page recovery is intentionally capped to a tiny lane. When
+    Walmart's product-page challenge circuit is open, those bounded claims use
+    official API/exact-search recovery only; HTML remains suppressed. Reporting
+    the current recovery mode and per-batch cap prevents a thousand due page rows
+    from being misread as a thousand simultaneous checks.
+
+    Legacy early verified timestamps are ignored until each status reaches its
+    shared fallback age: one day for verified markdowns, three days for
     reference/under-threshold states, and seven days for no-reference/unavailable
     states. Material catalog changes are ``pending`` and remain immediately
-    actionable. Terminal identity failures stay fail-closed and are never
-    actionable. ``verifying`` counts only actively leased rows; expired leases
-    return to the appropriate due bucket.
+    actionable. Terminal identity failures stay fail-closed until strict fresh
+    proof or the bounded terminal reprobe path safely rearms them.
     """
 
     if db is None:
@@ -207,6 +237,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     except Exception:
         return WalmartExactQueueHealth()
 
+    recovery_mode, recovery_cap, circuit_remaining = _page_recovery_runtime_state()
     return WalmartExactQueueHealth(
         total=_as_int(_row_get(row, "total", 0)),
         due_now=_as_int(_row_get(row, "due_now", 1)),
@@ -221,7 +252,34 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
         pending=_as_int(_row_get(row, "pending", 10)),
         unavailable=_as_int(_row_get(row, "unavailable", 11)),
         stale=_as_int(_row_get(row, "stale", 12)),
+        page_recovery_mode=recovery_mode,
+        page_recovery_batch_cap=recovery_cap,
+        page_circuit_remaining_seconds=circuit_remaining,
     )
+
+
+def _page_recovery_runtime_state() -> tuple[str, int, int]:
+    """Read the live provider circuit without coupling queue SQL to the provider."""
+
+    try:
+        from sniperplug.providers.registry import provider_registry
+        from sniperplug.services.walmart_exact_queue_runtime import (
+            _page_challenge_circuit_open,
+            _page_challenge_circuit_remaining_seconds,
+        )
+
+        provider = provider_registry.get("walmart")
+        if provider is None:
+            return "unknown", PAGE_RECOVERY_CLAIM_CAP, 0
+        if _page_challenge_circuit_open(provider):
+            return (
+                "api_only",
+                PAGE_RECOVERY_CLAIM_CAP,
+                _page_challenge_circuit_remaining_seconds(provider),
+            )
+        return "normal", PAGE_RECOVERY_CLAIM_CAP, 0
+    except Exception:
+        return "unknown", PAGE_RECOVERY_CLAIM_CAP, 0
 
 
 def _row_get(row: Any, key: str, index: int) -> Any:

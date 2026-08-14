@@ -15,6 +15,9 @@ from sniperplug.services.public_deal_quality import (
 from sniperplug.services.walmart_exact_verification_queue import (
     _candidate_from_snapshot,
 )
+from sniperplug.services.walmart_fanout_decisions import (
+    load_walmart_fanout_decisions,
+)
 
 
 DEFAULT_WINDOW_HOURS = 24
@@ -50,7 +53,11 @@ class WalmartDeliveryHealth:
     category_muted: int = 0
     quality_blocked: int = 0
     duplicate_or_reserved: int = 0
+    delivery_disabled: int = 0
+    wrong_retailer: int = 0
     eligible_without_post: int = 0
+    legacy_without_decision: int = 0
+    historical_decisions: int = 0
     invalid_snapshot: int = 0
     total_event_rows: int = 0
     total_pending_rows: int = 0
@@ -87,13 +94,23 @@ class WalmartDeliveryHealth:
             (
                 f"No-post reasons: below **{int(threshold)}%** **{self.below_threshold}** • "
                 f"muted category **{self.category_muted}** • proof/quality guard **{self.quality_blocked}** • "
-                f"duplicate/reserved **{self.duplicate_or_reserved}**"
+                f"duplicate/reserved **{self.duplicate_or_reserved}** • "
+                f"delivery disabled/retailer **{self.delivery_disabled}/{self.wrong_retailer}**"
+            ),
+            (
+                f"Historical destination decisions available: **{self.historical_decisions}/{self.events_seen}**"
             ),
         ]
         if self.eligible_without_post:
             lines.append(
-                "⚠️ Current-rule eligible events without a durable post receipt: "
-                f"**{self.eligible_without_post}**. This indicates a delivery or historical dedupe decision that needs inspection."
+                "⚠️ Processed events with a stored historical decision that still has no explained public outcome: "
+                f"**{self.eligible_without_post}**. These are real delivery gaps to inspect."
+            )
+        if self.legacy_without_decision:
+            lines.append(
+                "ℹ️ Older processed events without stored per-server decision provenance: "
+                f"**{self.legacy_without_decision}**. Current rules may allow them now, but they cannot be labeled "
+                "missed posts because the historical threshold/category/dedupe decision was never persisted."
             )
         if self.latest_decision is not None:
             lines.append("Latest decision: " + self.latest_decision.compact_line())
@@ -108,7 +125,8 @@ class WalmartDeliveryHealth:
             f"**{self.events_processed}/{self.events_pending}/{self.events_with_errors}**\n"
             f"This server posted: **{self.posted}** • below {int(threshold)}%: **{self.below_threshold}** • "
             f"muted: **{self.category_muted}** • proof/quality: **{self.quality_blocked}** • "
-            f"eligible without receipt: **{self.eligible_without_post}**"
+            f"true unexplained receipt gaps: **{self.eligible_without_post}** • "
+            f"legacy decisions unknown: **{self.legacy_without_decision}**"
         )
 
 
@@ -121,13 +139,15 @@ async def load_walmart_delivery_health(
     window_hours: int = DEFAULT_WINDOW_HOURS,
     event_limit: int = DEFAULT_EVENT_LIMIT,
 ) -> WalmartDeliveryHealth:
-    """Audit recent exact Walmart events against this guild's current rules.
+    """Run a read-only audit of recent exact events and destination outcomes.
 
-    The global fanout historically logged destination skips without persisting a
-    per-guild explanation. This read-only audit reconstructs recent exact event
-    snapshots, compares them with the guild's current threshold/category rules,
-    and checks durable public-post receipts. It never sends, reserves, replays,
-    or mutates a deal.
+    New fanout writes one bounded per-guild decision row before an exact event is
+    marked processed. Those rows preserve the threshold/category/quality/dedupe
+    reason that actually applied when fanout ran. Events created before this
+    provenance table existed are still reconstructed under current rules for
+    context, but an otherwise-eligible legacy row is labeled historical-unknown
+    rather than incorrectly declared a missed post. This health path never
+    creates, reserves, sends, replays, or mutates a deal or provenance row.
     """
 
     hours = max(1, min(24 * 30, int(window_hours)))
@@ -169,6 +189,11 @@ async def load_walmart_delivery_health(
             (snowflake_text(guild_id), cutoff),
         )
         post_rows = list(await post_cursor.fetchall())
+        historical = await load_walmart_fanout_decisions(
+            db,
+            guild_id=guild_id,
+            event_keys=(str(_row_get(row, "deal_key", 0) or "") for row in event_rows),
+        )
     except Exception as exc:
         return WalmartDeliveryHealth(
             window_hours=hours,
@@ -191,7 +216,11 @@ async def load_walmart_delivery_health(
         "category_muted": 0,
         "quality_blocked": 0,
         "duplicate_or_reserved": 0,
+        "delivery_disabled": 0,
+        "wrong_retailer": 0,
         "eligible_without_post": 0,
+        "legacy_without_decision": 0,
+        "historical_decisions": 0,
         "invalid_snapshot": 0,
     }
     decisions: list[WalmartDeliveryDecision] = []
@@ -206,6 +235,9 @@ async def load_walmart_delivery_health(
         )
         processed_at = str(_row_get(row, "processed_at", 4) or "")
         last_error = str(_row_get(row, "last_error", 5) or "").strip()
+        stored = historical.get(deal_key)
+        if stored is not None:
+            counts["historical_decisions"] += 1
 
         candidate = _candidate_from_snapshot(snapshot_json)
         card = legacy._exact_card_for_candidate(candidate)
@@ -217,7 +249,7 @@ async def load_walmart_delivery_health(
                     label="Unreadable exact snapshot",
                     event_at=event_at,
                     discount=None,
-                    threshold=int(threshold),
+                    threshold=(stored.threshold if stored is not None else int(threshold)),
                     outcome="invalid_snapshot",
                     detail="snapshot could not rebuild an exact public card",
                 )
@@ -252,26 +284,47 @@ async def load_walmart_delivery_health(
                 counts["duplicate_or_reserved"] += 1
                 outcome = "reserved"
                 detail = f"durable post slot is {status}"
+            elif stored is not None:
+                outcome = stored.outcome
+                detail = stored.detail or f"historical destination decision: {stored.outcome}"
+                if outcome == "posted":
+                    counts["posted"] += 1
+                elif outcome == "below_threshold":
+                    counts["below_threshold"] += 1
+                elif outcome == "category_muted":
+                    counts["category_muted"] += 1
+                elif outcome == "quality_blocked":
+                    counts["quality_blocked"] += 1
+                elif outcome in {"recent_duplicate", "reserved_duplicate"}:
+                    counts["duplicate_or_reserved"] += 1
+                elif outcome == "disabled":
+                    counts["delivery_disabled"] += 1
+                elif outcome == "wrong_retailer":
+                    counts["wrong_retailer"] += 1
+                elif outcome == "error":
+                    counts["events_with_errors"] += 1
+                else:
+                    counts["eligible_without_post"] += 1
             elif category.action == "suppress":
                 counts["category_muted"] += 1
-                outcome = "category_muted"
-                detail = f"muted category: {category.category_label}"
+                outcome = "legacy_category_muted_current_rules"
+                detail = f"current rules mute category: {category.category_label}; historical decision unavailable"
             elif discount is not None and discount < int(threshold):
                 counts["below_threshold"] += 1
-                outcome = "below_threshold"
-                detail = f"below this server's {int(threshold)}% threshold"
+                outcome = "legacy_below_threshold_current_rules"
+                detail = f"current rules place it below {int(threshold)}%; historical decision unavailable"
             elif not is_public_deal_candidate(
                 card,
                 source_label=SOURCE_LABEL,
                 min_discount=int(threshold),
             ):
                 counts["quality_blocked"] += 1
-                outcome = "quality_blocked"
-                detail = "blocked by exact proof/quality guard"
+                outcome = "legacy_quality_blocked_current_rules"
+                detail = "current exact proof/quality rules block it; historical decision unavailable"
             else:
-                counts["eligible_without_post"] += 1
-                outcome = "eligible_without_post"
-                detail = "current rules allow it, but no durable post receipt exists"
+                counts["legacy_without_decision"] += 1
+                outcome = "legacy_decision_unknown"
+                detail = "current rules allow it, but this event predates durable per-server decision provenance"
 
         decisions.append(
             WalmartDeliveryDecision(
@@ -279,7 +332,7 @@ async def load_walmart_delivery_health(
                 label=label,
                 event_at=event_at,
                 discount=discount,
-                threshold=int(threshold),
+                threshold=(stored.threshold if stored is not None else int(threshold)),
                 outcome=outcome,
                 detail=detail,
             )

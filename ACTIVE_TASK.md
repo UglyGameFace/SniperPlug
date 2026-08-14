@@ -1,94 +1,86 @@
 # Active Task
 
 ## Status
-**Active — SP-TURSO-READ-AMPLIFICATION is at the live post-deploy quota-slope gate.** PR #251 was squash-merged as `374a5d3cbd0b050a7378c3325d5cf572c78f3366` and removed the major broad Walmart exact-queue claim/pressure scan. PR #252 was squash-merged as `68ec064125205f8591062ab2a8df95e1303e8172` and is now deployed on Discloud. The first post-restart Turso dashboard anchor is **466,696,732 rows read at 6:09 PM on Aug 14**, still at 94% account quota. Startup cleanup completed without a broad/slow maintenance warning and removed exactly **1,000 stale operational rows** in bounded batches: **500 old `scan_runs` + 500 old `guild_retailer_auto_scan_runs`**. The task remains open until a clean 30-60 minute post-#252 rows-read slope proves the production rate is acceptably flattened.
-
-For context only, the prior checkpoint was **466,177,322 rows read at 5:19 PM**. The move to the 6:09 PM anchor was **+519,410 rows in 50 minutes (~623k/hour)**, about 64% below the earlier ~1.75M/hour emergency slope. Most of that 50-minute interval occurred before the #252 deployment, so it is encouraging evidence for the earlier hardening but is **not** valid acceptance evidence for #252.
+**Active — SP-AUTOSCAN-COVERAGE-STALL is at the merge/deploy/live-acceptance gate.** User explicitly FORCE SWITCHED on Aug 14 after `/autoscan_health` showed Walmart catalog discovery advancing but exact coverage badly misleading/stalled: **20,005 queue rows, 1,074 page-recovery rows shown actionable, 0 new/retry, 0 scheduled rechecks, 0 actively verifying, 12,390 terminal identity blocks, and 6 current-rule eligible exact events without a durable public-post receipt**. HP Store and Target health both reported `not_started`. PR #253 now contains the root-cause fixes on `fix/autoscan-coverage-stall`; final code head `20f30c795540c9eb262f11a93e49d2d2abe57368` passed all three PR workflows and the full **1,266-test** suite. The task remains open through merge, Discloud deployment, Walmart live acceptance, and standalone HP/Target watcher activation.
 
 ## Scope
-Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-quota emergency while preserving Walmart exact-verification correctness, price intelligence, dedupe safety, user preferences, and useful learning. Remove operational data that is expired, terminal, redundant, or no longer reachable by runtime behavior. Cleanup itself must be bounded and index-seeking so it does not create another quota spike.
+Repair the actual autoscan coverage path without weakening proof or hammering Walmart HTML. The task covers truthful claimable-vs-backlog Walmart health, safe progress while the Walmart HTML challenge circuit is open, immediate rescue of terminal/page-retry rows when strict fresh official catalog proof becomes available, catalog discovery beyond the same first two search pages, durable/historical public delivery decision visibility, and an explicit production path for HP/Target watcher activation. Preserve exact item/offer/seller/variant/condition/fulfillment/price proof, durable leases, dedupe, price history, and bounded Turso behavior.
 
 ## Root cause / findings
-- Turso's Aug 14 baseline was account-critical: **92% rows-read quota**, with SniperPlug at **455,545,327 rows read**. Later checkpoints reached **94%**.
-- PR #251 fixed the repeated exact-queue selector/pressure amplification. Mature verified rows with legacy-due schedules no longer force broad status scans; live claim timings remain fast.
-- Before #252, the clean post-#251 dashboard slope from 4:39 PM to 5:19 PM was **+1,166,572 rows in 40 minutes (~1.75M/hour)**, still too expensive.
-- Startup `run_storage_maintenance` used generic bounded selectors whose `ORDER BY rowid` did not align with expiry/time predicates, allowing avoidable reads before finding old rows.
-- `/storage_maintenance_now` performed decorative before/after `COUNT(*)` sweeps despite the cleanup result already knowing exact changed-row counts.
-- `scan_runs` is execution telemetry, not price intelligence, and had a 30-day retention. It is now 7 days.
-- Legacy per-server autoscan report history is now 7 days; global Walmart delivery does not depend on it.
-- `guild_retailer_auto_scan_runs` had no retention despite runtime decisions only needing recent interval/today data. It is now 8 days.
-- `error_events` could grow indefinitely with traceback/context payloads. It is now 30 days.
-- Old `guild_public_deal_posts` rows were retained beyond the independent 30-day public duplicate guard. Posted/sending ledger retention is now 31 days.
-- Terminal `cleared` active-deal rows were not included in cleanup and now are.
-- Persistent feedback targets had a 10-year expiry. Runtime can restore only 250 controls, yet previously fetched hundreds more. Cleanup now keeps a bounded 500-row buffer and restoration reads only the remaining registration capacity.
-- Global active-deal-history and Walmart-recheck-audit pruning used correlated COUNT-per-row cap checks. Global startup pruning is now a bounded timestamp seek; per-guild caps remain selective on explicit history access.
-- DM receipts keep their existing 90-day dedupe semantics, with a selective `delivered_at` cleanup index when the table exists.
-- Optional tables can appear after initial startup maintenance. Cleanup-index initialization now tracks base/optional index groups independently so later maintenance can install those indexes rather than skipping them.
-- The first live #252 startup hit the configured 500-row cap in both `scan_runs` and retailer autoscan history. That proves a real stale backlog exists and also confirms the cleanup stayed bounded rather than turning deployment into an unbounded purge.
-- `run_storage_maintenance` is currently invoked at startup or explicitly through `/storage_maintenance_now`; no new automatic high-frequency maintenance loop was introduced during the quota emergency.
-- Price observations, product identity, exact Walmart queue state, exact Walmart offer-price memory, feedback summaries/votes, live dedupe rows, user DM settings, and clearance seeds remain outside purge scope.
+- Walmart global catalog discovery was alive. The supplied health screen showed **265 routes** and **98 completed full passes**.
+- Catalog discovery was not deepening: every route requested only **pages 1 and 2 on every pass**. Walmart Affiliate search is bounded to the first **1,000 results** and SniperPlug requests 25/page, so 40 pages are available but 98 full passes repeatedly revisited the same shallow window.
+- Owner full queue health counted every due `page_retry` row as immediately actionable without knowing the provider-scoped HTML challenge circuit state.
+- The exact worker did know the circuit state and set `page_recovery_claim_cap=0` while it was open. That produced the live contradiction: **1,074 due page-recovery rows** in health while the worker could claim **0** from that lane.
+- `_fetch_exact_candidate_off_loop` already had a safe API-only open-circuit path using official item detail and exact Affiliate-search refresh while skipping Walmart HTML. The zero claim cap prevented the old page-retry backlog from using that safe path.
+- Strict fresh catalog snapshots already require exact item ID, payable price, selected offer, seller, variant checks, and required marketplace shipping/delivered-price proof. Bulk enqueue used those snapshots to rescue `page_retry`, but did not rescue terminal `incomplete_identity` / `identity_mismatch` rows even when current official proof now supplied the missing identity.
+- The fallback terminal maintenance path intentionally rearms only a tiny weekly rediscovery sample. That remains useful as a safety net but cannot be the primary recovery mechanism for **12,390** terminal rows.
+- The six `eligible_without_post` rows were not proof of six missed posts. The old read-only audit rebuilt historical events using **current** threshold/category/quality rules and checked the post ledger, but fanout did not persist the per-guild reason that applied when each event originally ran. Old legitimate threshold/category/dedupe decisions could therefore be mislabeled later as unexplained missing receipts.
+- HP and Target are real production watcher services but intentionally run as **separate Discloud applications**. Main SniperPlug starts `main.py`; HP starts `hp_watcher_main.py`; Target starts `target_watcher_main.py`. Their `not_started` state means those standalone producers have not reported a production cycle to the shared Turso database.
 
-## Changes live in `main` from PR #252
-- Reworked storage maintenance selectors to use bounded rowid batches ordered by the same expiry/timestamp columns used by their retention predicates.
-- Added quota-safe cleanup indexes for feedback targets/events, active-deal terminal rows, autoscan reports, public-post ledger rows, store-cache expiry, scan-run age, optional retailer-autoscan age, and optional DM-receipt age.
-- Cleanup index installation is connection/group aware: base indexes initialize once, while optional retailer-autoscan and DM-receipt indexes can still be installed later if those tables appear after startup.
-- Shortened disposable operational retention to: scan runs **7d**, autoscan reports **7d**, raw feedback click events **30d**, error events **30d**, public post ledger **31d**, retailer autoscan run history **8d**. DM receipts remain **90d**.
-- Added bounded cleanup for old posted/sending public-post rows, old error events, old retailer autoscan run rows, stale DM receipts, and terminal `cleared` active-cache rows.
-- Capped restart-safe feedback targets to the newest **500** rows in bounded batches while preserving feedback summaries and active vote ledgers.
-- Changed persistent feedback restoration to query only the remaining registration capacity instead of fetching hundreds of rows that will be discarded.
-- Removed before/after `storage_counts()` sweeps from `/storage_maintenance_now`.
-- Reworked global active-deal-history and Walmart-recheck-audit pruning to bounded timestamp seeks and removed global correlated COUNT-per-row cap queries.
-- Added regressions for bounded cleanup, protected price history, feedback target bounding, Turso mapping rowid aliases, no-op cleanup write avoidance, bounded history/audit pruning, static quota-safety invariants, and optional cleanup indexes appearing after startup.
+## Changes implemented in PR #253
+- **Circuit-safe page recovery:** production keeps a two-row `page_retry` claim lane while the HTML challenge circuit is open. The existing fetch path switches those claims to official API/exact-search-only recovery; challenged Walmart HTML remains completely suppressed.
+- **Truthful exact health:** the 1,074-style number is now labeled a **due backlog**, and health reports page-recovery mode, per-batch cap, actual claimable-this-batch count, and remaining HTML cooldown when applicable.
+- **Terminal rescue from strict proof:** `incomplete_identity` and `identity_mismatch` rows are immediately rearmed to `pending` only when the existing strict fresh official catalog snapshot builder succeeds. Missing seller/offer or unsafe marketplace proof leaves the row terminal. Telemetry now reports `terminal identity rescued`.
+- **Deep catalog coverage without more requests:** full catalog passes rotate through two-page windows across pages **1-40**, using the durable global `completed_passes` counter. Two pages per route remains unchanged, so network rate does not multiply. Twenty completed full passes cover the entire bounded 1,000-result search window before wrapping.
+- **Historical public decision provenance:** added bounded `walmart_guild_fanout_decisions` storage with event/guild outcome, threshold, detail, and timestamp; indexed by guild/time and retained 31 days. Fanout records posted, threshold, category, quality, duplicate, disabled, retailer, and error outcomes before marking an event processed.
+- **Read-only delivery audit remains read-only:** health reads historical destination decisions when they exist and never creates/mutates provenance. New events with a stored unexplained outcome can be called real gaps; pre-provenance legacy events that current rules happen to allow are labeled `legacy decision unknown` instead of falsely called missed posts.
+- **Bounded provenance writes/cleanup:** destination decisions use bulk upserts, schema initialization is cached per live connection, and old provenance prunes in bounded batches on the existing low-frequency fanout cleanup cadence.
+- **Actionable HP/Target health:** `not_started` now states that `SniperPlug-HP-Watcher` / `SniperPlug-Target-Watcher` must be deployed/running with `hp_watcher_main.py` / `target_watcher_main.py` against the exact same Turso DB. No duplicate watcher loop was added to the Discord bot.
 
 ## Validation completed
-- PR #251 final Python 3.12 suite: **1,246 passed, 1 warning**; dependency check, compileall, import smoke, and post-merge workflows passed.
-- PR #252 final Python 3.12 `Python Check`: **1,259 passed, 1 warning** (discord/audioop deprecation only).
-- `pip check`, `python -m compileall -q sniperplug scripts tests`, and import smoke (**37 modules / 22 symbols**) passed.
+- Added focused regressions for: open-circuit two-row API-only page recovery; strict terminal identity rescue; fail-closed incomplete catalog proof; persistent two-page catalog window rotation and wrap; truthful 1,074-vs-2 queue health; durable fanout-decision round trip/classification; and actionable HP/Target not-started health.
+- Existing page-circuit regressions still prove the shared fetcher suppresses Walmart HTML while the circuit is open and keeps official API recovery available.
+- Existing low-level claim regression still proves a caller can explicitly set page recovery cap to zero without rewriting page-retry rows; production simply no longer uses zero during the HTML circuit because its API-only path is safe.
+- First full PR run exposed **4 failures / 1,262 passes**. All four were traced from the actual CI log before changes: one stale queue-health wording assertion, one stale static `read-only audit` phrase, one delivery-health fake that did not model the new read-only provenance query, and one fanout-schema test that still expected only the old cursor index. No compile/import/runtime implementation failure was hidden by those tests.
+- The fixes kept delivery health genuinely read-only, updated legacy-event expectations to the new non-overclaiming semantics, and updated schema regression coverage for the provenance table/index plus the existing cursor index.
+- Final Python 3.12 `Python Check` on code head `20f30c795540c9eb262f11a93e49d2d2abe57368`: **1,266 passed, 1 warning** (discord/audioop deprecation only).
+- `pip check` passed with **No broken requirements found**.
+- `python -m compileall -q sniperplug scripts tests` passed.
+- Import smoke passed **37 modules / 22 symbols**.
 - Separate `Python tests` workflow passed.
-- All three final PR #252 workflows and all three post-merge `main` workflows passed.
-- PR #252 had no inline review blockers; Qodo only reported its inactive subscription.
-- PR #252 squash-merged as `68ec064125205f8591062ab2a8df95e1303e8172` and was deployed to Discloud on Aug 14.
-- Live startup after deployment connected to Turso successfully, initialized schema/services, and completed storage maintenance in roughly three seconds with no broad/slow maintenance SELECT warning in the supplied log.
-- Live startup cleanup changed **1,000 rows**: `old_scan_runs=500`, `old_retailer_autoscan_runs=500`, all other cleanup categories zero in that invocation.
-- Persistent feedback restoration reported bounded behavior: **registered=250, cap=250** rather than loading a large discard set.
-- Walmart catalog discovery continued after deployment; multiple batches completed normally.
-- Walmart exact verification remained active. Supplied post-deploy claim timings were approximately **0.08s, 0.07s, and 0.03s**, with a real exact verification succeeding at 6:10 PM. The separate Walmart page circuit was open because of `page_challenge`/page-recovery throttling, not because storage cleanup disabled verification.
-- A durable catalog claim left across restart was recovered once and normal catalog batches then continued.
-- First clean Turso post-restart anchor recorded: **466,696,732 rows read at 6:09 PM**.
-- No temporary workflow, alternate database/runtime, unbounded wipe, `VACUUM`, monkey patch, or relaxed Walmart proof behavior was introduced.
+- All three final PR workflows passed: Python Check, Python tests, and Import smoke check.
+- PR is mergeable, **19 commits ahead / 0 behind** its `main` base at the final code-validation checkpoint. Changed files are limited to the active task record, Walmart catalog/exact/health/fanout paths, HP/Target health text, and regressions.
+- PR discussion has no code-review blocker; the only comment is Qodo's inactive-subscription notice.
 
 ## Validation pending / Definition of Done
-- Obtain a Turso rows-read checkpoint about **30 minutes after the 6:09 PM anchor** and another around **60 minutes after the anchor** if needed.
-- Compute the clean post-#252 hourly rows-read rate from **466,696,732** and compare it with the pre-#252 **~1.75M rows/hour** emergency rate.
-- Confirm the percentage/absolute quota movement is acceptably flattened under normal catalog and exact-verification activity.
-- If the post-#252 rate is still materially high, use the new live interval as evidence to identify the next concrete reader; do not reopen the already-fast exact claim selector without matching evidence.
-- The two cleanup categories that hit the 500-row batch cap indicate more stale backlog may remain. Do not turn that into an unbounded purge; if production slope remains healthy, drain additional stale batches only through the existing bounded maintenance path or a separately reviewed low-frequency continuation design.
-- The task closes only when actual quota growth is acceptably flattened; deployment/CI/startup success alone are not production acceptance.
+- Re-run all PR checks after this task-record-only update and squash-merge PR #253 only if they remain green.
+- Verify merged `main` workflows remain green.
+- Deploy merged `main` to the existing SniperPlug Discloud app.
+- Live Walmart acceptance must show:
+  - catalog batches continue advancing and log rotating page windows deeper than the old fixed pages 1-2;
+  - if the Walmart HTML circuit is open, queue health reports the page backlog separately from the **2-row claimable API-only batch**;
+  - exact cycles can claim/process bounded `page_retry` work during the HTML cooldown without generating challenged HTML requests;
+  - fresh strict catalog proof can produce `terminal identity rescued > 0` when previously blocked rows are rediscovered with complete current proof;
+  - public/delivery dedupe and exact proof behavior remain intact;
+  - legacy pre-provenance events are no longer presented as confirmed missing posts merely because today's rules allow them.
+- HP acceptance requires the standalone `SniperPlug-HP-Watcher` Discloud process to run against the exact same Turso credentials and health to change from `not_started` to a real cycle state.
+- Target acceptance requires the standalone `SniperPlug-Target-Watcher` process, the same Turso credentials, and its required `TARGET_REDSKY_API_KEY`; health must change from `not_started` to a real cycle state.
+- The task closes only after those live production checks; green CI/merge alone is not production acceptance.
 
-## Cleanup / safety constraints
-- No `VACUUM`, unbounded emergency wipe, alternate database, stale safety-critical cache, monkey patch, or disabled Walmart verification.
-- No deletion of `price_observations`, `product_identity`, `walmart_offer_price_memory`, live exact queue state, feedback summaries/votes, unexpired alert dedupe, or user delivery settings.
-- Cleanup stays bounded per invocation and uses retention/index order instead of whole-table counts.
-- Public proof gates, exact seller/item/offer/variant/condition/fulfillment proof, page-recovery semantics, durable leases, price history, fanout, and delivery dedupe remain intact.
-
-## Blockers
-- Direct Turso top-query/organization read metrics are not exposed through the connected tools, so final quota-rate acceptance still requires user dashboard checkpoints after deployment.
+## Safety constraints
+- Do not disable or weaken the Walmart page-challenge circuit.
+- Do not use Walmart HTML while the circuit is open.
+- Do not promote a terminal row from weak relevance/search text; only strict fresh selected-offer proof or the normal exact proof path may rescue it.
+- Do not increase Walmart catalog requests per route/pass; coverage depth rotates within the existing two-page request budget.
+- Do not delete price history, offer memory, queue identity history, live dedupe, user settings, or feedback summaries to make health look better.
+- Do not run duplicate HP/Target watcher owners inside the Discord bot while standalone deployment remains the architecture.
 
 ## Suspended tasks
-**SP-TURSO-WRITE-AMPLIFICATION is suspended at its final dashboard rows-written slope gate.** Its exact-worker write-floor acceptance passed after PR #250; do not reopen solved scheduled-recheck write churn without evidence.
+**SP-TURSO-READ-AMPLIFICATION is suspended at its live post-#252 quota-slope gate.** Last clean anchor: **466,696,732 rows read at 6:09 PM Aug 14**. Resume only after this task closes or an exact FORCE SWITCH.
 
-**SP-DEALS-DISCOVER-HARDENING-244 is suspended at its live acceptance gate, not closed.** PR #247 is merged and CI-green.
+**SP-TURSO-WRITE-AMPLIFICATION is suspended at its final dashboard rows-written slope gate.**
+
+**SP-DEALS-DISCOVER-HARDENING-244 is suspended at its live acceptance gate, not closed.**
 
 **SP-WM-MISSED-DEALS-236 remains suspended, not closed.**
 
 ## Backlog
-- **SP-AUTOSCAN-COVERAGE-STALL:** Aug 14 owner health shows Walmart catalog discovery still advancing (**265 routes, 98 full passes**), but exact verification has **1,074 due page-recovery rows with 0 new/retry, 0 scheduled rechecks, and 0 actively verifying**, plus **12,390 terminal identity-blocked rows**, **315 delayed transient retries**, and **6 current-rule eligible exact events without a durable public-post receipt**. Runtime deliberately sets page-recovery claim cap to zero while the Walmart page-challenge circuit is open, while owner queue health currently counts those page-retry rows as actionable without circuit awareness. HP and Target health also report `not_started`; their implementations/configs are standalone watcher apps rather than tasks started by the main SniperPlug bot. After the quota task unlocks, audit actual-claimable-vs-circuit-blocked health reporting, safe official-API/catalog rescue of page-retry/terminal rows, the six delivery receipts/historical decisions, route coverage semantics, and whether the HP/Target standalone apps are deployed/running. Do not weaken the Walmart anti-challenge circuit just to drain the queue.
-- **SP-GATEWAY-EVENT-LOOP-LAG:** Investigate repeated Discord gateway `Can't keep up` warnings after quota work closes.
-- **SP-SETUP-DELIVERY-UX:** Align `/setup_sniperplug_here` with `/dm_deals`; make public delivery explicit and easy to review/change.
-- **SP-DM-DELIVERY-STARVATION:** Investigate matched DM deals lost to filter/duplicate suppression rather than Discord delivery errors.
-- **SP-DM-NEW-LOW-ALERT:** Send a distinct meaningful lower-price alert while same-price repeats remain deduped.
-- **SP-WM-REFERENCE-PRICE-RECOVERY:** Improve exact reference-price recovery without weakening public proof.
-- **SP-WM-CASH-PDP-AMOUNT:** Integrate exact same-item Walmart Cash proof for private/DM enrichment without confusing OnePay cashback or using Cash as markdown proof.
-- Resume #244 live acceptance after the active quota task closes.
-- Resume Walmart missed-deals/page-recovery throughput after active quota work closes.
+- **SP-GATEWAY-EVENT-LOOP-LAG**
+- **SP-SETUP-DELIVERY-UX**
+- **SP-DM-DELIVERY-STARVATION**
+- **SP-DM-NEW-LOW-ALERT**
+- **SP-WM-REFERENCE-PRICE-RECOVERY**
+- **SP-WM-CASH-PDP-AMOUNT**
+- Resume quota slope acceptance after this task closes.
+- Resume #244 live acceptance after active quota/autoscan work closes.
 - Resume SniperPlug-Site Whop content-reader work later.

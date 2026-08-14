@@ -57,7 +57,7 @@ async def _insert_due_row(
     )
 
 
-def test_open_circuit_claim_cap_zero_blocks_page_rows_without_rescheduling_them() -> None:
+def test_explicit_zero_claim_cap_can_still_block_page_rows_without_rescheduling_them() -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
         db = FakeDatabase(conn)
@@ -147,10 +147,13 @@ def test_default_claim_cap_still_allows_bounded_page_recovery_when_circuit_close
     asyncio.run(run())
 
 
-def test_production_bulk_runtime_disables_page_recovery_claim_lane_only_when_open() -> None:
+def test_production_bulk_runtime_keeps_two_row_api_only_page_lane_when_open() -> None:
     assert "PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
-    assert "0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
+    assert "API_ONLY_PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
+    assert "API_ONLY_PAGE_RECOVERY_CLAIM_CAP = min(2, PAGE_RECOVERY_CLAIM_CAP)" in BULK_RUNTIME
+    assert "if page_circuit_remaining > 0" in BULK_RUNTIME
     assert "page_recovery_claim_cap=page_recovery_claim_cap" in BULK_RUNTIME
+    assert "0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP" not in BULK_RUNTIME
     assert "defer_due_page_recovery_for_open_circuit" not in BULK_RUNTIME
     assert "page_circuit_reschedule_rows=0" in BULK_RUNTIME
     assert BULK_RUNTIME.index("page_circuit_remaining =") < BULK_RUNTIME.index(

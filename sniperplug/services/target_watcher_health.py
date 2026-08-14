@@ -35,6 +35,13 @@ class TargetWatcherHealth:
         return self.status == "healthy" and not self.stale
 
     def summary_line(self) -> str:
+        if self.status == "not_started":
+            return (
+                "Target watcher **not started** • standalone `SniperPlug-Target-Watcher` has not reported "
+                "a production cycle to the shared database • catalog "
+                f"**{self.priced_products}/{self.products} priced**. "
+                "Start/deploy `target_watcher_main.py` as the separate Discloud watcher using the same Turso DB."
+            )
         if self.status == "healthy" and self.stale:
             state = "stale"
         elif self.ok:

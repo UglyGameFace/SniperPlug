@@ -44,6 +44,14 @@ from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     _candidate_from_snapshot,
 )
+from sniperplug.services.walmart_fanout_decisions import (
+    WalmartGuildFanoutDecision,
+    classify_public_fanout_result,
+    decision_now,
+    ensure_walmart_fanout_decision_table,
+    prune_walmart_fanout_decisions,
+    record_walmart_fanout_decisions,
+)
 
 
 FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
@@ -178,7 +186,7 @@ def _lock(state: _FanoutRuntimeState, name: str) -> asyncio.Lock:
 
 
 async def ensure_global_deal_event_tables_once(db: Any) -> None:
-    """Initialize durable fanout schema and its queue cursor index once."""
+    """Initialize durable fanout schema, decision provenance, and queue cursor."""
 
     conn = db.require_conn()
     state = _state_for(conn)
@@ -186,6 +194,7 @@ async def ensure_global_deal_event_tables_once(db: Any) -> None:
         async with _lock(state, "schema_lock"):
             if not state.schema_ready:
                 await legacy.ensure_global_deal_event_tables(db)
+                await ensure_walmart_fanout_decision_table(db)
                 await conn.execute(FANOUT_CURSOR_INDEX_SQL)
                 await conn.commit()
                 state.schema_ready = True
@@ -209,6 +218,7 @@ async def ensure_global_deal_event_tables_once(db: Any) -> None:
             (cutoff,),
         )
         await conn.commit()
+        await prune_walmart_fanout_decisions(db)
         state.next_cleanup_monotonic = (
             time.monotonic() + FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS
         )
@@ -219,7 +229,13 @@ async def fanout_recent_exact_walmart_deals(
     *,
     event_limit: int = legacy.FANOUT_EVENT_LIMIT,
 ) -> GlobalDealFanoutResult:
-    """Bulk-ingest and transparently fan out exact Walmart deal events."""
+    """Bulk-ingest and transparently fan out exact Walmart deal events.
+
+    Every public destination decision is persisted before the global event is
+    finalized. That historical provenance lets owner health distinguish a true
+    missing-post gap from an event that was legitimately below threshold, muted,
+    quality-blocked, or deduped when fanout actually ran.
+    """
 
     db = getattr(bot, "db", None)
     if db is None or legacy._FANOUT_LOCK.locked():
@@ -270,6 +286,7 @@ async def fanout_recent_exact_walmart_deals(
         }
         processed: list[tuple[str, str]] = []
         failed: list[tuple[str, str, str]] = []
+        fanout_decisions: list[WalmartGuildFanoutDecision] = []
 
         for event in claimed_events:
             event_errors: list[str] = []
@@ -277,6 +294,7 @@ async def fanout_recent_exact_walmart_deals(
             for guild in guilds:
                 guild_id = int(guild.guild_id)
                 totals["guilds_checked"] += 1
+                threshold = 0
                 try:
                     threshold = await get_starting_deal_percent(db, guild_id)
                     public_result = await maybe_post_public_deal_cards(
@@ -312,6 +330,20 @@ async def fanout_recent_exact_walmart_deals(
                         or public_result.skipped_disabled
                         or public_result.skipped_wrong_retailer
                     )
+                    outcome, detail = classify_public_fanout_result(
+                        public_result,
+                        discount=_card_discount(event.card),
+                        threshold=int(threshold),
+                    )
+                    fanout_decisions.append(
+                        decision_now(
+                            event_key=event.deal_key,
+                            guild_id=guild_id,
+                            outcome=outcome,
+                            threshold=int(threshold),
+                            detail=detail,
+                        )
+                    )
                     if not posted:
                         _log_public_skip(
                             guild_id=guild_id,
@@ -334,8 +366,16 @@ async def fanout_recent_exact_walmart_deals(
                         )
                 except Exception as error:  # noqa: BLE001
                     totals["public_errors"] += 1
-                    event_errors.append(
-                        f"guild {guild_id}: {type(error).__name__}: {error}"
+                    error_text = f"{type(error).__name__}: {error}"
+                    event_errors.append(f"guild {guild_id}: {error_text}")
+                    fanout_decisions.append(
+                        decision_now(
+                            event_key=event.deal_key,
+                            guild_id=guild_id,
+                            outcome="error",
+                            threshold=int(threshold),
+                            detail=error_text,
+                        )
                     )
                     log.exception(
                         "Global Walmart public fanout failed guild=%s deal=%s",
@@ -453,6 +493,11 @@ async def fanout_recent_exact_walmart_deals(
                 processed.append((event.deal_key, event.claim_token))
                 totals["events_processed"] += 1
 
+        # Decision provenance is written before events are marked processed. If
+        # Turso cannot persist this small bounded batch, leave the events leased
+        # and retry later; public post reservations and DM receipts prevent sends
+        # from duplicating on that retry.
+        await record_walmart_fanout_decisions(db, fanout_decisions)
         await _finalize_claimed_events_bulk(
             db,
             processed=processed,
@@ -753,7 +798,6 @@ async def _finalize_claimed_events_bulk(
     await conn.commit()
 
 
-
 def _delivery_deal_key(card: Any) -> str:
     retailer = str(getattr(card, "retailer", None) or "walmart")
     return card_deal_key(card, retailer=retailer)
@@ -839,6 +883,7 @@ def _optional_bool(value: Any) -> bool | None:
     if value is None:
         return None
     return bool(value)
+
 
 def _log_public_skip(
     *,

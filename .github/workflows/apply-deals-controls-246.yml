@@ -1,0 +1,19 @@
+name: Apply deals controls 246
+
+on:
+  push:
+    branches:
+      - fix/deals-live-timeout-245
+    paths:
+      - '.github/workflows/apply-deals-controls-246.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate runner
+        run: echo "deals controls applicator runner ready"

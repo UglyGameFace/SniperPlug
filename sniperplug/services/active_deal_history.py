@@ -35,7 +35,7 @@ async def ensure_active_deal_history(db: Any) -> None:
         """
     )
     await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_active_deal_history_guild_time "
+        "CREATE INDEX IF NOT EXISTS idx_active_deal_history_guild_time_id "
         "ON guild_active_deal_history (guild_id, occurred_at DESC, id DESC)"
     )
     await conn.execute(

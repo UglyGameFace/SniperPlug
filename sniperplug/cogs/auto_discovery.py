@@ -91,6 +91,7 @@ class DiscoveryJob:
     guild_id: int
     user_id: int
     plan: DiscoveryPlan
+    public_posts: bool
     max_public_posts: int
     lock_key: ScanLockKey
     guild_scan_lock: asyncio.Lock
@@ -214,6 +215,17 @@ def chunk_discovery_queries(
     )
 
 
+def select_public_discovery_cards(
+    fresh_cards: list[DealCard],
+    *,
+    public_posts: bool,
+    max_public_posts: int,
+) -> list[DealCard]:
+    if not public_posts:
+        return []
+    return fresh_cards[: max(1, int(max_public_posts))]
+
+
 class AutoDiscoveryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -230,13 +242,15 @@ class AutoDiscoveryCog(commands.Cog):
     )
     @app_commands.describe(
         coverage="Quick: 16 routes. Deep: 64. Full: every route in a durable background job.",
-        max_public_posts="Fresh verified deals sent publicly; extra exact cards are delivered privately.",
+        public_posts="Also publish verified finds to the server deal channel. Off keeps this run private.",
+        max_public_posts="When public posts are on, cap how many verified deals can be published.",
     )
     @app_commands.choices(coverage=DISCOVERY_COVERAGE_CHOICES)
     async def discover(
         self,
         interaction: discord.Interaction,
         coverage: app_commands.Choice[str] | None = None,
+        public_posts: bool = False,
         max_public_posts: app_commands.Range[int, 1, 20] = 10,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -303,6 +317,7 @@ class AutoDiscoveryCog(commands.Cog):
             guild_id=guild_id,
             user_id=int(interaction.user.id),
             plan=plan,
+            public_posts=bool(public_posts),
             max_public_posts=max(1, int(max_public_posts)),
             lock_key=lock_key,
             guild_scan_lock=guild_scan_lock,
@@ -336,8 +351,13 @@ class AutoDiscoveryCog(commands.Cog):
             return
 
         destination = "your DMs" if job.delivery_kind == "dm" else "one editable status message in this channel"
+        public_status = (
+            f"Public posts are **ON** with a cap of **{job.max_public_posts}**; normal public safety gates still apply."
+            if job.public_posts
+            else "Public posts are **OFF** for this run; verified result cards stay private."
+        )
         await interaction.followup.send(
-            f"✅ Walmart discovery job `{job.job_id}` started. Progress and the final result will use {destination}; it will not stack a new message every 45 seconds.",
+            f"✅ Walmart discovery job `{job.job_id}` started. Progress and the final result will use {destination}; it will not stack a new message every 45 seconds. {public_status}",
             ephemeral=True,
         )
 
@@ -526,19 +546,25 @@ class AutoDiscoveryCog(commands.Cog):
             source_label=f"discover:{job.plan.key}:exact_verified",
         )
         fresh_cards = list(fresh_selection.fresh)
-        public_cards = fresh_cards[: job.max_public_posts]
-        normalize_exact_verified_walmart_cards(
-            public_cards,
-            min_discount=result.min_discount,
+        public_cards = select_public_discovery_cards(
+            fresh_cards,
+            public_posts=job.public_posts,
+            max_public_posts=job.max_public_posts,
         )
-        public_result = await maybe_post_public_deal_cards(
-            bot=self.bot,
-            guild_id=job.guild_id,
-            cards=public_cards,
-            source_label=f"discover:{job.plan.key}:exact_verified_{result.min_discount}_plus",
-            fallback_retailer=AUTO_DISCOVERY_RETAILER,
-            min_public_discount=result.min_discount,
-        )
+        public_result = PublicPostResult()
+        if public_cards:
+            normalize_exact_verified_walmart_cards(
+                public_cards,
+                min_discount=result.min_discount,
+            )
+            public_result = await maybe_post_public_deal_cards(
+                bot=self.bot,
+                guild_id=job.guild_id,
+                cards=public_cards,
+                source_label=f"discover:{job.plan.key}:exact_verified_{result.min_discount}_plus",
+                fallback_retailer=AUTO_DISCOVERY_RETAILER,
+                min_public_discount=result.min_discount,
+            )
         job.public_posted = int(public_result.posted)
         job.exact_cards = len(shown_cards)
 
@@ -589,6 +615,11 @@ class AutoDiscoveryCog(commands.Cog):
         public_result: PublicPostResult,
         fresh_summary: str,
     ) -> discord.Embed:
+        public_line = (
+            f"Public posts: **ON** • cap: **{job.max_public_posts}** • sent to public guard: **{len(public_cards)}** • posted: **{public_result.posted}**"
+            if job.public_posts
+            else "Public posts: **OFF** • no discovery cards were sent to the public posting lane"
+        )
         embed = discord.Embed(
             title="✅ Exact-Verified Walmart Discovery Complete",
             description=(
@@ -601,9 +632,8 @@ class AutoDiscoveryCog(commands.Cog):
                 f"**{result.pages_checked} API result pages**\n"
                 f"Exact verified total: **{result.total_verified_cards}** • "
                 f"private exact results: **{len(shown_cards)}** • "
-                f"fresh public-ready: **{len(fresh_cards)}**\n"
-                f"Public cap: **{job.max_public_posts}** • sent to public guard: **{len(public_cards)}** • "
-                f"posted: **{public_result.posted}**\n"
+                f"fresh verified candidates: **{len(fresh_cards)}**\n"
+                f"{public_line}\n"
                 f"Exact review/under-threshold audit count: **{job.review_count}** • "
                 f"elapsed: **{job.elapsed_seconds}s**\n"
                 f"Fresh filter: {fresh_summary}"
@@ -634,7 +664,7 @@ class AutoDiscoveryCog(commands.Cog):
                 value="\n".join(lines)[:1024],
                 inline=False,
             )
-        if len(shown_cards) > len(public_cards):
+        if job.public_posts and len(shown_cards) > len(public_cards):
             embed.add_field(
                 name="More exact deals found",
                 value=(
@@ -642,11 +672,19 @@ class AutoDiscoveryCog(commands.Cog):
                 ),
                 inline=False,
             )
+        elif not job.public_posts and shown_cards:
+            embed.add_field(
+                name="🔒 Private discovery run",
+                value=(
+                    f"All **{len(shown_cards)}** displayed exact-verified result card(s) stayed out of the public posting lane because Public Posts was off."
+                ),
+                inline=False,
+            )
         if normalized_exact:
             embed.add_field(
                 name="✅ Exact-detail normalization",
                 value=(
-                    f"Refreshed **{normalized_exact}** exact Walmart card(s) immediately before public gating. Search-only rows cannot become deal cards."
+                    f"Refreshed **{normalized_exact}** exact Walmart card(s) immediately before final delivery. Search-only rows cannot become deal cards."
                 ),
                 inline=False,
             )
@@ -672,10 +710,16 @@ class AutoDiscoveryCog(commands.Cog):
                 inline=False,
             )
         if job.delivery_kind != "dm":
+            fallback_public = (
+                " Public posting was explicitly enabled for this run, so eligible fresh deals still used the configured public lane."
+                if job.public_posts
+                else " Public posting was off, so no discovery result card was sent to the public lane."
+            )
             embed.add_field(
                 name="Private delivery fallback",
                 value=(
-                    "Your DMs were closed, so this single channel message was used for durable status. Exact cards were not dumped into the channel; fresh public-safe deals still used the configured public posting lane."
+                    "Your DMs were closed, so this single channel message was used for durable status. Exact cards were not dumped into the channel."
+                    + fallback_public
                 ),
                 inline=False,
             )
@@ -723,12 +767,16 @@ class AutoDiscoveryCog(commands.Cog):
             eta_seconds = max(1, int(seconds_per_route * remaining))
             eta = format_duration(eta_seconds)
         elif remaining == 0:
-            eta = "finishing public/private delivery"
+            eta = "finishing public/private delivery" if job.public_posts else "finishing private delivery"
 
         state_labels = {
             "starting": "Starting",
             "searching": "Searching and checkpointing",
-            "posting": "Applying final proof, duplicate, and public-post gates",
+            "posting": (
+                "Applying final proof, duplicate, and public-post gates"
+                if job.public_posts
+                else "Finishing private discovery delivery"
+            ),
             "cancel_requested": "Cancellation requested",
             "cancelled": "Cancelled",
             "timed_out": "Stopped by safety timeout",
@@ -750,9 +798,15 @@ class AutoDiscoveryCog(commands.Cog):
                 f"Chunk **{active_chunk}/{job.total_chunks}** • routes **{start_route}-{end_route}**"
             )
 
+        public_status = (
+            f"**ON** • up to **{job.max_public_posts}** verified deal(s), still subject to normal public gates"
+            if job.public_posts
+            else "**OFF** • this discovery run is private"
+        )
         description = (
             f"Job: `{job.job_id}` • State: **{state_labels.get(job.state, job.state)}**\n"
             f"Coverage: {job.plan.coverage_line()}\n"
+            f"Public posting: {public_status}\n"
             f"{chunk_line}\n"
             f"Actual progress: **{completed}/{total_routes} routes ({percent:.1f}%)**\n"
             f"Completed API pages: **{job.pages_checked}** • returned products: **{job.products_checked}**\n"
@@ -769,7 +823,9 @@ class AutoDiscoveryCog(commands.Cog):
             color=color,
         )
         embed.set_footer(
-            text="One status message is edited in place. Public posts still require exact price, seller/offer identity, threshold, availability, freshness, and duplicate proof."
+            text=(
+                "One status message is edited in place. Public posting only runs when this discovery job opts in, and then still requires exact price, seller/offer identity, threshold, availability, freshness, and duplicate proof."
+            )
         )
         return embed
 

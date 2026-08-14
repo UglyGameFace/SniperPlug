@@ -29,13 +29,22 @@ from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 
 
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
-VERIFIED_RECHECK_FALLBACK_HOURS = 24
-VERIFIED_RECHECK_STATUSES = (
-    "verified_markdown",
+VERIFIED_MARKDOWN_RECHECK_HOURS = 24
+VERIFIED_REFERENCE_RECHECK_HOURS = 72
+VERIFIED_LOW_SIGNAL_RECHECK_HOURS = 7 * 24
+VERIFIED_MARKDOWN_RECHECK_STATUSES = ("verified_markdown",)
+VERIFIED_REFERENCE_RECHECK_STATUSES = (
     "verified_under_threshold",
-    "verified_no_reference",
     "verified_reference",
+)
+VERIFIED_LOW_SIGNAL_RECHECK_STATUSES = (
+    "verified_no_reference",
     "not_buyable",
+)
+VERIFIED_RECHECK_STATUSES = (
+    *VERIFIED_MARKDOWN_RECHECK_STATUSES,
+    *VERIFIED_REFERENCE_RECHECK_STATUSES,
+    *VERIFIED_LOW_SIGNAL_RECHECK_STATUSES,
 )
 # Product-page recovery itself is already limited to two concurrent requests.
 # Do not let a backlog of distinct challenged pages consume an entire 8/24-item
@@ -48,6 +57,37 @@ _DISCOVERY_SNAPSHOT_COLUMNS = (
 _LEGACY_DISCOVERY_SNAPSHOT_PROJECTION = (
     "'' AS discovery_snapshot_json, NULL AS discovery_snapshot_at"
 )
+
+
+def verified_recheck_cutoffs(now: datetime) -> tuple[str, str, str]:
+    """Return claim cutoffs for high-, medium-, and low-signal verified states."""
+
+    now_utc = now.astimezone(timezone.utc)
+    return (
+        (now_utc - timedelta(hours=VERIFIED_MARKDOWN_RECHECK_HOURS)).isoformat(),
+        (now_utc - timedelta(hours=VERIFIED_REFERENCE_RECHECK_HOURS)).isoformat(),
+        (now_utc - timedelta(hours=VERIFIED_LOW_SIGNAL_RECHECK_HOURS)).isoformat(),
+    )
+
+
+def verified_recheck_delay(status: str) -> timedelta:
+    """Return the fallback exact cadence for a verified queue status.
+
+    Catalog-visible price/reference/selected-offer changes rearm verified rows to
+    ``pending`` immediately, so these delays are safety sweeps rather than the
+    primary change detector. High-value proven markdowns retain a daily fallback;
+    weaker reference states use three days; no-reference/unavailable states use a
+    weekly fallback to avoid spending Turso writes re-proving unchanged low-signal
+    outcomes every day.
+    """
+
+    if status in VERIFIED_MARKDOWN_RECHECK_STATUSES:
+        return timedelta(hours=VERIFIED_MARKDOWN_RECHECK_HOURS)
+    if status in VERIFIED_REFERENCE_RECHECK_STATUSES:
+        return timedelta(hours=VERIFIED_REFERENCE_RECHECK_HOURS)
+    if status in VERIFIED_LOW_SIGNAL_RECHECK_STATUSES:
+        return timedelta(hours=VERIFIED_LOW_SIGNAL_RECHECK_HOURS)
+    return timedelta(hours=12)
 
 
 async def claim_due_rows_batched(
@@ -70,11 +110,12 @@ async def claim_due_rows_batched(
     2. a guarded UPDATE leases only those item IDs and RETURNING confirms which
        rows this process actually acquired.
 
-    Verified rows have an additional claim-time age floor. A stale legacy
-    ``next_attempt_at`` from the old 4/12-hour cadence is simply ignored until
-    the last exact verification is 24 hours old, so migrating old schedules does
-    not itself spend Turso writes. A material catalog change changes the row back
-    to ``pending`` and therefore bypasses this verified-only floor immediately.
+    Verified rows have a status-aware claim-time age floor. Legacy early
+    ``next_attempt_at`` values are ignored without repair writes until the last
+    exact verification is old enough for that status: one day for verified
+    markdowns, three days for reference/under-threshold states, and seven days
+    for no-reference/unavailable states. A material catalog change changes the
+    row back to ``pending`` and bypasses this verified-only floor immediately.
 
     Fresh bounded catalog proof is ranked before network recovery. A no-snapshot
     ``page_retry`` lane is capped to two rows per batch by default so a Walmart
@@ -103,9 +144,11 @@ async def claim_due_rows_batched(
     snapshot_cutoff = (
         now_utc - timedelta(seconds=DISCOVERY_PROOF_MAX_AGE_SECONDS)
     ).isoformat()
-    verified_recheck_cutoff = (
-        now_utc - timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
-    ).isoformat()
+    (
+        markdown_recheck_cutoff,
+        reference_recheck_cutoff,
+        low_signal_recheck_cutoff,
+    ) = verified_recheck_cutoffs(now_utc)
     bounded_limit = max(1, int(limit))
     bounded_page_recovery_claim_cap = max(0, int(page_recovery_claim_cap))
     batch_token = uuid.uuid4().hex
@@ -118,7 +161,9 @@ async def claim_due_rows_batched(
         now_iso=now_iso,
         discovery_cutoff=discovery_cutoff,
         snapshot_cutoff=snapshot_cutoff,
-        verified_recheck_cutoff=verified_recheck_cutoff,
+        markdown_recheck_cutoff=markdown_recheck_cutoff,
+        reference_recheck_cutoff=reference_recheck_cutoff,
+        low_signal_recheck_cutoff=low_signal_recheck_cutoff,
         bounded_limit=bounded_limit,
         page_recovery_claim_cap=bounded_page_recovery_claim_cap,
     )
@@ -203,7 +248,9 @@ async def _select_due_rows_with_optional_discovery_snapshot(
     now_iso: str,
     discovery_cutoff: str,
     snapshot_cutoff: str,
-    verified_recheck_cutoff: str,
+    markdown_recheck_cutoff: str,
+    reference_recheck_cutoff: str,
+    low_signal_recheck_cutoff: str,
     bounded_limit: int,
     page_recovery_claim_cap: int,
 ) -> list[Any]:
@@ -218,7 +265,9 @@ async def _select_due_rows_with_optional_discovery_snapshot(
                 now_iso,
                 discovery_cutoff,
                 now_iso,
-                verified_recheck_cutoff,
+                markdown_recheck_cutoff,
+                reference_recheck_cutoff,
+                low_signal_recheck_cutoff,
                 snapshot_cutoff,
                 now_iso,
                 discovery_cutoff,
@@ -314,11 +363,28 @@ def _due_rows_select_sql(
         verified_statuses = ", ".join(
             f"'{status}'" for status in VERIFIED_RECHECK_STATUSES
         )
+        reference_statuses = ", ".join(
+            f"'{status}'" for status in VERIFIED_REFERENCE_RECHECK_STATUSES
+        )
+        low_signal_statuses = ", ".join(
+            f"'{status}'" for status in VERIFIED_LOW_SIGNAL_RECHECK_STATUSES
+        )
         verified_guard = f"""
           AND (
               status NOT IN ({verified_statuses})
               OR verified_at IS NULL
-              OR verified_at <= ?
+              OR (
+                  status = 'verified_markdown'
+                  AND verified_at <= ?
+              )
+              OR (
+                  status IN ({reference_statuses})
+                  AND verified_at <= ?
+              )
+              OR (
+                  status IN ({low_signal_statuses})
+                  AND verified_at <= ?
+              )
           )
         """
     else:
@@ -445,15 +511,7 @@ async def store_exact_candidate_with_tiered_recheck(
 
 
 def tiered_recheck_delay(status: str, discount_percent: float) -> timedelta:
-    """Use catalog-driven wakeups plus a low-write daily exact safety sweep.
-
-    Material catalog changes are rearmed immediately by the bulk enqueue path,
-    so verified rows no longer need a four-hour database-backed heartbeat just
-    because the last confirmed discount was large. The compatibility function
-    name is retained because both bulk and legacy exact persistence share it.
-    """
+    """Use catalog wakeups plus status-aware low-write exact safety sweeps."""
 
     _ = discount_percent
-    if status in VERIFIED_RECHECK_STATUSES:
-        return timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
-    return timedelta(hours=12)
+    return verified_recheck_delay(status)

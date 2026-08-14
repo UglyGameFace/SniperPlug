@@ -16,6 +16,7 @@ from sniperplug.services.walmart_exact_queue_pressure import (
     load_walmart_exact_queue_pressure,
 )
 from sniperplug.services.walmart_fresh_discovery_proof import (
+    DISCOVERY_PROOF_MAX_AGE_SECONDS,
     DISCOVERY_PROOF_REFRESH_INTERVAL_SECONDS,
     build_fresh_discovery_offer_snapshot,
 )
@@ -33,7 +34,10 @@ from sniperplug.services.walmart_exact_verification_queue import (
 # historical 999-variable ceiling while preserving bounded selected-offer proof.
 QUEUE_UPSERT_CHUNK_SIZE = 55
 QUEUE_EXISTING_LOOKUP_CHUNK_SIZE = 500
-QUEUE_DISCOVERY_REFRESH_INTERVAL_SECONDS = 6 * 60 * 60
+# Queue retention is fourteen days. A once-per-day discovery heartbeat keeps a
+# mature unchanged row comfortably inside that boundary without rewriting it on
+# every two-hour-ish global route rotation.
+QUEUE_DISCOVERY_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
 _QUEUE_COLUMNS_PER_ROW = 18
 _REARM_STATUSES = frozenset({"pending", "retry", "failed"})
 
@@ -65,6 +69,7 @@ class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
     write_statements: int = 0
     safe_snapshot_rows: int = 0
     page_retry_rearmed: int = 0
+    snapshot_refresh_skipped: int = 0
 
     def summary_line(self) -> str:
         return (
@@ -72,6 +77,7 @@ class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
             f"discovered **{self.discovered}** • unique item IDs this pass **{self.queued_unique}** • "
             f"safe fresh proof **{self.safe_snapshot_rows}** • "
             f"page retries rescued **{self.page_retry_rearmed}** • "
+            f"stale proof refresh skipped **{self.snapshot_refresh_skipped}** • "
             f"persisted/unchanged **{self.persisted_rows}/{self.unchanged_rows}** • "
             f"write statements **{self.write_statements}** • "
             f"actionable due (bounded) **{self.pending_total}**"
@@ -91,18 +97,20 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     contains a complete atomic selected offer, a bounded normalized proof
     snapshot is persisted separately so the canonical exact worker can reuse it
     while it is fresh and still revalidate item, price, seller, offer, variant,
-    and marketplace shipping before promotion. Production catalog passes
-    repeatedly rediscover many of the same item IDs, so the enqueue path first
-    loads one bounded projection for those primary keys and writes only rows
-    that are new, materially changed, safely rearmed, or old enough to need a
-    retention/proof heartbeat. Schema initialization is shared with the exact
-    worker's once-per-connection cache.
+    and marketplace shipping before promotion.
 
-    A page-retry row that receives a new complete safe snapshot is explicitly
-    rearmed to ``pending``. The old implementation only moved its due time while
-    leaving the row classified as page recovery, so stale high-priority page
-    work could continue to dominate the exact worker even after catalog proof
-    had become available.
+    Production catalog passes repeatedly rediscover mature verified products.
+    The enqueue path therefore writes only rows that are new, materially changed,
+    safely rearmed, due soon enough to consume a refreshed proof snapshot, or old
+    enough to need the once-per-day retention heartbeat. Refreshing the timestamp
+    of an identical fifteen-minute proof for a verified row whose next recheck is
+    hours away is intentionally suppressed: that proof would expire before it
+    could be consumed and the write has no correctness value.
+
+    A page-retry row that receives a complete safe snapshot is explicitly
+    rearmed to ``pending`` so fresh catalog proof can bypass an HTML challenge.
+    New/changed prices, references, identity proof, titles, URLs, source changes,
+    priority increases, and retry rearming remain immediate writes.
 
     Fifty-five rows use 990 parameters, below SQLite's conservative historical
     999-variable limit. A normal 75-100 row pass therefore uses no writes when
@@ -158,16 +166,31 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     snapshot_refresh_cutoff = (
         now - timedelta(seconds=DISCOVERY_PROOF_REFRESH_INTERVAL_SECONDS)
     ).isoformat()
-    rows_to_write = [
-        row
-        for row in rows
-        if _queue_row_needs_write(
+    snapshot_use_deadline = (
+        now + timedelta(seconds=DISCOVERY_PROOF_MAX_AGE_SECONDS)
+    ).isoformat()
+
+    rows_to_write: list[tuple[Any, ...]] = []
+    snapshot_refresh_skipped = 0
+    for row in rows:
+        stored = existing.get(str(row[0]))
+        needs_write = _queue_row_needs_write(
             row,
-            existing.get(str(row[0])),
+            stored,
             refresh_cutoff=refresh_cutoff,
             snapshot_refresh_cutoff=snapshot_refresh_cutoff,
+            snapshot_use_deadline=snapshot_use_deadline,
         )
-    ]
+        if needs_write:
+            rows_to_write.append(row)
+        elif _stale_snapshot_refresh_was_suppressed(
+            row,
+            stored,
+            snapshot_refresh_cutoff=snapshot_refresh_cutoff,
+            snapshot_use_deadline=snapshot_use_deadline,
+        ):
+            snapshot_refresh_skipped += 1
+
     safe_snapshot_rows = sum(1 for row in rows if str(row[16] or ""))
     page_retry_rearmed = sum(
         1
@@ -260,6 +283,7 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
         write_statements=write_statements,
         safe_snapshot_rows=safe_snapshot_rows,
         page_retry_rearmed=page_retry_rearmed,
+        snapshot_refresh_skipped=snapshot_refresh_skipped,
     )
 
 
@@ -329,6 +353,7 @@ def _queue_row_needs_write(
     *,
     refresh_cutoff: str,
     snapshot_refresh_cutoff: str,
+    snapshot_use_deadline: str,
 ) -> bool:
     if existing is None:
         return True
@@ -361,20 +386,28 @@ def _queue_row_needs_write(
         return True
     if not existing.last_seen_at or existing.last_seen_at <= refresh_cutoff:
         return True
+
     incoming_snapshot = str(row[16] or "")
     if incoming_snapshot:
         if incoming_snapshot != existing.discovery_snapshot_json:
             return True
-        if (
+
+        # Any complete fresh catalog snapshot can rescue page recovery. This is
+        # a semantic status change, not a heartbeat, and remains immediate even
+        # while the HTML circuit is open.
+        if existing.status == "page_retry":
+            return True
+
+        snapshot_stale = (
             not existing.discovery_snapshot_at
             or existing.discovery_snapshot_at <= snapshot_refresh_cutoff
+        )
+        if snapshot_stale and _snapshot_refresh_can_be_consumed(
+            existing,
+            snapshot_use_deadline=snapshot_use_deadline,
         ):
             return True
-        if existing.status == "page_retry" and (
-            not existing.next_attempt_at
-            or existing.next_attempt_at > str(row[15] or "")
-        ):
-            return True
+
     if (
         existing.status in _REARM_STATUSES
         and (
@@ -384,6 +417,44 @@ def _queue_row_needs_write(
     ):
         return True
     return False
+
+
+def _snapshot_refresh_can_be_consumed(
+    existing: _ExistingQueueRow,
+    *,
+    snapshot_use_deadline: str,
+) -> bool:
+    """Return whether an identical refreshed proof can be used before expiry."""
+
+    if existing.status in _REARM_STATUSES:
+        return True
+    if existing.status == "verifying":
+        return False
+    if not existing.next_attempt_at:
+        return False
+    return existing.next_attempt_at <= snapshot_use_deadline
+
+
+def _stale_snapshot_refresh_was_suppressed(
+    row: tuple[Any, ...],
+    existing: _ExistingQueueRow | None,
+    *,
+    snapshot_refresh_cutoff: str,
+    snapshot_use_deadline: str,
+) -> bool:
+    if existing is None:
+        return False
+    incoming_snapshot = str(row[16] or "")
+    if not incoming_snapshot or incoming_snapshot != existing.discovery_snapshot_json:
+        return False
+    if existing.status == "page_retry":
+        return False
+    if existing.discovery_snapshot_at and existing.discovery_snapshot_at > snapshot_refresh_cutoff:
+        return False
+    return not _snapshot_refresh_can_be_consumed(
+        existing,
+        snapshot_use_deadline=snapshot_use_deadline,
+    )
 
 
 def _queue_row(

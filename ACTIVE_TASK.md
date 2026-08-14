@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-TURSO-READ-AMPLIFICATION. Turso's Aug 14 dashboard shows the account at 92% of its rows-read quota, with SniperPlug alone at 455,545,327 rows read. Production also logged a 4.03s isolated database `SELECT item_id, title, product_url...` from the Walmart exact queue claim path. The root-cause audit reproduced a broad mature-queue scan from the monolithic ~20-second claim SELECT and identified repeated pressure scans over legacy schedules whose `next_attempt_at` is due but whose `verified_at` is intentionally still below the 24h/72h/7d safety floor. The active branch rewrites those reads into bounded, index-seekable lanes without weakening exact proof, leases, material-change wakeups, page-recovery caps, or verified fallback cadence. Validation is in progress; nothing is production-ready until CI and live read-rate acceptance pass.**
+**Active — SP-TURSO-READ-AMPLIFICATION. Turso's Aug 14 dashboard shows the account at 92% of its rows-read quota, with SniperPlug alone at 455,545,327 rows read. Production also logged a 4.03s isolated database `SELECT item_id, title, product_url...` from the Walmart exact queue claim path. PR #251 now has a CI-green bounded/indexed replacement for the high-frequency claim and pressure reads. The code/repository validation gate has passed; the task remains open through merge, Discloud deployment, and live Turso rows-read-rate acceptance.**
 
 ## Scope
 Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-quota emergency while preserving the existing Walmart exact-verification architecture and safety semantics. Fix the actual high-frequency read access paths rather than masking them with stale caches, disabling verification, or creating a parallel queue/runtime.
@@ -10,47 +10,50 @@ Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-qu
 - Turso's dashboard evidence is account-critical: rows read are at **92%**, and SniperPlug alone shows **455,545,327 rows read**, **6,273,176 rows written**, and **2.38 GB synced**.
 - Production logged a slow isolated database operation for `SELECT item_id, title, product_url...` with **remote_s=4.03**. That projection maps to the Walmart exact queue claim selector.
 - The exact worker normally runs about every **20 seconds**. Before this branch, `claim_due_rows_batched` used one all-status SELECT combining due time, retention, lease state, fresh-snapshot priority, page-recovery handling, verified status-age floors, status ordering, priority ordering, and a final small LIMIT.
-- A private mature-queue SQLite reproduction with thousands of recently verified low-signal rows showed the old claim planner choosing the `last_seen_at` access path and a temporary ORDER BY rather than seeking directly by the verified-age floor. A small result LIMIT therefore did not guarantee a small scan.
+- A mature-queue SQLite reproduction with thousands of recently verified low-signal rows showed the old claim planner choosing the `last_seen_at` access path and a temporary ORDER BY rather than seeking directly by the verified-age floor. A small result LIMIT therefore did not guarantee a small scan.
 - PR #250 intentionally stopped rewriting legacy early verified schedules in order to remove needless Turso writes. A mature verified row can therefore have an already-due legacy `next_attempt_at` while its newer `verified_at` correctly keeps it below the real 24h/72h/7d safety cadence. The old claim SELECT can repeatedly encounter and reject large numbers of those rows.
 - `load_walmart_exact_queue_pressure` is another multiplier. It is used by the exact worker before claims, after real work, and by catalog/backpressure paths. Its old verified recheck branch combined due schedule and verified-age predicates in a way that could repeatedly walk the same legacy-due-but-too-young rows.
 - Full owner-facing `load_walmart_exact_queue_health` performs broader aggregates, but background runtime explicitly avoids it (`background_full_queue_scans=false`). It is not the primary continuous read source identified here.
 - Global Walmart fanout cursor reads were already hardened separately with bounded cursor/index behavior and focused regression coverage. This task does not duplicate that work without evidence.
-- The read fix must preserve: durable per-row leases; fresh-snapshot priority; page-recovery claim cap; terminal identity exclusion; exact seller/item/offer/variant/condition/fulfillment proof; immediate material catalog wakeups; 24h markdown, 72h reference/under-threshold, and 7d low-signal safety sweeps; missing-`verified_at` recovery; price history; fanout; and delivery dedupe.
+- The read fix preserves: durable per-row leases; fresh-snapshot priority; page-recovery claim cap; terminal identity exclusion; exact seller/item/offer/variant/condition/fulfillment proof; immediate material catalog wakeups; 24h markdown, 72h reference/under-threshold, and 7d low-signal safety sweeps; missing-`verified_at` recovery; price history; fanout; and delivery dedupe.
 
-## Changes on active branch
+## Changes in PR #251
 - Added `idx_walmart_exact_detail_queue_status_verified_due` over `(status, verified_at, next_attempt_at, last_seen_at, lease_until, priority_score DESC)` during the existing one-time exact runtime schema initialization.
 - Reworked production exact claims from one broad all-status SELECT into a bounded candidate pool of index-seekable lanes: fresh proof, pending, retry, failed, capped page recovery, each verified status/age band, missing verified timestamps, and expired verifying work.
 - Preserved the existing final global ordering: fresh proof first, then the established status order, then priority and recency. The durable guarded lease UPDATE/RETURNING path remains unchanged.
 - Non-fresh lanes exclude currently fresh snapshot rows so a row cannot enter the candidate pool twice.
-- Direct compatibility callers that have not initialized runtime indexes retain the historical selector as a fallback; the production worker initializes the runtime schema before claiming.
+- Direct compatibility callers that have not initialized runtime indexes retain the historical current-schema selector; older pre-snapshot/pre-`verified_at` callers retain the legacy selector after the current-schema fallback reports missing optional columns.
 - Reworked bounded queue pressure so fresh/retry, page recovery, and active leases seek the existing status/due index, while scheduled verified rechecks are split by 24h/72h/7d age and seek the new status/verified index. Missing verified timestamps remain recoverable.
 - Added EXPLAIN-query-plan regressions using a mature queue fixture containing hundreds of legacy-due-but-too-young low-signal rows. Tests require the selective indexes and forbid a direct full queue scan in the optimized production path.
-- Updated existing pressure, recheck-floor, and claim regressions to exercise the indexed runtime schema while preserving previous behavior assertions.
+- Updated existing pressure, recheck-floor, claim, and runtime-schema regressions to exercise the indexed runtime schema while preserving previous behavior assertions.
 
-## Validation completed so far
+## Validation completed
 - Root-cause reproduction completed before edits: the old mature-queue claim plan used the `last_seen_at` index plus temporary ordering instead of a verified-age seek.
-- Synthetic optimized claim-plan inspection shows the new verified lanes can search by `status=? AND verified_at<?` and use the new status/verified index.
+- Synthetic optimized claim-plan inspection shows the new verified lanes search by `status=? AND verified_at<?` using the new status/verified index.
 - Synthetic optimized pressure-plan inspection follows the same age-seek approach rather than repeatedly post-filtering recent verified rows.
-- Focused regression files have been added/updated, including a 256-row legacy-due recent low-signal fixture where only the genuinely old recheck and fresh pending work are eligible.
+- Focused regression coverage includes a 256-row legacy-due recent low-signal fixture where only the genuinely old recheck and fresh pending work are eligible.
+- The first PR CI pass exposed exactly two compatibility regressions: a minimal legacy schema fell through only one fallback layer, and the runtime-schema test still expected five index/drop statements instead of six. Both were fixed narrowly without changing the optimized production semantics.
+- Final Python 3.12 `Python Check` passed **1,246 tests, 1 warning** (discord/audioop deprecation only). `pip check`, `python -m compileall -q sniperplug scripts tests`, and the 37-module/22-symbol import smoke check passed.
+- The separate `Python tests` workflow also passed dependency check, compilation, and the full pytest suite.
+- PR #251 has **9 changed files**, all directly scoped to the task record, exact claim/pressure/schema paths, and their regressions. No temporary workflow, alternate runtime, cache layer, or unrelated product behavior is in the diff.
+- PR #251 is mergeable with no review threads or submitted reviews. The only PR comment is Qodo's inactive-subscription notice, not a code finding.
 
 ## Validation pending / Definition of Done
-- Finish compatibility inspection for callers/tests that assume the previous runtime-index set or initialize only the base queue schema.
-- Run focused read-amplification, claim, pressure, recheck-floor, queue-runtime, and catalog/backpressure tests.
-- Run the full Python test suite on supported CI versions, dependency checks, compilation/import smoke, and repository diff/cleanup validation.
-- Inspect PR changed files, review threads, and conflicts. Do not merge with hidden temporary files, duplicate read paths, or unreviewed compatibility regressions.
-- Deploy the merged build to Discloud only after CI is green.
+- Merge PR #251 only after the final docs-only head checks remain green.
+- Deploy the merged build to Discloud.
 - Live acceptance must show the exact worker still claims/processes valid work correctly and the previous slow broad claim SELECT disappears or materially drops in latency/read cost.
+- Confirm bounded queue pressure remains behaviorally correct and no proof/dedupe regression appears.
 - Recheck Turso cumulative rows-read usage after a meaningful live interval and compare the post-deploy slope with the pre-fix rate. The task is not complete until actual quota burn is demonstrably reduced.
 
 ## Cleanup / safety constraints
 - No stale safety-critical cache, alternate database, parallel queue, startup exception swallow, monkey patch, or relaxed Walmart proof gate.
-- Do not lower exact verification quality or simply stop catalog discovery to save reads.
-- Preserve the page-recovery cap, status priority, material-change wake path, status-aware safety cadence, durable leases, offer memory, price history, fanout, and dedupe.
-- Prefer bounded indexed reads over timestamp-repair writes; do not undo the write-amplification fix by rewriting legacy schedules merely to make reads easier.
+- No exact-verification quality reduction or catalog-discovery shutdown was used to save reads.
+- Page-recovery cap, status priority, material-change wake path, status-aware safety cadence, durable leases, offer memory, price history, fanout, and dedupe remain intact.
+- The fix uses bounded indexed reads rather than timestamp-repair writes, so it does not undo the write-amplification work merely to make reads easier.
 
 ## Blockers
 - Direct Turso top-query/organization read metrics are not exposed through the connected tools, so final quota-rate acceptance still needs the user's Turso dashboard after deployment.
-- The current branch is not yet CI-validated or deployed.
+- PR #251 must be merged and deployed before live read-rate acceptance can start.
 
 ## Suspended tasks
 **SP-TURSO-WRITE-AMPLIFICATION is suspended at its final dashboard rows-written slope gate.** Its exact-worker write-floor acceptance passed after PR #250; do not reopen solved scheduled-recheck write churn without evidence.

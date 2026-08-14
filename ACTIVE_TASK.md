@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-TURSO-WRITE-AMPLIFICATION is at its final Turso-dashboard acceptance gate. PR #248, #249, and #250 are merged and deployed. Aug 14 post-#250 production telemetry now proves the blanket daily scheduled-recheck write floor is gone: bounded pressure repeatedly reports `new/retry 0`, `scheduled rechecks 0`, and exact cycles often claim 0 rows with `store 0.00s`, while page-recovery backlog remains parked behind the open page circuit. Exact-worker live acceptance has passed; the task remains open only until the Turso rows-written slope confirms the quota-rate reduction.**
+**Active — SP-TURSO-WRITE-AMPLIFICATION is at its final Turso-dashboard acceptance gate. PR #248, #249, and #250 are merged and deployed. Aug 14 post-#250 production telemetry proves the blanket daily scheduled-recheck write floor is gone: bounded pressure repeatedly reports `new/retry 0`, `scheduled rechecks 0`, and exact cycles often claim 0 rows with `store 0.00s`, while page-recovery backlog remains parked behind the open page circuit. Exact-worker live acceptance has passed. The Turso dashboard screenshot supplied at 13:10 EDT shows SniperPlug at **6,273,176 rows written**, but does not expose a rows-written time slope, so the original write-rate acceptance cannot be quantified from that screen alone. The same screenshot exposes a new account-critical blocker: the banner is for **rows READ**, at 92% used, with SniperPlug itself at **455,545,327 rows read**. Do not silently switch implementation tasks; SP-TURSO-READ-AMPLIFICATION is the next critical task if the user FORCE SWITCHes.**
 
 ## Scope
 Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart proof, delivery dedupe, durable leases, crash recovery, material-change detection, or price history. Fix storage-maintenance startup correctness and remove needless catalog/exact-worker writes using the existing queue/runtime rather than adding a parallel persistence or scheduling layer.
@@ -15,6 +15,7 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 - Bulk exact persistence was reinspected and correctly advances `verified_at` and `next_attempt_at`; this was not an immediate same-row reclaim bug. The mature queue was large enough that different low-signal rows crossed a blanket 24-hour anniversary continuously.
 - The live outcome mix identified the waste: many saturated batches contained `official was prices 0`, `markdowns 0`, and `no reference 7-8`. `verified_no_reference` and `not_buyable` were consuming daily lease/outcome/offer-memory writes despite being low-signal unchanged states.
 - The global catalog rotates 265 routes two at a time (roughly a 2.2-hour pass when not backpressured). Material catalog price/reference/selected-offer changes already rearm all verified states to `pending` immediately, so unchanged low-signal rows do not need a daily exact heartbeat for responsiveness.
+- The Aug 14 Turso dashboard screenshot shows that the current critical banner is **not rows written**. It says **Quota Critical — 92% used** for rows read. SniperPlug shows **455,545,327 rows read**, **6,273,176 rows written**, and **2.38 GB bytes synced**. The screen itself warns that hitting any free-tier limit blocks the entire account, so read amplification is now the immediate account-availability risk even though the write churn targeted by this task is live-fixed.
 
 ## Changes live from PR #248
 - Stable `rowid AS __sniperplug_rowid` maintenance extraction.
@@ -52,11 +53,13 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 - Non-idle cycles are now tied to real material catalog wakeups, page/API retry work, or small exact verification batches rather than a permanent scheduled anniversary lane. Catalog logs continue to show `verified changes rearmed` when material changes occur.
 - `page_circuit_reschedule_rows=0` remains true throughout the supplied post-#250 sample.
 - A real DM delivery succeeded during the sample: fanout reported `DM checked/matched/sent 1/1/1`, proving the DM transport path is operational even though separate DM filter/dedupe starvation work remains backlogged.
+- Turso dashboard evidence at 13:10 EDT: SniperPlug cumulative **rows written = 6,273,176**. The dashboard view supplied does not include a write-over-time graph, so no pre/post write slope can be calculated from it.
+- The same dashboard evidence shows the account-critical metric is **rows read = 92% used**, with SniperPlug cumulative **rows read = 455,545,327**.
 
 ## Validation pending / Definition of Done
-- Check the Turso dashboard rows-written slope after this deployment and compare it with the pre-#250 rate. The task is not complete until the monthly-rate risk is demonstrably reduced.
-- If the dashboard slope has materially flattened, close SP-TURSO-WRITE-AMPLIFICATION and resume the suspended task according to the task lock.
-- If the dashboard still shows an unexpectedly high write rate despite `scheduled rechecks 0`, inspect the next largest write source before closing; do not re-open the solved scheduled-recheck path without evidence.
+- If a Turso view with a rows-written time series is available, compare the post-#250 slope with the pre-#250 rate. The runtime write telemetry already demonstrates the solved write floor, but the original dashboard-slope criterion is not measurable from the supplied database-list screen.
+- Do not conflate the new 92% rows-read warning with write-amplification acceptance. It is a separate quota dimension and should become **SP-TURSO-READ-AMPLIFICATION** only via the task-lock FORCE SWITCH.
+- If the user chooses to close the write task based on the direct runtime evidence, record that explicitly before starting the read task. Otherwise keep this task open at the dashboard-slope gate.
 
 ## Cleanup status
 - No startup exception swallow, monkey patch, alternate database, duplicate queue runtime, or relaxed proof gate was added.
@@ -65,7 +68,9 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 - Price history and exact offer memory remain intact.
 
 ## Blockers
-- Direct Turso organization/top-query metrics are not exposed through the connected tools. Final quota-rate acceptance requires the user's Turso usage view after deployment.
+- The supplied Turso database-list screen exposes cumulative rows-read/rows-written totals but no time series, so it cannot prove a rows-written slope by itself.
+- Direct Turso organization/top-query metrics are not exposed through the connected tools.
+- New critical availability risk discovered: Turso rows-read quota is at **92%** and the UI warns that hitting any free-tier limit blocks the entire account.
 
 ## Suspended task
 **SP-DEALS-DISCOVER-HARDENING-244 is suspended at its live acceptance gate, not closed.** PR #247 is merged and CI-green. Resume only after this Turso task closes or another explicit FORCE SWITCH.
@@ -73,12 +78,13 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 **SP-WM-MISSED-DEALS-236 remains suspended, not closed.**
 
 ## Backlog
+- **SP-TURSO-READ-AMPLIFICATION — CRITICAL:** Turso dashboard is at **92% rows-read quota**. SniperPlug alone shows **455,545,327 rows read**. Root-cause audit should identify the highest-frequency/highest-row SELECT paths, repeated full/large queue scans, health/pressure polling, startup/restoration scans, fanout/history reads, and any query missing a selective index or bounded predicate. Preserve correctness and existing write optimizations; do not simply cache stale safety-critical data. Requires exact FORCE SWITCH before implementation.
 - **SP-GATEWAY-EVENT-LOOP-LAG:** Investigate repeated Discord gateway `Can't keep up` warnings around 41 seconds behind seen during the Aug 14 post-#250 sample. Trace event-loop blocking/slow DB or network work before editing; keep separate from the Turso cadence fix.
 - **SP-SETUP-DELIVERY-UX:** Align `/setup_sniperplug_here` with `/dm_deals`; make public delivery explicit and easy to review/change.
 - **SP-DM-DELIVERY-STARVATION:** Investigate matched DM deals lost to filter/duplicate suppression rather than Discord delivery errors.
 - **SP-DM-NEW-LOW-ALERT:** Send a distinct meaningful lower-price alert while same-price repeats remain deduped.
 - **SP-WM-REFERENCE-PRICE-RECOVERY:** Improve exact reference-price recovery without weakening public proof; current logs still show `api_price_missing`, `api_exact_search_no_match`, page challenges, and open-circuit recovery periods.
 - **SP-WM-CASH-PDP-AMOUNT:** Integrate exact same-item Walmart Cash proof for private/DM enrichment without confusing OnePay cashback or using Cash as markdown proof.
-- Resume #244 live acceptance after this task closes.
-- Resume Walmart missed-deals/page-recovery throughput work after the active task closes.
+- Resume #244 live acceptance after the active quota task closes.
+- Resume Walmart missed-deals/page-recovery throughput work after the active quota task closes.
 - Resume SniperPlug-Site Whop content-reader work later.

@@ -72,33 +72,26 @@ class StorageAdminCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        before = await storage_counts(self.bot.db, interaction.guild_id)
+
+        # Do not run the old before/after COUNT(*) sweep here. The cleanup result
+        # already reports exactly how many rows it changed, while extra counts
+        # would spend Turso rows-read quota merely to decorate the response.
         result = await run_storage_maintenance(self.bot.db)
-        after = await storage_counts(self.bot.db, interaction.guild_id)
         embed = discord.Embed(
             title="🧹 Storage Maintenance Complete",
             description=(
-                "Cleaned stale operational rows. Product/brand learning summaries "
-                "and active vote ledgers are preserved."
+                "Cleaned stale operational rows with bounded indexed batches. "
+                "Price history, exact Walmart offer memory, product identity, "
+                "feedback summaries/votes, and live duplicate guards were preserved.\n\n"
+                "Quota-safe mode intentionally skips before/after full row counts."
             ),
             color=discord.Color.green(),
         )
         embed.add_field(
-            name="Cleaned",
+            name="Changed rows",
             value=format_cleanup_result(result.log_fields()),
             inline=False,
         )
-        if interaction.guild_id is not None:
-            embed.add_field(
-                name="Server rows before",
-                value=format_count_rows(before),
-                inline=False,
-            )
-            embed.add_field(
-                name="Server rows after",
-                value=format_count_rows(after),
-                inline=False,
-            )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @storage_maintenance_now.error
@@ -176,6 +169,7 @@ async def build_storage_health_embed(db, guild_id: int) -> discord.Embed:
 
 
 async def storage_counts(db, guild_id: int | None) -> dict[str, int]:
+    """Explicit owner-requested diagnostics; never called by maintenance itself."""
     await ensure_deal_feedback_tables(db)
     await ensure_public_post_tables(db)
     await ensure_autoscan_history_table(db)
@@ -291,18 +285,4 @@ def format_cleanup_result(fields: dict[str, int]) -> str:
     return "\n".join(
         f"`{key}`: **{value}**"
         for key, value in fields.items()
-    )
-
-
-def format_count_rows(counts: dict[str, int]) -> str:
-    if not counts:
-        return "No server-specific counts available."
-    return (
-        f"feedback targets/events/votes: **{counts.get('feedback_targets', 0)} / "
-        f"{counts.get('feedback_events', 0)} / {counts.get('feedback_votes', 0)}**\n"
-        f"active/expired cache: **{counts.get('active_deals', 0)} / "
-        f"{counts.get('expired_deals', 0)}**\n"
-        f"posted/reserved public posts: **{counts.get('public_posts_posted', 0)} / "
-        f"{counts.get('public_posts_reserved', 0)}**\n"
-        f"legacy autoscan reports: **{counts.get('autoscan_reports', 0)}**"
     )

@@ -143,12 +143,13 @@ def test_batch_claim_uses_bounded_select_and_guarded_lease_update() -> None:
     asyncio.run(run())
 
 
-def test_recheck_cadence_prioritizes_public_alert_candidates_sustainably() -> None:
-    assert tiered_recheck_delay("verified_markdown", 69) == timedelta(hours=4)
-    assert tiered_recheck_delay("verified_markdown", 40) == timedelta(hours=12)
+def test_verified_recheck_cadence_is_daily_fallback() -> None:
+    assert tiered_recheck_delay("verified_markdown", 69) == timedelta(hours=24)
+    assert tiered_recheck_delay("verified_markdown", 40) == timedelta(hours=24)
     assert tiered_recheck_delay("verified_markdown", 20) == timedelta(hours=24)
     assert tiered_recheck_delay("verified_no_reference", 0) == timedelta(hours=24)
     assert tiered_recheck_delay("verified_under_threshold", 0) == timedelta(hours=24)
+    assert tiered_recheck_delay("verified_reference", 0) == timedelta(hours=24)
     assert tiered_recheck_delay("not_buyable", 0) == timedelta(hours=24)
 
 
@@ -233,7 +234,7 @@ def test_runtime_enters_bounded_drain_mode(monkeypatch) -> None:
         earliest, latest = await cursor.fetchone()
         earliest_dt = datetime.fromisoformat(earliest)
         latest_dt = datetime.fromisoformat(latest)
-        assert earliest_dt - datetime.now(timezone.utc) > timedelta(hours=11)
+        assert earliest_dt - datetime.now(timezone.utc) > timedelta(hours=23)
         assert latest_dt - earliest_dt < timedelta(minutes=1)
         await conn.close()
 

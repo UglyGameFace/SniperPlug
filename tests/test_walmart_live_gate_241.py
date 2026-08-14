@@ -11,9 +11,6 @@ from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     ensure_walmart_exact_verification_queue,
 )
-from sniperplug.services.walmart_page_circuit_queue import (
-    defer_due_page_recovery_for_open_circuit,
-)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,16 +57,13 @@ async def _insert_due_row(
     )
 
 
-def test_open_circuit_claim_cap_zero_blocks_page_rows_beyond_bounded_deferral() -> None:
+def test_open_circuit_claim_cap_zero_blocks_page_rows_without_rescheduling_them() -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
         db = FakeDatabase(conn)
         await ensure_walmart_exact_verification_queue(db)
         now = datetime.now(timezone.utc)
 
-        # Reproduce the live condition from PR #240 deployment: the page-recovery
-        # backlog is larger than the 64-row hygiene sweep. Six due rows therefore
-        # remain after one bounded defer pass.
         for index in range(70):
             await _insert_due_row(
                 conn,
@@ -87,23 +81,15 @@ def test_open_circuit_claim_cap_zero_blocks_page_rows_beyond_bounded_deferral() 
         )
         await conn.commit()
 
-        deferred = await defer_due_page_recovery_for_open_circuit(
-            conn,
-            now=now,
-            remaining_seconds=900,
-            limit=64,
-        )
-        assert deferred == 64
-
         cursor = await conn.execute(
             f"""
-            SELECT COUNT(*)
+            SELECT item_id, next_attempt_at
             FROM {QUEUE_TABLE}
-            WHERE status = 'page_retry' AND next_attempt_at <= ?
-            """,
-            (now.isoformat(),),
+            WHERE status = 'page_retry'
+            ORDER BY item_id
+            """
         )
-        assert (await cursor.fetchone())[0] == 6
+        before = await cursor.fetchall()
 
         claims = await claim_due_rows_batched(
             conn,
@@ -112,6 +98,16 @@ def test_open_circuit_claim_cap_zero_blocks_page_rows_beyond_bounded_deferral() 
             page_recovery_claim_cap=0,
         )
         assert [claim.item_id for claim in claims] == ["pending-api-work"]
+
+        cursor = await conn.execute(
+            f"""
+            SELECT item_id, next_attempt_at
+            FROM {QUEUE_TABLE}
+            WHERE status = 'page_retry'
+            ORDER BY item_id
+            """
+        )
+        assert await cursor.fetchall() == before
 
         cursor = await conn.execute(
             f"""
@@ -155,6 +151,8 @@ def test_production_bulk_runtime_disables_page_recovery_claim_lane_only_when_ope
     assert "PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
     assert "0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
     assert "page_recovery_claim_cap=page_recovery_claim_cap" in BULK_RUNTIME
+    assert "defer_due_page_recovery_for_open_circuit" not in BULK_RUNTIME
+    assert "page_circuit_reschedule_rows=0" in BULK_RUNTIME
     assert BULK_RUNTIME.index("page_circuit_remaining =") < BULK_RUNTIME.index(
         "page_recovery_claim_cap ="
     ) < BULK_RUNTIME.index("claim_due_rows_batched(")

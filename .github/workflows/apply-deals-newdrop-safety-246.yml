@@ -35,10 +35,10 @@ jobs:
                   raise SystemExit('compact card helper anchor missing')
               text = text.replace(helper_anchor, helper + helper_anchor, 1)
 
-          old = '''        for card in cards:\n            await interaction.followup.send(\n                embed=build_compact_deal_card_embed(card, verified=True),\n                ephemeral=True,\n            )\n'''
-          new = '''        for card in cards:\n            await interaction.followup.send(\n                embed=build_compact_deal_card_embed(\n                    card,\n                    verified=_is_verified_result_card(self.view.result, card),\n                ),\n                ephemeral=True,\n            )\n'''
+          old = '            await interaction.followup.send(embed=build_compact_deal_card_embed(card, verified=True), ephemeral=True)\n'
+          new = '''            await interaction.followup.send(\n                embed=build_compact_deal_card_embed(\n                    card,\n                    verified=_is_verified_result_card(self.view.result, card),\n                ),\n                ephemeral=True,\n            )\n'''
           if old not in text:
-              raise SystemExit('New / Drops compact rendering block missing')
+              raise SystemExit('current New / Drops compact rendering line missing')
           text = text.replace(old, new, 1)
           path.write_text(text)
           PY

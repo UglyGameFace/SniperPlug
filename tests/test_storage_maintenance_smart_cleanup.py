@@ -53,6 +53,24 @@ class MappingConnection:
         await self.inner.commit()
 
 
+class EmptyCursor:
+    async def fetchall(self):
+        return []
+
+
+class EmptyMaintenanceConnection:
+    def __init__(self):
+        self.commits = 0
+        self.executed_sql: list[str] = []
+
+    async def execute(self, sql, params=()):
+        self.executed_sql.append(" ".join(str(sql).split()))
+        return EmptyCursor()
+
+    async def commit(self):
+        self.commits += 1
+
+
 async def _noop_ensure(_db) -> None:
     return None
 
@@ -147,6 +165,27 @@ def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypat
         assert result.expired_store_cache == 1
         assert result.old_scan_runs == 1
         await conn.close()
+
+    asyncio.run(run())
+
+
+def test_empty_storage_maintenance_skips_operational_commit(monkeypatch) -> None:
+    async def run() -> None:
+        conn = EmptyMaintenanceConnection()
+        db = FakeDatabase(conn)
+
+        monkeypatch.setattr(maintenance, "ensure_deal_feedback_tables", _noop_ensure)
+        monkeypatch.setattr(maintenance, "ensure_public_post_tables", _noop_ensure)
+        monkeypatch.setattr(maintenance, "ensure_autoscan_history_table", _noop_ensure)
+        monkeypatch.setattr(maintenance, "prune_active_deal_history", _noop_prune)
+        monkeypatch.setattr(maintenance, "prune_walmart_recheck_audit", _noop_prune)
+
+        result = await maintenance.run_storage_maintenance(db, cleanup_batch_size=50)
+
+        assert result.total_changed == 0
+        assert conn.commits == 0
+        assert conn.executed_sql
+        assert all(sql.startswith("SELECT rowid AS __sniperplug_rowid") for sql in conn.executed_sql)
 
     asyncio.run(run())
 

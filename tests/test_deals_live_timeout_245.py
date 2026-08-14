@@ -12,6 +12,7 @@ from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.cogs.unified_deal_scanner import (
     DEAL_MODE_VIEW_TIMEOUT_SECONDS,
     DealSearchModeView,
+    _is_verified_result_card,
     build_compact_deal_card_embed,
     build_deal_mode_menu_embed,
     send_deal_mode_controls,
@@ -270,3 +271,21 @@ def test_result_menu_is_compact_instead_of_repeating_a_large_modes_legend() -> N
     assert len(embed.description or "") < 500
     assert all(field.name != "Modes" for field in embed.fields)
     assert any(field.name == "🟨 Private mode" for field in embed.fields)
+
+
+def test_new_drop_verification_status_uses_actual_verified_result_membership() -> None:
+    verified = DealCard(
+        embed=discord.Embed(title="Verified"),
+        url="https://example.com/verified",
+        label="Verified",
+    )
+    review = DealCard(
+        embed=discord.Embed(title="Review"),
+        url="https://example.com/review",
+        label="Review",
+    )
+    result = SimpleNamespace(verified_cards=[verified])
+
+    assert _is_verified_result_card(result, verified) is True
+    assert _is_verified_result_card(result, review) is False
+    assert _is_verified_result_card(None, verified) is False

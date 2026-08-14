@@ -73,7 +73,7 @@ def test_queue_health_separates_transient_retries_from_identity_blocks() -> None
     assert health.delayed_recovery_retries == 120
     assert health.identity_blocked == 290
     assert health.stale == 5
-    assert "due now **0**" in health.summary_line()
+    assert "due backlog now **0**" in health.summary_line()
     assert "new/retry **0**" in health.summary_line()
     assert "page recovery **0**" in health.summary_line()
     assert "scheduled rechecks **0**" in health.summary_line()

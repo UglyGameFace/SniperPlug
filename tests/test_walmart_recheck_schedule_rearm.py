@@ -40,7 +40,7 @@ def test_legacy_hourly_rechecks_are_deferred_only_when_not_truly_due() -> None:
                 "old-strong",
                 "verified_markdown",
                 6000,
-                (now - timedelta(hours=5)).isoformat(),
+                (now - timedelta(hours=25)).isoformat(),
             ),
             (
                 "fresh-work",
@@ -60,7 +60,7 @@ def test_legacy_hourly_rechecks_are_deferred_only_when_not_truly_due() -> None:
                 """,
                 (
                     item_id,
-                    (now - timedelta(days=1)).isoformat(),
+                    (now - timedelta(days=2)).isoformat(),
                     now.isoformat(),
                     status,
                     discount_bps,
@@ -80,7 +80,7 @@ def test_legacy_hourly_rechecks_are_deferred_only_when_not_truly_due() -> None:
         next_by_id = {item_id: value for item_id, value in await cursor.fetchall()}
 
         assert next_by_id["recent-strong"] == (
-            now + timedelta(hours=3)
+            now + timedelta(hours=23)
         ).isoformat()
         assert next_by_id["old-strong"] == old_due
         assert next_by_id["fresh-work"] == old_due

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import discord
+
 from sniperplug.cogs.auto_discovery import (
     DISCOVERY_CHUNK_ROUTES,
     chunk_discovery_queries,
@@ -85,7 +87,14 @@ def test_discover_notes_prioritize_exact_queue_and_hide_internal_chatter() -> No
 
 
 def test_discover_public_selection_is_private_by_default_and_capped_when_opted_in() -> None:
-    cards = [DealCard(embed=None, url=f"https://example.com/{index}", label=str(index)) for index in range(5)]
+    cards = [
+        DealCard(
+            embed=discord.Embed(title=str(index)),
+            url=f"https://example.com/{index}",
+            label=str(index),
+        )
+        for index in range(5)
+    ]
 
     assert select_public_discovery_cards(
         cards,

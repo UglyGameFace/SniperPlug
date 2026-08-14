@@ -12,6 +12,7 @@ Finish the existing `/deals` + `/discover` hardening task. Do not start a new im
 - ACK failures were swallowed without task-specific component diagnostics.
 - Normal `/deals` output reused dense Walmart proof/audit cards intended for deeper verification surfaces.
 - `New / Drops` can contain both verified cards and private review/search leads, so presentation status must come from actual `DealFinderResult.verified_cards` membership rather than a generic card flag.
+- Final `/discover` conflict reinspection found no competing implementation. The #244 regression `test_discover_queue_readback_only_allows_current_search_item_ids` explicitly rejects unrelated global queue item `9999`, excludes a foreground duplicate, and admits only a current-search overflow item. No additional code patch is justified without a live failure.
 
 ## Implemented follow-up
 - Each result menu receives a unique token embedded in every component custom ID.
@@ -35,10 +36,11 @@ Finish the existing `/deals` + `/discover` hardening task. Do not start a new im
 - PR #246 squash merge: passed, code commit `961956325eaf7ac45a3cf2b5c4acbac018488d55`.
 - Post-merge `main`: all three canonical checks passed.
 - Discloud live deployment: confirmed by the new `sniperplug.cogs.unified_deal_scanner | Deal result interaction acknowledged custom_id=deal_mode:<token>:markdown` runtime log.
+- Final `/discover` code/test reinspection: current-search item-ID isolation is still present and directly regression-tested; no duplicate or stale alternative path was found.
 
 ## Remaining Definition of Done
 1. Complete live `/deals search:phone mount` sweep: every enabled mode button responds; Fresh Scan responds; one control panel remains current; compact embeds are readable; private leads remain private.
-2. Live `/discover` still returns only current-job item IDs as established by PR #244.
+2. Live `/discover coverage:Quick` completes and its private/final result contains only items from that job's current search set; no unrelated global-queue product may leak in.
 3. Only then close SP-DEALS-DISCOVER-HARDENING-244.
 
 ## Suspended task

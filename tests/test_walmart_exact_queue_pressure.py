@@ -66,12 +66,15 @@ def test_bounded_pressure_returns_only_scheduling_counts() -> None:
     assert conn.sql.count("LIMIT ?") == 4
     assert conn.params[3] == 64
     assert conn.params[7] == 64
-    assert conn.params[14] == 600
-    assert conn.params[16] == 64
-    assert conn.params[13] < conn.params[12] < conn.params[11] < conn.params[8]
+    assert conn.params[23] == 600
+    assert conn.params[25] == 64
+    assert conn.params[16] < conn.params[12] < conn.params[8] < conn.params[0]
     assert "status IN ('verified_markdown')" in conn.sql
     assert "'verified_under_threshold', 'verified_reference'" in conn.sql
     assert "'verified_no_reference', 'not_buyable'" in conn.sql
+    assert "verified_at IS NULL" in conn.sql
+    assert "INDEXED BY idx_walmart_exact_detail_queue_status_due" in conn.sql
+    assert "INDEXED BY idx_walmart_exact_detail_queue_status_verified_due" in conn.sql
     assert "SELECT *" not in conn.sql.upper()
     assert "identity_mismatch" not in conn.sql
 
@@ -83,9 +86,9 @@ def test_exact_worker_can_request_a_tighter_all_lane_cap() -> None:
 
     assert conn.params[3] == 64
     assert conn.params[7] == 64
-    assert conn.params[14] == 64
-    assert conn.params[16] == 64
-    assert conn.params[13] < conn.params[12] < conn.params[11] < conn.params[8]
+    assert conn.params[23] == 64
+    assert conn.params[25] == 64
+    assert conn.params[16] < conn.params[12] < conn.params[8] < conn.params[0]
 
 
 def test_bounded_pressure_summary_does_not_claim_unmeasured_totals() -> None:
@@ -115,7 +118,7 @@ def test_background_workers_never_call_complete_queue_health() -> None:
     assert "cap=EXACT_WORKER_PRESSURE_CAP" in BULK_RUNTIME
 
 
-def test_pressure_query_is_capped_to_policy_useful_work() -> None:
+def test_pressure_query_is_capped_and_index_seekable() -> None:
     assert PRESSURE.count("LIMIT ?") == 4
     assert "DEFAULT_PRESSURE_CAP = 600" in PRESSURE
     assert "FRESH_PRESSURE_CAP = 64" in PRESSURE
@@ -127,3 +130,7 @@ def test_pressure_query_is_capped_to_policy_useful_work() -> None:
     assert "VERIFIED_LOW_SIGNAL_RECHECK_STATUSES" in PRESSURE
     assert "verified_at IS NULL" in PRESSURE
     assert "lease_until >= ?" in PRESSURE
+    assert "STATUS_DUE_INDEX" in PRESSURE
+    assert "STATUS_VERIFIED_DUE_INDEX" in PRESSURE
+    assert "INDEXED BY {STATUS_DUE_INDEX}" in PRESSURE
+    assert "INDEXED BY {STATUS_VERIFIED_DUE_INDEX}" in PRESSURE

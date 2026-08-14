@@ -22,7 +22,11 @@ class WalmartGuildFanoutDecision:
 
 
 async def ensure_walmart_fanout_decision_table(db: Any) -> None:
-    """Install the small provenance schema once per live DB connection."""
+    """Install the small provenance schema once per live DB connection.
+
+    The caller owns the surrounding commit so this helper composes with fanout's
+    existing one-commit schema initialization and with the bulk decision upsert.
+    """
 
     conn = db.require_conn()
     if _SCHEMA_CONNECTIONS.get(id(conn)) is conn:
@@ -44,7 +48,6 @@ async def ensure_walmart_fanout_decision_table(db: Any) -> None:
         f"CREATE INDEX IF NOT EXISTS idx_{DECISION_TABLE}_guild_time "
         f"ON {DECISION_TABLE} (guild_id, decided_at DESC)"
     )
-    await conn.commit()
     _SCHEMA_CONNECTIONS[id(conn)] = conn
 
 
@@ -99,25 +102,34 @@ async def load_walmart_fanout_decisions(
     guild_id: int,
     event_keys: Iterable[str],
 ) -> dict[str, WalmartGuildFanoutDecision]:
-    """Load historical destination outcomes only for the inspected event keys."""
+    """Read historical outcomes for inspected events without mutating storage.
+
+    Deployments can briefly run health before fanout has created the new table.
+    Treat only that expected missing-table case as an empty legacy history; other
+    database errors remain visible to the caller.
+    """
 
     keys = tuple(dict.fromkeys(str(key or "") for key in event_keys if str(key or "")))
     if not keys:
         return {}
-    await ensure_walmart_fanout_decision_table(db)
     conn = db.require_conn()
     result: dict[str, WalmartGuildFanoutDecision] = {}
     for offset in range(0, len(keys), 250):
         chunk = keys[offset : offset + 250]
         placeholders = ",".join("?" for _ in chunk)
-        cursor = await conn.execute(
-            f"""
-            SELECT event_key, guild_id, outcome, threshold, detail, decided_at
-            FROM {DECISION_TABLE}
-            WHERE guild_id = ? AND event_key IN ({placeholders})
-            """,
-            (str(int(guild_id)), *chunk),
-        )
+        try:
+            cursor = await conn.execute(
+                f"""
+                SELECT event_key, guild_id, outcome, threshold, detail, decided_at
+                FROM {DECISION_TABLE}
+                WHERE guild_id = ? AND event_key IN ({placeholders})
+                """,
+                (str(int(guild_id)), *chunk),
+            )
+        except Exception as exc:
+            if "no such table" in str(exc).lower() and DECISION_TABLE in str(exc):
+                return {}
+            raise
         for row in await cursor.fetchall():
             event_key = str(_row_get(row, "event_key", 0) or "")
             if not event_key:

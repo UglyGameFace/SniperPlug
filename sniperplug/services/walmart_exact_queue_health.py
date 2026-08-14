@@ -5,7 +5,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sniperplug.services.walmart_exact_queue_drain import (
-    VERIFIED_RECHECK_FALLBACK_HOURS,
+    VERIFIED_LOW_SIGNAL_RECHECK_STATUSES,
+    VERIFIED_MARKDOWN_RECHECK_STATUSES,
+    VERIFIED_REFERENCE_RECHECK_STATUSES,
+    verified_recheck_cutoffs,
 )
 from sniperplug.services.walmart_exact_verification_queue import QUEUE_RETENTION_DAYS
 
@@ -21,6 +24,14 @@ RECHECK_STATUSES = (
     "verified_reference",
     "not_buyable",
 )
+
+
+def _sql_statuses(statuses: tuple[str, ...]) -> str:
+    return ", ".join(f"'{status}'" for status in statuses)
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 @dataclass(frozen=True)
@@ -58,11 +69,13 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     """Return queue state using the same retention and lease rules as the worker.
 
     ``due_now`` includes both first-time/retry work and truly claimable scheduled
-    exact rechecks. A legacy 4/12-hour verified timestamp is not reported due
-    until the shared 24-hour fallback age has elapsed. Material catalog changes
-    are ``pending`` and therefore remain immediately actionable. Terminal identity
-    failures stay fail-closed and are never actionable. ``verifying`` counts only
-    actively leased rows; expired leases return to the appropriate due bucket.
+    exact rechecks. Legacy early timestamps are ignored until each status reaches
+    its shared fallback age: one day for verified markdowns, three days for
+    reference/under-threshold states, and seven days for no-reference/unavailable
+    states. Material catalog changes are ``pending`` and remain immediately
+    actionable. Terminal identity failures stay fail-closed and are never
+    actionable. ``verifying`` counts only actively leased rows; expired leases
+    return to the appropriate due bucket.
     """
 
     if db is None:
@@ -71,9 +84,24 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     discovery_cutoff = (now - timedelta(days=QUEUE_RETENTION_DAYS)).isoformat()
-    verified_recheck_cutoff = (
-        now - timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
-    ).isoformat()
+    (
+        markdown_recheck_cutoff,
+        reference_recheck_cutoff,
+        low_signal_recheck_cutoff,
+    ) = verified_recheck_cutoffs(now)
+    markdown_statuses = _sql_statuses(VERIFIED_MARKDOWN_RECHECK_STATUSES)
+    reference_statuses = _sql_statuses(VERIFIED_REFERENCE_RECHECK_STATUSES)
+    low_signal_statuses = _sql_statuses(VERIFIED_LOW_SIGNAL_RECHECK_STATUSES)
+    reference_cutoff_sql = _sql_literal(reference_recheck_cutoff)
+    low_signal_cutoff_sql = _sql_literal(low_signal_recheck_cutoff)
+    verified_guard = f"""
+        (
+            verified_at IS NULL
+            OR (status IN ({markdown_statuses}) AND verified_at <= ?)
+            OR (status IN ({reference_statuses}) AND verified_at <= {reference_cutoff_sql})
+            OR (status IN ({low_signal_statuses}) AND verified_at <= {low_signal_cutoff_sql})
+        )
+    """
     try:
         cursor = await conn.execute(
             f"""
@@ -97,8 +125,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                              'verified_reference',
                              'not_buyable'
                          )
-                         OR verified_at IS NULL
-                         OR verified_at <= ?
+                         OR {verified_guard}
                      )
                     THEN 1 ELSE 0 END) AS due_now,
                 SUM(CASE
@@ -124,7 +151,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                      )
                      AND next_attempt_at <= ?
                      AND (lease_until IS NULL OR lease_until < ?)
-                     AND (verified_at IS NULL OR verified_at <= ?)
+                     AND {verified_guard}
                     THEN 1 ELSE 0 END) AS recheck_due_now,
                 SUM(CASE
                     WHEN is_recent = 1
@@ -163,14 +190,14 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 discovery_cutoff,
                 now_iso,
                 now_iso,
-                verified_recheck_cutoff,
+                markdown_recheck_cutoff,
                 now_iso,
                 now_iso,
                 now_iso,
                 now_iso,
                 now_iso,
                 now_iso,
-                verified_recheck_cutoff,
+                markdown_recheck_cutoff,
                 now_iso,
                 now_iso,
                 now_iso,

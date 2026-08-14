@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import discord
 
 from sniperplug.cogs import deal_scanner
@@ -16,7 +18,6 @@ from sniperplug.services.active_deal_cache import (
     list_cached_active_deals,
 )
 from sniperplug.services.deal_finder_engine import DealFinderResult, find_walmart_deals_for_query
-from sniperplug.services.deal_finder_telemetry import top_route_lines
 from sniperplug.services.deal_search_modes import (
     DEAL_SEARCH_MODES,
     MODE_BEST,
@@ -41,6 +42,8 @@ from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 
 
 DEAL_MODE_VIEW_TIMEOUT_SECONDS = 15 * 60
+
+log = logging.getLogger(__name__)
 
 
 class UnifiedDealScannerCog(DealScannerCog):
@@ -97,7 +100,12 @@ class UnifiedDealScannerCog(DealScannerCog):
         simple_mode: bool,
         mode: str,
         force_refresh: bool = False,
+        replace_controls: bool = False,
+        menu_token: str | None = None,
+        owner_id: int | None = None,
     ) -> None:
+        menu_token = menu_token or str(interaction.id)[-12:]
+        owner_id = owner_id or getattr(interaction.user, "id", None)
         provider = provider_registry.get("walmart")
         if provider is None:
             await interaction.followup.send("Walmart search is not connected yet.", ephemeral=True)
@@ -149,6 +157,8 @@ class UnifiedDealScannerCog(DealScannerCog):
             ranked=ranked,
             cached_rows=cached_rows,
             freshness=freshness,
+            menu_token=menu_token,
+            owner_id=owner_id,
         )
 
         if ranked.has_verified:
@@ -161,7 +171,7 @@ class UnifiedDealScannerCog(DealScannerCog):
             )
             deal_scanner.add_public_posting_field(summary, public_result)
             summary.add_field(name="Product links", value="Each verified card includes its own **App/Web** and **Browser Search** links.", inline=False)
-            await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.verified], ephemeral=True)
+            await send_summary_and_embeds(interaction, summary=summary, embeds=[build_compact_deal_card_embed(card, verified=True) for card in ranked.verified], ephemeral=True)
             if ranked.has_review:
                 await send_private_card_batches(
                     interaction,
@@ -169,17 +179,17 @@ class UnifiedDealScannerCog(DealScannerCog):
                     content="🟨 Extra review/raw/flip/scout leads — private only. Staff can manually publish one after checking it.",
                     view=ManualReviewShareView(ranked.review),
                 )
-            await send_deal_mode_controls(interaction, view, ranked, freshness)
+            await send_deal_mode_controls(interaction, view, ranked, freshness, replace_existing=replace_controls)
             return
 
         if ranked.has_review:
-            await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.review], ephemeral=True)
-            await send_deal_mode_controls(interaction, view, ranked, freshness)
+            await send_summary_and_embeds(interaction, summary=summary, embeds=[build_compact_deal_card_embed(card, verified=False) for card in ranked.review], ephemeral=True)
+            await send_deal_mode_controls(interaction, view, ranked, freshness, replace_existing=replace_controls)
             return
 
         summary.add_field(name="Nothing useful found yet", value=deal_scanner.no_match_help(query, starting_discount, page, simple_mode), inline=False)
         await interaction.followup.send(embed=sanitize_embed(summary), ephemeral=True)
-        await send_deal_mode_controls(interaction, view, ranked, freshness)
+        await send_deal_mode_controls(interaction, view, ranked, freshness, replace_existing=replace_controls)
 
 
 class DealSearchModeView(discord.ui.View):
@@ -199,6 +209,8 @@ class DealSearchModeView(discord.ui.View):
         ranked: ModeRankedCards | None = None,
         cached_rows: list[CachedDealRow] | None = None,
         freshness: ScanFreshness | None = None,
+        menu_token: str | None = None,
+        owner_id: int | None = None,
     ):
         super().__init__(timeout=DEAL_MODE_VIEW_TIMEOUT_SECONDS)
         self.cog = cog
@@ -214,18 +226,75 @@ class DealSearchModeView(discord.ui.View):
         self.ranked = ranked
         self.cached_rows = cached_rows or []
         self.freshness = freshness
-        self.add_item(DealModeButton(MODE_BEST, row=0, disabled=self.mode == MODE_BEST))
-        self.add_item(DealModeButton(MODE_POPULAR, row=0, disabled=self.mode == MODE_POPULAR))
-        self.add_item(DealModeButton(MODE_HIDDEN, row=0, disabled=self.mode == MODE_HIDDEN))
-        self.add_item(DealModeButton(MODE_CHEAPEST, row=1, disabled=self.mode == MODE_CHEAPEST))
-        self.add_item(DealModeButton(MODE_MARKDOWN, row=1, disabled=self.mode == MODE_MARKDOWN))
-        self.add_item(RefreshDealModeButton(row=1))
-        self.add_item(CachedActiveButton(row=2, disabled=not bool(self.cached_rows)))
-        self.add_item(NewSinceScanButton(row=2, disabled=not bool(self.freshness and (self.freshness.new_count or self.freshness.price_drop_count))))
+        self.menu_token = menu_token or "legacy"
+        self.owner_id = owner_id
+        self.add_item(DealModeButton(MODE_BEST, row=0, active=self.mode == MODE_BEST, menu_token=self.menu_token))
+        self.add_item(DealModeButton(MODE_POPULAR, row=0, active=self.mode == MODE_POPULAR, menu_token=self.menu_token))
+        self.add_item(DealModeButton(MODE_HIDDEN, row=0, active=self.mode == MODE_HIDDEN, menu_token=self.menu_token))
+        self.add_item(DealModeButton(MODE_CHEAPEST, row=1, active=self.mode == MODE_CHEAPEST, menu_token=self.menu_token))
+        self.add_item(DealModeButton(MODE_MARKDOWN, row=1, active=self.mode == MODE_MARKDOWN, menu_token=self.menu_token))
+        self.add_item(RefreshDealModeButton(row=1, menu_token=self.menu_token))
+        self.add_item(CachedActiveButton(row=2, disabled=not bool(self.cached_rows), menu_token=self.menu_token))
+        self.add_item(NewSinceScanButton(row=2, disabled=not bool(self.freshness and (self.freshness.new_count or self.freshness.price_drop_count)), menu_token=self.menu_token))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if self.owner_id is not None and getattr(interaction.user, "id", None) != self.owner_id:
+            await deal_scanner.safe_send_interaction(
+                interaction,
+                "Run your own `/deals` search to use these controls.",
+                ephemeral=True,
+            )
+            return False
+        if interaction.response.is_done():
+            return True
+        try:
+            await interaction.response.defer(thinking=False)
+            log.info(
+                "Deal result interaction acknowledged custom_id=%s interaction_id=%s message_id=%s mode=%s",
+                (getattr(interaction, "data", None) or {}).get("custom_id"),
+                getattr(interaction, "id", None),
+                getattr(getattr(interaction, "message", None), "id", None),
+                self.mode,
+            )
+            return True
+        except discord.InteractionResponded:
+            return True
+        except (discord.NotFound, discord.HTTPException) as exc:
+            log.warning(
+                "Deal result interaction acknowledgement failed custom_id=%s interaction_id=%s message_id=%s mode=%s error=%r",
+                (getattr(interaction, "data", None) or {}).get("custom_id"),
+                getattr(interaction, "id", None),
+                getattr(getattr(interaction, "message", None), "id", None),
+                self.mode,
+                exc,
+            )
+            return False
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+        /,
+    ) -> None:
+        log.error(
+            "Deal result control failed custom_id=%s interaction_id=%s message_id=%s mode=%s",
+            getattr(item, "custom_id", None),
+            getattr(interaction, "id", None),
+            getattr(getattr(interaction, "message", None), "id", None),
+            self.mode,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        await deal_scanner.safe_send_interaction(
+            interaction,
+            "That result button hit an internal error. It was logged; run `/deals` again if the retry also fails.",
+            ephemeral=True,
+        )
 
     async def show_mode(self, interaction: discord.Interaction, mode: str, *, refresh: bool = False) -> None:
-        if not await deal_scanner.safe_defer(interaction, ephemeral=True, thinking=True):
-            return
+        if not interaction.response.is_done():
+            if not await deal_scanner.safe_defer(interaction, ephemeral=False, thinking=False):
+                return
         if refresh or self.result is None:
             await self.cog._send_unified_deal_search(
                 interaction,
@@ -239,6 +308,9 @@ class DealSearchModeView(discord.ui.View):
                 simple_mode=self.simple_mode,
                 mode=mode,
                 force_refresh=refresh,
+                replace_controls=True,
+                menu_token=self.menu_token,
+                owner_id=self.owner_id,
             )
             return
 
@@ -266,10 +338,12 @@ class DealSearchModeView(discord.ui.View):
             ranked=ranked,
             cached_rows=self.cached_rows,
             freshness=self.freshness,
+            menu_token=self.menu_token,
+            owner_id=self.owner_id,
         )
         if ranked.has_verified:
             summary.add_field(name="Mode switched", value="Re-ranked the same scan results without spending another API search.", inline=False)
-            await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.verified], ephemeral=True)
+            await send_summary_and_embeds(interaction, summary=summary, embeds=[build_compact_deal_card_embed(card, verified=True) for card in ranked.verified], ephemeral=True)
             if ranked.has_review:
                 await send_private_card_batches(
                     interaction,
@@ -277,73 +351,127 @@ class DealSearchModeView(discord.ui.View):
                     content="🟨 Extra review/raw/flip/scout leads — private only. Staff can manually publish one after checking it.",
                     view=ManualReviewShareView(ranked.review),
                 )
-            await send_deal_mode_controls(interaction, view, ranked, self.freshness)
+            await send_deal_mode_controls(interaction, view, ranked, self.freshness, replace_existing=True)
             return
         if ranked.has_review:
-            await send_summary_and_embeds(interaction, summary=summary, embeds=[card.embed for card in ranked.review], ephemeral=True)
-            await send_deal_mode_controls(interaction, view, ranked, self.freshness)
+            await send_summary_and_embeds(interaction, summary=summary, embeds=[build_compact_deal_card_embed(card, verified=False) for card in ranked.review], ephemeral=True)
+            await send_deal_mode_controls(interaction, view, ranked, self.freshness, replace_existing=True)
             return
         summary.add_field(name="No cards for this mode", value="Try another mode or refresh the search.", inline=False)
         await interaction.followup.send(embed=sanitize_embed(summary), ephemeral=True)
-        await send_deal_mode_controls(interaction, view, ranked, self.freshness)
+        await send_deal_mode_controls(interaction, view, ranked, self.freshness, replace_existing=True)
 
 
 class DealModeButton(discord.ui.Button):
-    def __init__(self, mode: str, *, row: int, disabled: bool = False):
+    def __init__(self, mode: str, *, row: int, active: bool = False, menu_token: str):
         info = DEAL_SEARCH_MODES[mode]
-        super().__init__(label=info.label, emoji=info.emoji, style=discord.ButtonStyle.primary if mode == MODE_BEST else discord.ButtonStyle.secondary, row=row, disabled=disabled, custom_id=f"deal_mode:{mode}")
+        super().__init__(
+            label=info.label,
+            emoji=info.emoji,
+            style=discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary,
+            row=row,
+            disabled=active,
+            custom_id=f"deal_mode:{menu_token}:{mode}",
+        )
         self.mode = mode
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(self.view, DealSearchModeView):
-            await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
+            await deal_scanner.safe_send_interaction(interaction, "This result menu is no longer active.", ephemeral=True)
             return
         await self.view.show_mode(interaction, self.mode)
 
 
 class RefreshDealModeButton(discord.ui.Button):
-    def __init__(self, *, row: int):
-        super().__init__(label="Fresh Scan", emoji="🔄", style=discord.ButtonStyle.secondary, row=row, custom_id="deal_mode:refresh")
+    def __init__(self, *, row: int, menu_token: str):
+        super().__init__(
+            label="Fresh Scan",
+            emoji="🔄",
+            style=discord.ButtonStyle.secondary,
+            row=row,
+            custom_id=f"deal_mode:{menu_token}:refresh",
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(self.view, DealSearchModeView):
-            await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
+            await deal_scanner.safe_send_interaction(interaction, "This result menu is no longer active.", ephemeral=True)
             return
         await self.view.show_mode(interaction, self.view.mode, refresh=True)
 
 
 class CachedActiveButton(discord.ui.Button):
-    def __init__(self, *, row: int, disabled: bool = False):
-        super().__init__(label="Cached Active", emoji="⚡", style=discord.ButtonStyle.success, row=row, disabled=disabled, custom_id="deal_mode:cached_active")
+    def __init__(self, *, row: int, disabled: bool = False, menu_token: str):
+        super().__init__(
+            label="Cached Active",
+            emoji="⚡",
+            style=discord.ButtonStyle.success,
+            row=row,
+            disabled=disabled,
+            custom_id=f"deal_mode:{menu_token}:cached_active",
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(self.view, DealSearchModeView):
-            await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
+            await deal_scanner.safe_send_interaction(interaction, "This result menu is no longer active.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=sanitize_embed(build_cached_active_embed(self.view.query, self.view.cached_rows)), ephemeral=True)
+        await interaction.followup.send(
+            embed=sanitize_embed(build_cached_active_embed(self.view.query, self.view.cached_rows)),
+            ephemeral=True,
+        )
 
 
 class NewSinceScanButton(discord.ui.Button):
-    def __init__(self, *, row: int, disabled: bool = False):
-        super().__init__(label="New / Drops", emoji="🆕", style=discord.ButtonStyle.danger, row=row, disabled=disabled, custom_id="deal_mode:new_since_scan")
+    def __init__(self, *, row: int, disabled: bool = False, menu_token: str):
+        super().__init__(
+            label="New / Drops",
+            emoji="🆕",
+            style=discord.ButtonStyle.danger,
+            row=row,
+            disabled=disabled,
+            custom_id=f"deal_mode:{menu_token}:new_since_scan",
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if not isinstance(self.view, DealSearchModeView) or self.view.freshness is None:
-            await interaction.response.send_message("This result menu is no longer active.", ephemeral=True)
-            return
-        if not await deal_scanner.safe_defer(interaction, ephemeral=True, thinking=True):
+            await deal_scanner.safe_send_interaction(interaction, "This result menu is no longer active.", ephemeral=True)
             return
         freshness = self.view.freshness
         cards = [*freshness.price_drop_cards[:5], *freshness.new_cards[:5]][:5]
-        await interaction.followup.send(embed=sanitize_embed(build_new_since_scan_embed(self.view.query, freshness)), ephemeral=True)
-        if not cards:
-            return
+        await interaction.followup.send(
+            embed=sanitize_embed(build_new_since_scan_embed(self.view.query, freshness)),
+            ephemeral=True,
+        )
         for card in cards:
-            await interaction.followup.send(embed=sanitize_embed(card.embed), ephemeral=True)
+            await interaction.followup.send(
+                embed=build_compact_deal_card_embed(
+                    card,
+                    verified=_is_verified_result_card(self.view.result, card),
+                ),
+                ephemeral=True,
+            )
 
 
-async def send_deal_mode_controls(interaction: discord.Interaction, view: DealSearchModeView, ranked: ModeRankedCards, freshness: ScanFreshness | None = None) -> None:
-    await interaction.followup.send(embed=sanitize_embed(build_deal_mode_menu_embed(view.query, ranked, freshness)), view=view, ephemeral=True)
+async def send_deal_mode_controls(
+    interaction: discord.Interaction,
+    view: DealSearchModeView,
+    ranked: ModeRankedCards,
+    freshness: ScanFreshness | None = None,
+    *,
+    replace_existing: bool = False,
+) -> None:
+    embed = sanitize_embed(build_deal_mode_menu_embed(view.query, ranked, freshness))
+    if replace_existing:
+        try:
+            await interaction.edit_original_response(embed=embed, view=view)
+            return
+        except (discord.NotFound, discord.HTTPException) as exc:
+            log.warning(
+                "Deal result menu edit failed; sending replacement menu interaction_id=%s message_id=%s error=%r",
+                getattr(interaction, "id", None),
+                getattr(getattr(interaction, "message", None), "id", None),
+                exc,
+            )
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 async def send_private_card_batches(
@@ -367,7 +495,7 @@ async def send_private_card_batches(
         await send_followup_with_optional_view(
             interaction,
             content=content if index == 0 else None,
-            embeds=[sanitize_embed(card.embed) for card in batch],
+            embeds=[build_compact_deal_card_embed(card, verified=False) for card in batch],
             view=view if index == len(batches) - 1 else None,
             ephemeral=True,
         )
@@ -384,94 +512,250 @@ def add_deal_feed_controls_field(embed: discord.Embed, *, suppressed_count: int 
     embed.add_field(name="🎛️ Deal Feed Controls", value="\n".join(lines)[:1024], inline=False)
 
 
-def build_deal_mode_menu_embed(query: str, ranked: ModeRankedCards, freshness: ScanFreshness | None = None) -> discord.Embed:
+def build_deal_mode_menu_embed(
+    query: str,
+    ranked: ModeRankedCards,
+    freshness: ScanFreshness | None = None,
+) -> discord.Embed:
     mode = ranked.mode
-    freshness_line = ""
+    shown = len(ranked.verified) + len(ranked.review)
+    changes = ""
     if freshness:
-        freshness_line = f"\nNew: **{freshness.new_count}** • Price drops: **{freshness.price_drop_count}** • Repeats: **{freshness.repeat_count}**"
+        changes = f" • 🆕 {freshness.new_count} new • 📉 {freshness.price_drop_count} drops"
     embed = discord.Embed(
-        title=f"⚙️ Deal result menu • {mode.display_name}",
+        title=f"🎛️ Results • {mode.display_name}",
         description=(
-            f"Search: **{query}**\n"
-            f"Current mode: **{mode.label}**{freshness_line}\n\n"
-            "Tap a mode below to re-rank these same scan results. "
-            "**Fresh Scan** bypasses the short cache and spends another API pass."
+            f"**{query}** • **{shown} shown**{changes}\n"
+            f"{mode.emoji} **{mode.label}:** {mode.description}\n\n"
+            "Choose another mode below. **Fresh Scan** checks Walmart live again; the other modes reuse this scan."
         ),
         color=discord.Color.blurple() if mode.public_safe else discord.Color.dark_gold(),
     )
-    embed.add_field(
-        name="Modes",
-        value=(
-            "🔥 **Best Picks** — balanced default\n"
-            "🏷️ **Popular Brands** — known brands/trusted sellers first\n"
-            "🧪 **Hidden Gems** — offbrand/scout/review-only leads\n"
-            "💸 **Cheapest** — lowest current price first\n"
-            "📉 **Biggest Markdown** — strongest verified markdowns\n"
-            "⚡ **Cached Active** — recently seen active deals, no API pass\n"
-            "🆕 **New / Drops** — only brand-new or lower-price cards from this scan"
-        ),
-        inline=False,
-    )
     if not mode.public_safe:
         embed.add_field(
-            name="Private review mode",
-            value="Hidden Gem results are broad and stay private unless staff manually shares one.",
+            name="🟨 Private mode",
+            value="Hidden Gems can include review/search leads. They never become public deal proof by themselves.",
             inline=False,
         )
-    embed.set_footer(text="Short scan cache speeds repeats. Fresh Scan bypasses cache so new glitches still get checked.")
+    embed.set_footer(text="The selected mode is highlighted and disabled. One control panel stays current.")
     return embed
 
 
-def build_deal_finder_summary(result: DealFinderResult, *, ranked: ModeRankedCards | None = None, freshness: ScanFreshness | None = None) -> discord.Embed:
-    review_count = len(result.review_candidates.cards)
-    scout_count = getattr(result, "scout_lead_count", 0)
-    mode = ranked.mode if ranked else DEAL_SEARCH_MODES[MODE_BEST]
+def _compact_lines(
+    value: str,
+    keywords: tuple[str, ...],
+    *,
+    limit: int = 7,
+    fallback_to_all: bool = True,
+) -> str:
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    selected = [line for line in lines if any(keyword in line.lower() for keyword in keywords)]
+    if not selected and fallback_to_all:
+        selected = lines
+    return "\n".join(selected[:limit])[:1024] or "—"
+
+
+def _source_field(embed: discord.Embed, *needles: str):
+    for field in embed.fields:
+        name = str(field.name or "").lower()
+        if any(needle in name for needle in needles):
+            return field
+    return None
+
+
+def _compact_product_title(source_title: str | None, fallback: str) -> str:
+    title = " ".join(str(source_title or fallback or "Walmart item").split())
+    if " • " in title:
+        prefix, product = title.split(" • ", 1)
+        prefix_key = prefix.lower()
+        if any(
+            marker in prefix_key
+            for marker in ("api-derived", "search match", "review candidate", "flip/value", "verified")
+        ):
+            title = product
+    if len(title) > 90:
+        title = title[:89].rstrip() + "…"
+    return title
+
+
+def _is_verified_result_card(
+    result: DealFinderResult | None,
+    card: DealCard,
+) -> bool:
+    if result is None:
+        return False
+    return any(card is verified for verified in result.verified_cards)
+
+
+def build_compact_deal_card_embed(card: DealCard, *, verified: bool) -> discord.Embed:
+    source = sanitize_embed(card.embed)
+    discount = float(getattr(card, "discount", 0) or 0)
+    product_title = _compact_product_title(source.title, card.label)
+    title_prefix = "🔥" if verified else "🟨"
     embed = discord.Embed(
-        title=f"🔌 SniperPlug Deal Finder • {mode.display_name}",
-        description=(
-            f"Searching: **{result.query}**\n"
-            f"Mode: **{mode.label}** — {mode.description}\n"
-            f"Starting threshold: **{result.min_discount}%+ verified markdown**\n"
-            f"Expanded searches: **{len(result.search_plan.queries)}** • Fresh API calls: **{result.searches_attempted}** • Cache hits: **{getattr(result, 'cache_hits', 0)}**\n"
-            f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} result pages**\n"
-            f"Verified {result.min_discount}%+ deals: **{len(result.verified_cards)}**\n"
-            f"Review/raw/flip/scout leads: **{review_count}**\n"
-            f"Low-price scout leads found: **{scout_count}**"
-        ),
-        color=discord.Color.red() if result.verified_cards else discord.Color.dark_gold() if review_count else discord.Color.orange(),
+        title=f"{title_prefix} {product_title}",
+        url=source.url or card.url,
+        color=source.color,
     )
+    thumbnail_url = getattr(source.thumbnail, "url", None)
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
+
+    if verified:
+        embed.description = "✅ **Verified Walmart deal**" + (
+            f" • **{discount:.0f}% off**" if discount > 0 else ""
+        )
+    else:
+        embed.description = "**Private shopping lead** • useful price/review data, not public markdown proof."
+
+    price = _source_field(source, "price")
+    if price is not None:
+        embed.add_field(
+            name="💰 Price",
+            value=_compact_lines(
+                str(price.value),
+                (
+                    "item price",
+                    "current",
+                    "delivered",
+                    "shipping",
+                    "was/typical",
+                    "savings",
+                    "markdown",
+                    "coupon",
+                    "walmart cash",
+                    "reference",
+                ),
+            ),
+            inline=False,
+        )
+
+    detail_field = _source_field(source, "api fields")
+    seller = _source_field(source, "seller", "offer") or detail_field
+    if seller is not None:
+        seller_value = _compact_lines(
+            str(seller.value),
+            ("seller", "condition", "marketplace", "offer type"),
+            limit=4,
+            fallback_to_all=False,
+        )
+        if seller_value != "—":
+            embed.add_field(name="🏪 Seller", value=seller_value, inline=False)
+
+    delivery = _source_field(source, "fulfillment", "stock") or detail_field
+    if delivery is not None:
+        delivery_value = _compact_lines(
+            str(delivery.value),
+            ("stock", "add-to-cart", "fulfillment", "shipping", "delivered", "available online"),
+            limit=5,
+            fallback_to_all=False,
+        )
+        if delivery_value != "—":
+            embed.add_field(name="📦 Delivery", value=delivery_value, inline=False)
+
+    if not verified:
+        comp = _source_field(source, "marketplace comp", "flip context")
+        if comp is not None:
+            comp_value = _compact_lines(
+                str(comp.value),
+                ("comp", "spread", "margin", "price"),
+                limit=4,
+                fallback_to_all=False,
+            )
+            if comp_value != "—":
+                embed.add_field(name="📈 Review context", value=comp_value, inline=False)
+
+    links = _source_field(source, "links")
+    if links is not None:
+        embed.add_field(name="🔗 Open product", value=str(links.value)[:1024], inline=False)
+    else:
+        link_block = deal_scanner.product_link_block(
+            getattr(card, "link_choices", ()),
+            fallback_url=card.url,
+        )
+        if link_block:
+            embed.add_field(name="🔗 Open product", value=link_block, inline=False)
+
+    embed.set_footer(
+        text=(
+            "Walmart price and stock can change quickly."
+            if verified
+            else "Private lead only • verify before sharing publicly."
+        )
+    )
+    return sanitize_embed(embed)
+
+
+def build_deal_finder_summary(
+    result: DealFinderResult,
+    *,
+    ranked: ModeRankedCards | None = None,
+    freshness: ScanFreshness | None = None,
+) -> discord.Embed:
+    review_count = len(result.review_candidates.cards)
+    verified_count = len(result.verified_cards)
+    mode = ranked.mode if ranked else DEAL_SEARCH_MODES[MODE_BEST]
+    shown = (len(ranked.verified) + len(ranked.review)) if ranked else verified_count
+    cache_hits = getattr(result, "cache_hits", 0)
+
+    if verified_count:
+        result_line = f"✅ **{verified_count} verified deal(s)** at **{result.min_discount}%+**"
+    elif review_count:
+        result_line = (
+            f"🟨 No verified **{result.min_discount}%+** markdown yet • showing private shopping leads"
+        )
+    else:
+        result_line = f"No verified **{result.min_discount}%+** markdown found in this pass"
+
+    embed = discord.Embed(
+        title=f"🔌 {mode.display_name} • {result.query}",
+        description=(
+            f"{result_line}\n"
+            f"**{shown} shown** • **{result.products_checked} products checked** • "
+            f"**{result.searches_attempted} live routes**"
+        ),
+        color=(
+            discord.Color.red()
+            if verified_count
+            else discord.Color.dark_gold()
+            if review_count
+            else discord.Color.orange()
+        ),
+    )
+    embed.add_field(name=f"{mode.emoji} {mode.label}", value=mode.description, inline=False)
+
     if freshness:
         embed.add_field(
-            name="Cache freshness",
-            value=f"Cached before scan: **{freshness.cached_before}** • New: **{freshness.new_count}** • Price drops: **{freshness.price_drop_count}** • Repeat same/higher: **{freshness.repeat_count}**",
+            name="🆕 Since the previous scan",
+            value=(
+                f"**{freshness.new_count} new** • **{freshness.price_drop_count} price drops** • "
+                f"**{freshness.repeat_count} repeats**"
+            ),
             inline=False,
         )
     if getattr(result, "force_refresh", False):
-        embed.add_field(name="Fresh Scan", value="This scan bypassed the short route cache and rechecked Walmart routes live.", inline=False)
-    if ranked:
-        embed.add_field(name="Mode note", value=ranked.note, inline=False)
-        if not ranked.mode.public_safe:
-            embed.add_field(name="Private review mode", value="Hidden Gem results are intentionally broader and stay private unless staff manually publishes one after checking seller, reviews, variants, and comps.", inline=False)
-    if result.search_plan.queries:
         embed.add_field(
-            name="Search plan",
-            value=", ".join(f"`{query}`" for query in result.search_plan.queries[:6]),
+            name="🔄 Fresh Scan",
+            value="Short route cache bypassed; Walmart was checked live again.",
             inline=False,
         )
-    if result.boosted_routes:
+    if ranked and not ranked.mode.public_safe:
         embed.add_field(
-            name="🧠 Learned route boost",
-            value=", ".join(f"`{query}`" for query in result.boosted_routes[:3]),
+            name="🟨 Private results",
+            value="These leads stay private unless they later pass the normal verified-deal gates.",
             inline=False,
         )
-    route_lines = top_route_lines(result.route_stats, limit=5)
-    if route_lines:
-        embed.add_field(name="🧭 Productive routes", value="\n".join(route_lines), inline=False)
-    if result.search_plan.notes:
-        embed.add_field(name="Expansion notes", value="\n".join(f"• {note}" for note in result.search_plan.notes[:4]), inline=False)
-    if result.review_candidates:
-        embed.add_field(name="🟨 Review / flip audit", value=result.review_candidates.summary_line(), inline=False)
     if result.warnings:
-        embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
-    embed.set_footer(text="Buttons re-rank results by mode. Fresh Scan bypasses cache. Change starting markdown with /deal_threshold.")
+        embed.add_field(
+            name="⚠️ Walmart notes",
+            value="\n".join(f"• {warning}" for warning in result.warnings[:2]),
+            inline=False,
+        )
+
+    embed.set_footer(
+        text=(
+            f"Cache hits: {cache_hits} • Change starting markdown with /deal_threshold • "
+            "Fresh Scan spends another live pass."
+        )
+    )
     return sanitize_embed(embed)

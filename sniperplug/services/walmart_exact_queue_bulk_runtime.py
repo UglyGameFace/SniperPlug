@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -46,13 +47,12 @@ from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
 from sniperplug.services.walmart_global_offer_memory import (
     maybe_prune_global_offer_memory,
 )
-from sniperplug.services.walmart_page_circuit_queue import (
-    defer_due_page_recovery_for_open_circuit,
-)
 from sniperplug.services.walmart_recheck_schedule_rearm import (
     rearm_legacy_due_rechecks_bounded,
 )
 
+
+log = logging.getLogger("sniperplug.autoscan.write_telemetry")
 
 # The exact worker only needs to detect the fresh-work drain threshold (48).
 # A 64-row cap leaves headroom while preventing the 20-second worker from
@@ -88,12 +88,13 @@ async def process_actionable_walmart_exact_queue_batch(
     ordinary claims immediately. Scheduling decisions use a tightly bounded
     pressure snapshot rather than rereading the scheduled-recheck backlog.
 
-    When the Walmart product-page challenge circuit is open, already-known
-    ``page_retry`` work is moved just past the circuit close time before claims
-    are selected. The claim selector also disables the stale page-recovery lane
-    entirely while the circuit is open, so a backlog larger than the bounded
-    deferral sweep cannot leak another two known page retries into every worker
-    cycle. Fresh/pending/API work remains claimable and can verify without HTML.
+    When the Walmart product-page challenge circuit is open, the claim selector
+    sets the page-recovery lane cap to zero. Already-known ``page_retry`` rows are
+    therefore left untouched instead of rewriting batches of 64 next-attempt
+    timestamps every circuit. Recovery pressure is bounded at 64 for diagnostics
+    and cannot by itself hit the 600-row catalog emergency stop. Fresh/pending/API
+    work remains claimable, and a newly safe catalog snapshot can still change a
+    page-retry row to ``pending`` immediately.
 
     Fresh discovery proof and page-challenge circuit state are reported directly
     in the worker summary. This makes a zero-promotion batch explainable without
@@ -113,12 +114,6 @@ async def process_actionable_walmart_exact_queue_batch(
     await rearm_legacy_due_rechecks_bounded(conn, now=now)
 
     page_circuit_remaining = _page_challenge_circuit_remaining_seconds(provider)
-    if page_circuit_remaining > 0:
-        await defer_due_page_recovery_for_open_circuit(
-            conn,
-            now=now,
-            remaining_seconds=page_circuit_remaining,
-        )
 
     pressure_before = await load_walmart_exact_queue_pressure(
         db,
@@ -270,6 +265,15 @@ async def process_actionable_walmart_exact_queue_batch(
     )
     await conn.commit()
     store_seconds = max(0.0, time.monotonic() - store_started)
+    log.info(
+        "Walmart exact Turso write telemetry lease_rows=%s outcome_rows=%s "
+        "offer_memory_rows=%s persistence_statements=%s "
+        "page_circuit_reschedule_rows=0",
+        len(claims),
+        persisted.queue_rows,
+        persisted.offer_rows,
+        persisted.sql_statements,
+    )
     pressure_after = await load_walmart_exact_queue_pressure(
         db,
         cap=EXACT_WORKER_PRESSURE_CAP,

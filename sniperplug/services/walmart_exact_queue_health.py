@@ -30,6 +30,10 @@ def _sql_statuses(statuses: tuple[str, ...]) -> str:
     return ", ".join(f"'{status}'" for status in statuses)
 
 
+def _sql_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 @dataclass(frozen=True)
 class WalmartExactQueueHealth:
     total: int = 0
@@ -88,12 +92,14 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     markdown_statuses = _sql_statuses(VERIFIED_MARKDOWN_RECHECK_STATUSES)
     reference_statuses = _sql_statuses(VERIFIED_REFERENCE_RECHECK_STATUSES)
     low_signal_statuses = _sql_statuses(VERIFIED_LOW_SIGNAL_RECHECK_STATUSES)
+    reference_cutoff_sql = _sql_literal(reference_recheck_cutoff)
+    low_signal_cutoff_sql = _sql_literal(low_signal_recheck_cutoff)
     verified_guard = f"""
         (
             verified_at IS NULL
             OR (status IN ({markdown_statuses}) AND verified_at <= ?)
-            OR (status IN ({reference_statuses}) AND verified_at <= ?)
-            OR (status IN ({low_signal_statuses}) AND verified_at <= ?)
+            OR (status IN ({reference_statuses}) AND verified_at <= {reference_cutoff_sql})
+            OR (status IN ({low_signal_statuses}) AND verified_at <= {low_signal_cutoff_sql})
         )
     """
     try:
@@ -185,8 +191,6 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 now_iso,
                 now_iso,
                 markdown_recheck_cutoff,
-                reference_recheck_cutoff,
-                low_signal_recheck_cutoff,
                 now_iso,
                 now_iso,
                 now_iso,
@@ -194,8 +198,6 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 now_iso,
                 now_iso,
                 markdown_recheck_cutoff,
-                reference_recheck_cutoff,
-                low_signal_recheck_cutoff,
                 now_iso,
                 now_iso,
                 now_iso,

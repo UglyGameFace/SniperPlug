@@ -442,7 +442,13 @@ class NewSinceScanButton(discord.ui.Button):
             ephemeral=True,
         )
         for card in cards:
-            await interaction.followup.send(embed=build_compact_deal_card_embed(card, verified=True), ephemeral=True)
+            await interaction.followup.send(
+                embed=build_compact_deal_card_embed(
+                    card,
+                    verified=_is_verified_result_card(self.view.result, card),
+                ),
+                ephemeral=True,
+            )
 
 
 async def send_deal_mode_controls(
@@ -570,6 +576,15 @@ def _compact_product_title(source_title: str | None, fallback: str) -> str:
     if len(title) > 90:
         title = title[:89].rstrip() + "…"
     return title
+
+
+def _is_verified_result_card(
+    result: DealFinderResult | None,
+    card: DealCard,
+) -> bool:
+    if result is None:
+        return False
+    return any(card is verified for verified in result.verified_cards)
 
 
 def build_compact_deal_card_embed(card: DealCard, *, verified: bool) -> discord.Embed:

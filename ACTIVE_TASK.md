@@ -1,14 +1,14 @@
 # Active Task
 
 ## Status
-**Active — SP-TURSO-READ-AMPLIFICATION live acceptance gate. Turso's Aug 14 dashboard shows the account at 92% of its rows-read quota, with SniperPlug alone at 455,545,327 rows read. Production also logged a 4.03s isolated database `SELECT item_id, title, product_url...` from the Walmart exact queue claim path. PR #251 was squash-merged to `main` as `374a5d3cbd0b050a7378c3325d5cf572c78f3366`; all three post-merge `main` workflows passed. The bounded/indexed read fix now needs Discloud deployment and live Turso rows-read-rate acceptance before this task can close.**
+**Active — SP-TURSO-READ-AMPLIFICATION is at its final Turso-dashboard slope gate. Turso's Aug 14 dashboard showed the account at 92% of its rows-read quota, with SniperPlug alone at 455,545,327 rows read. PR #251 was squash-merged to `main` as `374a5d3cbd0b050a7378c3325d5cf572c78f3366`; all three post-merge `main` workflows passed. Post-deploy Discloud telemetry now shows the exact claim path completing in 0.03-0.18s across repeated cycles while still claiming and verifying valid work, with no recurrence of the prior 4.03s slow `SELECT item_id, title, product_url...` warning in the supplied live sample. Runtime behavior acceptance has passed. The task remains open only until Turso rows-read growth is rechecked over a meaningful live interval and proves the account-quota burn rate is safely reduced.**
 
 ## Scope
 Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-quota emergency while preserving the existing Walmart exact-verification architecture and safety semantics. Fix the actual high-frequency read access paths rather than masking them with stale caches, disabling verification, or creating a parallel queue/runtime.
 
 ## Root cause / findings
-- Turso's dashboard evidence is account-critical: rows read are at **92%**, and SniperPlug alone shows **455,545,327 rows read**, **6,273,176 rows written**, and **2.38 GB synced**.
-- Production logged a slow isolated database operation for `SELECT item_id, title, product_url...` with **remote_s=4.03**. That projection maps to the Walmart exact queue claim selector.
+- Turso's dashboard evidence is account-critical: rows read were at **92%**, and SniperPlug alone showed **455,545,327 rows read**, **6,273,176 rows written**, and **2.38 GB synced**.
+- Production previously logged a slow isolated database operation for `SELECT item_id, title, product_url...` with **remote_s=4.03**. That projection maps to the Walmart exact queue claim selector.
 - The exact worker normally runs about every **20 seconds**. Before PR #251, `claim_due_rows_batched` used one all-status SELECT combining due time, retention, lease state, fresh-snapshot priority, page-recovery handling, verified status-age floors, status ordering, priority ordering, and a final small LIMIT.
 - A mature-queue SQLite reproduction with thousands of recently verified low-signal rows showed the old claim planner choosing the `last_seen_at` access path and a temporary ORDER BY rather than seeking directly by the verified-age floor. A small result LIMIT therefore did not guarantee a small scan.
 - PR #250 intentionally stopped rewriting legacy early verified schedules in order to remove needless Turso writes. A mature verified row can therefore have an already-due legacy `next_attempt_at` while its newer `verified_at` correctly keeps it below the real 24h/72h/7d safety cadence. The old claim SELECT could repeatedly encounter and reject large numbers of those rows.
@@ -39,12 +39,18 @@ Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-qu
 - PR #251 had no review threads or submitted review blockers. The only PR comment was Qodo's inactive-subscription notice, not a code finding.
 - PR #251 was squash-merged as `374a5d3cbd0b050a7378c3325d5cf572c78f3366`.
 - All three push workflows on the merged `main` commit passed: Python tests, Python Check, and Import smoke check.
+- Post-deploy Discloud startup completed normally with Turso process isolation, `bounded_queue_pressure=true`, `background_full_queue_scans=false`, exact queue batch 8, and 20-second exact interval preserved.
+- Repeated live exact cycles reported claim timings of **0.10s, 0.06s, 0.06s, 0.03s, 0.07s, 0.08s, and 0.18s**. The supplied post-deploy window contains no recurrence of the previous **4.03s** slow isolated queue-claim SELECT warning.
+- Valid exact work still flows: cycles claimed 7, 1, 2, 0, 1, 1, and 3 rows; a fresh catalog proof successfully verified a no-reference item, and a later cycle verified two items while recovering an official was price. This proves the optimized selector did not simply stop exact verification to save reads.
+- The material-change wake path remains active: the catalog reported **verified changes rearmed 1** before a later exact cycle claimed additional work.
+- Bounded pressure remained semantically coherent in the live sample: `actionable due >=64` was attributable to **page recovery >=64** while **scheduled rechecks 0** and **new/retry 0**. The open page circuit/page-challenge backlog is a Walmart page-recovery condition, not evidence of a returning broad Turso scan.
+- One startup `CREATE TABLE IF NOT...` operation took 2.59s, but it was a schema/startup operation rather than the repeated exact queue claim path under investigation.
 
 ## Validation pending / Definition of Done
-- Deploy current `main` to Discloud.
-- Live acceptance must show the exact worker still claims/processes valid work correctly and the previous slow broad claim SELECT disappears or materially drops in latency/read cost.
-- Confirm bounded queue pressure remains behaviorally correct and no proof/dedupe regression appears.
-- Recheck Turso cumulative rows-read usage after a meaningful live interval and compare the post-deploy slope with the pre-fix rate. The task is not complete until actual quota burn is demonstrably reduced.
+- Recheck Turso cumulative rows-read usage after a meaningful live interval and compare the post-deploy slope with the pre-fix rate.
+- Confirm the account-level rows-read burn rate has flattened enough that the 92% quota emergency is no longer progressing dangerously.
+- If the Turso slope is still too high despite the now-fast exact claim path, use Turso/top-query evidence to identify the next reader before making another implementation change; do not guess or reopen solved queue paths without evidence.
+- The task closes only after actual quota usage confirms the production read reduction.
 
 ## Cleanup / safety constraints
 - No stale safety-critical cache, alternate database, parallel queue, startup exception swallow, monkey patch, or relaxed Walmart proof gate.
@@ -53,8 +59,7 @@ Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-qu
 - The fix uses bounded indexed reads rather than timestamp-repair writes, so it does not undo the write-amplification work merely to make reads easier.
 
 ## Blockers
-- Direct Turso top-query/organization read metrics are not exposed through the connected tools, so final quota-rate acceptance still needs the user's Turso dashboard after deployment.
-- The merged build is not yet live on Discloud.
+- Direct Turso top-query/organization read metrics are not exposed through the connected tools, so final quota-rate acceptance still needs the user's Turso dashboard/current cumulative rows-read reading after this live interval.
 
 ## Suspended tasks
 **SP-TURSO-WRITE-AMPLIFICATION is suspended at its final dashboard rows-written slope gate.** Its exact-worker write-floor acceptance passed after PR #250; do not reopen solved scheduled-recheck write churn without evidence.

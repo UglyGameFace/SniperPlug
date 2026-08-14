@@ -200,6 +200,8 @@ async def discover_walmart_catalog_candidates(
     )
     warnings.append(
         "Walmart catalog discovery-only pass: "
+        f"page window **{page_label}**/**{CATALOG_MAX_PAGE}** • "
+        f"completed full passes before this batch **{completed_passes}** • "
         f"returned **{len(all_candidates)}** • unique **{len(deduped)}** • "
         f"usable item IDs **{item_id_count}** • foreground exact checks **0**."
     )

@@ -8,10 +8,8 @@ import aiosqlite
 from sniperplug.services.walmart_exact_queue_drain import claim_due_rows_batched
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
 from sniperplug.services.walmart_exact_queue_pressure import load_walmart_exact_queue_pressure
-from sniperplug.services.walmart_exact_verification_queue import (
-    QUEUE_TABLE,
-    ensure_walmart_exact_verification_queue,
-)
+from sniperplug.services.walmart_exact_runtime_schema import ensure_exact_runtime_schema_once
+from sniperplug.services.walmart_exact_verification_queue import QUEUE_TABLE
 
 
 class FakeDatabase:
@@ -27,7 +25,7 @@ def test_status_aware_verified_rechecks_are_ignored_until_their_real_floor() -> 
         conn = await aiosqlite.connect(":memory:")
         conn.row_factory = aiosqlite.Row
         db = FakeDatabase(conn)
-        await ensure_walmart_exact_verification_queue(db)
+        await ensure_exact_runtime_schema_once(db)
 
         now = datetime.now(timezone.utc)
         due = (now - timedelta(minutes=5)).isoformat()
@@ -113,7 +111,7 @@ def test_verified_row_without_verified_timestamp_remains_recoverable() -> None:
         conn = await aiosqlite.connect(":memory:")
         conn.row_factory = aiosqlite.Row
         db = FakeDatabase(conn)
-        await ensure_walmart_exact_verification_queue(db)
+        await ensure_exact_runtime_schema_once(db)
         now = datetime.now(timezone.utc)
         due = (now - timedelta(minutes=1)).isoformat()
         await conn.execute(

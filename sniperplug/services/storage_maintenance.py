@@ -23,7 +23,7 @@ RETAILER_AUTOSCAN_RUN_RETENTION_DAYS = 8
 DM_RECEIPT_RETENTION_DAYS = 90
 FEEDBACK_TARGET_MAX_ROWS = 500
 _MAINTENANCE_ROWID_ALIAS = "__sniperplug_rowid"
-_CLEANUP_INDEX_CONNECTIONS: set[int] = set()
+_CLEANUP_INDEX_CONNECTIONS: set[tuple[int, str]] = set()
 
 
 @dataclass(frozen=True)
@@ -317,36 +317,51 @@ async def run_storage_maintenance(
 
 
 async def ensure_quota_safe_cleanup_indexes(conn: Any) -> None:
-    """Install only indexes used by bounded operational cleanup paths."""
-    connection_key = id(conn)
-    if connection_key in _CLEANUP_INDEX_CONNECTIONS:
-        return
+    """Install cleanup indexes once each, including tables created after startup."""
+    connection_id = id(conn)
+    changed = False
 
-    statements = (
-        "CREATE INDEX IF NOT EXISTS idx_feedback_targets_created_cleanup ON guild_deal_feedback_targets (created_at DESC)",
-        "CREATE INDEX IF NOT EXISTS idx_feedback_events_created_cleanup ON guild_deal_feedback_events (created_at)",
-        "CREATE INDEX IF NOT EXISTS idx_active_deal_cache_status_seen_cleanup ON guild_active_deal_cache (status, last_seen_at)",
-        "CREATE INDEX IF NOT EXISTS idx_auto_scan_report_ran_cleanup ON guild_auto_scan_report_history (ran_at)",
-        "CREATE INDEX IF NOT EXISTS idx_public_posts_status_first_cleanup ON guild_public_deal_posts (status, first_seen_at)",
-        "CREATE INDEX IF NOT EXISTS idx_public_posts_status_posted_cleanup ON guild_public_deal_posts (status, posted_at)",
-        "CREATE INDEX IF NOT EXISTS idx_store_cache_expires_cleanup ON store_cache (expires_at)",
-        "CREATE INDEX IF NOT EXISTS idx_scan_runs_started_cleanup ON scan_runs (started_at)",
-    )
-    for statement in statements:
-        await conn.execute(statement)
+    base_key = (connection_id, "base")
+    if base_key not in _CLEANUP_INDEX_CONNECTIONS:
+        statements = (
+            "CREATE INDEX IF NOT EXISTS idx_feedback_targets_created_cleanup ON guild_deal_feedback_targets (created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_feedback_events_created_cleanup ON guild_deal_feedback_events (created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_active_deal_cache_status_seen_cleanup ON guild_active_deal_cache (status, last_seen_at)",
+            "CREATE INDEX IF NOT EXISTS idx_auto_scan_report_ran_cleanup ON guild_auto_scan_report_history (ran_at)",
+            "CREATE INDEX IF NOT EXISTS idx_public_posts_status_first_cleanup ON guild_public_deal_posts (status, first_seen_at)",
+            "CREATE INDEX IF NOT EXISTS idx_public_posts_status_posted_cleanup ON guild_public_deal_posts (status, posted_at)",
+            "CREATE INDEX IF NOT EXISTS idx_store_cache_expires_cleanup ON store_cache (expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_scan_runs_started_cleanup ON scan_runs (started_at)",
+        )
+        for statement in statements:
+            await conn.execute(statement)
+        _CLEANUP_INDEX_CONNECTIONS.add(base_key)
+        changed = True
 
-    if await table_exists(conn, "guild_retailer_auto_scan_runs"):
+    retailer_key = (connection_id, "retailer_autoscan")
+    if retailer_key not in _CLEANUP_INDEX_CONNECTIONS and await table_exists(
+        conn, "guild_retailer_auto_scan_runs"
+    ):
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_retailer_auto_scan_runs_ran_cleanup "
             "ON guild_retailer_auto_scan_runs (ran_at)"
         )
-    if await table_exists(conn, "user_dm_deal_alert_receipts"):
+        _CLEANUP_INDEX_CONNECTIONS.add(retailer_key)
+        changed = True
+
+    dm_key = (connection_id, "dm_receipts")
+    if dm_key not in _CLEANUP_INDEX_CONNECTIONS and await table_exists(
+        conn, "user_dm_deal_alert_receipts"
+    ):
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_dm_deal_alert_receipts_delivered_cleanup "
             "ON user_dm_deal_alert_receipts (delivered_at)"
         )
-    await conn.commit()
-    _CLEANUP_INDEX_CONNECTIONS.add(connection_key)
+        _CLEANUP_INDEX_CONNECTIONS.add(dm_key)
+        changed = True
+
+    if changed:
+        await conn.commit()
 
 
 async def table_exists(conn: Any, table: str) -> bool:

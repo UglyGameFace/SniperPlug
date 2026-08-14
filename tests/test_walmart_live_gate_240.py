@@ -10,9 +10,6 @@ from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     ensure_walmart_exact_verification_queue,
 )
-from sniperplug.services.walmart_page_circuit_queue import (
-    defer_due_page_recovery_for_open_circuit,
-)
 from sniperplug.services.walmart_terminal_identity_maintenance import (
     maintain_terminal_identity_rows_limited,
 )
@@ -71,74 +68,6 @@ async def _insert_queue_row(
             due.isoformat(),
         ),
     )
-
-
-def test_open_page_circuit_defers_due_page_backlog_without_blocking_pending_work() -> None:
-    async def run() -> None:
-        conn = await aiosqlite.connect(":memory:")
-        db = FakeDatabase(conn)
-        await ensure_walmart_exact_verification_queue(db)
-        now = datetime.now(timezone.utc)
-
-        await _insert_queue_row(
-            conn,
-            item_id="page-high",
-            status="page_retry",
-            now=now,
-            priority_score=100,
-        )
-        await _insert_queue_row(
-            conn,
-            item_id="page-low",
-            status="page_retry",
-            now=now,
-            priority_score=10,
-        )
-        await _insert_queue_row(
-            conn,
-            item_id="rescued-pending",
-            status="pending",
-            now=now,
-            priority_score=1,
-        )
-        await conn.commit()
-
-        first = await defer_due_page_recovery_for_open_circuit(
-            conn,
-            now=now,
-            remaining_seconds=600,
-            limit=1,
-        )
-        assert first == 1
-
-        cursor = await conn.execute(
-            f"SELECT item_id, status, next_attempt_at FROM {QUEUE_TABLE} ORDER BY item_id"
-        )
-        rows = {row[0]: (row[1], datetime.fromisoformat(row[2])) for row in await cursor.fetchall()}
-        assert rows["page-high"][0] == "page_retry"
-        assert rows["page-high"][1] > now + timedelta(minutes=9)
-        assert rows["page-low"][1] <= now
-        assert rows["rescued-pending"][0] == "pending"
-        assert rows["rescued-pending"][1] <= now
-
-        second = await defer_due_page_recovery_for_open_circuit(
-            conn,
-            now=now,
-            remaining_seconds=600,
-            limit=64,
-        )
-        assert second == 1
-
-        cursor = await conn.execute(
-            f"SELECT status, next_attempt_at FROM {QUEUE_TABLE} WHERE item_id = ?",
-            ("rescued-pending",),
-        )
-        status, next_attempt_at = await cursor.fetchone()
-        assert status == "pending"
-        assert datetime.fromisoformat(next_attempt_at) <= now
-        await conn.close()
-
-    asyncio.run(run())
 
 
 def test_terminal_identity_maintenance_caps_reprobes_and_quarantine_writes() -> None:
@@ -209,14 +138,11 @@ def test_terminal_identity_maintenance_caps_reprobes_and_quarantine_writes() -> 
     asyncio.run(run())
 
 
-def test_production_runtime_defers_page_backlog_before_pressure_and_claims() -> None:
-    defer_call = "defer_due_page_recovery_for_open_circuit("
-    pressure_call = "load_walmart_exact_queue_pressure("
-    claim_call = "claim_due_rows_batched("
-    assert defer_call in BULK_RUNTIME
-    assert BULK_RUNTIME.index(defer_call) < BULK_RUNTIME.index(pressure_call)
-    assert BULK_RUNTIME.index(defer_call) < BULK_RUNTIME.index(claim_call)
-    assert "page_circuit_remaining > 0" in BULK_RUNTIME
+def test_production_runtime_uses_claim_cap_instead_of_page_backlog_rewrites() -> None:
+    assert "defer_due_page_recovery_for_open_circuit" not in BULK_RUNTIME
+    assert "page_recovery_claim_cap =" in BULK_RUNTIME
+    assert "0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
+    assert "page_circuit_reschedule_rows=0" in BULK_RUNTIME
 
 
 def test_production_terminal_maintenance_uses_row_limited_implementation() -> None:

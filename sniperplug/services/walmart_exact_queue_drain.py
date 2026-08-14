@@ -29,8 +29,7 @@ from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 
 
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
-PUBLIC_ALERT_RECHECK_PERCENT = 50.0
-MID_TIER_RECHECK_PERCENT = 30.0
+VERIFIED_RECHECK_FALLBACK_HOURS = 24
 # Product-page recovery itself is already limited to two concurrent requests.
 # Do not let a backlog of distinct challenged pages consume an entire 8/24-item
 # exact batch. Fresh catalog snapshots are exempt because they are attempted
@@ -408,19 +407,21 @@ async def store_exact_candidate_with_tiered_recheck(
 
 
 def tiered_recheck_delay(status: str, discount_percent: float) -> timedelta:
-    """Keep strong deals fresh without creating an impossible hourly queue."""
+    """Use catalog-driven wakeups plus a low-write daily exact safety sweep.
 
-    discount = max(0.0, float(discount_percent or 0.0))
-    if status == "verified_markdown":
-        if discount >= PUBLIC_ALERT_RECHECK_PERCENT:
-            return timedelta(hours=4)
-        if discount >= MID_TIER_RECHECK_PERCENT:
-            return timedelta(hours=12)
-        return timedelta(hours=24)
-    if status == "verified_no_reference":
-        return timedelta(hours=24)
-    if status == "verified_under_threshold":
-        return timedelta(hours=24)
-    if status == "not_buyable":
-        return timedelta(hours=24)
+    Material catalog changes are rearmed immediately by the bulk enqueue path,
+    so verified rows no longer need a four-hour database-backed heartbeat just
+    because the last confirmed discount was large. The compatibility function
+    name is retained because both bulk and legacy exact persistence share it.
+    """
+
+    _ = discount_percent
+    if status in {
+        "verified_markdown",
+        "verified_no_reference",
+        "verified_under_threshold",
+        "verified_reference",
+        "not_buyable",
+    }:
+        return timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
     return timedelta(hours=12)

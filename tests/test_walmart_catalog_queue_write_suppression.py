@@ -13,6 +13,9 @@ from sniperplug.services.walmart_exact_verification_queue_bulk import (
     QUEUE_UPSERT_CHUNK_SIZE,
     enqueue_walmart_exact_verification_candidates_bulk,
 )
+from sniperplug.services.walmart_fresh_discovery_proof import (
+    DISCOVERY_PROOF_REFRESH_INTERVAL_SECONDS,
+)
 
 
 class CountingConnection:
@@ -47,7 +50,20 @@ def candidate(
     reference: float = 100.0,
     title: str | None = None,
     route: str = "electronics clearance",
+    safe_snapshot: bool = False,
 ) -> SourceCandidate:
+    attrs = {"finderSourceQuery": route}
+    if safe_snapshot:
+        attrs.update(
+            {
+                "selectedOfferMarketplace": "false",
+                "selectedOfferSeller": "Walmart",
+                "selectedOfferId": item_id,
+                "referencePriceTrusted": "yes",
+                "trustedReferencePrice": f"{reference:.2f}",
+                "trustedReferenceSource": "search.wasPrice",
+            }
+        )
     return SourceCandidate(
         source_key="walmart",
         retailer="Walmart",
@@ -65,7 +81,12 @@ def candidate(
         product_id_type="sku",
         sku=item_id,
         selected_offer_id=item_id,
-        variant_attributes={"finderSourceQuery": route},
+        seller_name="Walmart" if safe_snapshot else None,
+        fulfillment_type="shipping" if safe_snapshot else None,
+        condition="new" if safe_snapshot else None,
+        stock_status="in stock" if safe_snapshot else None,
+        can_add_to_cart=True if safe_snapshot else None,
+        variant_attributes=attrs,
     )
 
 
@@ -289,6 +310,160 @@ def test_changed_price_title_and_source_are_never_suppressed() -> None:
     asyncio.run(run())
 
 
+def test_far_future_verified_row_skips_expiring_snapshot_timestamp_refresh() -> None:
+    async def run() -> None:
+        inner, conn, db = await _new_db()
+        item = candidate("820001", safe_snapshot=True)
+        source = "global_catalog_autoscan:global_catalog_autoscan"
+        first = await enqueue_walmart_exact_verification_candidates_bulk(
+            db,
+            [item],
+            min_discount=50,
+            source_label=source,
+        )
+        assert first.safe_snapshot_rows == 1
+
+        now = datetime.now(timezone.utc)
+        stale_snapshot_at = (
+            now - timedelta(seconds=DISCOVERY_PROOF_REFRESH_INTERVAL_SECONDS + 60)
+        ).isoformat()
+        next_attempt_at = (now + timedelta(hours=4)).isoformat()
+        await inner.execute(
+            f"""
+            UPDATE {QUEUE_TABLE}
+            SET status = 'verified_markdown',
+                last_seen_at = ?,
+                discovery_snapshot_at = ?,
+                next_attempt_at = ?
+            WHERE item_id = ?
+            """,
+            (now.isoformat(), stale_snapshot_at, next_attempt_at, "820001"),
+        )
+        await inner.commit()
+
+        conn.queue_upserts = 0
+        conn.commits = 0
+        second = await enqueue_walmart_exact_verification_candidates_bulk(
+            db,
+            [item],
+            min_discount=50,
+            source_label=source,
+        )
+
+        assert second.persisted_rows == 0
+        assert second.unchanged_rows == 1
+        assert second.snapshot_refresh_skipped == 1
+        assert second.write_statements == 0
+        assert conn.queue_upserts == 0
+        assert conn.commits == 0
+        cursor = await inner.execute(
+            f"SELECT discovery_snapshot_at FROM {QUEUE_TABLE} WHERE item_id = ?",
+            ("820001",),
+        )
+        assert (await cursor.fetchone())[0] == stale_snapshot_at
+        await inner.close()
+
+    asyncio.run(run())
+
+
+def test_due_soon_verified_row_refreshes_snapshot_before_it_can_expire() -> None:
+    async def run() -> None:
+        inner, conn, db = await _new_db()
+        item = candidate("820002", safe_snapshot=True)
+        source = "global_catalog_autoscan:global_catalog_autoscan"
+        await enqueue_walmart_exact_verification_candidates_bulk(
+            db,
+            [item],
+            min_discount=50,
+            source_label=source,
+        )
+
+        now = datetime.now(timezone.utc)
+        stale_snapshot_at = (
+            now - timedelta(seconds=DISCOVERY_PROOF_REFRESH_INTERVAL_SECONDS + 60)
+        ).isoformat()
+        await inner.execute(
+            f"""
+            UPDATE {QUEUE_TABLE}
+            SET status = 'verified_markdown',
+                last_seen_at = ?,
+                discovery_snapshot_at = ?,
+                next_attempt_at = ?
+            WHERE item_id = ?
+            """,
+            (
+                now.isoformat(),
+                stale_snapshot_at,
+                (now + timedelta(minutes=5)).isoformat(),
+                "820002",
+            ),
+        )
+        await inner.commit()
+
+        conn.queue_upserts = 0
+        result = await enqueue_walmart_exact_verification_candidates_bulk(
+            db,
+            [item],
+            min_discount=50,
+            source_label=source,
+        )
+
+        assert result.persisted_rows == 1
+        assert result.snapshot_refresh_skipped == 0
+        assert result.write_statements == 1
+        cursor = await inner.execute(
+            f"SELECT discovery_snapshot_at FROM {QUEUE_TABLE} WHERE item_id = ?",
+            ("820002",),
+        )
+        assert (await cursor.fetchone())[0] > stale_snapshot_at
+        await inner.close()
+
+    asyncio.run(run())
+
+
+def test_safe_catalog_snapshot_immediately_rescues_due_page_retry() -> None:
+    async def run() -> None:
+        inner, _conn, db = await _new_db()
+        item = candidate("820003", safe_snapshot=True)
+        source = "global_catalog_autoscan:global_catalog_autoscan"
+        await enqueue_walmart_exact_verification_candidates_bulk(
+            db,
+            [item],
+            min_discount=50,
+            source_label=source,
+        )
+        now = datetime.now(timezone.utc)
+        await inner.execute(
+            f"""
+            UPDATE {QUEUE_TABLE}
+            SET status = 'page_retry', next_attempt_at = ?
+            WHERE item_id = ?
+            """,
+            ((now - timedelta(minutes=1)).isoformat(), "820003"),
+        )
+        await inner.commit()
+
+        result = await enqueue_walmart_exact_verification_candidates_bulk(
+            db,
+            [item],
+            min_discount=50,
+            source_label=source,
+        )
+
+        assert result.persisted_rows == 1
+        assert result.page_retry_rearmed == 1
+        cursor = await inner.execute(
+            f"SELECT status, next_attempt_at FROM {QUEUE_TABLE} WHERE item_id = ?",
+            ("820003",),
+        )
+        status, next_attempt_at = await cursor.fetchone()
+        assert status == "pending"
+        assert next_attempt_at <= datetime.now(timezone.utc).isoformat()
+        await inner.close()
+
+    asyncio.run(run())
+
+
 def test_catalog_enqueue_uses_cached_schema_and_safe_larger_batches() -> None:
     source = Path(
         "sniperplug/services/walmart_exact_verification_queue_bulk.py"
@@ -298,3 +473,4 @@ def test_catalog_enqueue_uses_cached_schema_and_safe_larger_batches() -> None:
     assert "await ensure_walmart_exact_verification_queue(db)" not in source
     assert QUEUE_UPSERT_CHUNK_SIZE == 55
     assert QUEUE_UPSERT_CHUNK_SIZE * 18 <= 999
+    assert QUEUE_DISCOVERY_REFRESH_INTERVAL_SECONDS == 24 * 60 * 60

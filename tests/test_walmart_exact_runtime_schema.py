@@ -69,11 +69,18 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
         await runtime_schema.ensure_exact_runtime_schema_once(second)
 
         assert calls == {"queue": 2, "offer": 2}
-        assert first_conn.execute_count == 5
+        assert first_conn.execute_count == 6
         assert first_conn.commit_count == 1
-        assert second_conn.execute_count == 5
+        assert second_conn.execute_count == 6
         assert second_conn.commit_count == 1
-        drop_v1_sql, drop_v2_sql, claim_sql, fresh_sql, pressure_sql = first_conn.sql
+        (
+            drop_v1_sql,
+            drop_v2_sql,
+            claim_sql,
+            fresh_sql,
+            pressure_sql,
+            verified_due_sql,
+        ) = first_conn.sql
         assert runtime_schema.LEGACY_CLAIM_ORDER_INDEX in drop_v1_sql
         assert runtime_schema.LEGACY_CLAIM_ORDER_INDEX_V2 in drop_v2_sql
         assert "DROP INDEX IF EXISTS" in drop_v1_sql
@@ -92,6 +99,11 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
         assert "status," in pressure_sql
         assert "next_attempt_at" in pressure_sql
         assert "lease_until" in pressure_sql
+        assert runtime_schema.STATUS_VERIFIED_DUE_INDEX in verified_due_sql
+        assert "status," in verified_due_sql
+        assert "verified_at" in verified_due_sql
+        assert "next_attempt_at" in verified_due_sql
+        assert "lease_until" in verified_due_sql
 
     asyncio.run(run())
 
@@ -158,6 +170,8 @@ def test_claim_query_prioritizes_fresh_proof_and_keeps_bounded_recovery_order() 
         "priority_score DESC",
         "last_seen_at DESC",
         "discovery_snapshot_at DESC",
+        "STATUS_VERIFIED_DUE_INDEX",
+        "verified_at",
     ):
         assert fragment in schema_source
 

@@ -4,7 +4,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sniperplug.services.walmart_exact_queue_drain import (
-    VERIFIED_RECHECK_FALLBACK_HOURS,
+    VERIFIED_LOW_SIGNAL_RECHECK_STATUSES,
+    VERIFIED_MARKDOWN_RECHECK_STATUSES,
+    VERIFIED_REFERENCE_RECHECK_STATUSES,
+    verified_recheck_cutoffs,
 )
 from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHealth
 from sniperplug.services.walmart_exact_verification_queue import (
@@ -24,6 +27,10 @@ RECOVERY_PRESSURE_CAP = 64
 VERIFYING_PRESSURE_CAP = 64
 
 
+def _sql_statuses(statuses: tuple[str, ...]) -> str:
+    return ", ".join(f"'{status}'" for status in statuses)
+
+
 async def load_walmart_exact_queue_pressure(
     db: Any,
     *,
@@ -35,7 +42,7 @@ async def load_walmart_exact_queue_pressure(
     backpressure can depend on it. Fresh/retry and active-lease lanes are capped
     more tightly at the maximum information current scheduling policy can use.
     Verified rows whose legacy ``next_attempt_at`` is early are not counted until
-    their 24-hour exact fallback is truly claimable. Counts at a cap are lower
+    the status-aware fallback age is truly claimable. Counts at a cap are lower
     bounds; callers use this snapshot for scheduling and bounded logging, never
     owner-facing exact totals.
     """
@@ -53,9 +60,14 @@ async def load_walmart_exact_queue_pressure(
     discovery_cutoff = (
         now - timedelta(days=QUEUE_RETENTION_DAYS)
     ).isoformat()
-    verified_recheck_cutoff = (
-        now - timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
-    ).isoformat()
+    (
+        markdown_recheck_cutoff,
+        reference_recheck_cutoff,
+        low_signal_recheck_cutoff,
+    ) = verified_recheck_cutoffs(now)
+    markdown_statuses = _sql_statuses(VERIFIED_MARKDOWN_RECHECK_STATUSES)
+    reference_statuses = _sql_statuses(VERIFIED_REFERENCE_RECHECK_STATUSES)
+    low_signal_statuses = _sql_statuses(VERIFIED_LOW_SIGNAL_RECHECK_STATUSES)
     cursor = await conn.execute(
         f"""
         WITH fresh_due AS (
@@ -89,7 +101,12 @@ async def load_walmart_exact_queue_pressure(
               AND next_attempt_at <= ?
               AND last_seen_at >= ?
               AND (lease_until IS NULL OR lease_until < ?)
-              AND (verified_at IS NULL OR verified_at <= ?)
+              AND (
+                  verified_at IS NULL
+                  OR (status IN ({markdown_statuses}) AND verified_at <= ?)
+                  OR (status IN ({reference_statuses}) AND verified_at <= ?)
+                  OR (status IN ({low_signal_statuses}) AND verified_at <= ?)
+              )
             LIMIT ?
         ),
         active_verifying AS (
@@ -118,7 +135,9 @@ async def load_walmart_exact_queue_pressure(
             now_iso,
             discovery_cutoff,
             now_iso,
-            verified_recheck_cutoff,
+            markdown_recheck_cutoff,
+            reference_recheck_cutoff,
+            low_signal_recheck_cutoff,
             recheck_cap,
             now_iso,
             verifying_cap,

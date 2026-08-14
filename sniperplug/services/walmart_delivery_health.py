@@ -139,14 +139,15 @@ async def load_walmart_delivery_health(
     window_hours: int = DEFAULT_WINDOW_HOURS,
     event_limit: int = DEFAULT_EVENT_LIMIT,
 ) -> WalmartDeliveryHealth:
-    """Audit recent exact Walmart events against durable destination outcomes.
+    """Run a read-only audit of recent exact events and destination outcomes.
 
     New fanout writes one bounded per-guild decision row before an exact event is
     marked processed. Those rows preserve the threshold/category/quality/dedupe
     reason that actually applied when fanout ran. Events created before this
     provenance table existed are still reconstructed under current rules for
     context, but an otherwise-eligible legacy row is labeled historical-unknown
-    rather than incorrectly declared a missed post.
+    rather than incorrectly declared a missed post. This health path never
+    creates, reserves, sends, replays, or mutates a deal or provenance row.
     """
 
     hours = max(1, min(24 * 30, int(window_hours)))
@@ -234,6 +235,9 @@ async def load_walmart_delivery_health(
         )
         processed_at = str(_row_get(row, "processed_at", 4) or "")
         last_error = str(_row_get(row, "last_error", 5) or "").strip()
+        stored = historical.get(deal_key)
+        if stored is not None:
+            counts["historical_decisions"] += 1
 
         candidate = _candidate_from_snapshot(snapshot_json)
         card = legacy._exact_card_for_candidate(candidate)
@@ -245,7 +249,7 @@ async def load_walmart_delivery_health(
                     label="Unreadable exact snapshot",
                     event_at=event_at,
                     discount=None,
-                    threshold=int(threshold),
+                    threshold=(stored.threshold if stored is not None else int(threshold)),
                     outcome="invalid_snapshot",
                     detail="snapshot could not rebuild an exact public card",
                 )
@@ -261,7 +265,6 @@ async def load_walmart_delivery_health(
             or card_deal_key(card, retailer=retailer)
         )
         status = post_status.get(public_key) or post_status.get(deal_key) or ""
-        stored = historical.get(deal_key)
 
         if not processed_at:
             counts["events_pending"] += 1
@@ -282,7 +285,6 @@ async def load_walmart_delivery_health(
                 outcome = "reserved"
                 detail = f"durable post slot is {status}"
             elif stored is not None:
-                counts["historical_decisions"] += 1
                 outcome = stored.outcome
                 detail = stored.detail or f"historical destination decision: {stored.outcome}"
                 if outcome == "posted":

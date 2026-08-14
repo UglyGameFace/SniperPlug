@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-AUTOSCAN-COVERAGE-STALL is at the merge/deploy/live-acceptance gate.** User explicitly FORCE SWITCHED on Aug 14 after `/autoscan_health` showed Walmart catalog discovery advancing but exact coverage badly misleading/stalled: **20,005 queue rows, 1,074 page-recovery rows shown actionable, 0 new/retry, 0 scheduled rechecks, 0 actively verifying, 12,390 terminal identity blocks, and 6 current-rule eligible exact events without a durable public-post receipt**. HP Store and Target health both reported `not_started`. PR #253 now contains the root-cause fixes on `fix/autoscan-coverage-stall`; final code head `20f30c795540c9eb262f11a93e49d2d2abe57368` passed all three PR workflows and the full **1,266-test** suite. The task remains open through merge, Discloud deployment, Walmart live acceptance, and standalone HP/Target watcher activation.
+**Active — SP-AUTOSCAN-COVERAGE-STALL is at live production acceptance.** User explicitly FORCE SWITCHED on Aug 14 after `/autoscan_health` showed Walmart catalog discovery advancing but exact coverage badly misleading/stalled: **20,005 queue rows, 1,074 page-recovery rows shown actionable, 0 new/retry, 0 scheduled rechecks, 0 actively verifying, 12,390 terminal identity blocks, and 6 current-rule eligible exact events without a durable public-post receipt**. HP Store and Target health both reported `not_started`. PR #253 was squash-merged to `main` as `ff12b0e57021489b9348424188dcfc81ed57f770`. Final PR validation passed **1,266 tests**, dependency/compile/import checks, and all three post-merge `main` workflows are green. GitHub also reports `discloud/commit` success for the existing SniperPlug app `1779293887444`. The task remains open until fresh production logs and `/autoscan_health` prove the Walmart behavior live and the standalone HP/Target watcher processes are actually running against the shared Turso database.
 
 ## Scope
 Repair the actual autoscan coverage path without weakening proof or hammering Walmart HTML. The task covers truthful claimable-vs-backlog Walmart health, safe progress while the Walmart HTML challenge circuit is open, immediate rescue of terminal/page-retry rows when strict fresh official catalog proof becomes available, catalog discovery beyond the same first two search pages, durable/historical public delivery decision visibility, and an explicit production path for HP/Target watcher activation. Preserve exact item/offer/seller/variant/condition/fulfillment/price proof, durable leases, dedupe, price history, and bounded Turso behavior.
@@ -17,7 +17,7 @@ Repair the actual autoscan coverage path without weakening proof or hammering Wa
 - The six `eligible_without_post` rows were not proof of six missed posts. The old read-only audit rebuilt historical events using **current** threshold/category/quality rules and checked the post ledger, but fanout did not persist the per-guild reason that applied when each event originally ran. Old legitimate threshold/category/dedupe decisions could therefore be mislabeled later as unexplained missing receipts.
 - HP and Target are real production watcher services but intentionally run as **separate Discloud applications**. Main SniperPlug starts `main.py`; HP starts `hp_watcher_main.py`; Target starts `target_watcher_main.py`. Their `not_started` state means those standalone producers have not reported a production cycle to the shared Turso database.
 
-## Changes implemented in PR #253
+## Changes live in `main` from PR #253
 - **Circuit-safe page recovery:** production keeps a two-row `page_retry` claim lane while the HTML challenge circuit is open. The existing fetch path switches those claims to official API/exact-search-only recovery; challenged Walmart HTML remains completely suppressed.
 - **Truthful exact health:** the 1,074-style number is now labeled a **due backlog**, and health reports page-recovery mode, per-batch cap, actual claimable-this-batch count, and remaining HTML cooldown when applicable.
 - **Terminal rescue from strict proof:** `incomplete_identity` and `identity_mismatch` rows are immediately rearmed to `pending` only when the existing strict fresh official catalog snapshot builder succeeds. Missing seller/offer or unsafe marketplace proof leaves the row terminal. Telemetry now reports `terminal identity rescued`.
@@ -33,19 +33,18 @@ Repair the actual autoscan coverage path without weakening proof or hammering Wa
 - Existing low-level claim regression still proves a caller can explicitly set page recovery cap to zero without rewriting page-retry rows; production simply no longer uses zero during the HTML circuit because its API-only path is safe.
 - First full PR run exposed **4 failures / 1,262 passes**. All four were traced from the actual CI log before changes: one stale queue-health wording assertion, one stale static `read-only audit` phrase, one delivery-health fake that did not model the new read-only provenance query, and one fanout-schema test that still expected only the old cursor index. No compile/import/runtime implementation failure was hidden by those tests.
 - The fixes kept delivery health genuinely read-only, updated legacy-event expectations to the new non-overclaiming semantics, and updated schema regression coverage for the provenance table/index plus the existing cursor index.
-- Final Python 3.12 `Python Check` on code head `20f30c795540c9eb262f11a93e49d2d2abe57368`: **1,266 passed, 1 warning** (discord/audioop deprecation only).
+- Final Python 3.12 `Python Check` on the PR: **1,266 passed, 1 warning** (discord/audioop deprecation only).
 - `pip check` passed with **No broken requirements found**.
 - `python -m compileall -q sniperplug scripts tests` passed.
 - Import smoke passed **37 modules / 22 symbols**.
 - Separate `Python tests` workflow passed.
-- All three final PR workflows passed: Python Check, Python tests, and Import smoke check.
-- PR is mergeable, **19 commits ahead / 0 behind** its `main` base at the final code-validation checkpoint. Changed files are limited to the active task record, Walmart catalog/exact/health/fanout paths, HP/Target health text, and regressions.
-- PR discussion has no code-review blocker; the only comment is Qodo's inactive-subscription notice.
+- PR #253 had no code-review blocker; the only discussion item was Qodo's inactive-subscription notice.
+- PR #253 squash-merged as `ff12b0e57021489b9348424188dcfc81ed57f770`.
+- Post-merge `main` validation is green: Python Check, Python tests, and Import smoke check all passed.
+- GitHub combined status for the merged commit reports **`discloud/commit: success`** for app `1779293887444`. Treat that as deployment/integration success, not as proof of live runtime behavior.
 
 ## Validation pending / Definition of Done
-- Re-run all PR checks after this task-record-only update and squash-merge PR #253 only if they remain green.
-- Verify merged `main` workflows remain green.
-- Deploy merged `main` to the existing SniperPlug Discloud app.
+- Fresh live SniperPlug logs and `/autoscan_health` must prove the merged behavior is actually running.
 - Live Walmart acceptance must show:
   - catalog batches continue advancing and log rotating page windows deeper than the old fixed pages 1-2;
   - if the Walmart HTML circuit is open, queue health reports the page backlog separately from the **2-row claimable API-only batch**;
@@ -55,7 +54,7 @@ Repair the actual autoscan coverage path without weakening proof or hammering Wa
   - legacy pre-provenance events are no longer presented as confirmed missing posts merely because today's rules allow them.
 - HP acceptance requires the standalone `SniperPlug-HP-Watcher` Discloud process to run against the exact same Turso credentials and health to change from `not_started` to a real cycle state.
 - Target acceptance requires the standalone `SniperPlug-Target-Watcher` process, the same Turso credentials, and its required `TARGET_REDSKY_API_KEY`; health must change from `not_started` to a real cycle state.
-- The task closes only after those live production checks; green CI/merge alone is not production acceptance.
+- The task closes only after those live production checks; green CI/merge/deploy status alone is not production acceptance.
 
 ## Safety constraints
 - Do not disable or weaken the Walmart page-challenge circuit.

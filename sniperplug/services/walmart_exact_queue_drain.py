@@ -29,8 +29,14 @@ from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 
 
 TERMINAL_IDENTITY_STATUSES = ("incomplete_identity", "identity_mismatch")
-PUBLIC_ALERT_RECHECK_PERCENT = 50.0
-MID_TIER_RECHECK_PERCENT = 30.0
+VERIFIED_RECHECK_FALLBACK_HOURS = 24
+VERIFIED_RECHECK_STATUSES = (
+    "verified_markdown",
+    "verified_under_threshold",
+    "verified_no_reference",
+    "verified_reference",
+    "not_buyable",
+)
 # Product-page recovery itself is already limited to two concurrent requests.
 # Do not let a backlog of distinct challenged pages consume an entire 8/24-item
 # exact batch. Fresh catalog snapshots are exempt because they are attempted
@@ -64,6 +70,12 @@ async def claim_due_rows_batched(
     2. a guarded UPDATE leases only those item IDs and RETURNING confirms which
        rows this process actually acquired.
 
+    Verified rows have an additional claim-time age floor. A stale legacy
+    ``next_attempt_at`` from the old 4/12-hour cadence is simply ignored until
+    the last exact verification is 24 hours old, so migrating old schedules does
+    not itself spend Turso writes. A material catalog change changes the row back
+    to ``pending`` and therefore bypasses this verified-only floor immediately.
+
     Fresh bounded catalog proof is ranked before network recovery. A no-snapshot
     ``page_retry`` lane is capped to two rows per batch by default so a Walmart
     challenge wave cannot consume the batch. Callers may pass a cap of zero
@@ -78,9 +90,9 @@ async def claim_due_rows_batched(
     this worker from processing rows it did not lease.
 
     Production initializes the current queue schema before calling this helper.
-    Direct legacy callers that still own the pre-snapshot queue shape remain
-    supported fail-closed: only a missing discovery-snapshot column causes one
-    bounded retry with empty snapshot aliases. Other database errors propagate.
+    Direct legacy callers with a pre-snapshot/pre-verified-at test schema remain
+    supported fail-closed through one bounded compatibility retry. Production's
+    current schema always uses the verified-age floor.
     """
 
     now_utc = now.astimezone(timezone.utc)
@@ -90,6 +102,9 @@ async def claim_due_rows_batched(
     ).isoformat()
     snapshot_cutoff = (
         now_utc - timedelta(seconds=DISCOVERY_PROOF_MAX_AGE_SECONDS)
+    ).isoformat()
+    verified_recheck_cutoff = (
+        now_utc - timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
     ).isoformat()
     bounded_limit = max(1, int(limit))
     bounded_page_recovery_claim_cap = max(0, int(page_recovery_claim_cap))
@@ -103,6 +118,7 @@ async def claim_due_rows_batched(
         now_iso=now_iso,
         discovery_cutoff=discovery_cutoff,
         snapshot_cutoff=snapshot_cutoff,
+        verified_recheck_cutoff=verified_recheck_cutoff,
         bounded_limit=bounded_limit,
         page_recovery_claim_cap=bounded_page_recovery_claim_cap,
     )
@@ -187,6 +203,7 @@ async def _select_due_rows_with_optional_discovery_snapshot(
     now_iso: str,
     discovery_cutoff: str,
     snapshot_cutoff: str,
+    verified_recheck_cutoff: str,
     bounded_limit: int,
     page_recovery_claim_cap: int,
 ) -> list[Any]:
@@ -195,11 +212,13 @@ async def _select_due_rows_with_optional_discovery_snapshot(
             _due_rows_select_sql(
                 _DISCOVERY_SNAPSHOT_COLUMNS,
                 has_snapshot_columns=True,
+                has_verified_at=True,
             ),
             (
                 now_iso,
                 discovery_cutoff,
                 now_iso,
+                verified_recheck_cutoff,
                 snapshot_cutoff,
                 now_iso,
                 discovery_cutoff,
@@ -211,12 +230,13 @@ async def _select_due_rows_with_optional_discovery_snapshot(
             ),
         )
     except Exception as exc:
-        if not _is_missing_discovery_snapshot_column(exc):
+        if not _is_missing_optional_claim_column(exc):
             raise
         cursor = await conn.execute(
             _due_rows_select_sql(
                 _LEGACY_DISCOVERY_SNAPSHOT_PROJECTION,
                 has_snapshot_columns=False,
+                has_verified_at=False,
             ),
             (
                 now_iso,
@@ -236,6 +256,7 @@ def _due_rows_select_sql(
     snapshot_projection: str,
     *,
     has_snapshot_columns: bool,
+    has_verified_at: bool,
 ) -> str:
     if has_snapshot_columns:
         page_guard = f"""
@@ -289,6 +310,20 @@ def _due_rows_select_sql(
         """
         freshness_order = ""
 
+    if has_verified_at:
+        verified_statuses = ", ".join(
+            f"'{status}'" for status in VERIFIED_RECHECK_STATUSES
+        )
+        verified_guard = f"""
+          AND (
+              status NOT IN ({verified_statuses})
+              OR verified_at IS NULL
+              OR verified_at <= ?
+          )
+        """
+    else:
+        verified_guard = ""
+
     return f"""
         SELECT
             item_id, title, product_url, image_url,
@@ -300,6 +335,7 @@ def _due_rows_select_sql(
           AND last_seen_at >= ?
           AND status NOT IN ('incomplete_identity', 'identity_mismatch')
           AND (lease_until IS NULL OR lease_until < ?)
+          {verified_guard}
           {page_guard}
         ORDER BY
             {freshness_order}
@@ -322,13 +358,14 @@ def _due_rows_select_sql(
     """
 
 
-def _is_missing_discovery_snapshot_column(exc: BaseException) -> bool:
+def _is_missing_optional_claim_column(exc: BaseException) -> bool:
     message = str(exc or "").lower()
     return (
         "no such column" in message
         and (
             "discovery_snapshot_json" in message
             or "discovery_snapshot_at" in message
+            or "verified_at" in message
         )
     )
 
@@ -408,19 +445,15 @@ async def store_exact_candidate_with_tiered_recheck(
 
 
 def tiered_recheck_delay(status: str, discount_percent: float) -> timedelta:
-    """Keep strong deals fresh without creating an impossible hourly queue."""
+    """Use catalog-driven wakeups plus a low-write daily exact safety sweep.
 
-    discount = max(0.0, float(discount_percent or 0.0))
-    if status == "verified_markdown":
-        if discount >= PUBLIC_ALERT_RECHECK_PERCENT:
-            return timedelta(hours=4)
-        if discount >= MID_TIER_RECHECK_PERCENT:
-            return timedelta(hours=12)
-        return timedelta(hours=24)
-    if status == "verified_no_reference":
-        return timedelta(hours=24)
-    if status == "verified_under_threshold":
-        return timedelta(hours=24)
-    if status == "not_buyable":
-        return timedelta(hours=24)
+    Material catalog changes are rearmed immediately by the bulk enqueue path,
+    so verified rows no longer need a four-hour database-backed heartbeat just
+    because the last confirmed discount was large. The compatibility function
+    name is retained because both bulk and legacy exact persistence share it.
+    """
+
+    _ = discount_percent
+    if status in VERIFIED_RECHECK_STATUSES:
+        return timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
     return timedelta(hours=12)

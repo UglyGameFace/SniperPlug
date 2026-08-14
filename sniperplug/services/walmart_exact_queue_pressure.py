@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sniperplug.services.walmart_exact_queue_drain import (
+    VERIFIED_RECHECK_FALLBACK_HOURS,
+)
 from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHealth
 from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_RETENTION_DAYS,
@@ -31,8 +34,10 @@ async def load_walmart_exact_queue_pressure(
     ``cap`` controls the scheduled-recheck lane because total emergency
     backpressure can depend on it. Fresh/retry and active-lease lanes are capped
     more tightly at the maximum information current scheduling policy can use.
-    Counts at a cap are intentionally lower bounds; callers use this snapshot for
-    threshold decisions and bounded logging, never owner-facing exact totals.
+    Verified rows whose legacy ``next_attempt_at`` is early are not counted until
+    their 24-hour exact fallback is truly claimable. Counts at a cap are lower
+    bounds; callers use this snapshot for scheduling and bounded logging, never
+    owner-facing exact totals.
     """
 
     if db is None:
@@ -47,6 +52,9 @@ async def load_walmart_exact_queue_pressure(
     now_iso = now.isoformat()
     discovery_cutoff = (
         now - timedelta(days=QUEUE_RETENTION_DAYS)
+    ).isoformat()
+    verified_recheck_cutoff = (
+        now - timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
     ).isoformat()
     cursor = await conn.execute(
         f"""
@@ -81,6 +89,7 @@ async def load_walmart_exact_queue_pressure(
               AND next_attempt_at <= ?
               AND last_seen_at >= ?
               AND (lease_until IS NULL OR lease_until < ?)
+              AND (verified_at IS NULL OR verified_at <= ?)
             LIMIT ?
         ),
         active_verifying AS (
@@ -109,6 +118,7 @@ async def load_walmart_exact_queue_pressure(
             now_iso,
             discovery_cutoff,
             now_iso,
+            verified_recheck_cutoff,
             recheck_cap,
             now_iso,
             verifying_cap,

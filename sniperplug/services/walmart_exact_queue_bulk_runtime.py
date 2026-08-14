@@ -47,9 +47,6 @@ from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
 from sniperplug.services.walmart_global_offer_memory import (
     maybe_prune_global_offer_memory,
 )
-from sniperplug.services.walmart_recheck_schedule_rearm import (
-    rearm_legacy_due_rechecks_bounded,
-)
 
 
 log = logging.getLogger("sniperplug.autoscan.write_telemetry")
@@ -77,10 +74,11 @@ async def process_actionable_walmart_exact_queue_batch(
     serialized native libsql operations.
 
     Large 24/4 drain batches are reserved strictly for substantial unclaimed
-    first-time/retry pressure. Scheduled rechecks never force drain mode. Existing
-    rows left on the old hourly schedule are repaired in bounded batches, and a
-    row is deferred only when its own verified timestamp proves the current
-    4/12/24-hour tier has not elapsed yet.
+    first-time/retry pressure. Scheduled rechecks never force drain mode. Legacy
+    4/12-hour verified timestamps are filtered at claim time until the shared
+    24-hour fallback age has actually elapsed, so cadence migration costs zero
+    repair writes. A material catalog change reclassifies the row as ``pending``
+    and wakes it immediately.
 
     Exact queue and offer-memory schema initialization is cached per live
     database connection. Terminal identity maintenance is bounded to a
@@ -111,7 +109,6 @@ async def process_actionable_walmart_exact_queue_batch(
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
     await maybe_prune_walmart_exact_queue_bounded(conn, now=now)
-    await rearm_legacy_due_rechecks_bounded(conn, now=now)
 
     page_circuit_remaining = _page_challenge_circuit_remaining_seconds(provider)
 

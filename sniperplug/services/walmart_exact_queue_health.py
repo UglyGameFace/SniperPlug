@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sniperplug.services.walmart_exact_queue_drain import (
+    VERIFIED_RECHECK_FALLBACK_HOURS,
+)
 from sniperplug.services.walmart_exact_verification_queue import QUEUE_RETENTION_DAYS
 
 
@@ -54,11 +57,12 @@ class WalmartExactQueueHealth:
 async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     """Return queue state using the same retention and lease rules as the worker.
 
-    ``due_now`` includes both first-time/retry work and scheduled exact rechecks.
-    The split makes queue growth diagnosable without weakening backpressure.
-    Terminal identity failures stay fail-closed and are never actionable.
-    ``verifying`` counts only actively leased rows; expired leases return to the
-    appropriate due bucket.
+    ``due_now`` includes both first-time/retry work and truly claimable scheduled
+    exact rechecks. A legacy 4/12-hour verified timestamp is not reported due
+    until the shared 24-hour fallback age has elapsed. Material catalog changes
+    are ``pending`` and therefore remain immediately actionable. Terminal identity
+    failures stay fail-closed and are never actionable. ``verifying`` counts only
+    actively leased rows; expired leases return to the appropriate due bucket.
     """
 
     if db is None:
@@ -67,6 +71,9 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     discovery_cutoff = (now - timedelta(days=QUEUE_RETENTION_DAYS)).isoformat()
+    verified_recheck_cutoff = (
+        now - timedelta(hours=VERIFIED_RECHECK_FALLBACK_HOURS)
+    ).isoformat()
     try:
         cursor = await conn.execute(
             f"""
@@ -82,6 +89,17 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                      AND status NOT IN ('incomplete_identity', 'identity_mismatch')
                      AND next_attempt_at <= ?
                      AND (lease_until IS NULL OR lease_until < ?)
+                     AND (
+                         status NOT IN (
+                             'verified_markdown',
+                             'verified_under_threshold',
+                             'verified_no_reference',
+                             'verified_reference',
+                             'not_buyable'
+                         )
+                         OR verified_at IS NULL
+                         OR verified_at <= ?
+                     )
                     THEN 1 ELSE 0 END) AS due_now,
                 SUM(CASE
                     WHEN is_recent = 1
@@ -106,6 +124,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                      )
                      AND next_attempt_at <= ?
                      AND (lease_until IS NULL OR lease_until < ?)
+                     AND (verified_at IS NULL OR verified_at <= ?)
                     THEN 1 ELSE 0 END) AS recheck_due_now,
                 SUM(CASE
                     WHEN is_recent = 1
@@ -144,12 +163,14 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 discovery_cutoff,
                 now_iso,
                 now_iso,
+                verified_recheck_cutoff,
                 now_iso,
                 now_iso,
                 now_iso,
                 now_iso,
                 now_iso,
                 now_iso,
+                verified_recheck_cutoff,
                 now_iso,
                 now_iso,
                 now_iso,

@@ -6,6 +6,7 @@ from typing import Any
 
 WALMART_RECHECK_AUDIT_RETENTION_DAYS = 30
 WALMART_RECHECK_AUDIT_MAX_ROWS_PER_GUILD = 2000
+WALMART_RECHECK_AUDIT_PRUNE_BATCH_SIZE = 500
 
 
 async def ensure_walmart_recheck_audit(db: Any) -> None:
@@ -35,7 +36,12 @@ async def ensure_walmart_recheck_audit(db: Any) -> None:
         """
     )
     await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_walmart_recheck_audit_guild_time ON guild_walmart_recheck_audit (guild_id, occurred_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_walmart_recheck_audit_guild_time_id "
+        "ON guild_walmart_recheck_audit (guild_id, occurred_at DESC, id DESC)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_walmart_recheck_audit_occurred_cleanup "
+        "ON guild_walmart_recheck_audit (occurred_at, id)"
     )
     await conn.commit()
 
@@ -125,55 +131,126 @@ async def prune_walmart_recheck_audit(
     guild_id: int | None = None,
     retention_days: int = WALMART_RECHECK_AUDIT_RETENTION_DAYS,
     max_rows_per_guild: int = WALMART_RECHECK_AUDIT_MAX_ROWS_PER_GUILD,
+    batch_size: int = WALMART_RECHECK_AUDIT_PRUNE_BATCH_SIZE,
 ) -> int:
+    """Prune audit rows with bounded indexed reads.
+
+    Global startup maintenance only seeks an old-row batch by timestamp. Per-
+    guild cap enforcement remains available on explicit history access, where
+    the guild/time index makes the operation selective.
+    """
     await ensure_walmart_recheck_audit(db)
     conn = db.require_conn()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(retention_days)))).isoformat()
+    safe_batch = max(1, min(int(batch_size), 5_000))
     deleted = 0
+
+    old_ids = await _select_audit_ids(
+        conn,
+        guild_id=guild_id,
+        cutoff=cutoff,
+        limit=safe_batch,
+    )
+    deleted += await _delete_audit_ids(conn, old_ids)
+
+    if guild_id is not None:
+        overflow_ids = await _select_overflow_ids(
+            conn,
+            guild_id=int(guild_id),
+            keep=max(1, int(max_rows_per_guild)),
+            limit=safe_batch,
+        )
+        deleted += await _delete_audit_ids(conn, overflow_ids)
+
+    if deleted:
+        await conn.commit()
+    return deleted
+
+
+async def _select_audit_ids(
+    conn: Any,
+    *,
+    guild_id: int | None,
+    cutoff: str,
+    limit: int,
+) -> list[int]:
     if guild_id is None:
-        cursor = await conn.execute("DELETE FROM guild_walmart_recheck_audit WHERE occurred_at < ?", (cutoff,))
-        deleted += _row_count(cursor)
         cursor = await conn.execute(
             """
-            DELETE FROM guild_walmart_recheck_audit
-            WHERE id IN (
-                SELECT audit.id
-                FROM guild_walmart_recheck_audit AS audit
-                WHERE (
-                    SELECT COUNT(*)
-                    FROM guild_walmart_recheck_audit AS newer
-                    WHERE newer.guild_id = audit.guild_id
-                      AND (
-                          newer.occurred_at > audit.occurred_at
-                          OR (newer.occurred_at = audit.occurred_at AND newer.id > audit.id)
-                      )
-                ) >= ?
-            )
+            SELECT id
+            FROM guild_walmart_recheck_audit
+            WHERE occurred_at < ?
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?
             """,
-            (max(1, int(max_rows_per_guild)),),
+            (cutoff, limit),
         )
-        deleted += _row_count(cursor)
     else:
         cursor = await conn.execute(
-            "DELETE FROM guild_walmart_recheck_audit WHERE guild_id = ? AND occurred_at < ?",
-            (int(guild_id), cutoff),
-        )
-        deleted += _row_count(cursor)
-        cursor = await conn.execute(
             """
-            DELETE FROM guild_walmart_recheck_audit
-            WHERE guild_id = ? AND id NOT IN (
-                SELECT id FROM guild_walmart_recheck_audit
-                WHERE guild_id = ?
-                ORDER BY occurred_at DESC, id DESC
-                LIMIT ?
-            )
+            SELECT id
+            FROM guild_walmart_recheck_audit
+            WHERE guild_id = ? AND occurred_at < ?
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?
             """,
-            (int(guild_id), int(guild_id), max(1, int(max_rows_per_guild))),
+            (int(guild_id), cutoff, limit),
         )
-        deleted += _row_count(cursor)
-    await conn.commit()
-    return deleted
+    return _ids_from_rows(await cursor.fetchall())
+
+
+async def _select_overflow_ids(
+    conn: Any,
+    *,
+    guild_id: int,
+    keep: int,
+    limit: int,
+) -> list[int]:
+    cursor = await conn.execute(
+        """
+        SELECT id
+        FROM guild_walmart_recheck_audit
+        WHERE guild_id = ?
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (guild_id, limit, keep),
+    )
+    return _ids_from_rows(await cursor.fetchall())
+
+
+async def _delete_audit_ids(conn: Any, ids: list[int]) -> int:
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    await conn.execute(
+        f"DELETE FROM guild_walmart_recheck_audit WHERE id IN ({placeholders})",
+        tuple(ids),
+    )
+    return len(ids)
+
+
+def _ids_from_rows(rows: list[Any]) -> list[int]:
+    ids: list[int] = []
+    for row in rows:
+        value = _row_value(row, "id", 0)
+        try:
+            item_id = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        ids.append(item_id)
+    return ids
+
+
+def _row_value(row: Any, key: str, index: int) -> Any:
+    try:
+        return row[key]
+    except Exception:
+        pass
+    try:
+        return row[index]
+    except Exception:
+        return getattr(row, key, None)
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -181,10 +258,3 @@ def _float_or_none(value: Any) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
-
-
-def _row_count(cursor: Any) -> int:
-    try:
-        return max(0, int(getattr(cursor, "rowcount", 0) or 0))
-    except (TypeError, ValueError):
-        return 0

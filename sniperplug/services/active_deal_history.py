@@ -8,6 +8,7 @@ from sniperplug.services.public_deal_posts import ensure_public_post_tables
 
 ACTIVE_DEAL_HISTORY_RETENTION_DAYS = 30
 ACTIVE_DEAL_HISTORY_MAX_ROWS_PER_GUILD = 1000
+ACTIVE_DEAL_HISTORY_PRUNE_BATCH_SIZE = 500
 
 
 async def ensure_active_deal_history(db: Any) -> None:
@@ -34,7 +35,12 @@ async def ensure_active_deal_history(db: Any) -> None:
         """
     )
     await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_active_deal_history_guild_time ON guild_active_deal_history (guild_id, occurred_at DESC)"
+        "CREATE INDEX IF NOT EXISTS idx_active_deal_history_guild_time_id "
+        "ON guild_active_deal_history (guild_id, occurred_at DESC, id DESC)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_active_deal_history_occurred_cleanup "
+        "ON guild_active_deal_history (occurred_at, id)"
     )
     await conn.execute(
         """
@@ -85,57 +91,126 @@ async def prune_active_deal_history(
     guild_id: int | None = None,
     retention_days: int = ACTIVE_DEAL_HISTORY_RETENTION_DAYS,
     max_rows_per_guild: int = ACTIVE_DEAL_HISTORY_MAX_ROWS_PER_GUILD,
+    batch_size: int = ACTIVE_DEAL_HISTORY_PRUNE_BATCH_SIZE,
 ) -> int:
+    """Prune history without a global COUNT-per-row scan.
+
+    Startup/global maintenance only performs a bounded age seek. The per-guild
+    row cap is enforced when that guild's history is explicitly used, where the
+    `(guild_id, occurred_at, id)` index can satisfy the request directly.
+    """
     await ensure_active_deal_history(db)
     conn = db.require_conn()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, int(retention_days)))).isoformat()
+    safe_batch = max(1, min(int(batch_size), 5_000))
     deleted = 0
 
+    old_ids = await _select_history_ids(
+        conn,
+        guild_id=guild_id,
+        cutoff=cutoff,
+        limit=safe_batch,
+    )
+    deleted += await _delete_history_ids(conn, old_ids)
+
+    if guild_id is not None:
+        overflow_ids = await _select_overflow_ids(
+            conn,
+            guild_id=int(guild_id),
+            keep=max(1, int(max_rows_per_guild)),
+            limit=safe_batch,
+        )
+        deleted += await _delete_history_ids(conn, overflow_ids)
+
+    if deleted:
+        await conn.commit()
+    return deleted
+
+
+async def _select_history_ids(
+    conn: Any,
+    *,
+    guild_id: int | None,
+    cutoff: str,
+    limit: int,
+) -> list[int]:
     if guild_id is None:
-        cursor = await conn.execute("DELETE FROM guild_active_deal_history WHERE occurred_at < ?", (cutoff,))
-        deleted += _row_count(cursor)
         cursor = await conn.execute(
             """
-            DELETE FROM guild_active_deal_history
-            WHERE id IN (
-                SELECT history.id
-                FROM guild_active_deal_history AS history
-                WHERE (
-                    SELECT COUNT(*)
-                    FROM guild_active_deal_history AS newer
-                    WHERE newer.guild_id = history.guild_id
-                      AND (
-                          newer.occurred_at > history.occurred_at
-                          OR (newer.occurred_at = history.occurred_at AND newer.id > history.id)
-                      )
-                ) >= ?
-            )
+            SELECT id
+            FROM guild_active_deal_history
+            WHERE occurred_at < ?
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?
             """,
-            (max(1, int(max_rows_per_guild)),),
+            (cutoff, limit),
         )
-        deleted += _row_count(cursor)
     else:
         cursor = await conn.execute(
-            "DELETE FROM guild_active_deal_history WHERE guild_id = ? AND occurred_at < ?",
-            (guild_id, cutoff),
-        )
-        deleted += _row_count(cursor)
-        cursor = await conn.execute(
             """
-            DELETE FROM guild_active_deal_history
-            WHERE guild_id = ? AND id NOT IN (
-                SELECT id FROM guild_active_deal_history
-                WHERE guild_id = ?
-                ORDER BY occurred_at DESC, id DESC
-                LIMIT ?
-            )
+            SELECT id
+            FROM guild_active_deal_history
+            WHERE guild_id = ? AND occurred_at < ?
+            ORDER BY occurred_at ASC, id ASC
+            LIMIT ?
             """,
-            (guild_id, guild_id, max(1, int(max_rows_per_guild))),
+            (int(guild_id), cutoff, limit),
         )
-        deleted += _row_count(cursor)
+    return _ids_from_rows(await cursor.fetchall())
 
-    await conn.commit()
-    return deleted
+
+async def _select_overflow_ids(
+    conn: Any,
+    *,
+    guild_id: int,
+    keep: int,
+    limit: int,
+) -> list[int]:
+    cursor = await conn.execute(
+        """
+        SELECT id
+        FROM guild_active_deal_history
+        WHERE guild_id = ?
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (guild_id, limit, keep),
+    )
+    return _ids_from_rows(await cursor.fetchall())
+
+
+async def _delete_history_ids(conn: Any, ids: list[int]) -> int:
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    await conn.execute(
+        f"DELETE FROM guild_active_deal_history WHERE id IN ({placeholders})",
+        tuple(ids),
+    )
+    return len(ids)
+
+
+def _ids_from_rows(rows: list[Any]) -> list[int]:
+    ids: list[int] = []
+    for row in rows:
+        value = _row_value(row, "id", 0)
+        try:
+            item_id = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        ids.append(item_id)
+    return ids
+
+
+def _row_value(row: Any, key: str, index: int) -> Any:
+    try:
+        return row[key]
+    except Exception:
+        pass
+    try:
+        return row[index]
+    except Exception:
+        return getattr(row, key, None)
 
 
 async def list_active_deal_history(
@@ -172,10 +247,3 @@ async def list_active_deal_history(
         tuple(params),
     )
     return [dict(row) for row in await cursor.fetchall()]
-
-
-def _row_count(cursor: Any) -> int:
-    try:
-        return max(0, int(getattr(cursor, "rowcount", 0) or 0))
-    except (TypeError, ValueError):
-        return 0

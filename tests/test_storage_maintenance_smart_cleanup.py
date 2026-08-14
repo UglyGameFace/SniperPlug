@@ -57,6 +57,9 @@ class EmptyCursor:
     async def fetchall(self):
         return []
 
+    async def fetchone(self):
+        return None
+
 
 class EmptyMaintenanceConnection:
     def __init__(self):
@@ -79,18 +82,36 @@ async def _noop_prune(_db) -> int:
     return 0
 
 
-def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypatch) -> None:
+async def _no_optional_table(_conn, _table: str) -> bool:
+    return False
+
+
+async def _noop_indexes(_conn) -> None:
+    return None
+
+
+def _install_noop_ensures(monkeypatch) -> None:
+    monkeypatch.setattr(maintenance, "ensure_deal_feedback_tables", _noop_ensure)
+    monkeypatch.setattr(maintenance, "ensure_public_post_tables", _noop_ensure)
+    monkeypatch.setattr(maintenance, "ensure_autoscan_history_table", _noop_ensure)
+    monkeypatch.setattr(maintenance, "ensure_error_logging_table", _noop_ensure)
+    monkeypatch.setattr(maintenance, "prune_active_deal_history", _noop_prune)
+    monkeypatch.setattr(maintenance, "prune_walmart_recheck_audit", _noop_prune)
+
+
+def test_smart_cleanup_drops_disposable_rows_but_keeps_price_history(monkeypatch) -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
         db = FakeDatabase(conn)
         now = datetime.now(timezone.utc)
-        old = (now - timedelta(days=10)).isoformat()
-        old_scan_run = (now - timedelta(days=40)).isoformat()
+        old_40d = (now - timedelta(days=40)).isoformat()
+        old_10d = (now - timedelta(days=10)).isoformat()
+        old_100d = (now - timedelta(days=100)).isoformat()
         recent = (now - timedelta(hours=1)).isoformat()
 
         await conn.executescript(
             """
-            CREATE TABLE guild_deal_feedback_targets (expires_at TEXT);
+            CREATE TABLE guild_deal_feedback_targets (created_at TEXT, expires_at TEXT);
             CREATE TABLE guild_deal_feedback_events (created_at TEXT);
             CREATE TABLE guild_active_deal_cache (
                 guild_id INTEGER,
@@ -99,12 +120,19 @@ def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypat
                 last_seen_at TEXT
             );
             CREATE TABLE guild_auto_scan_report_history (ran_at TEXT);
-            CREATE TABLE guild_public_deal_posts (status TEXT, first_seen_at TEXT);
+            CREATE TABLE guild_public_deal_posts (
+                status TEXT,
+                first_seen_at TEXT,
+                posted_at TEXT
+            );
             CREATE TABLE provider_response_cache (expires_at TEXT);
             CREATE TABLE scan_result_cache (expires_at TEXT);
             CREATE TABLE alert_dedupe (expires_at TEXT);
             CREATE TABLE store_cache (expires_at TEXT);
             CREATE TABLE scan_runs (started_at TEXT);
+            CREATE TABLE error_events (created_at TEXT);
+            CREATE TABLE guild_retailer_auto_scan_runs (ran_at TEXT);
+            CREATE TABLE user_dm_deal_alert_receipts (delivered_at TEXT);
             CREATE TABLE price_observations (
                 observation_id TEXT PRIMARY KEY,
                 retailer TEXT,
@@ -116,11 +144,15 @@ def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypat
         )
         await conn.execute(
             "INSERT INTO guild_active_deal_cache VALUES (1, 'old-active', 'active', ?)",
-            (old,),
+            (old_10d,),
         )
         await conn.execute(
             "INSERT INTO guild_active_deal_cache VALUES (1, 'old-stale', 'stale', ?)",
-            (old,),
+            (old_10d,),
+        )
+        await conn.execute(
+            "INSERT INTO guild_active_deal_cache VALUES (1, 'old-cleared', 'cleared', ?)",
+            (old_10d,),
         )
         await conn.execute(
             "INSERT INTO guild_active_deal_cache VALUES (1, 'recent', 'active', ?)",
@@ -128,7 +160,7 @@ def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypat
         )
         await conn.execute(
             "INSERT INTO price_observations VALUES ('history-1', 'walmart', 'item-1', 19.99, ?)",
-            (old,),
+            (old_100d,),
         )
         for table in (
             "provider_response_cache",
@@ -136,15 +168,24 @@ def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypat
             "alert_dedupe",
             "store_cache",
         ):
-            await conn.execute(f"INSERT INTO {table} VALUES (?)", (old,))
-        await conn.execute("INSERT INTO scan_runs VALUES (?)", (old_scan_run,))
+            await conn.execute(f"INSERT INTO {table} VALUES (?)", (old_10d,))
+        await conn.execute("INSERT INTO scan_runs VALUES (?)", (old_10d,))
+        await conn.execute("INSERT INTO error_events VALUES (?)", (old_40d,))
+        await conn.execute("INSERT INTO guild_auto_scan_report_history VALUES (?)", (old_10d,))
+        await conn.execute(
+            "INSERT INTO guild_public_deal_posts VALUES ('posted', ?, ?)",
+            (old_40d, old_40d),
+        )
+        await conn.execute(
+            "INSERT INTO guild_public_deal_posts VALUES ('sending', ?, NULL)",
+            (old_40d,),
+        )
+        await conn.execute("INSERT INTO guild_retailer_auto_scan_runs VALUES (?)", (old_10d,))
+        await conn.execute("INSERT INTO user_dm_deal_alert_receipts VALUES (?)", (old_100d,))
         await conn.commit()
 
-        monkeypatch.setattr(maintenance, "ensure_deal_feedback_tables", _noop_ensure)
-        monkeypatch.setattr(maintenance, "ensure_public_post_tables", _noop_ensure)
-        monkeypatch.setattr(maintenance, "ensure_autoscan_history_table", _noop_ensure)
-        monkeypatch.setattr(maintenance, "prune_active_deal_history", _noop_prune)
-        monkeypatch.setattr(maintenance, "prune_walmart_recheck_audit", _noop_prune)
+        _install_noop_ensures(monkeypatch)
+        maintenance._CLEANUP_INDEX_CONNECTIONS.clear()
 
         result = await maintenance.run_storage_maintenance(
             db,
@@ -158,12 +199,56 @@ def test_smart_cleanup_drops_terminal_hot_rows_but_keeps_price_history(monkeypat
 
         cursor = await conn.execute("SELECT COUNT(*) FROM price_observations")
         assert (await cursor.fetchone())[0] == 1
-        assert result.old_inactive_active_deals == 2
+        assert result.old_inactive_active_deals == 3
         assert result.expired_provider_cache == 1
         assert result.expired_scan_result_cache == 1
         assert result.expired_alert_dedupe == 1
         assert result.expired_store_cache == 1
         assert result.old_scan_runs == 1
+        assert result.old_error_events == 1
+        assert result.old_autoscan_reports == 1
+        assert result.old_public_posts == 1
+        assert result.old_public_sending_rows == 1
+        assert result.old_retailer_autoscan_runs == 1
+        assert result.old_dm_receipts == 1
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_feedback_targets_are_bounded_without_counting_entire_table(monkeypatch) -> None:
+    async def run() -> None:
+        conn = await aiosqlite.connect(":memory:")
+        await conn.execute(
+            "CREATE TABLE guild_deal_feedback_targets (created_at TEXT, expires_at TEXT)"
+        )
+        now = datetime.now(timezone.utc)
+        rows = [
+            (
+                (now - timedelta(minutes=index)).isoformat(),
+                (now + timedelta(days=30)).isoformat(),
+            )
+            for index in range(620)
+        ]
+        await conn.executemany(
+            "INSERT INTO guild_deal_feedback_targets VALUES (?, ?)",
+            rows,
+        )
+        await conn.execute(
+            "CREATE INDEX idx_targets_created ON guild_deal_feedback_targets (created_at DESC)"
+        )
+        await conn.commit()
+
+        deleted = await maintenance.delete_oldest_rows_beyond_limit(
+            conn,
+            table="guild_deal_feedback_targets",
+            timestamp_column="created_at",
+            keep=500,
+            limit=50,
+        )
+        assert deleted == 50
+        cursor = await conn.execute("SELECT COUNT(*) FROM guild_deal_feedback_targets")
+        assert (await cursor.fetchone())[0] == 570
         await conn.close()
 
     asyncio.run(run())
@@ -174,18 +259,17 @@ def test_empty_storage_maintenance_skips_operational_commit(monkeypatch) -> None
         conn = EmptyMaintenanceConnection()
         db = FakeDatabase(conn)
 
-        monkeypatch.setattr(maintenance, "ensure_deal_feedback_tables", _noop_ensure)
-        monkeypatch.setattr(maintenance, "ensure_public_post_tables", _noop_ensure)
-        monkeypatch.setattr(maintenance, "ensure_autoscan_history_table", _noop_ensure)
-        monkeypatch.setattr(maintenance, "prune_active_deal_history", _noop_prune)
-        monkeypatch.setattr(maintenance, "prune_walmart_recheck_audit", _noop_prune)
+        _install_noop_ensures(monkeypatch)
+        monkeypatch.setattr(maintenance, "ensure_quota_safe_cleanup_indexes", _noop_indexes)
+        monkeypatch.setattr(maintenance, "table_exists", _no_optional_table)
 
         result = await maintenance.run_storage_maintenance(db, cleanup_batch_size=50)
 
         assert result.total_changed == 0
         assert conn.commits == 0
         assert conn.executed_sql
-        assert all(sql.startswith("SELECT rowid AS __sniperplug_rowid") for sql in conn.executed_sql)
+        assert not any(sql.startswith("DELETE ") or sql.startswith("UPDATE ") for sql in conn.executed_sql)
+        assert not any("COUNT(*)" in sql.upper() for sql in conn.executed_sql)
 
     asyncio.run(run())
 

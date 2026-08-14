@@ -1,67 +1,72 @@
 # Active Task
 
 ## Status
-**Active — SP-TURSO-READ-AMPLIFICATION is at its final Turso-dashboard slope gate. Turso's Aug 14 1:10 PM dashboard baseline showed the account at 92% of its rows-read quota, with SniperPlug at 455,545,327 rows read. PR #251 was squash-merged to `main` as `374a5d3cbd0b050a7378c3325d5cf572c78f3366`; all three post-merge `main` workflows passed. Post-deploy Discloud telemetry shows the exact claim path completing in 0.03-0.18s across repeated cycles while still claiming and verifying valid work, with no recurrence of the prior 4.03s slow `SELECT item_id, title, product_url...` warning in the supplied live sample. A 4:39 PM Turso dashboard checkpoint now shows the account at 94% and SniperPlug at 465,010,750 rows read. That is +9,465,423 rows versus the 1:10 PM baseline, but that delta spans roughly 3h12m before the new build was deployed and only about 17m after deployment, so it cannot be attributed to the fixed build. Treat 465,010,750 at 4:39 PM as the first clean post-deploy slope anchor. The task remains open pending a second post-deploy Turso reading over a meaningful interval.**
+**Active — SP-TURSO-READ-AMPLIFICATION.** PR #251 was already squash-merged as `374a5d3cbd0b050a7378c3325d5cf572c78f3366` and removed the major broad Walmart exact-queue claim/pressure scan. The deployed exact worker now claims in roughly 0.03-0.18s in the supplied live sample while continuing to verify real work. However, the clean Turso dashboard checkpoints still showed SniperPlug rising from **465,010,750 rows read at 4:39 PM** to **466,177,322 at 5:19 PM**: **+1,166,572 rows in 40 minutes (~1.75M/hour)**. That is still too expensive at 94% account quota. PR #252 now contains the second evidence-based hardening pass for stale operational history and cleanup/restore paths; its final head is CI-green and review-thread clean. The task remains open through merge/deploy and a new Turso rows-read slope check.
 
 ## Scope
-Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-quota emergency while preserving the existing Walmart exact-verification architecture and safety semantics. Fix the actual high-frequency read access paths rather than masking them with stale caches, disabling verification, or creating a parallel queue/runtime.
+Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-quota emergency while preserving Walmart exact-verification correctness, price intelligence, dedupe safety, user preferences, and useful learning. Remove operational data that is expired, terminal, redundant, or no longer reachable by runtime behavior. Cleanup itself must be bounded and index-seeking so it does not create another quota spike.
 
 ## Root cause / findings
-- Turso's dashboard evidence is account-critical: rows read were at **92%**, and SniperPlug alone showed **455,545,327 rows read**, **6,273,176 rows written**, and **2.38 GB synced** at the 1:10 PM baseline.
-- Production previously logged a slow isolated database operation for `SELECT item_id, title, product_url...` with **remote_s=4.03**. That projection maps to the Walmart exact queue claim selector.
-- The exact worker normally runs about every **20 seconds**. Before PR #251, `claim_due_rows_batched` used one all-status SELECT combining due time, retention, lease state, fresh-snapshot priority, page-recovery handling, verified status-age floors, status ordering, priority ordering, and a final small LIMIT.
-- A mature-queue SQLite reproduction with thousands of recently verified low-signal rows showed the old claim planner choosing the `last_seen_at` access path and a temporary ORDER BY rather than seeking directly by the verified-age floor. A small result LIMIT therefore did not guarantee a small scan.
-- PR #250 intentionally stopped rewriting legacy early verified schedules in order to remove needless Turso writes. A mature verified row can therefore have an already-due legacy `next_attempt_at` while its newer `verified_at` correctly keeps it below the real 24h/72h/7d safety cadence. The old claim SELECT could repeatedly encounter and reject large numbers of those rows.
-- `load_walmart_exact_queue_pressure` was another multiplier. It is used by the exact worker before claims, after real work, and by catalog/backpressure paths. Its old verified recheck branch combined due schedule and verified-age predicates in a way that could repeatedly walk the same legacy-due-but-too-young rows.
-- Full owner-facing `load_walmart_exact_queue_health` performs broader aggregates, but background runtime explicitly avoids it (`background_full_queue_scans=false`). It is not the primary continuous read source identified here.
-- Global Walmart fanout cursor reads were already hardened separately with bounded cursor/index behavior and focused regression coverage. This task does not duplicate that work without evidence.
-- The read fix preserves: durable per-row leases; fresh-snapshot priority; page-recovery claim cap; terminal identity exclusion; exact seller/item/offer/variant/condition/fulfillment proof; immediate material catalog wakeups; 24h markdown, 72h reference/under-threshold, and 7d low-signal safety sweeps; missing-`verified_at` recovery; price history; fanout; and delivery dedupe.
+- Turso's Aug 14 baseline was account-critical: **92% rows-read quota**, with SniperPlug at **455,545,327 rows read**. Later checkpoints reached **94%**.
+- PR #251 fixed the repeated exact-queue selector/pressure amplification. Mature verified rows with legacy-due schedules no longer force broad status scans; live claim timings confirm that path is now fast.
+- The remaining clean post-deploy slope is still high enough to justify inspecting other real readers rather than reopening the solved exact selector.
+- Startup `run_storage_maintenance` was still using generic `SELECT rowid ... WHERE ... ORDER BY rowid LIMIT ?` selectors. Even though deletes were capped at 500 rows, `ORDER BY rowid` did not align with expiry/time predicates and could force avoidable scans before finding old rows.
+- `/storage_maintenance_now` performed a full server-specific `storage_counts()` sweep **before and after** cleanup. Those decorative `COUNT(*)` reads were unnecessary during a quota emergency because the cleanup result already knows exact changed-row counts.
+- `scan_runs` is execution telemetry, not price intelligence, yet was retained for 30 days. Startup already hit the exact 500-row cleanup cap, proving a backlog exists. Seven days is sufficient for current diagnostics.
+- Legacy per-server autoscan report history was retained for 14 days even though global Walmart delivery no longer depends on it; seven days retains recent troubleshooting value.
+- `guild_retailer_auto_scan_runs` had no retention at all. Its only runtime uses are today's run count and an interval gate whose maximum configured interval is seven days, so rows older than eight days are no longer decision-relevant.
+- `error_events` stores potentially large traceback/context payloads and had no retention. Thirty days preserves useful troubleshooting while preventing indefinite growth.
+- `guild_public_deal_posts` retained normal `posted` rows indefinitely even though the independent `alert_dedupe` guard expires normal public duplicate protection after 30 days. Posted/sending ledger rows older than 31 days are redundant.
+- Active deal rows marked `cleared` were terminal but never included in terminal cache cleanup.
+- Feedback target rows were set to a 10-year expiry. Startup restored at most 250 persistent feedback views but fetched up to 750 targets first; the live log showed **250 registered / 501 skipped_old**. Rows beyond the bounded restore surface are not useful after restart. The new cleanup keeps a 500-row buffer and restoration now queries only the capacity it can register.
+- Global `prune_active_deal_history` and `prune_walmart_recheck_audit` each used a correlated `COUNT(*)` per candidate row to enforce per-guild caps. That is unnecessary at startup and can grow toward quadratic work. Global startup maintenance only needs a bounded age prune; per-guild caps can be enforced selectively when that guild's history is explicitly opened.
+- DM receipts keep their existing 90-day dedupe semantics, but stale receipt cleanup now gets a standalone `delivered_at` cleanup index when the table exists.
+- A final conflict/safety inspection found one lifecycle edge case before merge: optional tables such as retailer autoscan history or DM receipts can be created after the first startup maintenance call. The cleanup-index initialization now tracks base/optional index groups independently, so a later maintenance pass can install the missing selective index instead of returning early and scanning the newly-created table without one.
+- Price observations, product identity, exact Walmart verification queue state, exact Walmart offer-price memory, feedback summaries/votes, live dedupe rows, user DM settings, and clearance seeds are explicitly outside this purge scope.
 
-## Changes live in `main` from PR #251
-- Added `idx_walmart_exact_detail_queue_status_verified_due` over `(status, verified_at, next_attempt_at, last_seen_at, lease_until, priority_score DESC)` during the existing one-time exact runtime schema initialization.
-- Reworked production exact claims from one broad all-status SELECT into a bounded candidate pool of index-seekable lanes: fresh proof, pending, retry, failed, capped page recovery, each verified status/age band, missing verified timestamps, and expired verifying work.
-- Preserved the existing final global ordering: fresh proof first, then the established status order, then priority and recency. The durable guarded lease UPDATE/RETURNING path remains unchanged.
-- Non-fresh lanes exclude currently fresh snapshot rows so a row cannot enter the candidate pool twice.
-- Direct compatibility callers that have not initialized runtime indexes retain the historical current-schema selector; older pre-snapshot/pre-`verified_at` callers retain the legacy selector after the current-schema fallback reports missing optional columns.
-- Reworked bounded queue pressure so fresh/retry, page recovery, and active leases seek the existing status/due index, while scheduled verified rechecks are split by 24h/72h/7d age and seek the new status/verified index. Missing verified timestamps remain recoverable.
-- Added EXPLAIN-query-plan regressions using a mature queue fixture containing hundreds of legacy-due-but-too-young low-signal rows. Tests require the selective indexes and forbid a direct full queue scan in the optimized production path.
-- Updated existing pressure, recheck-floor, claim, and runtime-schema regressions to exercise the indexed runtime schema while preserving previous behavior assertions.
+## Changes in PR #252
+- Reworked storage maintenance selectors to use bounded rowid batches ordered by the same expiry/timestamp columns used by their retention predicates.
+- Added quota-safe cleanup indexes for feedback targets/events, active deal terminal rows, autoscan reports, public-post ledger rows, store-cache expiry, scan-run age, optional retailer autoscan run age, and optional DM receipt age.
+- Cleanup index installation is connection/group aware: base indexes initialize once, while optional retailer-autoscan and DM-receipt indexes can still be installed later if those tables appear after startup.
+- Shortened disposable operational retention to: scan runs **7d**, autoscan reports **7d**, raw feedback click events **30d**, error events **30d**, public post ledger **31d**, retailer autoscan run history **8d**. DM receipts remain **90d**.
+- Added bounded cleanup for old posted/sending public-post rows, old error events, old retailer autoscan run rows, stale DM receipts, and terminal `cleared` active-cache rows.
+- Capped restart-safe feedback targets to the newest **500** rows in bounded batches while preserving feedback summaries and active vote ledgers.
+- Changed persistent feedback restoration to query only the remaining registration capacity instead of fetching hundreds of rows that will be discarded.
+- Removed before/after `storage_counts()` sweeps from `/storage_maintenance_now`; the command now reports exact cleanup-result counts and explicitly skips quota-wasting count scans.
+- Reworked global active-deal history and Walmart recheck-audit pruning to bounded timestamp seeks. Removed the global correlated COUNT-per-row cap queries. Per-guild cap enforcement remains selective and bounded on explicit history access.
+- Added focused regressions for bounded operational cleanup, protected price history, feedback target bounding, Turso mapping rowid aliases, no-op cleanup write avoidance, bounded history/audit pruning, static quota-safety invariants, and optional cleanup indexes appearing after startup.
 
 ## Validation completed
-- Root-cause reproduction completed before edits: the old mature-queue claim plan used the `last_seen_at` index plus temporary ordering instead of a verified-age seek.
-- Synthetic optimized claim-plan inspection shows the new verified lanes search by `status=? AND verified_at<?` using the new status/verified index.
-- Synthetic optimized pressure-plan inspection follows the same age-seek approach rather than repeatedly post-filtering recent verified rows.
-- Focused regression coverage includes a 256-row legacy-due recent low-signal fixture where only the genuinely old recheck and fresh pending work are eligible.
-- The first PR CI pass exposed exactly two compatibility regressions: a minimal legacy schema fell through only one fallback layer, and the runtime-schema test still expected five index/drop statements instead of six. Both were fixed narrowly without changing the optimized production semantics.
-- Final Python 3.12 `Python Check` passed **1,246 tests, 1 warning** (discord/audioop deprecation only). `pip check`, `python -m compileall -q sniperplug scripts tests`, and the 37-module/22-symbol import smoke check passed.
-- The separate `Python tests` workflow also passed dependency check, compilation, and the full pytest suite.
-- PR #251 had **9 changed files**, all directly scoped to the task record, exact claim/pressure/schema paths, and their regressions. No temporary workflow, alternate runtime, cache layer, or unrelated product behavior was in the diff.
-- PR #251 had no review threads or submitted review blockers. The only PR comment was Qodo's inactive-subscription notice, not a code finding.
-- PR #251 was squash-merged as `374a5d3cbd0b050a7378c3325d5cf572c78f3366`.
-- All three push workflows on the merged `main` commit passed: Python tests, Python Check, and Import smoke check.
-- Post-deploy Discloud startup completed normally with Turso process isolation, `bounded_queue_pressure=true`, `background_full_queue_scans=false`, exact queue batch 8, and 20-second exact interval preserved.
-- Repeated live exact cycles reported claim timings of **0.10s, 0.06s, 0.06s, 0.03s, 0.07s, 0.08s, and 0.18s**. The supplied post-deploy window contains no recurrence of the previous **4.03s** slow isolated queue-claim SELECT warning.
-- Valid exact work still flows: cycles claimed 7, 1, 2, 0, 1, 1, and 3 rows; a fresh catalog proof successfully verified a no-reference item, and a later cycle verified two items while recovering an official was price. This proves the optimized selector did not simply stop exact verification to save reads.
-- The material-change wake path remains active: the catalog reported **verified changes rearmed 1** before a later exact cycle claimed additional work.
-- Bounded pressure remained semantically coherent in the live sample: `actionable due >=64` was attributable to **page recovery >=64** while **scheduled rechecks 0** and **new/retry 0**. The open page circuit/page-challenge backlog is a Walmart page-recovery condition, not evidence of a returning broad Turso scan.
-- One startup `CREATE TABLE IF NOT...` operation took 2.59s, but it was a schema/startup operation rather than the repeated exact queue claim path under investigation.
-- First post-deploy dashboard checkpoint: **4:39 PM — account 94%, SniperPlug 465,010,750 rows read, 6,317,266 rows written**. The apparent **+9,465,423** rows versus the 1:10 PM baseline is not a valid post-deploy rate because most of that interval predates deployment.
+- PR #251 final Python 3.12 suite: **1,246 passed, 1 warning** (discord/audioop deprecation only); dependency check, compileall, and import smoke passed, and all post-merge `main` workflows passed.
+- Post-deploy exact-worker claim timing after #251 stayed fast and exact verification remained active; no recurrence of the prior 4.03s queue-claim warning appeared in the supplied window.
+- PR #252 final head `17dd9d9f9a653c96e62b519db11df1f60f11e364` is **16 commits ahead / 0 behind** its current `main` merge base and changes **13 files**, all scoped to the task record, storage cleanup/admin behavior, bounded history/audit pruning, bounded feedback restoration, and regressions.
+- The first PR #252 full-suite pass exposed one stale static regression that still required the old in-memory `targets[:remaining]` slice. The production optimization intentionally moved that bound into the database query itself, so the stale test was updated narrowly rather than restoring the wasteful fetch-and-discard behavior.
+- Final Python 3.12 `Python Check` passed **1,259 tests, 1 warning** (discord/audioop deprecation only).
+- `pip check` passed.
+- `python -m compileall -q sniperplug scripts tests` passed.
+- Import smoke passed **37 modules / 22 symbols**.
+- The separate `Python tests` workflow passed.
+- All three final PR #252 workflows are green: Python Check, Python tests, and Import smoke check.
+- PR #252 has **no inline review threads** or submitted review blockers. The only discussion item is Qodo's inactive-subscription notice, not a code finding.
+- No temporary workflow, alternate database/runtime, unbounded wipe, `VACUUM`, monkey patch, or relaxed Walmart proof behavior was introduced.
 
 ## Validation pending / Definition of Done
-- Use **465,010,750 rows read at 4:39 PM** as the post-deploy slope anchor and obtain a second dashboard reading after a meaningful no-restart interval.
-- Calculate the clean post-deploy rows-read growth from that anchor and compare it with the pre-fix burn rate.
-- Confirm the account-level rows-read burn rate has flattened enough that the 94% quota emergency is no longer progressing dangerously.
-- If the clean post-deploy slope is still too high despite the now-fast exact claim path, use Turso/top-query evidence or targeted code-path evidence to identify the next reader before making another implementation change; do not guess or reopen solved queue paths without evidence.
-- The task closes only after actual quota usage confirms the production read reduction.
+- Squash-merge PR #252 and verify the merged `main` workflows remain green.
+- Deploy merged `main` to Discloud.
+- Confirm startup cleanup completes with bounded changed-row counts and without broad/slow maintenance SELECT warnings.
+- Confirm persistent feedback restoration now reads/registers only the bounded capacity instead of loading hundreds of discarded targets.
+- Confirm Walmart catalog discovery, exact verification, fanout, and DM/public dedupe remain active after cleanup.
+- Obtain a new clean Turso dashboard rows-read slope after deployment and compare it with the pre-#252 **~1.75M rows/hour** clean rate.
+- The task closes only when actual quota growth is acceptably flattened; CI/merge alone are not production acceptance.
 
 ## Cleanup / safety constraints
-- No stale safety-critical cache, alternate database, parallel queue, startup exception swallow, monkey patch, or relaxed Walmart proof gate.
-- No exact-verification quality reduction or catalog-discovery shutdown was used to save reads.
-- Page-recovery cap, status priority, material-change wake path, status-aware safety cadence, durable leases, offer memory, price history, fanout, and dedupe remain intact.
-- The fix uses bounded indexed reads rather than timestamp-repair writes, so it does not undo the write-amplification work merely to make reads easier.
+- No `VACUUM`, unbounded emergency wipe, alternate database, stale safety-critical cache, monkey patch, or disabled Walmart verification.
+- No deletion of `price_observations`, `product_identity`, `walmart_offer_price_memory`, live exact queue state, feedback summaries/votes, unexpired alert dedupe, or user delivery settings.
+- Cleanup stays bounded per invocation and uses retention/index order instead of whole-table counts.
+- Public proof gates, exact seller/item/offer/variant/condition/fulfillment proof, page-recovery semantics, durable leases, price history, fanout, and delivery dedupe remain intact.
 
 ## Blockers
-- Direct Turso top-query/organization read metrics are not exposed through the connected tools, so final quota-rate acceptance still needs a second user dashboard reading after the 4:39 PM post-deploy anchor.
+- Direct Turso top-query/organization read metrics are not exposed through the connected tools, so final quota-rate acceptance still requires user dashboard checkpoints after deployment.
 
 ## Suspended tasks
 **SP-TURSO-WRITE-AMPLIFICATION is suspended at its final dashboard rows-written slope gate.** Its exact-worker write-floor acceptance passed after PR #250; do not reopen solved scheduled-recheck write churn without evidence.
@@ -71,11 +76,11 @@ Reduce SniperPlug's Turso rows scanned/read rate enough to remove the account-qu
 **SP-WM-MISSED-DEALS-236 remains suspended, not closed.**
 
 ## Backlog
-- **SP-GATEWAY-EVENT-LOOP-LAG:** Investigate repeated Discord gateway `Can't keep up` warnings around 41 seconds behind. Trace event-loop blocking/slow DB or network work before editing; keep separate from quota work.
+- **SP-GATEWAY-EVENT-LOOP-LAG:** Investigate repeated Discord gateway `Can't keep up` warnings around 41 seconds behind after quota work closes.
 - **SP-SETUP-DELIVERY-UX:** Align `/setup_sniperplug_here` with `/dm_deals`; make public delivery explicit and easy to review/change.
 - **SP-DM-DELIVERY-STARVATION:** Investigate matched DM deals lost to filter/duplicate suppression rather than Discord delivery errors.
 - **SP-DM-NEW-LOW-ALERT:** Send a distinct meaningful lower-price alert while same-price repeats remain deduped.
-- **SP-WM-REFERENCE-PRICE-RECOVERY:** Improve exact reference-price recovery without weakening public proof; current logs still show `api_price_missing`, `api_exact_search_no_match`, page challenges, and open-circuit recovery periods.
+- **SP-WM-REFERENCE-PRICE-RECOVERY:** Improve exact reference-price recovery without weakening public proof.
 - **SP-WM-CASH-PDP-AMOUNT:** Integrate exact same-item Walmart Cash proof for private/DM enrichment without confusing OnePay cashback or using Cash as markdown proof.
 - Resume #244 live acceptance after the active quota task closes.
 - Resume Walmart missed-deals/page-recovery throughput after active quota work closes.

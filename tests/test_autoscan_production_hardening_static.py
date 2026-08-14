@@ -62,7 +62,9 @@ def test_all_autoscan_diagnostics_are_logged_at_truthful_severity() -> None:
 
 def test_feedback_views_are_bounded() -> None:
     assert "MAX_PERSISTENT_FEEDBACK_VIEWS = 250" in FEEDBACK
-    assert "targets[:remaining]" in FEEDBACK
+    assert "remaining = max(0, MAX_PERSISTENT_FEEDBACK_VIEWS - registered)" in FEEDBACK
+    assert "recent_feedback_targets(db, limit=remaining)" in FEEDBACK
+    assert "recent_feedback_targets(db)" not in FEEDBACK
     assert "register_bounded_persistent_feedback_views" in BOT
     assert "bounded cap=250" in BOT
 

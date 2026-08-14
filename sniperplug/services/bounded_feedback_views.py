@@ -11,11 +11,12 @@ MAX_PERSISTENT_FEEDBACK_VIEWS = 250
 
 
 async def register_bounded_persistent_feedback_views(bot: Any) -> int:
-    """Restore a bounded set of feedback controls after restart.
+    """Restore only the feedback controls that can actually be registered.
 
     One legacy catch-all view keeps old un-tokenized buttons functional. The
-    newest token-backed targets fill the remaining bounded slots. Discord does
-    not require one in-memory view for every historical deal forever.
+    remaining slots are filled from the newest token-backed targets. Do not
+    fetch hundreds of additional targets just to discard them in memory; that
+    unnecessary startup read is especially costly on remote Turso.
     """
 
     registered = 0
@@ -29,15 +30,17 @@ async def register_bounded_persistent_feedback_views(bot: Any) -> int:
     if db is None:
         return registered
 
+    remaining = max(0, MAX_PERSISTENT_FEEDBACK_VIEWS - registered)
+    if remaining <= 0:
+        return registered
+
     try:
-        targets = list(await deal_feedback.recent_feedback_targets(db))
+        targets = list(await deal_feedback.recent_feedback_targets(db, limit=remaining))
     except Exception:
         log.exception("Could not load recent feedback targets")
         return registered
 
-    remaining = max(0, MAX_PERSISTENT_FEEDBACK_VIEWS - registered)
-    selected = targets[:remaining]
-    for token, target in selected:
+    for token, target in targets:
         try:
             bot.add_view(
                 deal_feedback.DealFeedbackView(
@@ -50,12 +53,10 @@ async def register_bounded_persistent_feedback_views(bot: Any) -> int:
         except Exception:
             log.exception("Could not restore feedback view token=%s", token)
 
-    skipped = max(0, len(targets) - len(selected))
-    if skipped:
-        log.warning(
-            "Persistent feedback restoration capped registered=%s skipped_old=%s cap=%s",
-            registered,
-            skipped,
-            MAX_PERSISTENT_FEEDBACK_VIEWS,
-        )
+    log.info(
+        "Persistent feedback restoration bounded registered=%s query_limit=%s cap=%s",
+        registered,
+        remaining,
+        MAX_PERSISTENT_FEEDBACK_VIEWS,
+    )
     return registered

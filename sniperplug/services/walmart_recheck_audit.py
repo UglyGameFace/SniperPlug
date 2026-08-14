@@ -36,7 +36,7 @@ async def ensure_walmart_recheck_audit(db: Any) -> None:
         """
     )
     await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_walmart_recheck_audit_guild_time "
+        "CREATE INDEX IF NOT EXISTS idx_walmart_recheck_audit_guild_time_id "
         "ON guild_walmart_recheck_audit (guild_id, occurred_at DESC, id DESC)"
     )
     await conn.execute(

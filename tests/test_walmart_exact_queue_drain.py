@@ -143,14 +143,13 @@ def test_batch_claim_uses_bounded_select_and_guarded_lease_update() -> None:
     asyncio.run(run())
 
 
-def test_verified_recheck_cadence_is_daily_fallback() -> None:
+def test_verified_recheck_cadence_is_status_aware() -> None:
     assert tiered_recheck_delay("verified_markdown", 69) == timedelta(hours=24)
-    assert tiered_recheck_delay("verified_markdown", 40) == timedelta(hours=24)
     assert tiered_recheck_delay("verified_markdown", 20) == timedelta(hours=24)
-    assert tiered_recheck_delay("verified_no_reference", 0) == timedelta(hours=24)
-    assert tiered_recheck_delay("verified_under_threshold", 0) == timedelta(hours=24)
-    assert tiered_recheck_delay("verified_reference", 0) == timedelta(hours=24)
-    assert tiered_recheck_delay("not_buyable", 0) == timedelta(hours=24)
+    assert tiered_recheck_delay("verified_under_threshold", 0) == timedelta(hours=72)
+    assert tiered_recheck_delay("verified_reference", 0) == timedelta(hours=72)
+    assert tiered_recheck_delay("verified_no_reference", 0) == timedelta(days=7)
+    assert tiered_recheck_delay("not_buyable", 0) == timedelta(days=7)
 
 
 def test_health_splits_first_time_work_from_scheduled_rechecks() -> None:

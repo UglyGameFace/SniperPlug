@@ -1,73 +1,67 @@
 # Active Task
 
 ## Status
-**Active — SP-DEALS-DISCOVER-HARDENING-244 live acceptance gate. PR #247 was squash-merged to `main` as `3d1787e79eb2c04379c4e8f48df613c577b85fc8`. Final PR-head CI, review/thread inspection, cleanup/conflict inspection, and all three post-merge `main` workflows passed. The remaining blockers are Discloud deployment of the merged build and live `/deals` + private/public `/discover` acceptance.**
+**Active — SP-TURSO-WRITE-AMPLIFICATION. The user FORCE SWITCHed from #244 because Turso rows-written usage crossed 75% of the monthly quota and the same storage-maintenance path now crash-loops SniperPlug at startup. Implementation is in progress on `fix/turso-write-amplification`; production completion is not claimed.**
 
 ## Scope
-Finish the existing `/deals` + `/discover` hardening task. Do not start a new implementation task until this live gate passes or the user explicitly FORCE SWITCHes.
+Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart proof, delivery dedupe, durable leases, crash recovery, or price history. Fix the deterministic storage-maintenance startup crash as part of the same storage path. Inspect existing implementations before changing them; do not stack a new persistence layer over the established queue/fanout runtimes.
 
 ## Root cause / findings
-- The original post-#245 `/deals` result View acknowledged interactions inside individual callbacks rather than at the earliest View boundary.
-- Mode changes spawned another controls message while every View reused the same static component custom IDs, creating unnecessary competing/stale dispatch surfaces.
-- ACK failures were swallowed without task-specific component diagnostics.
-- Normal `/deals` output reused dense Walmart proof/audit cards intended for deeper verification surfaces.
-- `New / Drops` can contain both verified cards and private review/search leads, so presentation status must come from actual `DealFinderResult.verified_cards` membership rather than a generic card flag.
-- Final `/discover` queue-isolation reinspection remains clean. The #244 regression `test_discover_queue_readback_only_allows_current_search_item_ids` rejects unrelated global queue rows and only allows exact rows whose item IDs came from that discovery search.
-- **Aug 14 live `/discover` failure:** the canonical slash command defaulted `max_public_posts` to 10 with no separate public-post opt-in. `_finish_discovery_job` unconditionally sliced fresh cards into `public_cards` and called `maybe_post_public_deal_cards`. The DM status destination controlled progress/private-result delivery only; it never disabled the public lane. The public helper was behaving as designed, so weakening or bypassing its safety/config gates was not the fix.
-- `select_fresh_deal_cards` was reinspected after the public opt-in change. It performs public-quality/duplicate/reservation/cache preflight reads and annotates cards, but it does not reserve or publish a deal. Keeping that reporting preflight on private discovery runs therefore does not secretly create a public post/reservation.
+- The connected tooling does not expose the user's Turso organization usage/top-query dashboard, so no top-query metric is being invented. The supplied production logs and real callers are the current source of truth; new write telemetry is being added for post-deploy validation.
+- Prior Turso work is present and must not be duplicated: PR #222 already suppresses recent identical catalog row UPSERTs, PR #226 already bounds startup cleanup, PR #204 already bulk-persists exact outcomes, PR #207 already bulk-fanouts events, and the exact worker already uses bounded leases/pressure reads.
+- The new startup crash is deterministic in `storage_maintenance._bounded_rowids()`: it selects bare `rowid` and then assumes either `row["rowid"]` or `row[0]`. `guild_auto_scan_report_history` has `id INTEGER PRIMARY KEY`, so libSQL can expose the selected rowid under primary-key metadata; the process-isolated worker normalizes it to a mapping and both old lookups fail with the supplied `KeyError: 'rowid'` / `KeyError: 0`.
+- The dominant current catalog-write pattern is different from the old #222 bug. Production examples on pass 91 show `safe fresh proof 81` with `persisted/unchanged 87/7`, `safe fresh proof 76` with `83/17`, and `safe fresh proof 62` with `81/19`. The queue refreshes an otherwise identical safe discovery snapshot after ten minutes even when a verified row's next exact recheck is four, twelve, or twenty-four hours away. That refreshed proof expires after fifteen minutes, so the timestamp-only write often cannot be consumed before it is stale again.
+- The global catalog rotates 265 routes two at a time. Mature products are therefore rediscovered repeatedly; a six-hour `last_seen_at` heartbeat also rewrites unchanged rows several times per day despite the queue's fourteen-day retention boundary.
+- During an open Walmart HTML challenge circuit, the bulk runtime both set `page_recovery_claim_cap=0` **and** rewrote up to 64 due `page_retry` rows per worker cycle to move their `next_attempt_at`. The claim cap already prevents those rows from being leased. Recovery pressure is itself bounded to 64 and cannot alone reach the 600-row catalog emergency threshold, so the reschedule writer became redundant write amplification.
 
-## Implemented follow-up
-- Each `/deals` result menu receives a unique token embedded in every component custom ID.
-- `DealSearchModeView.interaction_check` acknowledges components with `response.defer(thinking=False)` before button-specific work and enforces menu ownership.
-- Component ACK failures and callback exceptions have task-specific logs.
-- Mode switches and Fresh Scan preserve the menu token/owner and replace the existing controls message instead of stacking duplicate control panels.
-- Selected mode is primary/disabled; other modes remain selectable.
-- `/deals` uses compact shopping-focused embeds preserving price, seller, delivery, links, thumbnails, and verified/private status while removing internal identity/evidence noise.
-- Normal finder summary and mode menu are compact; diagnostic/public proof renderers and autoscan safety gates were not weakened or replaced.
-- `New / Drops` determines verified/private presentation from actual verified-result membership so review leads cannot be mislabeled as verified.
-- `/discover` now has an explicit `public_posts` per-run option that defaults to `False`; `max_public_posts` is only a cap when public posting is opted in. A private run selects zero public cards and never calls the public-post helper. Opted-in runs still use the existing `maybe_post_public_deal_cards` guard unchanged.
-- `/discover` start/status/final messaging states Public Posts ON/OFF explicitly, and DM-closed fallback messaging follows the selected public mode instead of implying that every discovery run publishes.
-- Added a pure `select_public_discovery_cards` policy helper and regression coverage proving private-by-default selection and capped public opt-in behavior.
-- Updated the existing deal-feed command coverage guard so it requires category-filtered discovery cards, explicit public-policy selection, and the guarded public-helper call instead of requiring the old unconditional slice implementation.
+## Changes implemented on branch
+- Storage maintenance now selects `rowid AS __sniperplug_rowid` and uses a mapping/positional-safe extractor. This directly covers the process-isolated Turso row shape while preserving local aiosqlite behavior.
+- Storage maintenance now skips its final operational commit when every bounded cleanup selector found zero rows; the existing per-subsystem prune functions retain their own ownership.
+- Added a regression that emulates process-isolated mapping rows against a table with `id INTEGER PRIMARY KEY AUTOINCREMENT` and proves bounded deletion works through the explicit rowid alias.
+- Walmart catalog queue discovery heartbeat is coalesced from six hours to twenty-four hours, still far inside fourteen-day retention.
+- Identical stale safe proof snapshots are refreshed only when the row can consume them within the existing fifteen-minute proof-validity horizon. New/changed proof still persists immediately. `pending`/`retry`/`failed` rearming remains immediate, and any safe snapshot still rescues `page_retry` to `pending` immediately.
+- Catalog queue summaries now report `stale proof refresh skipped` alongside persisted/unchanged rows and write statements so the live reduction is measurable.
+- Removed the open-circuit page-retry reschedule call. The existing claim cap remains the authoritative gate and leaves the blocked page rows untouched until the circuit closes or a safe catalog snapshot rescues one.
+- Removed the now-unreferenced `walmart_page_circuit_queue.py` writer instead of leaving a dead compatibility shim.
+- Added exact-worker write telemetry for requested lease rows, outcome rows, offer-memory rows, persistence statements, and explicit zero page-circuit reschedule rows.
+- Updated live-gate regressions to prove a page backlog larger than the old 64-row sweep stays unclaimed **without changing its `next_attempt_at` values** while fresh pending/API work remains claimable.
+- Added catalog regressions proving far-future verified rows skip timestamp-only proof refreshes, due-soon verified rows still refresh, page retries are still rescued, changed data is never suppressed, and the daily retention heartbeat still persists.
 
 ## Validation completed
-- Prior focused #244/#245/control/presentation regressions: **15 passed**.
-- Prior full Python 3.11 regression suite: **1,234 passed, 1 warning** (discord.py/audioop deprecation only).
-- PR #246 checks/review/cleanup and post-merge `main` checks passed; Discloud deployment of PR #246 was confirmed by live tokenized component ACK logs.
-- `/discover` current-search item-ID queue isolation remains directly regression-tested and has no competing implementation.
-- PR #247 started from then-current `main`; no rebase/conflict gap was present.
-- First PR #247 Python 3.11 run: dependency and compile checks passed; full suite reached **1,234 passed / 1 failed**. The sole failure was an existing static assertion that required the old `public_cards = fresh_cards[:]` implementation string. The guard was updated to validate the new explicit opt-in path rather than restoring unsafe behavior.
-- Revised/final PR #247 Python 3.11 workflow: **1,235 passed, 1 warning**; `pip check` passed; `python -m compileall -q sniperplug tests *.py` passed.
-- Revised/final PR #247 Python 3.12 `Python Check`: dependency check, compile, import smoke, and full test suite all passed.
-- Revised/final PR #247 separate `Import smoke check`: passed.
-- Final PR #247 review/thread inspection found no unresolved review threads or code-review blockers.
-- Public-freshness preflight reinspection confirmed it does not create public posts/reservations; the actual publishing helper remains behind `if public_cards:` and is unreachable when `public_posts=False`.
-- Cleanup/conflict inspection: PR #247 changed only `ACTIVE_TASK.md`, `sniperplug/cogs/auto_discovery.py`, `tests/test_exact_discover_coverage.py`, and `tests/test_deal_feed_controls_command_coverage.py`; no temporary runner/applicator or alternate discovery implementation was added.
-- PR #247 squash merge succeeded as `3d1787e79eb2c04379c4e8f48df613c577b85fc8`.
-- Post-merge `main` workflows for `3d1787e79eb2c04379c4e8f48df613c577b85fc8`: **Import smoke check passed**, **Python Check passed**, and **Python tests passed**.
+- Root execution path, callers, existing write-suppression implementation, exact lease path, pressure policy, page-circuit behavior, storage-maintenance tests, and relevant historical Turso PRs were inspected before editing.
+- Obsolete page-circuit reschedule writer has been removed and internal source/tests were updated to the single claim-cap implementation.
 
 ## Validation pending
-- CI for this documentation-only active-task record refresh.
-- Discloud deployment of merged `main`.
-- Live acceptance below.
+- GitHub Actions Python 3.11 full suite.
+- Python 3.12 check, compilation, import smoke, and dependency validation.
+- Final changed-file/conflict/reference inspection after CI.
+- Merge and Discloud deployment.
+- Live startup proof that storage maintenance no longer throws `KeyError`.
+- Live catalog logs showing high `stale proof refresh skipped`, mostly unchanged mature passes, and materially fewer persisted rows/write statements.
+- Live exact telemetry confirming `page_circuit_reschedule_rows=0` and measuring lease/outcome/offer-memory write demand.
+- Turso dashboard rows-written slope after deployment; the task is not complete until the rate is validated rather than inferred from code alone.
 
-## Remaining Definition of Done
-1. Complete live `/deals search:phone mount` sweep: every enabled mode button responds; Fresh Scan responds; one control panel remains current; compact embeds are readable; private leads remain private.
-2. Deploy merged `main` containing `3d1787e79eb2c04379c4e8f48df613c577b85fc8` to Discloud.
-3. Live `/discover coverage:Quick` with **Public Posts off/default** completes privately and publishes **zero** discovery cards to the public deal lane; its private/final result contains only current-search job items.
-4. Live `/discover coverage:Quick public_posts:True max_public_posts:1` proves the explicit public option still sends only eligible verified cards through the unchanged public safety/threshold/category/duplicate guard and respects the one-card cap.
-5. Only then close SP-DEALS-DISCOVER-HARDENING-244.
+## Cleanup status
+- No startup try/except, monkey patch, alternate database, duplicate queue implementation, or relaxed proof gate was added.
+- The obsolete page-circuit queue rescheduler was deleted after caller/reference inspection.
+- Price observations, exact offer-price memory, durable fanout/dedupe state, and exact queue history are not deleted to save quota.
+
+## Blockers
+- Direct Turso organization/top-query metrics are not available through the connected tools in this session. Production write telemetry plus the user's Turso usage view will be required for final live rate validation.
+- SniperPlug must be deployed after merge before the startup-crash and quota-rate Definition of Done can be closed.
 
 ## Suspended task
-**SP-WM-MISSED-DEALS-236 remains suspended, not closed.** Resume only after this active task closes or an explicit FORCE SWITCH.
+**SP-DEALS-DISCOVER-HARDENING-244 is suspended at its live acceptance gate, not closed.** PR #247 is already merged and CI-green. Remaining live `/deals` button and private/public `/discover` acceptance resumes only after this active Turso task closes or another explicit FORCE SWITCH.
+
+**SP-WM-MISSED-DEALS-236 remains suspended, not closed.**
 
 ## Backlog
-- **SP-TURSO-WRITE-AMPLIFICATION:** Urgently investigate Turso Cloud rows-written usage after the Aug 14 warning that the organization exceeded 75% of its monthly write quota. Do not default to a paid-plan upgrade. First use Turso organization/database usage and top-query stats to identify the actual write-heavy database and SQL statements, then trace those statements through SniperPlug's real database callers, worker cadences, lease/retry/status/heartbeat paths, migrations, guards, and compatibility layers. Eliminate needless updates of unchanged rows, write-on-read patterns, overly frequent lease/status touches, duplicate retry/fanout bookkeeping, and other write amplification; batch/coalesce safe writes and make upserts/update predicates idempotent where correctness permits. Preserve durable fanout/dedupe/exact-queue correctness and crash recovery. Add subsystem write telemetry and regression coverage, then validate rows-written rate in production before considering overages or a plan upgrade. Do not implement until #244 closes unless explicitly FORCE SWITCHed.
-- **SP-SETUP-DELIVERY-UX:** Align `/setup_sniperplug_here` with the clearer `/dm_deals` setup experience. Make public delivery an explicit understandable option, show the selected public channel/status, separate public-post controls from personal DM controls, keep only essential choices mandatory, and make the resulting configuration easy to review/change without hidden defaults. Do not implement until #244 closes unless explicitly FORCE SWITCHed.
-- **SP-DM-DELIVERY-STARVATION:** Investigate why personal DM alerts are producing `checked/matched/sent 2/1/0` with `DM disabled 0` and `errors 0`; current evidence shows matching deals are being lost to filter and duplicate suppression (`filter/duplicate/cap/diversity 1/1/0/0`) rather than Discord DM delivery being disabled. Inspect the real DM rule evaluation, dedupe key/lifetime, event-version semantics, per-user thresholds/categories, and whether a legitimate new price/version is being incorrectly treated as already delivered before changing behavior.
-- **SP-DM-NEW-LOW-ALERT:** When the exact same item reaches a genuinely lower price, emit a distinct user-facing “New Lower Price” event instead of suppressing it as a duplicate or resending the original card. Preserve the item’s price timeline and show previous observed price → new price, dollars saved since the last alert, percentage drop since the last alert, and discount versus the highest trusted observed/reference price. Clearly distinguish official Walmart was/list price from SniperPlug-observed history and estimated market reference. Re-alert only for meaningful new lows; same-price repeats remain deduped. Prefer updating/replacing the prior active DM card when practical, or send a compact follow-up that visually emphasizes the new low and links back to the product.
-- **SP-WM-REFERENCE-PRICE-RECOVERY:** Improve Walmart exact verification when the API omits current/reference/was price. Current logs show `api_price_missing`, `api_exact_search_no_match`, `page_challenge`, and long `page_circuit_open` windows, while page retries can occasionally rescue candidates. Inspect the current API → PDP/page → memory path first. Desired hierarchy: official Walmart strike/list/was price when available; same-item historical price observed by SniperPlug; exact same variant/condition Walmart offer context; conservative cross-seller/market reference only as clearly labeled estimated/reference context, never falsely presented as an official Walmart “was” price. Reject outliers and variant/condition mismatches, retain provenance/confidence, and keep public markdown proof stricter than private review/scout context.
-- **SP-WM-CASH-PDP-AMOUNT:** A live Ivory Body Wash deal visibly shows **“Get $0.50 Walmart Cash”** on the exact Walmart product page, while SniperPlug's alert omits the amount. Root-cause inspection found that `walmart_pdp_cash_proof.py` can parse page wording such as `Get $0.50 Walmart Cash`, but the production Walmart Cash pipeline is API-only and explicitly disables PDP fallback, leaving the parser unwired to autoscan/exact-deal delivery. After #244 closes, inspect the exact Walmart product-page fetch/recovery execution path and safely integrate same-item PDP Cash proof for private/DM enrichment, preserving strict provenance and never letting account-dependent Walmart Cash substitute for verified markdown proof. Store amount, eligibility wording, selected option/variant, and source; render a clear `Walmart Cash: $0.50` line and optionally an `after Cash` value. Do not confuse OnePay cashback with Walmart Cash.
-- Resume Walmart exact-verification/page-recovery throughput work after #244 closes.
-- Investigate remaining Discord gateway lag if it persists after this command path is stable.
+- **SP-SETUP-DELIVERY-UX:** Align `/setup_sniperplug_here` with the clearer `/dm_deals` setup experience; make public delivery explicit and easy to review/change.
+- **SP-DM-DELIVERY-STARVATION:** Investigate matched DM deals lost to filter/duplicate suppression rather than Discord delivery errors.
+- **SP-DM-NEW-LOW-ALERT:** Send a distinct meaningful lower-price alert for the same item while same-price repeats remain deduped.
+- **SP-WM-REFERENCE-PRICE-RECOVERY:** Improve exact reference-price recovery with official PDP/history and conservative clearly labeled estimates without weakening public proof.
+- **SP-WM-CASH-PDP-AMOUNT:** Integrate exact same-item PDP Walmart Cash amount proof for private/DM enrichment without confusing OnePay cashback or using Cash as markdown proof.
+- Resume #244 live acceptance after this task closes.
+- Resume Walmart missed-deals/page-recovery throughput work after the active task closes.
+- Investigate remaining Discord gateway lag only if it persists after the Turso write path is stable.
 - Resume SniperPlug-Site Whop content-reader work later.

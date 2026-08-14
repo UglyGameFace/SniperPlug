@@ -138,11 +138,15 @@ def test_terminal_identity_maintenance_caps_reprobes_and_quarantine_writes() -> 
     asyncio.run(run())
 
 
-def test_production_runtime_uses_claim_cap_instead_of_page_backlog_rewrites() -> None:
+def test_production_runtime_keeps_bounded_api_only_page_lane_without_rescheduling() -> None:
     assert "defer_due_page_recovery_for_open_circuit" not in BULK_RUNTIME
-    assert "page_recovery_claim_cap =" in BULK_RUNTIME
-    assert "0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
+    assert "API_ONLY_PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
+    assert "if page_circuit_remaining > 0" in BULK_RUNTIME
+    assert "else PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
+    assert "0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP" not in BULK_RUNTIME
     assert "page_circuit_reschedule_rows=0" in BULK_RUNTIME
+    assert "official item-detail and" in BULK_RUNTIME
+    assert "exact Affiliate-search recovery only" in BULK_RUNTIME
 
 
 def test_production_terminal_maintenance_uses_row_limited_implementation() -> None:

@@ -52,12 +52,18 @@ def test_fanout_schema_initializes_once_per_connection(monkeypatch) -> None:
         conn = FakeConnection()
         db = FakeDatabase(conn)
         await bulk.ensure_global_deal_event_tables_once(db)
+        first_execute_count = len(conn.execute_calls)
+        first_commit_count = conn.commit_calls
         await bulk.ensure_global_deal_event_tables_once(db)
 
         assert calls == 1
-        assert len(conn.execute_calls) == 1
-        assert bulk.FANOUT_CURSOR_INDEX in conn.execute_calls[0]
-        assert conn.commit_calls == 1
+        assert first_execute_count == 3
+        assert len(conn.execute_calls) == first_execute_count
+        assert "walmart_guild_fanout_decisions" in conn.execute_calls[0]
+        assert "idx_walmart_guild_fanout_decisions_guild_time" in conn.execute_calls[1]
+        assert bulk.FANOUT_CURSOR_INDEX in conn.execute_calls[2]
+        assert first_commit_count == 1
+        assert conn.commit_calls == first_commit_count
 
     asyncio.run(run())
 
@@ -93,6 +99,7 @@ def test_bulk_fanout_replaces_per_event_sql_loops() -> None:
     assert "WITH finalized(deal_key, claim_token)" in BULK_SOURCE
     assert "Global Walmart public destination decision" in BULK_SOURCE
     assert "not_alertable_reasons=%s" in BULK_SOURCE
+    assert "record_walmart_fanout_decisions" in BULK_SOURCE
 
 
 def test_production_runner_uses_bulk_fanout_runtime() -> None:

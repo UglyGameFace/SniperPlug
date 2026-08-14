@@ -1,7 +1,7 @@
 # Active Task
 
 ## Status
-**Active — SP-TURSO-WRITE-AMPLIFICATION. PR #248 is merged and live. The startup `rowid` crash and catalog rediscovery write storm are live-validated fixed. Production telemetry exposed scheduled exact rechecks as the remaining sustained Turso write source, so the same active task continues in PR #249 on `fix/turso-write-amplification-recheck-cadence`.**
+**Active — SP-TURSO-WRITE-AMPLIFICATION. PR #248 is merged and live. The startup `rowid` crash and catalog rediscovery write storm are live-validated fixed. Production telemetry exposed scheduled exact rechecks as the remaining sustained Turso write source. PR #249 now has final code validation green; merge/deploy and live write-rate acceptance remain before this task can close.**
 
 ## Scope
 Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart proof, delivery dedupe, durable leases, crash recovery, or price history. Fix the storage-maintenance startup crash and remove needless catalog/exact-worker writes. Do not stack a second persistence layer or relax item/seller/offer/variant/reference proof.
@@ -16,7 +16,7 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 - The real scheduling cause is the old exact cadence: verified markdowns at 50%+ were rechecked every four hours, 30%+ every twelve hours, and other verified states every twenty-four hours. With thousands of mature verified rows, that creates a permanent Turso lease/outcome/offer-memory write floor.
 - The global catalog rotates 265 routes two at a time on a one-minute cadence, so a full catalog pass is roughly 2.2 hours when not backpressured. The safe way to lower scheduled writes is therefore event-driven: a material catalog price/reference/selected-offer change must wake a verified row immediately, while unchanged verified rows use a low-frequency exact safety sweep.
 - Reinspection of the former `walmart_recheck_schedule_rearm` migration found it was the wrong mechanism for the new policy: it spent writes moving due timestamps and marked a connection complete, so future legacy 4/12-hour rows could still leak one early exact cycle. The better execution path is a claim-time age floor that ignores an early legacy `next_attempt_at` without writing anything.
-- Queue pressure and owner health originally counted those early legacy timestamps as actionable even if the claim selector would suppress them. They must use the same verified-age rule or false scheduled pressure can pause catalog discovery.
+- Queue pressure and owner health originally counted those early legacy timestamps as actionable even if the claim selector would suppress them. They now use the same verified-age rule so false scheduled pressure cannot pause catalog discovery.
 
 ## Changes already live from PR #248
 - Stable aliased maintenance rowid extraction (`rowid AS __sniperplug_rowid`) with mapping/positional-safe reads.
@@ -44,21 +44,29 @@ Reduce SniperPlug's real Turso rows-written rate without weakening exact Walmart
 - Live startup proof passed: Turso connected through the process-isolated driver, storage maintenance completed with 509 bounded changes, slash commands synced, and SniperPlug reached online without the old `KeyError` crash.
 - Live catalog write-suppression proof passed with mature passes overwhelmingly unchanged and stale proof refreshes skipped.
 - Live page-circuit write proof passed with `page_circuit_reschedule_rows=0`.
-- First PR #249 Python 3.11 run compiled, passed dependency checks, and reached **1,241 passed / 1 failed**. The sole failure was the old migration regression expecting a five-hour-old high markdown to be truly due. That failure confirmed the shared 24-hour policy was being applied; the write-based migration was subsequently removed in favor of the zero-write claim floor.
+- First PR #249 Python 3.11 run compiled, passed dependency checks, and reached **1,241 passed / 1 failed**. The sole failure was the old migration regression expecting a five-hour-old high markdown to be truly due. That exposed the stale migration assumption and led to the cleaner zero-write claim-floor implementation.
+- The next PR #249 run reached **1,240 passed / 3 failed**; all three failures were static SQL parameter-layout assertions that had not accounted for the new verified-age cutoff. No runtime behavior regression failed. Those guards were updated to assert the cutoff itself rather than merely shifting indexes.
+- Final PR #249 Python 3.11 workflow: **1,243 passed, 1 warning** (discord/audioop deprecation only); `pip check` passed and `python -m compileall -q sniperplug tests *.py` passed.
+- Final PR #249 Python 3.12 `Python Check` passed, including dependency install/check, compilation, import smoke, and full test suite.
+- Final separate import-smoke workflow passed.
+- Final PR changed-file inspection is confined to the active-task record, existing Walmart exact scheduler/claim/health/pressure/catalog files, deletion of the obsolete recheck-repair writer, directly related existing tests, and two focused new regression files.
+- PR patch/reference inspection confirms the deleted `walmart_recheck_schedule_rearm.py` import/call is removed from the exact runtime and its dedicated migration test is deleted. The claim selector is now the single cadence-enforcement path.
 
 ## Validation pending / Definition of Done
-- Run focused and full CI for the final PR #249 claim-floor implementation on Python 3.11 and 3.12.
-- Inspect final changed files, review threads, imports/references, and diff for duplicate or conflicting recheck policy.
-- Merge and deploy PR #249.
+- Run final documentation-only PR-head CI after this active-task record refresh.
+- Inspect PR #249 review threads/reviews and confirm mergeability on the final head.
+- Merge PR #249 and validate post-merge `main` workflows.
+- Deploy merged `main` to Discloud.
 - Live queue pressure should no longer report legacy 4/12-hour timestamps as actionable scheduled rechecks before `verified_at + 24h`.
 - Live exact telemetry must show a materially lower sustained lease/outcome/offer-memory row rate than the pre-change ~8-row-every-20-second saturation once fresh work is zero.
-- Catalog logs should show `verified changes rearmed` only for real price/reference/selected-offer changes; ordinary unchanged rediscovery should remain mostly write-free.
+- Catalog logs should show `verified changes rearmed` only when material catalog price/reference/selected-offer proof changes require exact revalidation; ordinary unchanged rediscovery should remain mostly write-free.
 - Turso dashboard rows-written slope must be checked after deployment. The task is not complete until the monthly-rate risk is demonstrably reduced.
 
 ## Cleanup status
 - No startup exception swallow, monkey patch, alternate database, duplicate queue runtime, or relaxed proof gate was added.
 - Obsolete page-circuit reschedule code remains deleted.
 - Obsolete write-based legacy recheck schedule repair is deleted; the existing claim path is the single cadence enforcement point.
+- Pressure and health use the same verified-age rule as the claim selector; there is no conflicting actionable-recheck definition left in the worker path.
 - The current PR changes the existing shared recheck policy, claim selector, pressure/health accounting, and catalog UPSERT; it does not add a parallel scheduler.
 
 ## Blockers

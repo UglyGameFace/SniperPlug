@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 BULK_RUNTIME = (
     ROOT / "sniperplug/services/walmart_exact_queue_bulk_runtime.py"
 ).read_text(encoding="utf-8")
+PACING_RUNTIME = (
+    ROOT / "sniperplug/services/walmart_exact_fetch_pacing.py"
+).read_text(encoding="utf-8")
 RUNTIME_SCHEMA = (
     ROOT / "sniperplug/services/walmart_exact_runtime_schema.py"
 ).read_text(encoding="utf-8")
@@ -145,8 +148,17 @@ def test_production_runtime_keeps_bounded_api_only_page_lane_without_reschedulin
     assert "else PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
     assert "0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP" not in BULK_RUNTIME
     assert "page_circuit_reschedule_rows=0" in BULK_RUNTIME
-    assert "official item-detail and" in BULK_RUNTIME
-    assert "exact Affiliate-search recovery only" in BULK_RUNTIME
+
+    # #255 moved the HTML safety boundary into a dedicated helper. The worker
+    # must use that helper while preserving the canonical exact verifier for
+    # fresh catalog and official API/exact-search proof.
+    assert "fetch_exact_candidate_with_page_pacing" in BULK_RUNTIME
+    assert "_fetch_exact_candidate_off_loop" not in BULK_RUNTIME
+    assert "PAGE_HTML_PROBE_INTERVAL_SECONDS = 60.0" in PACING_RUNTIME
+    assert "_ApiOnlyProviderView" in PACING_RUNTIME
+    assert "retry_kind=page_pacing_deferred" in PACING_RUNTIME
+    assert "_fetch_exact_candidate_off_loop(" in PACING_RUNTIME
+    assert "_trip_page_circuit_immediately(provider)" in PACING_RUNTIME
 
 
 def test_production_terminal_maintenance_uses_row_limited_implementation() -> None:

@@ -6,6 +6,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from sniperplug.services.walmart_exact_fetch_pacing import (
+    fetch_exact_candidate_with_page_pacing,
+    _page_challenge_circuit_open,
+    _page_challenge_circuit_remaining_seconds,
+)
 from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
 from sniperplug.services.walmart_exact_queue_bulk_persistence import (
     ExactQueuePersistenceOutcome,
@@ -27,12 +32,9 @@ from sniperplug.services.walmart_exact_queue_runtime import (
     EXACT_FETCH_HARD_TIMEOUT_SECONDS,
     TERMINAL_IDENTITY_STATUSES,
     ExactQueueRuntimeResult,
-    _fetch_exact_candidate_off_loop,
     _fresh_snapshot_rejection_reason,
     _identity_error_bucket,
     _is_fresh_snapshot_candidate,
-    _page_challenge_circuit_open,
-    _page_challenge_circuit_remaining_seconds,
     _retry_error_bucket,
     _retry_kind_from_error,
 )
@@ -58,9 +60,10 @@ EXACT_WORKER_PRESSURE_CAP = 64
 
 # The HTML challenge circuit must stop Walmart product-page requests, not stop
 # official API recovery entirely. Keep the already-bounded page lane alive at the
-# same two-row cap while the circuit is open; _fetch_exact_candidate_off_loop()
-# then forces those claims through official detail/exact-search only and never
-# calls the challenged page loader.
+# same two-row cap while the circuit is open; the paced shared fetcher then forces
+# those claims through official detail/exact-search only and never calls the
+# challenged page loader. When the circuit is closed, HTML remains a last-resort
+# single-probe fallback while fresh/API proof keeps normal worker throughput.
 API_ONLY_PAGE_RECOVERY_CLAIM_CAP = min(2, PAGE_RECOVERY_CLAIM_CAP)
 
 
@@ -93,19 +96,19 @@ async def process_actionable_walmart_exact_queue_batch(
     ordinary claims immediately. Scheduling decisions use a tightly bounded
     pressure snapshot rather than rereading the scheduled-recheck backlog.
 
-    When the Walmart product-page challenge circuit is open, HTML remains fully
-    suppressed. A tiny two-row page-recovery lane is still claimable, however,
-    because the shared fetcher switches those claims to official item-detail and
-    exact Affiliate-search recovery only. This lets previously challenged rows
-    recover when Walmart's structured API now exposes complete seller/offer
-    identity without probing another blocked page. Rows still missing official
-    identity return to ``page_retry`` on the normal bounded delay.
+    Walmart HTML is now isolated from normal exact throughput. Fresh catalog
+    proof and official item-detail/exact-search run first for every claim. Only
+    one claim per pacing window may attempt the product-page fallback, and the
+    first challenge-class response opens the existing provider circuit
+    immediately. While that circuit is open, a tiny two-row page-recovery lane
+    remains claimable because those rows still get official API/exact-search
+    recovery without touching HTML.
 
     Fresh discovery proof and page-challenge circuit state are reported directly
     in the worker summary. This makes a zero-promotion batch explainable without
     weakening proof: the log now distinguishes no snapshot input, strict snapshot
-    rejection, ordinary API/page retries, and page requests suppressed by the
-    challenge circuit.
+    rejection, paced page deferrals, ordinary API/page retries, and page requests
+    suppressed by the challenge circuit.
     """
 
     if db is None or provider is None or limit <= 0:
@@ -161,7 +164,7 @@ async def process_actionable_walmart_exact_queue_batch(
 
     async def fetch(claim):
         async with semaphore:
-            return claim, await _fetch_exact_candidate_off_loop(
+            return claim, await fetch_exact_candidate_with_page_pacing(
                 provider,
                 claim,
                 timeout_seconds=timeout_seconds,
@@ -222,7 +225,7 @@ async def process_actionable_walmart_exact_queue_batch(
             fresh_rejection_counts[reason] = fresh_rejection_counts.get(reason, 0) + 1
 
         retry_kind = _retry_kind_from_error(error)
-        if retry_kind == "page_circuit_open":
+        if retry_kind in {"page_circuit_open", "page_pacing_deferred"}:
             page_circuit_suppressed += 1
 
         if candidate is None:

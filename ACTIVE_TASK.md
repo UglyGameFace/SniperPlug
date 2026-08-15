@@ -14,7 +14,7 @@ Repair autoscan coverage without weakening exact proof or hammering Walmart HTML
 - Concrete production examples: **13:44:06** logged `page_challenge=5` plus `page_circuit_open=19`; **13:59:20** again logged `page_challenge=5` plus `page_circuit_open=18`. Five real challenged page requests in one drain batch is the behavior being removed.
 - The fixed-rate exact worker also yields only one second after an overlong cycle, so a 30-37 second page-heavy batch can otherwise be followed almost immediately by another cycle.
 - Fresh catalog snapshots and official API/exact-search continue to verify real products while HTML is blocked, including many 8/8 and 24/24 batches. Therefore the safe solution is to isolate/rate-limit HTML only, not slow the full deal pipeline.
-- The prior open-circuit helper called inner official API methods directly. The new paced fetcher explicitly puts those direct official helpers inside the shared exact-priority request coordinator so API recovery remains bounded and prioritized.
+- The pacing helper deliberately reuses the existing canonical exact verifier instead of creating a second seller/offer proof implementation. An isolated synthetic open-circuit view obtains the verifier's fresh/API-only result first; only a true need for HTML may advance to the paced real-provider pass.
 
 ## Changes already live — PR #253
 - Keep a **2-row** `page_retry` lane claimable while the HTML circuit is open; those claims use official API/exact-search only.
@@ -40,13 +40,13 @@ Repair autoscan coverage without weakening exact proof or hammering Walmart HTML
 Branch: `fix/walmart-page-request-pacing-255`
 
 Implementation intent:
-- Strict fresh catalog proof remains first and requires no network when valid.
-- Otherwise use official item-detail, then exact Affiliate search, before considering HTML.
-- Direct official helper calls use the shared `EXACT_PRIORITY` request coordinator.
-- Product-page HTML becomes a **single process/provider probe at most once per 60 seconds** when the circuit is closed.
+- Keep `_fetch_exact_candidate_off_loop()` as the canonical proof implementation.
+- First run each claim through an isolated API-only view of that verifier. Valid strict fresh catalog proof or complete official item-detail/exact-search proof returns immediately.
+- Only a claim whose canonical API-only result says HTML is still required may advance to the real provider path.
+- Product-page HTML becomes a **single process/provider probe at most once per 60 seconds** when the real circuit is closed.
 - The probe slot is reserved synchronously in the provider's existing circuit state so concurrent 8/2 or 24/4 claims cannot race multiple HTML fallbacks through.
-- If no probe slot is available, the row remains fail-closed as `page_retry` with `retry_kind=page_pacing_deferred`; API/fresh work for other rows continues.
-- The **first** challenge/403/429 from a paced page probe immediately opens the existing **15-minute** provider circuit. It no longer waits for two challenge responses while other requests are in flight.
+- If no probe slot is available, the row remains fail-closed as `page_retry` with `retry_kind=page_pacing_deferred`; fresh/API work for other rows continues.
+- The **first** challenge/403/429 from a paced real-provider pass immediately opens the existing **15-minute** provider circuit. It no longer waits for two challenge responses while other requests are in flight.
 - While the circuit is open, HTML remains fully suppressed and the existing two-row page-recovery lane gets official API/exact-search attempts only.
 - No proof gate, public threshold, DM rule, dedupe rule, catalog depth, or queue ownership rule is weakened.
 

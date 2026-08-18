@@ -33,6 +33,17 @@ class SourceCandidate:
     sku: str | None = None
     upc: str | None = None
 
+    selected_offer_id: str | None = None
+    variant_label: str | None = None
+    variant_attributes: dict[str, str] = field(default_factory=dict)
+    pack_size: str | None = None
+    color: str | None = None
+    platform: str | None = None
+    model: str | None = None
+    parent_title: str | None = None
+    option_mismatch_warning: str | None = None
+    requires_staff_review: bool = False
+
     stock_status: str | None = None
     can_add_to_cart: bool | None = None
     is_business_offer: bool = False
@@ -59,6 +70,16 @@ class SourceCandidate:
         if self.is_checkout_price:
             availability_bits.append("Checkout price observed")
 
+        verification_notes: list[str] = []
+        if self.selected_offer_id:
+            verification_notes.append(f"Selected offer ID: {self.selected_offer_id}")
+        if self.variant_label:
+            verification_notes.append(f"Selected option: {self.variant_label}")
+        if self.parent_title:
+            verification_notes.append(f"Parent listing title: {self.parent_title}")
+        if self.option_mismatch_warning:
+            verification_notes.append(self.option_mismatch_warning)
+
         deal = NormalizedDeal(
             title=self.title,
             retailer=self.retailer,
@@ -70,7 +91,18 @@ class SourceCandidate:
             sku=self.sku or (self.product_id if self.product_id_type == "sku" else None),
             upc=self.upc or (self.product_id if self.product_id_type == "upc" else None),
             asin=self.product_id if self.product_id_type == "asin" else None,
+            selected_offer_id=self.selected_offer_id,
+            variant_label=self.variant_label,
+            variant_attributes=dict(self.variant_attributes),
+            pack_size=self.pack_size,
+            color=self.color,
+            platform=self.platform,
+            model=self.model,
+            parent_title=self.parent_title,
+            option_mismatch_warning=self.option_mismatch_warning,
+            requires_staff_review=self.requires_staff_review or bool(self.option_mismatch_warning),
             availability_message="; ".join(availability_bits) if availability_bits else None,
+            verification_notes=verification_notes,
         )
         deal.recalculate_prices()
 
@@ -82,7 +114,13 @@ class SourceCandidate:
             deal.is_ymmv = True
             deal.risk_flags.append("May require membership")
 
+        if self.option_mismatch_warning:
+            deal.risk_flags.append(self.option_mismatch_warning)
+
+        if self.requires_staff_review:
+            deal.risk_flags.append("Staff review required: selected offer/variant proof is not safe enough for public alerting")
+
         if self.signals:
-            deal.risk_flags.extend(self.signals[:5])
+            deal.risk_flags.extend(self.signals[:8])
 
         return deal

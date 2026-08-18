@@ -7,11 +7,11 @@ from discord.ext import commands
 
 from sniperplug.config import Settings
 from sniperplug.cogs.auto_discovery import AutoDiscoveryCog
-from sniperplug.cogs.deal_scanner import DealScannerCog
+from sniperplug.cogs.deal_scanner_locked import DealScannerCog
 from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.registry import provider_registry
-from sniperplug.providers.walmart import WalmartProvider
+from sniperplug.providers.walmart_variant import WalmartProvider
 from sniperplug.storage.db import Database
 
 

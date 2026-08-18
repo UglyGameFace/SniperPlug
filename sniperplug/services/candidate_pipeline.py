@@ -27,8 +27,8 @@ MIN_REVIEW_SCORE = 60
 def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
     """Convert a source-found candidate into an alert/review decision.
 
-    This function is intentionally provider-agnostic. Providers find candidates;
-    the pipeline scores, routes, and decides what happens next.
+    Providers find candidates. The pipeline decides whether that candidate can
+    become a public alert. Variant/option uncertainty always forces Staff Review.
     """
     deal = apply_risk_flags(candidate.to_normalized_deal())
     anomaly = score_deal_anomaly(deal)
@@ -52,6 +52,11 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
         should_alert = False
         hold_for_review = True
         reasons.append("Review: urgent anomaly but add-to-cart was not confirmed")
+
+    if deal.requires_staff_review:
+        should_alert = False
+        hold_for_review = True
+        reasons.append("Review: selected option/variant proof is required before public alert")
 
     return CandidateDecision(
         candidate=candidate,

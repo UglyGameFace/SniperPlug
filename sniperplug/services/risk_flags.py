@@ -19,18 +19,26 @@ def apply_risk_flags(deal: NormalizedDeal) -> NormalizedDeal:
     """
     deal.recalculate_prices()
 
-    flags: list[str] = []
-    tags: list[str] = []
+    flags: list[str] = list(deal.risk_flags)
+    tags: list[str] = list(deal.alert_tags)
 
     discount = deal.discount_percent or 0
 
-    if discount >= 70:
+    if discount >= 70 and not deal.requires_staff_review:
         deal.is_possible_price_error = True
         tags.append("⚡ Possible Price Glitch")
         flags.append("Huge discount compared to the typical price. It may be an error or may disappear fast.")
+    elif discount >= 70 and deal.requires_staff_review:
+        tags.append("🟡 Staff Review")
+        flags.append("Large discount exists, but selected option proof is not safe enough for public alerting.")
     elif discount >= 40:
         tags.append("🔥 Hot Deal")
         flags.append("Large discount compared to the typical price.")
+
+    if deal.option_mismatch_warning:
+        deal.requires_staff_review = True
+        tags.append("🟡 Staff Review")
+        flags.append(deal.option_mismatch_warning)
 
     if deal.retailer.lower() == "amazon":
         deal.is_ymmv = True
@@ -51,8 +59,14 @@ def apply_risk_flags(deal: NormalizedDeal) -> NormalizedDeal:
     if deal.availability_message:
         flags.append(f"Availability note: {deal.availability_message}")
 
+    if deal.requires_staff_review:
+        flags.append("Staff review required before any public alert.")
+        deal.verification_status = "staff_review"
+
     # Risk level is intentionally conservative.
     if deal.is_possible_price_error or len(flags) >= 3:
+        deal.risk_level = "medium"
+    if deal.requires_staff_review:
         deal.risk_level = "medium"
     if deal.fulfilled_by_amazon is False and discount >= 70:
         deal.risk_level = "high"
@@ -82,6 +96,8 @@ def calculate_confidence_score(deal: NormalizedDeal) -> int:
         score -= 15
     if deal.is_possible_price_error:
         score -= 10
+    if deal.requires_staff_review:
+        score -= 20
     if deal.condition and deal.condition.lower() in {"used", "renewed", "open box", "refurbished"}:
         score -= 5
 

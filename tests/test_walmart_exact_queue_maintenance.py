@@ -77,10 +77,14 @@ def test_cleanup_deletes_only_preselected_item_ids() -> None:
 
 
 def test_overlapping_stale_and_overflow_rows_still_fill_unique_batch() -> None:
-    stale_ids = [str(index) for index in range(100)]
+    stale_count = max(1, CLEANUP_BATCH_SIZE // 5)
+    stale_ids = [str(index) for index in range(stale_count)]
     overflow_ids = [
         *stale_ids,
-        *(str(index) for index in range(100, CLEANUP_BATCH_SIZE + 100)),
+        *(
+            str(index)
+            for index in range(stale_count, CLEANUP_BATCH_SIZE + stale_count)
+        ),
     ]
     conn = CleanupConnection(
         [
@@ -103,7 +107,7 @@ def test_overlapping_stale_and_overflow_rows_still_fill_unique_batch() -> None:
     assert len(delete_params) == CLEANUP_BATCH_SIZE
     assert len(set(delete_params)) == CLEANUP_BATCH_SIZE
     assert delete_params[:3] == ("0", "1", "2")
-    assert delete_params[-1] == "499"
+    assert delete_params[-1] == str(CLEANUP_BATCH_SIZE - 1)
     assert conn.commit_count == 1
 
 

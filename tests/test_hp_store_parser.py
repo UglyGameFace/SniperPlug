@@ -12,6 +12,10 @@ from sniperplug.hp_watcher.parser import (
 
 
 PRODUCT_URL = "https://www.hp.com/us-en/shop/pdp/hp-travel-25-liter-156-iron-grey-laptop-backpack"
+CONFIGURE_URL = (
+    "https://www.hp.com/us-en/shop/ConfigureView?langId=-1&storeId=10151&catalogId=10051"
+    "&catEntryId=3074457345620326820&urlLangId=&quantity=1"
+)
 
 
 def test_sitemap_index_and_product_url_filtering() -> None:
@@ -26,18 +30,22 @@ def test_sitemap_index_and_product_url_filtering() -> None:
     assert index.kind == "sitemapindex"
     assert index.locations == ("https://www.hp.com/sitemap-store-us-en-products-1.xml",)
 
+    configure_xml_url = CONFIGURE_URL.replace("&", "&amp;")
     urlset = parse_sitemap_xml(
         f"""<?xml version="1.0" encoding="UTF-8"?>
         <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
           <url><loc>{PRODUCT_URL}</loc></url>
           <url><loc>https://www.hp.com/us-en/shop/cat/accessories</loc></url>
           <url><loc>https://www.hp.com/us-en/shop/pdp/another-product</loc></url>
+          <url><loc>{configure_xml_url}</loc></url>
+          <url><loc>https://www.hp.com/us-en/shop/ConfigureView?catalogId=10051</loc></url>
         </urlset>
         """
     )
     assert hp_us_product_urls(urlset) == (
         PRODUCT_URL,
         "https://www.hp.com/us-en/shop/pdp/another-product",
+        CONFIGURE_URL,
     )
 
 
@@ -60,6 +68,41 @@ def test_product_page_identity_prefers_exact_json_product() -> None:
     assert identity.catalog_entry_id == "3074457345619999999"
     assert identity.title.startswith("HP Travel 25 Liter")
     assert identity.image_url.startswith("https://")
+
+
+def test_configure_view_identity_uses_exact_catalog_entry_id_from_url() -> None:
+    html = """
+    <html><head><title>HP Z4 G5 Tower Workstation | HP Store</title></head><body>
+    <script type="application/ld+json">
+    {
+      "@type": "Product",
+      "name": "HP Z4 G5 Tower Workstation",
+      "sku": "A1BC2AV#ABA"
+    }
+    </script>
+    </body></html>
+    """
+    identity = parse_product_page_identity(CONFIGURE_URL, html)
+    assert identity.sku == "A1BC2AV"
+    assert identity.catalog_entry_id == "3074457345620326820"
+    assert identity.title == "HP Z4 G5 Tower Workstation"
+
+
+def test_configure_view_identity_rejects_catalog_entry_mismatch() -> None:
+    html = """
+    <html><body>
+    <script type="application/ld+json">
+    {
+      "@type": "Product",
+      "name": "Wrong HP Product",
+      "sku": "A1BC2AV#ABA",
+      "catentryId": "3074457345619999999"
+    }
+    </script>
+    </body></html>
+    """
+    with pytest.raises(ValueError, match="disagreed"):
+        parse_product_page_identity(CONFIGURE_URL, html)
 
 
 def test_product_page_identity_rejects_missing_exact_catalog_identity() -> None:

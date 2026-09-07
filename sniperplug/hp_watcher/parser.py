@@ -5,11 +5,12 @@ import html as html_module
 import json
 import re
 from typing import Any, Iterable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from xml.etree import ElementTree
 
 
 _HP_PDP_PATH_MARKERS = ("/us-en/shop/pdp/", "/us-en/shop/products/")
+_HP_CONFIGURE_VIEW_PATH = "/us-en/shop/configureview"
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,11 @@ def is_official_hp_product_url(value: str) -> bool:
         return False
     host = (parsed.hostname or "").lower()
     path = parsed.path.lower()
-    return parsed.scheme == "https" and host == "www.hp.com" and any(marker in path for marker in _HP_PDP_PATH_MARKERS)
+    if parsed.scheme != "https" or host != "www.hp.com":
+        return False
+    if any(marker in path for marker in _HP_PDP_PATH_MARKERS):
+        return True
+    return bool(_configure_view_catalog_entry_id(value))
 
 
 def parse_product_page_identity(product_url: str, html_text: str) -> ProductPageIdentity:
@@ -106,10 +111,18 @@ def parse_product_page_identity(product_url: str, html_text: str) -> ProductPage
             r'(?i)data-(?:catentry-id|product-id)\s*=\s*["\'](\d{4,20})["\']',
         ),
     )
+    url_product_id = _configure_view_catalog_entry_id(product_url)
 
-    selected = _select_identity_candidate(candidates, preferred_sku=regex_sku)
+    selected = _select_identity_candidate(
+        candidates,
+        preferred_sku=regex_sku,
+        preferred_product_id=url_product_id,
+    )
     sku = normalize_hp_sku((selected or {}).get("sku") or regex_sku)
-    product_id = _digits((selected or {}).get("product_id") or regex_product_id)
+    html_product_id = _digits((selected or {}).get("product_id") or regex_product_id)
+    if url_product_id and html_product_id and url_product_id != html_product_id:
+        raise ValueError("HP product page catalog entry ID disagreed with product URL")
+    product_id = html_product_id or url_product_id
     title = _clean_text((selected or {}).get("title") or _html_title(decoded))
     image_url = _clean_url((selected or {}).get("image_url"))
 
@@ -211,6 +224,25 @@ def normalize_hp_sku(value: Any) -> str:
     return text if len(text) >= 5 and any(character.isdigit() for character in text) else ""
 
 
+def _configure_view_catalog_entry_id(value: str) -> str:
+    try:
+        parsed = urlparse(str(value or "").strip())
+    except ValueError:
+        return ""
+    if parsed.scheme != "https" or (parsed.hostname or "").lower() != "www.hp.com":
+        return ""
+    if parsed.path.lower().rstrip("/") != _HP_CONFIGURE_VIEW_PATH:
+        return ""
+    query = {
+        str(key).lower(): values
+        for key, values in parse_qs(parsed.query, keep_blank_values=True).items()
+    }
+    values = query.get("catentryid", ())
+    if len(values) != 1:
+        return ""
+    return _digits(values[0])
+
+
 def _script_json_objects(html_text: str) -> Iterable[Any]:
     pattern = re.compile(
         r"<script\b[^>]*(?:type=[\"']application/(?:ld\+json|json)[\"'])?[^>]*>(.*?)</script>",
@@ -262,9 +294,23 @@ def _select_identity_candidate(
     candidates: list[dict[str, str]],
     *,
     preferred_sku: str,
+    preferred_product_id: str = "",
 ) -> dict[str, str] | None:
     normalized_preferred = normalize_hp_sku(preferred_sku)
+    normalized_product_id = _digits(preferred_product_id)
     complete = [item for item in candidates if item.get("sku") and item.get("product_id")]
+    if normalized_product_id:
+        exact_id = [item for item in complete if item.get("product_id") == normalized_product_id]
+        if normalized_preferred:
+            for item in exact_id:
+                if item.get("sku") == normalized_preferred:
+                    return item
+        if exact_id:
+            return exact_id[0]
+        if normalized_preferred:
+            for item in candidates:
+                if item.get("sku") == normalized_preferred and not item.get("product_id"):
+                    return item
     if normalized_preferred:
         for item in complete:
             if item.get("sku") == normalized_preferred:

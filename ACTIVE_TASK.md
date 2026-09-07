@@ -3,76 +3,85 @@
 ## Task / outcome
 **SP-WM-DEAL-DELIVERY-STALL — restore Walmart deal delivery end-to-end.**
 
-Target outcome: catalog discovery feeds exact verification, current Walmart selected-offer identity normalizes correctly, paced page recovery does not churn known retries, verified deals fan out before maintenance uses the shared Turso worker, and proof/shipping/dedupe safety remains intact.
+Target outcome: catalog discovery feeds exact verification, strict selected-offer/current/reference proof produces eligible Walmart deals, page recovery stays paced, verified deals fan out before maintenance, and proof/shipping/dedupe safety remains intact.
 
 ## Scope
-`catalog discovery → selected-offer normalization → fresh proof → exact-detail queue → claim → Walmart API/page recovery → exact result persistence → Walmart/external fanout → bounded maintenance`
+`catalog discovery → selected-offer normalization → fresh proof → exact-detail queue → claim → Walmart official detail/exact-search/page recovery → exact result persistence → Walmart/external fanout → bounded maintenance`
 
 Do not switch to unrelated watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
 
 ## Status
-**PR #256 merged to `main` as `2b057b6b02b96c44699be69baa915fe9e0d07a97`. Implementation and pre-merge validation are complete. Active work is now production acceptance only.**
+**PR #256 is merged and its original production choke is live-improved. Production acceptance exposed a second blocker on the same Walmart delivery path: exact current/reference recovery. Draft PR #257 is the active implementation follow-up.**
 
-PR: #256 `Restore Walmart deal verification throughput`
-Validated PR head: `edd9e6f31535db64f00b26b1a152fae50a042266`
+Merged: #256 `Restore Walmart deal verification throughput` → `2b057b6b02b96c44699be69baa915fe9e0d07a97`
+Active: #257 `Recover Walmart exact prices and trusted references`
+Branch: `fix/walmart-exact-price-recovery-257`
 
-## Root cause / findings
-- Sep 7 production catalog discovery was healthy: 98 returned / 98 unique / 98 usable item IDs.
-- Safe fresh proof collapsed to effectively 0 and exact drain batches verified 0/24 while 47/48 recent claims became `page_pacing_deferred`.
-- Current Walmart payloads use seller/merchant aliases the older selected-offer normalizer did not recognize.
-- Known `page_retry` rows were repeatedly leased while the single HTML probe slot was unavailable, creating useless lease/outcome writes.
-- Production queue cleanup ownership was duplicated; the old blind prune still ran from catalog enqueue while newer bounded cleanup existed elsewhere.
-- Exact verification and fanout schema paths could run maintenance before ready alerts reached delivery.
-- Turso's single process-isolated worker showed 8-10 second maintenance/queue stalls on the hot path.
-
-## Changes merged in #256
-- Extended the existing authoritative selected-offer normalizer for current seller/merchant aliases, marketplace aliases, explicit first-party flags, scalar seller/merchant values, and existing Walmart seller IDs.
-- Seller identity is read only from the selected offer first and exact item root second; sibling offers cannot donate identity.
-- Existing `SourceCandidate` payable-price normalization stays authoritative; marketplace shipping remains fail-closed.
-- Known `page_retry` rows are not leased while the HTML probe is merely paced; fresh/pending official API work remains claimable.
-- Removed legacy blind prune ownership from production catalog enqueue.
-- Removed retention cleanup from exact verification so durable results return immediately for fanout.
-- Reduced exact-queue cleanup from 500 IDs to 100 IDs per bounded write.
-- Moved Walmart event/decision and exact-queue maintenance after Walmart and external fanout; skip maintenance while another fanout owner is active.
-- Removed retention DELETE behavior from fanout schema initialization.
-- Updated stale architecture/static tests for the three-way page-lane policy and cleanup ownership.
-
-## Validation / results
-Termux Ubuntu `aarch64`, Python 3.12.14, exact validated PR head:
+## #256 validation
+Exact validated #256 head `edd9e6f31535db64f00b26b1a152fae50a042266` on Termux Ubuntu aarch64 / Python 3.12.14:
 - affected regression set: **32 passed**
 - native `libsql==0.1.11` built successfully from source on ARM
-- `tests/test_libsql_process_connection.py`: **10 passed**
-- `python -m pip check`: **passed**
-- `python -m compileall -q sniperplug scripts tests`: **passed**, exit 0
-- `python scripts/smoke_imports.py`: **passed**, 37 modules / 22 symbols, exit 0
-- full suite with native libsql installed: **1,282 passed**, exit 0
+- native libsql process tests: **10 passed**
+- `pip check`: passed
+- compileall: passed, exit 0
+- import smoke: **37 modules / 22 symbols**, exit 0
+- full suite: **1,282 passed**, exit 0
 - one unrelated Python `audioop` deprecation warning
-- final PR diff inspected; review threads: none; submitted reviews: none
 
-GitHub-hosted Actions remains infrastructure-blocked before execution (`runner_id=0`, empty runner name, `steps=[]`). Those workflow conclusions are not code-test failures.
+GitHub-hosted Actions remains infrastructure-blocked before execution (`runner_id=0`, empty runner name, `steps=[]`).
 
-## Remaining Definition of Done — production acceptance
-After the merged code is deployed/restarted, live-prove all of the following:
-1. `safe fresh proof` becomes nonzero when current explicit seller/merchant identity exists.
-2. Exact batches verify real rows instead of repeated 0/24 page-pacing churn.
-3. Known `page_retry` rows are not repeatedly leased while the HTML probe slot is occupied.
-4. Walmart/external fanout produces processed events/posts/DMs for eligible verified deals.
-5. HTML remains one paced probe with no multi-request challenge burst.
-6. Maintenance no longer blocks the hot delivery path for 8-10 seconds.
+## Live acceptance after #256
+What is now proven improved:
+- catalog discovery remains healthy and safe fresh proof is nonzero again: examples **3/98**, **11/98**, **10/96**
+- exact verification produces real verified rows again: examples **3/24**, **10/24**, **10/24**
+- after the new deployment, page retry/suppression collapsed to **page 0 / page suppressed 0** across repeated batches
+- exact fetch/store timings returned to sane ranges; supplied post-deploy logs do not show the old 8-10 second Walmart maintenance stalls
+- runtime explicitly reports `maintenance_after_all_fanout=true`
 
-Only after those live checks pass call Walmart deal delivery restored and close this task.
+What still blocks end-to-end deal delivery:
+- repeated exact batches now fail as `api_price_missing`, including **8/8** and **24/24** batches
+- verified fresh rows usually have no trusted reference; example **10 verified / 0 official was prices / 9 no reference / 0 markdowns**
+- therefore the original page-pacing/maintenance choke moved out of the way, revealing exact current/reference recovery as the next same-path bottleneck
+
+## #257 root cause
+- Canonical exact verification currently tries official Affiliate exact search as a recovery source only when seller/offer identity is missing.
+- If official detail has complete identity but no numeric current price, verification returns `api_price_missing` without trying exact search, even though exact search is the same exact-ID-checked API path already supplying catalog prices.
+- A strict fresh discovery snapshot may safely prove the current selected-offer price while lacking a trusted Walmart was/regular/original reference. It returns immediately as verified, so it never receives a same-cycle exact-search opportunity to recover a trusted reference and becomes `verified_no_reference`.
+
+## #257 implementation
+- Keep `_fetch_exact_candidate_off_loop()` as the only canonical proof implementation.
+- Add an exact-search-only provider view with HTML forcibly disabled.
+- Hide the fresh discovery snapshot only for that recovery pass so the pass must use official exact search rather than short-circuiting on the same snapshot.
+- On canonical `api_price_missing`, run one exact-ID Affiliate search recovery through the canonical verifier.
+- On a verified candidate with no trusted reference, run one best-effort exact-search reference recovery through the canonical verifier.
+- Failed reference recovery preserves the already-valid no-reference candidate; it cannot downgrade it or route it to HTML.
+- Recovery remains active while the real HTML challenge circuit is open; that circuit suppresses HTML, not healthy official API work.
+- Exact item ID, seller, offer, marketplace, shipping, variant, current-price, and trusted-reference gates remain unchanged.
+
+## #257 regressions
+Added coverage for:
+1. exact detail has seller/offer identity but no price; exact search recovers current + trusted reference
+2. the same recovery still works while the real HTML circuit is open
+3. strict fresh current-price proof with no reference gets best-effort exact-search reference recovery without HTML
+4. failed reference recovery preserves the valid fresh candidate
+
+## Remaining Definition of Done
+1. Validate exact #257 head with targeted Walmart tests, `pip check`, compileall, import smoke, native libsql process tests, and the full suite.
+2. Inspect final #257 diff/review state and keep the PR draft until evidence is green.
+3. Merge/deploy #257 only after exact-head validation.
+4. Live-prove `api_price_missing` materially drops, official trusted references/markdowns become nonzero when Walmart exposes them, page suppression remains 0/appropriately paced, and eligible verified deals reach fanout/posts/DMs.
+5. Only then call Walmart deal delivery restored and close this active task.
 
 ## Risks / boundaries
-- Product-page HTML parsing was not blindly changed without raw live page evidence.
-- Live Walmart payload/traffic acceptance is still required.
-- No public threshold, DM rule, dedupe rule, reference-price rule, catalog depth, price history, challenge circuit, or shipping guard was weakened.
+- No catalog/relevance neighbor is allowed to donate exact price/reference; Walmart exact search must return the requested exact item ID.
+- Trusted reference rules are unchanged. MSRP/list/retail/marketplace context remains blocked where existing code blocks it.
+- Product-page HTML parsing is not being blindly changed without raw live page evidence.
 
 ## Backlog — not active
 - SP-GATEWAY-EVENT-LOOP-LAG
 - SP-SETUP-DELIVERY-UX
 - SP-DM-DELIVERY-STARVATION
 - SP-DM-NEW-LOW-ALERT
-- SP-WM-REFERENCE-PRICE-RECOVERY
 - SP-WM-CASH-PDP-AMOUNT
 - HP/Target standalone watcher deployment/acceptance
 - SP-TURSO-READ-AMPLIFICATION acceptance
@@ -81,4 +90,4 @@ Only after those live checks pass call Walmart deal delivery restored and close 
 - SniperPlug-Site work
 
 ## Next step
-Deploy/restart the merged `main` build and inspect fresh production Walmart autoscan/exact/fanout logs against the six acceptance checks above.
+Run exact-head #257 validation, then merge/deploy only if the full evidence is green.

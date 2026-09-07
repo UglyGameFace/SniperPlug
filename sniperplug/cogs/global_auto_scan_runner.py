@@ -32,6 +32,7 @@ from sniperplug.services.walmart_global_catalog_autoscan import (
 )
 from sniperplug.services.walmart_global_deal_fanout_bulk import (
     fanout_recent_exact_walmart_deals,
+    maybe_prune_global_deal_event_storage_bounded,
 )
 from sniperplug.services.walmart_exact_queue_maintenance import (
     maybe_prune_walmart_exact_queue_bounded,
@@ -110,7 +111,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "scheduled_rechecks_never_drain=true "
             "request_level_provider_priority=true fixed_rate_exact_worker=true "
             "catalog_cannot_own_exact_worker=true bounded_queue_pressure=true "
-            "queue_cleanup_after_fanout=true background_full_queue_scans=false",
+            "maintenance_after_all_fanout=true background_full_queue_scans=false",
             platform.python_version(),
             sys.platform,
             GLOBAL_DISCOVERY_ROUTES_PER_BATCH,
@@ -492,31 +493,36 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             legacy.log.info(result.summary_line())
 
     async def _run_walmart_post_fanout_maintenance(self) -> None:
-        """Run bounded queue retention only when no other fanout owner is active."""
+        """Run bounded retention only when no other fanout owner is active."""
 
         # Catalog and reconciliation both invoke the same Walmart/external fanout
         # paths. Their fanout calls return early to another caller when the shared
         # fanout lock is occupied, so the exact worker must not mistake that early
-        # return for "fanout finished" and start a DELETE underneath the owner.
+        # return for "fanout finished" and start maintenance underneath the owner.
         if self._catalog_active or self._reconciliation_active:
             return
 
         try:
-            cleanup = await maybe_prune_walmart_exact_queue_bounded(
+            event_rows, decision_rows = await maybe_prune_global_deal_event_storage_bounded(
+                self.bot.db
+            )
+            queue_cleanup = await maybe_prune_walmart_exact_queue_bounded(
                 self.bot.db.require_conn()
             )
-            if cleanup.deleted:
+            if event_rows or decision_rows or queue_cleanup.deleted:
                 legacy.log.info(
-                    "Walmart exact queue post-fanout cleanup deleted=%s",
-                    cleanup.deleted,
+                    "Walmart post-fanout maintenance events=%s decisions=%s exact_queue=%s",
+                    event_rows,
+                    decision_rows,
+                    queue_cleanup.deleted,
                 )
         except asyncio.CancelledError:
             raise
         except Exception:
             # Maintenance must never turn a successful verification/fanout cycle
-            # into a failed deal-delivery cycle. The bounded cleaner retries later.
+            # into a failed deal-delivery cycle. Bounded cleaners retry later.
             legacy.log.exception(
-                "Walmart exact queue post-fanout cleanup failed safely"
+                "Walmart post-fanout maintenance failed safely"
             )
 
     def _log_global_result_notes(self, warnings) -> None:

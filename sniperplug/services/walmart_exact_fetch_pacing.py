@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
 from sniperplug.services.walmart_exact_queue_runtime import (
     PAGE_CHALLENGE_CIRCUIT_COOLDOWN_SECONDS,
     _PAGE_CIRCUIT_STATE_ATTR,
@@ -58,6 +59,43 @@ class _ApiOnlyProviderView:
         return getattr(self._provider, name)
 
 
+class _ExactSearchOnlyInnerView(_ApiOnlyInnerView):
+    """Make official exact search the canonical verifier's detail source."""
+
+    async def _official_detail_payload(self, item_id: str) -> dict:
+        search_fetcher = getattr(self._inner, "_official_exact_search_payload", None)
+        if not callable(search_fetcher):
+            raise RuntimeError("official Walmart exact search unavailable")
+        return await search_fetcher(item_id)
+
+
+class _ExactSearchOnlyProviderView:
+    """Run one exact-search recovery pass with page HTML impossible."""
+
+    def __init__(self, provider: Any, *, hold_seconds: float) -> None:
+        self._provider = provider
+        self.inner = _ExactSearchOnlyInnerView(
+            getattr(provider, "inner", provider),
+            hold_seconds=hold_seconds,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._provider, name)
+
+
+class _NetworkRecoveryClaimView:
+    """Hide fresh proof so a recovery pass must use the requested official source."""
+
+    discovery_snapshot_json = ""
+    discovery_snapshot_at = None
+
+    def __init__(self, claim: Any) -> None:
+        self._claim = claim
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._claim, name)
+
+
 async def fetch_exact_candidate_with_page_pacing(
     provider: Any,
     claim: Any,
@@ -68,16 +106,26 @@ async def fetch_exact_candidate_with_page_pacing(
 
     The existing exact verifier remains the only proof implementation. Each claim
     first runs through an isolated API-only view. Valid fresh catalog proof or a
-    complete official item-detail/exact-search result returns immediately. Only a
-    claim whose canonical result says ``page_circuit_open`` solely because the
-    API-only view intentionally suppressed HTML is eligible for the real provider
-    pass.
+    complete official item-detail/exact-search result returns without HTML.
 
-    A synchronous provider-state reservation allows at most one such real pass
-    per minute. Therefore concurrent 8/2 or 24/4 batches cannot release several
-    Walmart product-page requests when the real circuit cooldown expires. If the
-    paced probe itself receives a challenge/403/429, the real provider circuit is
-    opened for the existing fifteen-minute cooldown immediately.
+    Production can receive an exact-detail row with valid seller/offer identity
+    but no numeric current price even though the Affiliate exact-search endpoint
+    has the same exact item with price data. Likewise, a strict fresh catalog
+    snapshot can prove current selected-offer price while lacking a trusted
+    Walmart was/regular/original reference. In those two cases, one official
+    exact-search-only recovery pass is allowed through the same canonical
+    verifier. The recovery pass cannot see the discovery snapshot and cannot use
+    page HTML, so it cannot promote search relevance neighbors or stale catalog
+    price as exact proof.
+
+    Only a claim whose canonical API-only result says ``page_circuit_open`` solely
+    because the API-only view intentionally suppressed HTML is eligible for the
+    real provider pass. A synchronous provider-state reservation allows at most
+    one such real pass per minute. Therefore concurrent 8/2 or 24/4 batches cannot
+    release several Walmart product-page requests when the real circuit cooldown
+    expires. If the paced probe itself receives a challenge/403/429, the real
+    provider circuit is opened for the existing fifteen-minute cooldown
+    immediately.
     """
 
     # If Walmart HTML is already held, use the canonical verifier directly. Its
@@ -98,11 +146,40 @@ async def fetch_exact_candidate_with_page_pacing(
         claim,
         timeout_seconds=timeout_seconds,
     )
+    retry_kind = _retry_kind_from_error(error)
 
-    # Fresh catalog proof, complete official API proof, true API failures, and
-    # strict identity failures all keep their canonical result. Only the
-    # synthetic API-only page-circuit result means an HTML fallback is needed.
-    if candidate is not None or _retry_kind_from_error(error) != "page_circuit_open":
+    # A detail payload with exact identity but no price is not grounds for HTML.
+    # Give the healthy Affiliate exact-search endpoint one exact-ID-only chance to
+    # supply the missing current price through the canonical verifier.
+    if candidate is None and retry_kind == "api_price_missing":
+        recovered = await _try_official_exact_search_recovery(
+            provider,
+            claim,
+            timeout_seconds=timeout_seconds,
+        )
+        if recovered[0] is not None:
+            return recovered
+        return candidate, status, error
+
+    # A strict fresh snapshot is already safe current-price proof. If it lacks a
+    # trusted Walmart reference, exact search may enrich it with a same-item
+    # was/regular/original price. Failure to find one must never downgrade the
+    # already-valid fresh candidate or send the request to HTML.
+    if candidate is not None:
+        if _trusted_reference(candidate) is None:
+            recovered = await _try_official_exact_search_recovery(
+                provider,
+                claim,
+                timeout_seconds=timeout_seconds,
+            )
+            if recovered[0] is not None and _trusted_reference(recovered[0]) is not None:
+                return recovered
+        return candidate, status, error
+
+    # True API failures and strict identity failures keep their canonical result.
+    # Only the synthetic API-only page-circuit result means an HTML fallback is
+    # still needed.
+    if retry_kind != "page_circuit_open":
         return candidate, status, error
 
     # Another concurrent claim may have tripped the real circuit while this API
@@ -132,6 +209,33 @@ async def fetch_exact_candidate_with_page_pacing(
     if _is_page_challenge_retry_kind(retry_kind):
         _trip_page_circuit_immediately(provider)
     return candidate, status, error
+
+
+async def _try_official_exact_search_recovery(
+    provider: Any,
+    claim: Any,
+    *,
+    timeout_seconds: float,
+) -> tuple[SourceCandidate | None, str, str]:
+    """Best-effort exact-ID Affiliate search through the canonical verifier."""
+
+    inner = getattr(provider, "inner", provider)
+    if not callable(getattr(inner, "_official_exact_search_payload", None)):
+        return (
+            None,
+            "provider_unavailable",
+            "retry_kind=api_exact_search_unavailable official Walmart exact search unavailable",
+        )
+
+    recovery_provider = _ExactSearchOnlyProviderView(
+        provider,
+        hold_seconds=max(60.0, float(timeout_seconds) * 2.0),
+    )
+    return await _fetch_exact_candidate_off_loop(
+        recovery_provider,
+        _NetworkRecoveryClaimView(claim),
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def reserve_page_html_probe(

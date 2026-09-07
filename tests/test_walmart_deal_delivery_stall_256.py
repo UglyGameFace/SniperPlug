@@ -104,6 +104,63 @@ def test_scalar_marketplace_seller_reapplies_delivered_price_guard() -> None:
     assert build_fresh_discovery_offer_snapshot(candidate)
 
 
+def test_marketplace_alias_without_shipping_stays_fail_closed() -> None:
+    provider = provider_with_metadata()
+    candidate = candidate_from(
+        provider,
+        {
+            "itemId": 910005,
+            "name": "Marketplace shipping unknown",
+            "selectedOffer": {
+                "offerId": "offer-910005",
+                "currentPrice": 20.00,
+                "wasPrice": 80.00,
+                "merchantInfo": {
+                    "merchantName": "Exact Marketplace LLC",
+                    "merchantId": "seller-910005",
+                    "isMarketplace": True,
+                },
+            },
+            "availableOnline": True,
+        },
+    )
+
+    assert candidate is not None
+    assert candidate.seller_name == "Exact Marketplace LLC"
+    assert candidate.variant_attributes["selectedOfferMarketplace"] == "yes"
+    assert candidate.item_price == 20.00
+    assert candidate.shipping_status == "unknown"
+    assert candidate.current_price is None
+    assert candidate.api_current_price is None
+    assert build_fresh_discovery_offer_snapshot(candidate) == ""
+
+
+def test_contradictory_marketplace_flag_wins_fail_closed_over_walmart_name() -> None:
+    provider = provider_with_metadata()
+    candidate = candidate_from(
+        provider,
+        {
+            "itemId": 910006,
+            "name": "Contradictory marketplace identity",
+            "selectedOffer": {
+                "offerId": "offer-910006",
+                "currentPrice": 20.00,
+                "wasPrice": 80.00,
+                "seller": "Walmart.com",
+                "isMarketplace": True,
+            },
+            "availableOnline": True,
+        },
+    )
+
+    assert candidate is not None
+    assert candidate.seller_name == "Walmart.com"
+    assert candidate.variant_attributes["selectedOfferMarketplace"] == "yes"
+    assert candidate.current_price is None
+    assert candidate.api_current_price is None
+    assert build_fresh_discovery_offer_snapshot(candidate) == ""
+
+
 def test_sibling_offer_cannot_donate_missing_selected_seller() -> None:
     provider = provider_with_metadata()
     candidate = candidate_from(
@@ -197,7 +254,7 @@ def test_paced_probe_does_not_reclaim_known_page_retry_lane(monkeypatch) -> None
     asyncio.run(run())
 
 
-def test_queue_cleanup_has_one_production_owner_after_fanout() -> None:
+def test_all_walmart_retention_is_after_fanout_and_bounded() -> None:
     bulk_runtime_source = (
         ROOT / "sniperplug/services/walmart_exact_queue_bulk_runtime.py"
     ).read_text(encoding="utf-8")
@@ -207,9 +264,28 @@ def test_queue_cleanup_has_one_production_owner_after_fanout() -> None:
     runner_source = (
         ROOT / "sniperplug/cogs/global_auto_scan_runner.py"
     ).read_text(encoding="utf-8")
+    fanout_source = (
+        ROOT / "sniperplug/services/walmart_global_deal_fanout_bulk.py"
+    ).read_text(encoding="utf-8")
+    legacy_fanout_source = (
+        ROOT / "sniperplug/services/walmart_global_deal_fanout.py"
+    ).read_text(encoding="utf-8")
 
     assert "maybe_prune_walmart_exact_queue_bounded" not in bulk_runtime_source
     assert "maybe_prune_walmart_exact_verification_queue" not in enqueue_source
+
+    legacy_schema = legacy_fanout_source.split(
+        "async def ensure_global_deal_event_tables", 1
+    )[1].split("async def prune_global_deal_events_bounded", 1)[0]
+    bulk_schema = fanout_source.split(
+        "async def ensure_global_deal_event_tables_once", 1
+    )[1].split("async def maybe_prune_global_deal_event_storage_bounded", 1)[0]
+    assert "DELETE FROM" not in legacy_schema
+    assert "DELETE FROM" not in bulk_schema
+    assert "LIMIT ?" in legacy_fanout_source.split(
+        "async def prune_global_deal_events_bounded", 1
+    )[1].split("async def maybe_prune_global_deal_events_after_fanout", 1)[0]
+    assert "FANOUT_CLEANUP_BATCH_SIZE = 100" in fanout_source
 
     exact_worker = runner_source.split(
         "async def _walmart_exact_verification_worker", 1
@@ -217,4 +293,6 @@ def test_queue_cleanup_has_one_production_owner_after_fanout() -> None:
     fanout_index = exact_worker.index("await self._fanout_external_verified_events()")
     cleanup_index = exact_worker.index("await self._run_walmart_post_fanout_maintenance()")
     assert fanout_index < cleanup_index
+    assert "maybe_prune_global_deal_event_storage_bounded" in runner_source
     assert "maybe_prune_walmart_exact_queue_bounded" in runner_source
+    assert "if self._catalog_active or self._reconciliation_active" in runner_source

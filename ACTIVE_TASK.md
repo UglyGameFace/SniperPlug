@@ -11,92 +11,79 @@ Target outcome: `/movies` shows only recently confirmed official offers/screenin
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
 
 ## Status
-**PR #260 is merged as `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`, but production acceptance exposed an additional Gofobo/actionability defect. Draft follow-up PR #261 is open on branch `fix/movie-ticket-actionability-261`.**
+**PR #260 and corrective follow-up PR #261 are merged. Production acceptance is now the only remaining gate before this task can be called restored.**
 
-Validated #260 head: `dab76e36193584ed42245ef2c3e21e744bd91ecc`.
+#260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
+#261 validated head: `0275ab55f8c2f7f616700aa8c1305430ab610e6f`
+#261 merge commit: `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`
 
-#260 validation evidence:
-- targeted movie regression set: **67 passed**
+#261 exact-head validation evidence:
+- targeted movie regression set: **57 passed**
 - `python -m pip check`: passed
-- compileall: passed, exit 0
+- compileall: exit 0
 - import smoke: **37 modules / 22 symbols**, exit 0
-- native libsql process tests: **10 passed**, exit 0
-- full suite: **1,295 passed**, exit 0
+- native libsql process suite: **10 passed**, exit 0
+- full pytest suite: **1,301 passed**, exit 0
+- only 1 upstream `audioop` deprecation warning
+- final diff: only 5 expected files
+- inline review threads: none
+- submitted reviews: none
+
+GitHub-hosted Actions still reports infrastructure failures before execution on the validated head; sampled jobs have no executed steps. Local Linux Python 3.12/native-libsql validation is the code evidence for #261.
 
 Previous Walmart delivery work (#256/#257) remains merged on `main`; its production acceptance is paused by the explicit task switch and stays backlog/context only.
 
-## #260 root cause / fixes
-- Production Atom requests return HTTP 403 and enter a six-hour access backoff.
-- Movie cache rows had no serving-time freshness ceiling, so a source could fail for days/weeks while old rows remained `active=1` and were still presented as current.
-- Current Atom promotions can legitimately render `Partner Promotions` without the old mandatory `Film Promotions` section. The old parser treated that as invalid and preserved stale public codes instead of safely accepting zero current public reusable codes.
-- Multi-source runtime declared `local_screening` deliverable, but base storage hard-filtered to `public_reusable`; Gofobo screenings could be parsed and then silently discarded.
-- Movie config already used TEXT Discord snowflakes because Turso/libSQL can coerce large numeric IDs, while delivery/message/user feedback IDs still used INTEGER.
-- #260 added freshness-bounded results, current Atom compatibility, Gofobo `local_screening` persistence, exact-TEXT delivery/feedback snowflakes, and truthful source degradation/status messaging.
+## Root cause / findings
+- Production Atom requests return HTTP 403 and enter source backoff.
+- Before #260, stale movie cache rows could remain active indefinitely and be presented as current.
+- Current Atom promotions can validly render `Partner Promotions` without the old `Film Promotions` section.
+- Before #260, Gofobo `local_screening` results could be parsed and then silently discarded by storage filtering.
+- Delivery/feedback Discord snowflakes required exact TEXT storage under Turso/libSQL.
+- After #260, production proved Gofobo persistence worked but exposed a second defect: live Gofobo alerts could use CTA text such as **`LEARN MORE`** as the movie title.
+- Current Gofobo cards can separate movie/event headings from generic CTA links and can use deeper heading levels.
+- A persisted bad Gofobo row could survive a parser deploy through HTTP 304 without a fresh response body.
+- Setup Status still required users to reconstruct slash-command syntax instead of offering a direct action.
 
-## Production acceptance after #260
-Proven improved:
-- Atom now reports stale/unavailable after its month-old confirmation and old cached Atom results are hidden.
-- Atom HTTP 403 no longer poisons healthy Fandango/Gofobo source health.
-- Fandango and Gofobo both confirmed healthy in the same live status result.
-- Gofobo `local_screening` rows now persist and appear in `/movies latest`.
+## Implemented
+#260:
+- source freshness gate with durable-but-hidden stale cache
+- current Atom compatibility parser
+- independent source degradation/backoff
+- Gofobo `local_screening` persistence/delivery
+- exact-TEXT delivery/feedback snowflakes
+- truthful setup/latest/status recovery messaging
 
-Acceptance failure discovered:
-- The live Gofobo result used **`LEARN MORE` as the movie title**.
-- Gofobo's current public homepage lists real upcoming titles, while the parser accepted the card CTA as a screening candidate.
-- The resulting alert was generic and oversized: it did not identify the actual movie/event or give a concise useful next step.
-- The Setup Status panel still told managers to reconstruct `/movies setup alert_channel:#...` manually instead of providing a direct action.
-
-## #261 root cause / implementation
-- Gofobo card titles and generic CTA links can be separate DOM elements; the parser treated arbitrary links inside the upcoming section as titles.
-- The generic-title denylist omitted CTA labels such as `LEARN MORE` and `MORE INFO`.
-- Heading capture stopped at h3 even though current cards may use deeper heading levels.
-- Title-only candidates had no explicit safe fallback when a title-specific link could not be associated.
-- A persisted bad Gofobo row could survive a parser deployment if the first post-deploy request returned 304 and reused the old durable row without a new response body.
-
-Implemented in #261:
-- Reject generic CTA labels as movie/event titles and strip CTA suffixes from mixed card text.
-- Capture h1-h6 headings within the official upcoming section.
-- Pair a real heading title with a following generic CTA link when that CTA carries the title-specific official URL.
-- Coalesce duplicate title candidates and prefer title-specific official Gofobo detail URLs.
-- Fall back to the official Gofobo ZIP search when a title is known but a title-specific URL cannot be proven.
-- Accept the current official Gofobo image CDN host observed on the public site.
-- Make Gofobo validity/restriction text state explicitly that theater/date/time are ZIP-gated and must be checked on Gofobo.
-- Force one unconditional Gofobo homepage fetch per bot process before normal ETag/Last-Modified requests resume, so a parser deployment receives a real body capable of replacing previously accepted bad cache rows.
-- Add **Use This Channel for Alerts** to the private Setup Status result. The action requires Manage Server, validates bot permissions, saves the exact channel snowflake, and immediately runs a source scan.
-- Rework the guide so primary actions are buttons first and slash-command syntax is secondary.
-
-## Validation required for #261
-- targeted Gofobo parser/actionability/cache-revalidation tests
-- movie guide/status action tests
-- existing movie parser/store/runtime/feedback regressions
-- `python -m pip check`
-- `python -m compileall -q sniperplug scripts tests`
-- `python scripts/smoke_imports.py`
-- native libsql process tests where available
-- full pytest suite on the exact PR head
-- final diff/review inspection
-
-GitHub-hosted Actions has recently been infrastructure-blocked before execution (`runner_id=0`, empty runner name, `steps=[]`); red conclusions with no runner/steps are not code-test failures.
+#261:
+- rejects generic Gofobo CTA labels as titles and strips CTA suffixes from mixed card text
+- captures h1-h6 headings in the official upcoming section
+- pairs real title headings with following official CTA detail links
+- coalesces duplicate title candidates and prefers title-specific official URLs
+- falls back to the official Gofobo ZIP search when a specific URL cannot be proven
+- recognizes the current official Gofobo image CDN host
+- shortens Gofobo restriction copy and explicitly keeps theater/date/time ZIP-gated
+- forces one unconditional Gofobo body fetch per process before normal ETag/Last-Modified behavior resumes, replacing old bad CTA cache after deploy
+- adds **Use This Channel for Alerts** to private Setup Status with Manage Server and channel-permission checks
+- makes guide actions button-first while keeping slash commands available
 
 ## Remaining production acceptance
-After #261 merge/deploy:
-1. No Gofobo alert may use CTA text such as `LEARN MORE`, `MORE INFO`, or `VIEW DETAILS` as a movie/event title.
-2. Current Gofobo upcoming movie/event names must appear in the alert when the official page exposes them.
-3. Title-specific official links are used when proven; otherwise the alert falls back to Gofobo's official ZIP search without inventing theater/date/time.
-4. Gofobo alerts are concise enough to answer: what movie/event is this, is a public code exposed, and what do I do next?
+After deploy/restart:
+1. No Gofobo alert uses `LEARN MORE`, `MORE INFO`, `VIEW DETAILS`, or similar CTA text as a movie/event title.
+2. Current Gofobo movie/event names appear when exposed by the official page.
+3. Title-specific official links are used when proven; otherwise the alert uses official ZIP search without inventing theater/date/time.
+4. Gofobo alerts are concise enough to answer what the movie/event is, whether a public code exists, and what to do next.
 5. The first post-deploy Gofobo scan replaces the existing bad CTA cache instead of re-confirming it through HTTP 304.
-6. Setup Status exposes one-click current-channel configuration for a manager and successfully persists/delivers to that exact channel.
-7. Atom stale-cache handling, source isolation, exact snowflakes, dedupe, and feedback behavior remain intact.
+6. Setup Status exposes one-click current-channel configuration for a manager and persists/delivers to that exact channel.
+7. Atom stale-cache handling, source isolation, exact snowflakes, dedupe, and feedback remain intact.
 
 Only after these live checks pass call movie tickets restored and close this task.
 
 ## Risks / boundaries
 - No anti-bot bypass, proxy rotation, CAPTCHA evasion, or private/account-source scraping is added.
 - Stale rows are hidden, not blindly deleted.
-- Only the two already-supported public classifications are deliverable.
-- Gofobo theater/date/time are not guessed when the public source requires a ZIP/account lookup.
+- Only the already-supported public classifications are deliverable.
+- Gofobo theater/date/time are not guessed when the public source requires ZIP/account lookup.
 - The unconditional Gofobo body fetch happens once per process; normal conditional request behavior resumes afterward.
-- Pre-migration real Discord delivery/feedback snowflakes stored as unsafe legacy INTEGER values are not guessed back into live controls.
+- Unsafe pre-migration legacy INTEGER snowflakes are not guessed back into live controls.
 
 ## Backlog — not active
 - SP-WM-DEAL-DELIVERY-STALL production acceptance
@@ -110,4 +97,4 @@ Only after these live checks pass call movie tickets restored and close this tas
 - SniperPlug-Site work
 
 ## Next step
-Validate the exact #261 head locally, fix only evidence-backed failures, then inspect final diff/review state before merge and repeat production acceptance with a real Gofobo result plus one-click setup.
+Deploy/restart `main` at or after merge commit `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`, then run live `/movies latest` and Setup Status acceptance against the real Gofobo result before closing this task.

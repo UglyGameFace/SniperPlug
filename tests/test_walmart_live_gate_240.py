@@ -145,14 +145,21 @@ def test_production_runtime_keeps_bounded_api_only_page_lane_without_reschedulin
     assert "defer_due_page_recovery_for_open_circuit" not in BULK_RUNTIME
     assert "API_ONLY_PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
     assert "if page_circuit_remaining > 0" in BULK_RUNTIME
-    assert "else PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
+    assert "page_recovery_claim_cap = API_ONLY_PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
+    assert "elif page_probe_remaining > 0" in BULK_RUNTIME
+    assert "page_recovery_claim_cap = 0" in BULK_RUNTIME
+    assert "page_recovery_claim_cap = PAGE_RECOVERY_CLAIM_CAP" in BULK_RUNTIME
     assert "0 if page_circuit_remaining > 0 else PAGE_RECOVERY_CLAIM_CAP" not in BULK_RUNTIME
     assert "page_circuit_reschedule_rows=0" in BULK_RUNTIME
 
     # #255 moved the HTML safety boundary into a dedicated helper. The worker
     # must use that helper while preserving the canonical exact verifier for
-    # fresh catalog and official API/exact-search proof.
+    # fresh catalog and official API/exact-search proof. #256 adds a middle
+    # paced state that leaves new/API work claimable while old page_retry rows
+    # wait for the single HTML probe slot instead of being re-leased just to
+    # write another page_pacing_deferred outcome.
     assert "fetch_exact_candidate_with_page_pacing" in BULK_RUNTIME
+    assert "page_html_probe_remaining_seconds" in BULK_RUNTIME
     assert "_fetch_exact_candidate_off_loop" not in BULK_RUNTIME
     assert "PAGE_HTML_PROBE_INTERVAL_SECONDS = 60.0" in PACING_RUNTIME
     assert "_ApiOnlyProviderView" in PACING_RUNTIME

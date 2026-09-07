@@ -31,8 +31,12 @@ SEEITEARLY_MAX_RESPONSE_BYTES = 3_000_000
 # primary results and the first successful baseline cannot flood a guild.
 SEEITEARLY_MAX_ACTIVE_DROPS = 3
 
+# Extra public screening destinations surfaced by the permanent panel. They are
+# links only until each site has a stable fail-closed automated parsing contract.
 ADVANCE_SCREENINGS_URL = "https://www.advancescreenings.com/"
 ONE_IOTA_URL = "https://1iota.com/"
+CINEFIND_URL = "https://www.cinefind.app/"
+SCREENING_SQUAD_URL = "https://www.screeningsquad.com/"
 
 _FREE_PASS_RE = re.compile(r"\b(?P<count>\d{1,4})\s+free\s+pass(?:es)?\b", re.IGNORECASE)
 _GENERIC_TITLES = frozenset(
@@ -125,6 +129,10 @@ class _SeeItEarlyUpcomingParser(HTMLParser):
                     self.candidates.append(candidate)
         self._active_href = ""
         self._active_parts = []
+        # A free-pass count belongs to the movie card we just consumed. Clear
+        # nearby context here so one title can never donate its count to the
+        # next paid/release-only title on the page.
+        self._recent_text = []
 
 
 def parse_seeitearly_upcoming_html(html_text: str) -> SeeItEarlyParseResult:

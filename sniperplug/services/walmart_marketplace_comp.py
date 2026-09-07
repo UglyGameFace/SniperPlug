@@ -31,6 +31,28 @@ _CURRENCY_UNIT_TOKENS = {
     "dollar",
     "dollars",
 }
+_WALMART_SELLER_IDS = {
+    "0",
+    "F55CDC31AB754BB68FE0B39041159D63",
+    "WALMART",
+}
+_FIRST_PARTY_TRUE_KEYS = (
+    "isWalmartSeller",
+    "isSoldByWalmart",
+    "soldByWalmart",
+)
+_MARKETPLACE_KEYS = (
+    "isMarketPlaceItem",
+    "isMarketplaceItem",
+    "isMarketplace",
+    "marketplace",
+)
+_SELLER_CONTAINER_KEYS = (
+    "seller",
+    "sellerInfo",
+    "merchant",
+    "merchantInfo",
+)
 
 
 @dataclass(frozen=True)
@@ -116,30 +138,24 @@ def marketplace_comp_from_item(item: dict[str, Any]) -> dict[str, str]:
 
 
 def selected_offer_delivery_attributes(item: dict[str, Any]) -> dict[str, str]:
+    """Normalize one Walmart selected offer without borrowing sibling identity.
+
+    Walmart has exposed the same selected seller through ``seller*`` and
+    ``merchant*`` aliases over time. Read those aliases only from the selected
+    offer node and then the exact item root, preserving the existing root fallback
+    while never walking sibling ``offers`` arrays. This keeps fresh catalog proof
+    resilient to payload-shape changes without weakening seller/offer isolation.
+    """
+
     node, node_path = selected_offer_node(item)
     attrs: dict[str, str] = {"selectedOfferNodeSource": node_path}
 
-    seller_name = clean_string(
-        node.get("sellerName")
-        or node.get("sellerDisplayName")
-        or nested(node, "seller", "name")
-        or nested(node, "sellerInfo", "sellerName")
-        or nested(node, "sellerInfo", "name")
-        or item.get("sellerName")
-        or item.get("sellerDisplayName")
-        or nested(item, "seller", "name")
-        or nested(item, "sellerInfo", "sellerName")
-    )
-    seller_id = clean_string(
-        node.get("sellerId")
-        or node.get("sellerID")
-        or nested(node, "seller", "id")
-        or nested(node, "sellerInfo", "sellerId")
-        or item.get("sellerId")
-        or item.get("sellerID")
-        or nested(item, "seller", "id")
-        or nested(item, "sellerInfo", "sellerId")
-    )
+    seller_name = _seller_name_from_node(node)
+    seller_id = _seller_id_from_node(node)
+    if node is not item:
+        seller_name = seller_name or _seller_name_from_node(item)
+        seller_id = seller_id or _seller_id_from_node(item)
+
     offer_id = clean_string(
         node.get("offerId")
         or node.get("offerID")
@@ -170,20 +186,23 @@ def selected_offer_delivery_attributes(item: dict[str, Any]) -> dict[str, str]:
         or item.get("condition")
     )
 
-    marketplace = first_bool(
-        node.get("isMarketPlaceItem"),
-        node.get("isMarketplaceItem"),
-        node.get("marketplace"),
-        item.get("isMarketPlaceItem"),
-        item.get("isMarketplaceItem"),
-        item.get("marketplace"),
-    )
-    if (
-        marketplace is None
-        and seller_name
-        and not seller_name_is_walmart(seller_name)
-    ):
-        marketplace = True
+    marketplace = _marketplace_from_node(node)
+    if marketplace is None and node is not item:
+        marketplace = _marketplace_from_node(item)
+
+    first_party = _explicit_first_party(node)
+    if node is not item:
+        first_party = first_party or _explicit_first_party(item)
+    if seller_id_is_walmart(seller_id):
+        first_party = True
+
+    if first_party and not seller_name:
+        seller_name = "Walmart"
+    if marketplace is None:
+        if first_party or seller_name_is_walmart(seller_name):
+            marketplace = False
+        elif seller_name or seller_id:
+            marketplace = True
 
     item_price = first_money(
         (f"{node_path}.salePrice", node.get("salePrice")),
@@ -535,6 +554,104 @@ def first_bool(*values: Any) -> bool | None:
     return None
 
 
+def _seller_name_from_node(value: dict[str, Any]) -> str | None:
+    direct = _first_text(
+        value.get("sellerName"),
+        value.get("sellerDisplayName"),
+        value.get("merchantName"),
+        value.get("soldBy"),
+        value.get("soldByName"),
+        value.get("seller") if not isinstance(value.get("seller"), dict) else None,
+        value.get("merchant") if not isinstance(value.get("merchant"), dict) else None,
+    )
+    if direct:
+        return direct
+    for key in _SELLER_CONTAINER_KEYS:
+        child = value.get(key)
+        if not isinstance(child, dict):
+            continue
+        seller = _first_text(
+            child.get("name"),
+            child.get("displayName"),
+            child.get("sellerName"),
+            child.get("sellerDisplayName"),
+            child.get("merchantName"),
+        )
+        if seller:
+            return seller
+    return None
+
+
+def _seller_id_from_node(value: dict[str, Any]) -> str | None:
+    direct = _first_text(
+        value.get("sellerId"),
+        value.get("sellerID"),
+        value.get("merchantId"),
+        value.get("merchantID"),
+    )
+    if direct:
+        return direct
+    for key in _SELLER_CONTAINER_KEYS:
+        child = value.get(key)
+        if not isinstance(child, dict):
+            continue
+        seller_id = _first_text(
+            child.get("id"),
+            child.get("sellerId"),
+            child.get("sellerID"),
+            child.get("merchantId"),
+            child.get("merchantID"),
+        )
+        if seller_id:
+            return seller_id
+    return None
+
+
+def _marketplace_from_node(value: dict[str, Any]) -> bool | None:
+    direct = first_bool(*(value.get(key) for key in _MARKETPLACE_KEYS))
+    if direct is not None:
+        return direct
+    for key in _SELLER_CONTAINER_KEYS:
+        child = value.get(key)
+        if not isinstance(child, dict):
+            continue
+        nested_value = first_bool(*(child.get(name) for name in _MARKETPLACE_KEYS))
+        if nested_value is not None:
+            return nested_value
+    return None
+
+
+def _explicit_first_party(value: dict[str, Any]) -> bool:
+    if first_bool(*(value.get(key) for key in _FIRST_PARTY_TRUE_KEYS)) is True:
+        return True
+    for key in _SELLER_CONTAINER_KEYS:
+        child = value.get(key)
+        if isinstance(child, dict) and first_bool(
+            *(child.get(name) for name in _FIRST_PARTY_TRUE_KEYS)
+        ) is True:
+            return True
+    seller_type = _first_text(value.get("sellerType"), value.get("merchantType"))
+    return bool(
+        seller_type
+        and _normalized_token(seller_type)
+        in {"walmart", "firstparty", "firstpartyseller", "1p"}
+    )
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        text = clean_string(value)
+        if text:
+            return text
+    return None
+
+
+def _normalized_token(value: Any) -> str:
+    return "".join(
+        character for character in str(value or "").lower() if character.isalnum()
+    )
+
+
 def seller_name_is_walmart(value: str | None) -> bool:
     normalized = " ".join(str(value or "").lower().split())
     return normalized in {
@@ -543,6 +660,10 @@ def seller_name_is_walmart(value: str | None) -> bool:
         "walmart stores inc",
         "walmart stores, inc.",
     }
+
+
+def seller_id_is_walmart(value: str | None) -> bool:
+    return str(value or "").strip().upper() in _WALMART_SELLER_IDS
 
 
 def float_or_none(value: Any) -> float | None:

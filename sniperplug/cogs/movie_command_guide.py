@@ -16,6 +16,11 @@ from sniperplug.services.movie_ticket_drops import (
     MovieTicketConfig,
     clean_text,
 )
+from sniperplug.services.seeitearly_screenings import (
+    ADVANCE_SCREENINGS_URL,
+    ONE_IOTA_URL,
+    SEEITEARLY_UPCOMING_URL,
+)
 
 
 log = logging.getLogger("sniperplug.movie_guide")
@@ -25,6 +30,7 @@ GUIDE_SELECT_ID = "movies:guide:section"
 GUIDE_LATEST_ID = "movies:guide:latest"
 GUIDE_STATUS_ID = "movies:guide:status"
 GUIDE_ENABLE_HERE_ID = "movies:guide:enable_here"
+GUIDE_ENABLE_HERE_PANEL_ID = "movies:guide:enable_here_panel"
 MAX_LATEST_EMBEDS = 8
 
 
@@ -32,34 +38,35 @@ class MovieGuideSectionSelect(discord.ui.Select):
     def __init__(self, cog: "MovieCommandGuideCog") -> None:
         self.cog = cog
         super().__init__(
-            placeholder="Choose what you need help with…",
+            placeholder="What do you want to do?",
             min_values=1,
             max_values=1,
             custom_id=GUIDE_SELECT_ID,
+            row=0,
             options=[
                 discord.SelectOption(
                     label="Start Here",
                     value="start",
                     emoji="🎬",
-                    description="The quickest way to start finding free tickets.",
+                    description="Quick tour of checking and claiming free tickets.",
                 ),
                 discord.SelectOption(
-                    label="Find Free Tickets",
+                    label="Find Tickets",
                     value="users",
                     emoji="🎟️",
-                    description="Commands anyone can use to check drops and sources.",
+                    description="Refresh current offers and screening leads.",
                 ),
                 discord.SelectOption(
-                    label="Server Setup",
+                    label="Alert Settings",
                     value="admins",
-                    emoji="⚙️",
-                    description="Commands for server owners and managers.",
+                    emoji="🔔",
+                    description="Enable, move, test, or disable automatic alerts.",
                 ),
                 discord.SelectOption(
-                    label="Safety & Sources",
+                    label="Sources & Safety",
                     value="safety",
                     emoji="🛡️",
-                    description="What SniperPlug verifies and what it cannot guarantee.",
+                    description="Direct sources, supplemental discovery, and limits.",
                 ),
             ],
         )
@@ -67,6 +74,7 @@ class MovieGuideSectionSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         try:
+            await self.cog.refresh_public_panel_from_interaction(interaction)
             section = self.values[0] if self.values else _selected_value(interaction)
             await interaction.followup.send(
                 embed=build_movie_guide_section_embed(section or "start"),
@@ -82,16 +90,22 @@ class MovieGuideSectionSelect(discord.ui.Select):
 
 
 class MovieGuidePanelView(discord.ui.View):
+    """Restart-safe permanent panel with fixed rows and direct actions."""
+
     def __init__(self, cog: "MovieCommandGuideCog") -> None:
         super().__init__(timeout=None)
         self.cog = cog
         self.add_item(MovieGuideSectionSelect(cog))
+
+        # Direct sources get their own row. Explicit rows prevent Discord.py's
+        # automatic component packing from pushing core actions out of view.
         self.add_item(
             discord.ui.Button(
                 label="Atom",
                 style=discord.ButtonStyle.link,
                 url=ATOM_PROMOTIONS_URL,
                 emoji="⚛️",
+                row=2,
             )
         )
         self.add_item(
@@ -100,6 +114,7 @@ class MovieGuidePanelView(discord.ui.View):
                 style=discord.ButtonStyle.link,
                 url=FANDANGO_OFFERS_URL,
                 emoji="🎟️",
+                row=2,
             )
         )
         self.add_item(
@@ -108,26 +123,72 @@ class MovieGuidePanelView(discord.ui.View):
                 style=discord.ButtonStyle.link,
                 url=GOFOBO_HOME_URL,
                 emoji="🎬",
+                row=2,
+            )
+        )
+
+        # Extra public discovery/directories. SeeItEarly is connected to the
+        # runtime as bounded supplemental discovery; Advance Screenings and
+        # 1iota remain manual/direct links until we have a stable fail-closed
+        # machine-readable path for them.
+        self.add_item(
+            discord.ui.Button(
+                label="SeeItEarly",
+                style=discord.ButtonStyle.link,
+                url=SEEITEARLY_UPCOMING_URL,
+                emoji="🔎",
+                row=3,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="AdvanceScreenings",
+                style=discord.ButtonStyle.link,
+                url=ADVANCE_SCREENINGS_URL,
+                emoji="🎞️",
+                row=3,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="1iota",
+                style=discord.ButtonStyle.link,
+                url=ONE_IOTA_URL,
+                emoji="⭐",
+                row=3,
             )
         )
 
     @discord.ui.button(
-        label="Check Latest Drops",
+        label="Check Now",
         style=discord.ButtonStyle.success,
         emoji="🎟️",
         custom_id=GUIDE_LATEST_ID,
+        row=1,
     )
     async def latest_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.cog.send_latest_from_panel(interaction)
 
     @discord.ui.button(
-        label="Setup Status",
+        label="Status",
         style=discord.ButtonStyle.secondary,
         emoji="📡",
         custom_id=GUIDE_STATUS_ID,
+        row=1,
     )
     async def status_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self.cog.send_status_from_panel(interaction)
+
+    @discord.ui.button(
+        label="Alerts Here",
+        style=discord.ButtonStyle.primary,
+        emoji="🔔",
+        custom_id=GUIDE_ENABLE_HERE_PANEL_ID,
+        row=1,
+    )
+    async def alerts_here_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.cog.refresh_public_panel_from_interaction(interaction)
+        await self.cog.enable_alerts_here(interaction)
 
     async def on_error(
         self,
@@ -146,10 +207,10 @@ class MovieGuidePanelView(discord.ui.View):
 
 
 class MovieStatusActionView(discord.ui.View):
-    """Private one-click setup action attached to the status result."""
+    """Private backup for the permanent panel's Alerts Here action."""
 
     def __init__(self, cog: "MovieCommandGuideCog") -> None:
-        super().__init__(timeout=300)
+        super().__init__(timeout=900)
         self.cog = cog
 
     @discord.ui.button(
@@ -157,85 +218,18 @@ class MovieStatusActionView(discord.ui.View):
         style=discord.ButtonStyle.success,
         emoji="🔔",
         custom_id=GUIDE_ENABLE_HERE_ID,
+        row=0,
     )
     async def enable_here(
         self,
         interaction: discord.Interaction,
         _: discord.ui.Button,
     ) -> None:
-        if not interaction.guild or not interaction.guild_id:
-            await interaction.response.send_message("Use this button inside a server.", ephemeral=True)
-            return
-        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message(
-                "You need **Manage Server** to change the movie-alert destination.",
-                ephemeral=True,
-            )
-            return
-        if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "Open the movie panel in the text channel you want to use, then press this button again.",
-                ephemeral=True,
-            )
-            return
-
-        movie_cog = self.cog._movie_cog()
-        if movie_cog is None:
-            await interaction.response.send_message(
-                "The movie-ticket monitor is unavailable on this build.",
-                ephemeral=True,
-            )
-            return
-
-        missing = missing_channel_permissions(interaction.guild, interaction.channel, self.cog.bot)
-        if missing:
-            await interaction.response.send_message(
-                f"I cannot post movie alerts in {interaction.channel.mention}. Missing: **{', '.join(missing)}**.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        guild_id = int(interaction.guild_id)
-        channel = interaction.channel
-        await movie_cog.store.save_config(
-            MovieTicketConfig(
-                guild_id=guild_id,
-                alert_channel_id=int(channel.id),
-                enabled=True,
-            )
-        )
-
-        scan_line = "Automatic monitoring is enabled."
-        try:
-            outcome = await movie_cog._scan_official_source(target_guild_id=guild_id)  # noqa: SLF001
-            scan_line = (
-                f"Automatic monitoring is enabled. Recently confirmed offers/screenings: **{outcome.active_count}** • "
-                f"new alerts posted: **{outcome.delivered_count}**."
-            )
-            warning = movie_cog._source_warning_summary()  # noqa: SLF001
-            if warning:
-                scan_line += f"\n⚠️ {warning}"
-        except Exception as error:  # noqa: BLE001 - config is still valid.
-            log.warning(
-                "Movie one-click setup saved but initial refresh failed guild=%s channel=%s error=%s",
-                guild_id,
-                channel.id,
-                clean_text(str(error))[:300],
-            )
-            scan_line = (
-                "Automatic monitoring is enabled, but no source could be confirmed during this immediate refresh. "
-                "SniperPlug will retry automatically."
-            )
-
-        await interaction.followup.send(
-            f"✅ Movie alerts will post in {channel.mention}.\n{scan_line}",
-            ephemeral=True,
-        )
+        await self.cog.enable_alerts_here(interaction)
 
 
 class MovieCommandGuideCog(commands.Cog):
-    """Interactive help panel for the `/movies` command group."""
+    """Interactive, persistent UI for the `/movies` command group."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -246,7 +240,7 @@ class MovieCommandGuideCog(commands.Cog):
 
     @app_commands.command(
         name="movies-help",
-        description="Open a private guide explaining every movie-ticket command.",
+        description="Open the private free-movie-ticket guide.",
     )
     async def movies_help(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(
@@ -257,10 +251,10 @@ class MovieCommandGuideCog(commands.Cog):
 
     @app_commands.command(
         name="movies-panel",
-        description="Post the interactive movie-ticket command guide for your server.",
+        description="Post the permanent free-movie-ticket panel for your server.",
     )
     @app_commands.describe(
-        target_channel="Channel where the permanent movie-ticket guide should be posted. Defaults to this channel.",
+        target_channel="Channel where the permanent movie-ticket panel should be posted. Defaults to this channel.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def movies_panel(
@@ -285,7 +279,7 @@ class MovieCommandGuideCog(commands.Cog):
         missing = missing_channel_permissions(interaction.guild, channel, self.bot)
         if missing:
             await interaction.response.send_message(
-                f"I cannot post the guide in {channel.mention}. Missing: **{', '.join(missing)}**.",
+                f"I cannot post the panel in {channel.mention}. Missing: **{', '.join(missing)}**.",
                 ephemeral=True,
             )
             return
@@ -297,18 +291,119 @@ class MovieCommandGuideCog(commands.Cog):
             allowed_mentions=discord.AllowedMentions.none(),
         )
         await interaction.followup.send(
-            f"Movie-ticket command guide posted successfully: {message.jump_url}",
+            f"Movie-ticket panel posted successfully: {message.jump_url}",
+            ephemeral=True,
+        )
+
+    async def refresh_public_panel_from_interaction(self, interaction: discord.Interaction) -> bool:
+        """Upgrade an old permanent panel in place on its next interaction.
+
+        Older panels were posted without saving their channel/message IDs. A
+        component interaction still carries the exact message, which gives us a
+        safe migration path without scanning channel history or asking admins to
+        delete/repost months-old panels.
+        """
+
+        message = getattr(interaction, "message", None)
+        if message is None or not interaction.guild_id:
+            return False
+        author = getattr(message, "author", None)
+        if self.bot.user is not None and author is not None and getattr(author, "id", None) != self.bot.user.id:
+            return False
+        try:
+            await message.edit(
+                embed=build_movie_guide_home_embed(),
+                view=MovieGuidePanelView(self),
+            )
+            return True
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as error:
+            log.warning(
+                "Could not self-refresh old movie panel guild=%s message=%s error=%s",
+                interaction.guild_id,
+                getattr(message, "id", None),
+                clean_text(str(error))[:300],
+            )
+            return False
+
+    async def enable_alerts_here(self, interaction: discord.Interaction) -> None:
+        """Shared manager-gated current-channel setup used by both panel views."""
+
+        if not interaction.guild or not interaction.guild_id:
+            await _respond_ephemeral(interaction, "Use this button inside a server.")
+            return
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
+            await _respond_ephemeral(
+                interaction,
+                "You need **Manage Server** to change the movie-alert destination.",
+            )
+            return
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await _respond_ephemeral(
+                interaction,
+                "Open the permanent movie panel in the text channel you want to use, then press **Alerts Here**.",
+            )
+            return
+
+        movie_cog = self._movie_cog()
+        if movie_cog is None:
+            await _respond_ephemeral(interaction, "The movie-ticket monitor is unavailable on this build.")
+            return
+
+        missing = missing_channel_permissions(interaction.guild, interaction.channel, self.bot)
+        if missing:
+            await _respond_ephemeral(
+                interaction,
+                f"I cannot post movie alerts in {interaction.channel.mention}. Missing: **{', '.join(missing)}**.",
+            )
+            return
+
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        guild_id = int(interaction.guild_id)
+        channel = interaction.channel
+        await movie_cog.store.save_config(
+            MovieTicketConfig(
+                guild_id=guild_id,
+                alert_channel_id=int(channel.id),
+                enabled=True,
+            )
+        )
+
+        scan_line = "Automatic monitoring is enabled."
+        try:
+            outcome = await movie_cog._scan_official_source(target_guild_id=guild_id)  # noqa: SLF001
+            scan_line = (
+                f"Recently confirmed offers/screenings: **{outcome.active_count}** • "
+                f"new direct-source alerts posted: **{outcome.delivered_count}**."
+            )
+            warning = movie_cog._source_warning_summary()  # noqa: SLF001
+            if warning:
+                scan_line += f"\n⚠️ {warning}"
+        except Exception as error:  # noqa: BLE001 - config is still valid.
+            log.warning(
+                "Movie one-click setup saved but initial refresh failed guild=%s channel=%s error=%s",
+                guild_id,
+                channel.id,
+                clean_text(str(error))[:300],
+            )
+            scan_line = (
+                "The destination is saved, but no source could be confirmed during this immediate refresh. "
+                "SniperPlug will retry automatically."
+            )
+
+        await interaction.followup.send(
+            f"✅ Movie alerts are enabled in {channel.mention}.\n{scan_line}",
             ephemeral=True,
         )
 
     async def send_latest_from_panel(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
+            await self.refresh_public_panel_from_interaction(interaction)
             movie_cog = self._movie_cog()
             if movie_cog is None:
                 await interaction.followup.send(
-                    "The movie-ticket monitor is unavailable. Run `/movies latest`; "
-                    "if that command works, restart the bot on the newest build.",
+                    "The movie-ticket monitor is unavailable. Try `/movies latest` after restarting the newest build.",
                     ephemeral=True,
                 )
                 return
@@ -318,13 +413,13 @@ class MovieCommandGuideCog(commands.Cog):
                 await movie_cog._scan_official_source(  # noqa: SLF001 - intentional UI bridge.
                     target_guild_id=int(interaction.guild_id) if interaction.guild_id else None,
                 )
-            except Exception as error:  # noqa: BLE001 - verified cache remains usable.
+            except Exception as error:  # noqa: BLE001 - freshness-qualified cache remains usable.
                 refresh_error = clean_text(str(error))[:500]
                 log.exception("Movie guide live-drop refresh failed guild=%s", interaction.guild_id)
 
             drops = await movie_cog.store.list_active_drops(limit=MAX_LATEST_EMBEDS)
             if not drops:
-                message = "No recently confirmed official free-ticket offers or screening opportunities are available right now."
+                message = "No recently confirmed free-ticket offers or screening opportunities are available right now."
                 if refresh_error:
                     message += f"\nLive refresh failed safely: `{refresh_error}`"
                 await interaction.followup.send(message, ephemeral=True)
@@ -332,8 +427,8 @@ class MovieCommandGuideCog(commands.Cog):
 
             embeds = await movie_cog._build_drop_embeds(drops)  # noqa: SLF001
             content = (
-                f"Found **{len(drops)}** recently confirmed official ticket offer(s) or screening lead(s). "
-                "Claim quickly because code, pass, and local inventory can run out early."
+                f"Found **{len(drops)}** recently confirmed ticket offer(s) or screening lead(s). "
+                "Direct-source and supplemental discovery results are labeled separately."
             )
             if refresh_error:
                 content += (
@@ -352,11 +447,11 @@ class MovieCommandGuideCog(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         try:
+            await self.refresh_public_panel_from_interaction(interaction)
             movie_cog = self._movie_cog()
             if movie_cog is None:
                 await interaction.followup.send(
-                    "The movie-ticket monitor is unavailable. Run `/movies status`; "
-                    "if that command works, restart the bot on the newest build.",
+                    "The movie-ticket monitor is unavailable. Try `/movies status` after restarting the newest build.",
                     ephemeral=True,
                 )
                 return
@@ -366,7 +461,7 @@ class MovieCommandGuideCog(commands.Cog):
             active = await movie_cog.store.list_active_drops(limit=100)
             sent_count = await movie_cog.store.count_sent_for_guild(guild_id)
             public_codes = sum(1 for drop in active if drop.classification == "public_reusable")
-            local_screenings = sum(1 for drop in active if drop.classification == "local_screening")
+            screening_leads = sum(1 for drop in active if drop.classification == "local_screening")
             states = await movie_cog._connected_source_states()  # noqa: SLF001 - shared status bridge.
             successful_times = [state.last_success_at for state in states.values() if state.last_success_at]
             latest_success = max(successful_times) if successful_times else ""
@@ -376,7 +471,7 @@ class MovieCommandGuideCog(commands.Cog):
                     enabled=config.enabled,
                     alert_channel_id=config.alert_channel_id,
                     active_count=public_codes,
-                    local_screening_count=local_screenings,
+                    local_screening_count=screening_leads,
                     sent_count=sent_count,
                     last_success_at=latest_success,
                     source_health_lines=source_lines,
@@ -400,40 +495,41 @@ class MovieCommandGuideCog(commands.Cog):
 
 def build_movie_guide_home_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🎬 SniperPlug Movie Ticket Guide",
+        title="🎬 Free Movie Tickets & Screenings",
         description=(
-            "Use this panel to check official free-ticket offers and screenings without memorizing commands.\n\n"
-            "**Fastest route:** press **Check Latest Drops**. For automatic alerts, press **Setup Status** and then **Use This Channel for Alerts**."
+            "Find current free-ticket offers and early-screening leads without memorizing commands.\n\n"
+            "**Check now. Turn on alerts. Open the source. Claim fast.**"
         ),
         color=GUIDE_COLOR,
     )
     embed.add_field(
-        name="👤 Everyone can use",
+        name="🎟️ Check now",
+        value="Press **Check Now** to refresh every connected source and privately show current results.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🔔 Automatic alerts",
         value=(
-            "**Check Latest Drops** — refresh and show current ticket codes and screening leads.\n"
-            "**Setup Status** — show source health and this server's alert destination.\n"
-            "`/movies sources` — explain Atom, Fandango, Gofobo, and unconnected private sources.\n"
-            "`/movies-help` — reopen this guide privately."
+            "Managers: press **Alerts Here** to make this channel the alert destination immediately. "
+            "Press **Status** anytime to see source health and delivery state."
         ),
         inline=False,
     )
     embed.add_field(
-        name="🛠️ Server managers",
+        name="🌐 Coverage",
         value=(
-            "**Setup Status → Use This Channel for Alerts** — one-tap automatic setup for the current text channel.\n"
-            "`/movies setup alert_channel:#channel` — choose a different alert channel manually.\n"
-            "`/movies scan` — check every connected official source immediately.\n"
-            "`/movies test-alert` — verify that the configured channel works.\n"
-            "`/movies disable` — stop automatic movie alerts."
+            "**Direct monitoring:** Atom • Fandango • Gofobo\n"
+            "**Supplemental discovery:** SeeItEarly\n"
+            "**Extra screening directories:** AdvanceScreenings • 1iota"
         ),
         inline=False,
     )
     embed.add_field(
-        name="👇 Pick a guide section",
-        value="Use the dropdown for details, examples, and safety limits.",
+        name="👇 More options",
+        value="Use the dropdown for finding tickets, alert settings, source details, and safety limits.",
         inline=False,
     )
-    embed.set_footer(text="Official codes and screening passes can still expire, fill, or run out early.")
+    embed.set_footer(text="Free passes can fill or expire early. Always verify the linked provider before traveling.")
     return embed
 
 
@@ -450,120 +546,117 @@ def build_movie_guide_section_embed(section: str) -> discord.Embed:
 def _build_start_section() -> discord.Embed:
     embed = discord.Embed(
         title="🎬 Start Here",
-        description="No Atom, Fandango, or Gofobo API key is needed to use SniperPlug's public movie alerts.",
+        description="The permanent panel is the main interface. Commands are optional fallbacks.",
         color=GUIDE_COLOR,
     )
+    embed.add_field(name="1. Find something", value="Press **Check Now**.", inline=False)
     embed.add_field(
-        name="1. Check what is live now",
-        value="Press **Check Latest Drops** on the panel.",
-        inline=False,
-    )
-    embed.add_field(
-        name="2. Read the classification",
+        name="2. Read what kind of result it is",
         value=(
-            "A result may be a reusable Atom code, a Fandango offer requiring a qualifying purchase, "
-            "or a Gofobo screening that depends on ZIP and pass availability."
+            "Atom/Fandango/Gofobo results come from direct public source pages. "
+            "SeeItEarly results are clearly marked supplemental discovery and point you toward current screening locations/providers."
         ),
         inline=False,
     )
     embed.add_field(
-        name="3. Claim immediately",
-        value="Open the matching official-source button, follow its restrictions, and claim before inventory disappears.",
+        name="3. Claim from the linked provider",
+        value="Open the result, verify your city/date/rules, and claim before free inventory fills.",
         inline=False,
     )
     embed.add_field(
-        name="For automatic alerts",
-        value="A server manager presses **Setup Status → Use This Channel for Alerts** once.",
+        name="Want automatic alerts?",
+        value="A server manager presses **Alerts Here** once in the channel that should receive them.",
         inline=False,
     )
     return embed
 
 
 def _build_user_section() -> discord.Embed:
-    embed = discord.Embed(title="🎟️ Commands Anyone Can Use", color=GUIDE_COLOR)
+    embed = discord.Embed(title="🎟️ Find Tickets", color=GUIDE_COLOR)
     embed.add_field(
-        name="Check Latest Drops",
-        value="Refreshes Atom, Fandango, and Gofobo, then privately shows recently confirmed results with artwork and restrictions.",
+        name="Check Now",
+        value="Refreshes Atom, Fandango, Gofobo, and bounded SeeItEarly discovery, then shows freshness-qualified results privately.",
         inline=False,
     )
     embed.add_field(
-        name="Setup Status",
-        value="Shows this server's alert channel, health for every connected source, code/screening counts, and delivery total.",
+        name="Source buttons",
+        value=(
+            "Use the direct links on the permanent panel when you want to browse a provider yourself. "
+            "AdvanceScreenings and 1iota are included as extra directories even though SniperPlug does not automate them yet."
+        ),
         inline=False,
     )
     embed.add_field(
-        name="`/movies sources`",
-        value="Explains which official sources are automated and which private/account sources are not connected yet.",
-        inline=False,
-    )
-    embed.add_field(
-        name="`/movies-help`",
-        value="Opens this interactive guide privately without posting in the channel.",
+        name="Advanced fallback",
+        value="`/movies latest` refreshes results and `/movies sources` explains source coverage.",
         inline=False,
     )
     return embed
 
 
 def _build_admin_section() -> discord.Embed:
-    embed = discord.Embed(title="⚙️ Server Setup", color=GUIDE_COLOR)
+    embed = discord.Embed(title="🔔 Alert Settings", color=GUIDE_COLOR)
     embed.add_field(
-        name="One-tap setup",
-        value="Press **Setup Status**, then **Use This Channel for Alerts**. Requires **Manage Server**.",
+        name="Enable or move alerts here",
+        value="Press **Alerts Here** on the permanent panel. Requires **Manage Server**.",
         inline=False,
     )
     embed.add_field(
-        name="`/movies setup alert_channel:#movie-tickets`",
-        value="Use this only when you want alerts in a different channel than the one containing the panel.",
+        name="Check configuration",
+        value="Press **Status** to see destination, connected-source health, current result counts, and delivery total.",
         inline=False,
     )
     embed.add_field(
-        name="`/movies scan`",
-        value="Checks Atom, Fandango, and Gofobo immediately and delivers newly discovered results.",
-        inline=False,
-    )
-    embed.add_field(
-        name="`/movies test-alert`",
-        value="Posts a clearly labeled fake alert to verify permissions and appearance safely.",
-        inline=False,
-    )
-    embed.add_field(
-        name="`/movies disable`",
-        value="Stops automatic delivery without deleting the saved channel configuration.",
+        name="Advanced fallbacks",
+        value=(
+            "`/movies setup alert_channel:#channel` chooses a different channel.\n"
+            "`/movies scan` refreshes now.\n"
+            "`/movies test-alert` verifies permissions/appearance.\n"
+            "`/movies disable` stops automatic delivery."
+        ),
         inline=False,
     )
     return embed
 
 
 def _build_safety_section() -> discord.Embed:
-    embed = discord.Embed(title="🛡️ Sources, Accuracy & Limits", color=GUIDE_COLOR)
+    embed = discord.Embed(title="🛡️ Sources & Safety", color=GUIDE_COLOR)
     embed.add_field(
-        name="Automated official sources",
+        name="Direct monitored sources",
         value=(
-            f"[Atom Promotions]({ATOM_PROMOTIONS_URL}) for public reusable codes.\n"
-            f"[Fandango Offers]({FANDANGO_OFFERS_URL}) for free-ticket promotions, with purchase requirements labeled.\n"
-            f"[Gofobo]({GOFOBO_HOME_URL}) for upcoming local screening announcements and public short-code links."
+            f"[Atom Promotions]({ATOM_PROMOTIONS_URL}) — public reusable promotions.\n"
+            f"[Fandango Offers]({FANDANGO_OFFERS_URL}) — ticket offers, with purchase requirements labeled.\n"
+            f"[Gofobo]({GOFOBO_HOME_URL}) — local screening announcements and public pass/code links."
         ),
         inline=False,
     )
     embed.add_field(
-        name="Filtered or labeled separately",
+        name="Supplemental discovery",
         value=(
-            "Private/account codes, sweepstakes, ordinary discounts, paid memberships, concessions, "
-            "purchase-required offers, and ZIP-local screenings are never presented as the same thing."
+            f"[SeeItEarly]({SEEITEARLY_UPCOMING_URL}) — bounded public discovery across many screening providers. "
+            "SniperPlug labels it as an aggregator and never treats it as the original pass issuer."
         ),
         inline=False,
     )
     embed.add_field(
-        name="What cannot be guaranteed",
+        name="More places to check",
         value=(
-            "A verified code may expire or hit its limit. Gofobo often reveals the actual theater/date/time only after a ZIP lookup, "
-            "and a pass can still fill before you claim or before admission."
+            f"[AdvanceScreenings]({ADVANCE_SCREENINGS_URL}) and [1iota]({ONE_IOTA_URL}) can contain screenings not present on Gofobo. "
+            "They are linked from the permanent panel while their automated integration remains fail-closed."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="What SniperPlug will not fake",
+        value=(
+            "No guessed theater/date/time, no account scraping, no CAPTCHA bypass, no paid event mislabeled free, "
+            "and no aggregator result presented as if it came directly from a studio/pass issuer."
         ),
         inline=False,
     )
     embed.add_field(
         name="Best practice",
-        value="Claim immediately, read every restriction, and use Worked/Didn't work to help other members.",
+        value="Verify the city, date, venue, restrictions, and remaining pass inventory on the linked provider before traveling.",
         inline=False,
     )
     return embed
@@ -588,7 +681,7 @@ def build_movie_status_embed(
         inline=True,
     )
     embed.add_field(name="Reusable ticket codes", value=str(active_count), inline=True)
-    embed.add_field(name="Local screening leads", value=str(local_screening_count), inline=True)
+    embed.add_field(name="Screening/discovery leads", value=str(local_screening_count), inline=True)
     embed.add_field(name="Delivered to this server", value=str(sent_count), inline=True)
     embed.add_field(name="Latest successful check", value=_discord_time(last_success_at), inline=True)
     if source_health_lines:
@@ -597,12 +690,12 @@ def build_movie_status_embed(
         health = "Healthy" if last_success_at and not last_error else "Waiting for first successful check"
         if last_error:
             health = f"Last error: `{clean_text(last_error)[:700]}`"
-    embed.add_field(name="Official source health", value=health, inline=False)
+    embed.add_field(name="Connected source health", value=health, inline=False)
     embed.add_field(
         name="Alert destination",
         value=(
-            "Managers can press **Use This Channel for Alerts** below to enable alerts here or move the existing destination here. "
-            "No slash-command syntax required."
+            "Managers can press **Alerts Here** on the permanent movie panel to enable alerts in that channel or move the destination there. "
+            "This private status card also includes the same setup action when Discord renders its controls."
         ),
         inline=False,
     )
@@ -636,16 +729,20 @@ def _selected_value(interaction: discord.Interaction) -> str:
     return "start"
 
 
+async def _respond_ephemeral(interaction: discord.Interaction, message: str) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+
 async def _send_component_error(interaction: discord.Interaction, error: Exception) -> None:
     message = (
         "That movie panel action hit an error, but it was acknowledged safely. "
-        "Try reopening `/movies-help` while the error is logged."
+        "Try **Check Now** again while the error is logged."
     )
     try:
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+        await _respond_ephemeral(interaction, message)
     except Exception:
         log.exception(
             "Could not send movie guide component failure response original=%s",

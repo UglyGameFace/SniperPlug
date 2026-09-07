@@ -7,9 +7,6 @@ from sniperplug.services.walmart_metadata_snapshot_guard import (
     install_bounded_walmart_metadata_snapshot,
 )
 from sniperplug.services.walmart_product_metadata import extract_walmart_product_metadata
-from sniperplug.services.walmart_selected_offer_identity import (
-    augment_candidate_selected_offer_identity,
-)
 
 
 _PATCH_FLAG = "_sniperplug_product_metadata_installed"
@@ -37,11 +34,6 @@ def install_walmart_product_metadata(provider: Any) -> Any:
     candidate builder used by both search and exact detail is wrapped once per
     provider instance. Separate module-level bridges preserve the structured
     attributes on private review cards and render the same facts on public cards.
-
-    The same normalization hook also fills missing selected-offer identity from
-    explicit current Walmart seller/merchant aliases. It does not invent proof or
-    borrow a seller from sibling offers; it only preserves equivalent official
-    fields that the older base normalizer does not recognize yet.
     """
 
     if str(getattr(provider, "provider_key", "") or "").strip().lower() != "walmart":
@@ -60,7 +52,6 @@ def install_walmart_product_metadata(provider: Any) -> Any:
                 if candidate is None or not isinstance(item, dict):
                     return candidate
 
-                candidate = augment_candidate_selected_offer_identity(item, candidate)
                 metadata = extract_walmart_product_metadata(
                     item,
                     current_price=getattr(candidate, "api_current_price", None)

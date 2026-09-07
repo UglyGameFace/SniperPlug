@@ -14,6 +14,9 @@ BULK_RUNTIME = (
 DRAIN = (
     ROOT / "sniperplug/services/walmart_exact_queue_drain.py"
 ).read_text(encoding="utf-8")
+GLOBAL_RUNNER = (
+    ROOT / "sniperplug/cogs/global_auto_scan_runner.py"
+).read_text(encoding="utf-8")
 
 
 class FakeConnection:
@@ -176,11 +179,21 @@ def test_claim_query_prioritizes_fresh_proof_and_keeps_bounded_recovery_order() 
         assert fragment in schema_source
 
 
-def test_bulk_runtime_uses_cached_schema_and_bounded_maintenance() -> None:
+def test_bulk_runtime_returns_before_queue_cleanup_and_runner_cleans_after_fanout() -> None:
     assert "ensure_exact_runtime_schema_once(db)" in BULK_RUNTIME
     assert "maintain_terminal_identity_rows_bounded(db)" in BULK_RUNTIME
     assert "ensure_walmart_exact_verification_queue(db)" not in BULK_RUNTIME
     assert "ensure_global_offer_memory_table(db)" not in BULK_RUNTIME
     assert "maintain_terminal_identity_rows(db)" not in BULK_RUNTIME
-    assert "maybe_prune_walmart_exact_queue_bounded" in BULK_RUNTIME
+    assert "maybe_prune_walmart_exact_queue_bounded" not in BULK_RUNTIME
     assert "load_walmart_exact_queue_pressure" in BULK_RUNTIME
+
+    fanout_call = "await self._fanout_external_verified_events()"
+    cleanup_call = "await self._run_walmart_post_fanout_maintenance()"
+    assert "maybe_prune_walmart_exact_queue_bounded" in GLOBAL_RUNNER
+    assert fanout_call in GLOBAL_RUNNER
+    assert cleanup_call in GLOBAL_RUNNER
+    assert GLOBAL_RUNNER.index(fanout_call, GLOBAL_RUNNER.index("async def _walmart_exact_verification_worker")) < GLOBAL_RUNNER.index(
+        cleanup_call,
+        GLOBAL_RUNNER.index("async def _walmart_exact_verification_worker"),
+    )

@@ -30,6 +30,7 @@ GOFOBO_IMAGE_ALLOWED_HOSTS = frozenset(
         "gofobo.com",
         "www.gofobo.com",
         "dk2d6nav3mn9d.cloudfront.net",
+        "d21ld3wfckjpu2.cloudfront.net",
     }
 )
 GOFOBO_USER_AGENT = "SniperPlug/1.0 MovieTicketMonitor (+https://sniperplug.com)"
@@ -60,12 +61,35 @@ _RESERVED_PATHS = frozenset(
 _GENERIC_TITLES = frozenset(
     {
         "find screenings",
+        "find screening",
         "find more movies and events",
+        "get passes",
+        "get tickets",
+        "learn more",
         "login",
+        "more info",
+        "more information",
         "redeem",
         "screenings",
         "upcoming screenings & events",
+        "view details",
+        "view more",
+        "watch trailer",
+        "watch the trailer",
     }
+)
+_CTA_SUFFIXES = (
+    "learn more",
+    "more info",
+    "more information",
+    "view details",
+    "view more",
+    "get passes",
+    "get tickets",
+    "find screenings",
+    "find screening",
+    "watch trailer",
+    "watch the trailer",
 )
 
 
@@ -106,6 +130,8 @@ class _GofoboUpcomingParser(HTMLParser):
         self._heading_parts: list[str] = []
         self._last_safe_link = ""
         self._last_safe_image = ""
+        self._pending_heading_title = ""
+        self._pending_heading_image = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized_tag = tag.lower()
@@ -136,7 +162,7 @@ class _GofoboUpcomingParser(HTMLParser):
                 self._active_link_parts.append(alt)
             return
 
-        if not self._capture_heading and normalized_tag in {"h1", "h2", "h3"}:
+        if not self._capture_heading and normalized_tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             self._capture_heading = normalized_tag
             self._heading_parts = []
 
@@ -149,53 +175,108 @@ class _GofoboUpcomingParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         normalized_tag = tag.lower()
         if normalized_tag == "a" and self._active_link:
-            title = clean_text(" ".join(self._active_link_parts))
+            raw_title = clean_text(" ".join(self._active_link_parts))
+            cleaned_title = clean_gofobo_candidate_title(raw_title)
             if self.in_upcoming_section:
-                self._add_candidate(
-                    title=title,
-                    href=self._active_link,
-                    image_url=self._active_link_image or self._last_safe_image,
-                )
+                if cleaned_title:
+                    self._add_candidate(
+                        title=cleaned_title,
+                        href=self._active_link,
+                        image_url=self._active_link_image or self._last_safe_image,
+                    )
+                    if normalize_text(cleaned_title) == normalize_text(self._pending_heading_title):
+                        self._pending_heading_title = ""
+                        self._pending_heading_image = ""
+                elif self._pending_heading_title:
+                    # Current Gofobo cards can expose the movie/event title in a
+                    # heading and use a generic CTA such as "LEARN MORE" for the
+                    # actual detail link. Pair those explicitly rather than
+                    # turning the CTA into a fake movie title.
+                    self._add_candidate(
+                        title=self._pending_heading_title,
+                        href=self._active_link,
+                        image_url=(
+                            self._active_link_image
+                            or self._pending_heading_image
+                            or self._last_safe_image
+                        ),
+                    )
+                    self._pending_heading_title = ""
+                    self._pending_heading_image = ""
             self._active_link = ""
             self._active_link_parts = []
             self._active_link_image = ""
             return
 
         if self._capture_heading and normalized_tag == self._capture_heading:
-            title = clean_text(" ".join(self._heading_parts))
+            raw_title = clean_text(" ".join(self._heading_parts))
+            title = clean_gofobo_candidate_title(raw_title)
             self._capture_heading = ""
             self._heading_parts = []
-            normalized = normalize_text(title)
+            normalized = normalize_text(raw_title)
             if normalized == "upcoming screenings & events":
                 self.in_upcoming_section = True
                 self.upcoming_section_found = True
+                self._pending_heading_title = ""
+                self._pending_heading_image = ""
                 return
             if self.in_upcoming_section and normalized.startswith("browse our newly added"):
                 self.in_upcoming_section = False
+                self._pending_heading_title = ""
+                self._pending_heading_image = ""
                 return
-            if self.in_upcoming_section and normalized_tag == "h3":
+            if self.in_upcoming_section and title:
+                # Keep a safe title-only fallback even if the card-specific URL
+                # is represented later by a generic CTA. The CTA handler above
+                # will add the same title with the specific URL and parse-time
+                # coalescing will prefer that version.
+                self._pending_heading_title = title
+                self._pending_heading_image = self._last_safe_image
                 self._add_candidate(
                     title=title,
-                    href=self._last_safe_link,
+                    href="",
                     image_url=self._last_safe_image,
                 )
 
     def _add_candidate(self, *, title: str, href: str, image_url: str) -> None:
-        cleaned_title = collapse_repeated_title(clean_text(title))
+        cleaned_title = clean_gofobo_candidate_title(title)
         normalized = normalize_text(cleaned_title)
         if not cleaned_title or normalized in _GENERIC_TITLES:
             return
         if len(cleaned_title) < 2 or len(cleaned_title) > 180:
             return
-        if not href:
-            return
+        candidate_href = safe_gofobo_url(href)
+        if not candidate_href:
+            candidate_href = GOFOBO_LOCAL_SCREENINGS_URL
         candidate = _RawGofoboScreening(
             title=cleaned_title,
-            href=href,
+            href=candidate_href,
             image_url=safe_gofobo_image_url(image_url),
         )
         if candidate not in self.blocks:
             self.blocks.append(candidate)
+
+
+def clean_gofobo_candidate_title(value: str) -> str:
+    """Return a movie/event title without generic card CTA text."""
+
+    cleaned = collapse_repeated_title(clean_text(value))
+    if not cleaned:
+        return ""
+    if normalize_text(cleaned) in _GENERIC_TITLES:
+        return ""
+
+    for suffix in _CTA_SUFFIXES:
+        cleaned = re.sub(
+            rf"(?:\s*[-|•:]\s*|\s+){re.escape(suffix)}\s*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+    cleaned = collapse_repeated_title(cleaned)
+    if normalize_text(cleaned) in _GENERIC_TITLES:
+        return ""
+    return cleaned
 
 
 def collapse_repeated_title(value: str) -> str:
@@ -230,26 +311,31 @@ def parse_gofobo_home_html(html_text: str) -> GofoboParseResult:
     if not document_valid:
         return GofoboParseResult((), False, parser.upcoming_section_found, len(parser.blocks))
 
-    drops: list[MovieTicketDrop] = []
-    seen_ids: set[str] = set()
+    by_title: dict[str, MovieTicketDrop] = {}
     for block in parser.blocks:
         drop = _drop_from_gofobo_block(block)
-        if drop is None or drop.drop_id in seen_ids:
+        if drop is None:
             continue
-        seen_ids.add(drop.drop_id)
-        drops.append(drop)
+        key = normalize_text(drop.title)
+        existing = by_title.get(key)
+        if existing is None or (
+            gofobo_offer_is_title_specific(drop.offer_url)
+            and not gofobo_offer_is_title_specific(existing.offer_url)
+        ):
+            by_title[key] = drop
 
-    drops.sort(key=lambda item: item.title.lower())
+    drops = sorted(by_title.values(), key=lambda item: item.title.lower())
     return GofoboParseResult(tuple(drops), True, True, len(parser.blocks))
 
 
 def _drop_from_gofobo_block(block: _RawGofoboScreening) -> MovieTicketDrop | None:
-    offer_url = safe_gofobo_url(block.href)
-    if not offer_url:
+    title = clean_gofobo_candidate_title(block.title)
+    if not title:
         return None
+    offer_url = safe_gofobo_url(block.href) or GOFOBO_LOCAL_SCREENINGS_URL
 
     public_code = extract_gofobo_public_code(offer_url)
-    raw_lines = [f"Official upcoming listing: {block.title}"]
+    raw_lines = [f"Official upcoming listing: {title}"]
     if public_code:
         raw_lines.append(GOFOBO_PUBLIC_CODE_MARKER)
     image_url = safe_gofobo_image_url(block.image_url)
@@ -257,21 +343,22 @@ def _drop_from_gofobo_block(block: _RawGofoboScreening) -> MovieTicketDrop | Non
         raw_lines.append(f"{GOFOBO_IMAGE_MARKER}{image_url}")
 
     restrictions = (
-        "Availability is local: open Gofobo and enter your ZIP/postal code before attempting to claim.",
-        "A free Gofobo account and successful pass claim may be required; an announcement is not a guaranteed pass.",
-        "Screenings can fill or move to a wait list when all passes are redeemed.",
-        "A pass is valid only for its listed theater, date, and time and does not guarantee admission; seating is first come, first served.",
+        "Availability is ZIP/postal-code specific; Gofobo can show different theaters or no screening in your area.",
+        "Pass inventory can fill quickly, and a claimed pass still does not guarantee admission after capacity is reached.",
     )
     return MovieTicketDrop(
-        drop_id=gofobo_drop_id(title=block.title, offer_url=offer_url),
+        drop_id=gofobo_drop_id(title=title, offer_url=offer_url),
         source_key=GOFOBO_SOURCE_KEY,
         source_label=GOFOBO_SOURCE_LABEL,
-        title=block.title[:180],
+        title=title[:180],
         code=public_code,
         classification="local_screening",
         ticket_limit=1,
         offer_url=offer_url,
-        validity_text="Local screening availability can change at any time; check your ZIP and claim immediately.",
+        validity_text=(
+            "Gofobo lists this title as an upcoming screening. Open the official listing and enter your ZIP/postal code "
+            "for the actual theater, date, time, and remaining pass availability."
+        ),
         restrictions=restrictions,
         raw_text="\n".join(raw_lines)[:8000],
     )
@@ -290,6 +377,21 @@ def extract_gofobo_public_code(url: str | None) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,40}", path):
         return ""
     return normalize_public_code(path)
+
+
+def gofobo_offer_is_title_specific(url: str | None) -> bool:
+    safe_url = safe_gofobo_url(url)
+    if not safe_url:
+        return False
+    path = unquote(urlparse(safe_url).path or "").strip("/")
+    normalized_path = path.lower()
+    if re.fullmatch(r"main/local_movie_screenings/\d+", normalized_path):
+        return True
+    if normalized_path.startswith("main/blp/") and len(path.split("/")) >= 3:
+        return True
+    if path and "/" not in path and normalized_path not in _RESERVED_PATHS:
+        return bool(re.fullmatch(r"[A-Za-z0-9_-]{4,40}", path))
+    return False
 
 
 def gofobo_drop_id(*, title: str, offer_url: str) -> str:
@@ -329,17 +431,25 @@ def gofobo_has_public_code(raw_text: str) -> bool:
 
 
 class GofoboUpcomingClient:
+    # On the first successful Gofobo request of each process, intentionally omit
+    # persisted validators. Parser upgrades must get one real response body so a
+    # previously accepted bad durable row (for example title="LEARN MORE") can
+    # be replaced immediately after deployment instead of being blessed forever
+    # by a 304. Normal ETag/Last-Modified requests resume after that one body.
+    _process_full_body_confirmed = False
+
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
 
     async def fetch(self, state: MovieTicketSourceState | None = None) -> GofoboFetchResult:
+        force_full_body = not type(self)._process_full_body_confirmed
         headers = {
             "Accept": "text/html,application/xhtml+xml",
             "User-Agent": GOFOBO_USER_AGENT,
         }
-        if state and state.etag:
+        if not force_full_body and state and state.etag:
             headers["If-None-Match"] = state.etag
-        if state and state.last_modified:
+        if not force_full_body and state and state.last_modified:
             headers["If-Modified-Since"] = state.last_modified
 
         timeout = aiohttp.ClientTimeout(total=GOFOBO_REQUEST_TIMEOUT_SECONDS, connect=5)
@@ -353,6 +463,10 @@ class GofoboUpcomingClient:
             if not safe_gofobo_url(final_url):
                 raise RuntimeError("Gofobo request redirected outside the official Gofobo allowlist.")
             if response.status == 304:
+                if force_full_body:
+                    raise RuntimeError(
+                        "Official Gofobo returned HTTP 304 to the required full-body cache refresh."
+                    )
                 return GofoboFetchResult(
                     not_modified=True,
                     etag=response.headers.get("ETag", state.etag if state else ""),
@@ -370,6 +484,7 @@ class GofoboUpcomingClient:
                 html_text = payload.decode(charset, errors="replace")
             except LookupError:
                 html_text = payload.decode("utf-8", errors="replace")
+            type(self)._process_full_body_confirmed = True
             return GofoboFetchResult(
                 not_modified=False,
                 html=html_text,

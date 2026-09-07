@@ -11,7 +11,11 @@ from discord.ext import commands
 from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
 from sniperplug.services.fandango_movie_offers import FANDANGO_OFFERS_URL
 from sniperplug.services.gofobo_screenings import GOFOBO_HOME_URL
-from sniperplug.services.movie_ticket_drops import ATOM_PROMOTIONS_URL, clean_text
+from sniperplug.services.movie_ticket_drops import (
+    ATOM_PROMOTIONS_URL,
+    MovieTicketConfig,
+    clean_text,
+)
 
 
 log = logging.getLogger("sniperplug.movie_guide")
@@ -20,6 +24,7 @@ GUIDE_COLOR = discord.Color.gold()
 GUIDE_SELECT_ID = "movies:guide:section"
 GUIDE_LATEST_ID = "movies:guide:latest"
 GUIDE_STATUS_ID = "movies:guide:status"
+GUIDE_ENABLE_HERE_ID = "movies:guide:enable_here"
 MAX_LATEST_EMBEDS = 8
 
 
@@ -140,6 +145,95 @@ class MovieGuidePanelView(discord.ui.View):
         await _send_component_error(interaction, error)
 
 
+class MovieStatusActionView(discord.ui.View):
+    """Private one-click setup action attached to the status result."""
+
+    def __init__(self, cog: "MovieCommandGuideCog") -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Use This Channel for Alerts",
+        style=discord.ButtonStyle.success,
+        emoji="🔔",
+        custom_id=GUIDE_ENABLE_HERE_ID,
+    )
+    async def enable_here(
+        self,
+        interaction: discord.Interaction,
+        _: discord.ui.Button,
+    ) -> None:
+        if not interaction.guild or not interaction.guild_id:
+            await interaction.response.send_message("Use this button inside a server.", ephemeral=True)
+            return
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                "You need **Manage Server** to change the movie-alert destination.",
+                ephemeral=True,
+            )
+            return
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Open the movie panel in the text channel you want to use, then press this button again.",
+                ephemeral=True,
+            )
+            return
+
+        movie_cog = self.cog._movie_cog()
+        if movie_cog is None:
+            await interaction.response.send_message(
+                "The movie-ticket monitor is unavailable on this build.",
+                ephemeral=True,
+            )
+            return
+
+        missing = missing_channel_permissions(interaction.guild, interaction.channel, self.cog.bot)
+        if missing:
+            await interaction.response.send_message(
+                f"I cannot post movie alerts in {interaction.channel.mention}. Missing: **{', '.join(missing)}**.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild_id = int(interaction.guild_id)
+        channel = interaction.channel
+        await movie_cog.store.save_config(
+            MovieTicketConfig(
+                guild_id=guild_id,
+                alert_channel_id=int(channel.id),
+                enabled=True,
+            )
+        )
+
+        scan_line = "Automatic monitoring is enabled."
+        try:
+            outcome = await movie_cog._scan_official_source(target_guild_id=guild_id)  # noqa: SLF001
+            scan_line = (
+                f"Automatic monitoring is enabled. Recently confirmed offers/screenings: **{outcome.active_count}** • "
+                f"new alerts posted: **{outcome.delivered_count}**."
+            )
+            warning = movie_cog._source_warning_summary()  # noqa: SLF001
+            if warning:
+                scan_line += f"\n⚠️ {warning}"
+        except Exception as error:  # noqa: BLE001 - config is still valid.
+            log.warning(
+                "Movie one-click setup saved but initial refresh failed guild=%s channel=%s error=%s",
+                guild_id,
+                channel.id,
+                clean_text(str(error))[:300],
+            )
+            scan_line = (
+                "Automatic monitoring is enabled, but no source could be confirmed during this immediate refresh. "
+                "SniperPlug will retry automatically."
+            )
+
+        await interaction.followup.send(
+            f"✅ Movie alerts will post in {channel.mention}.\n{scan_line}",
+            ephemeral=True,
+        )
+
+
 class MovieCommandGuideCog(commands.Cog):
     """Interactive help panel for the `/movies` command group."""
 
@@ -230,7 +324,7 @@ class MovieCommandGuideCog(commands.Cog):
 
             drops = await movie_cog.store.list_active_drops(limit=MAX_LATEST_EMBEDS)
             if not drops:
-                message = "No official free-ticket offers or screening opportunities are currently cached."
+                message = "No recently confirmed official free-ticket offers or screening opportunities are available right now."
                 if refresh_error:
                     message += f"\nLive refresh failed safely: `{refresh_error}`"
                 await interaction.followup.send(message, ephemeral=True)
@@ -238,12 +332,12 @@ class MovieCommandGuideCog(commands.Cog):
 
             embeds = await movie_cog._build_drop_embeds(drops)  # noqa: SLF001
             content = (
-                f"Found **{len(drops)}** active official ticket offer(s) or screening lead(s). "
+                f"Found **{len(drops)}** recently confirmed official ticket offer(s) or screening lead(s). "
                 "Claim quickly because code, pass, and local inventory can run out early."
             )
             if refresh_error:
                 content += (
-                    "\nShowing the last verified cache because part of the live refresh failed: "
+                    "\nSome sources could not be refreshed live; only freshness-qualified results are shown: "
                     f"`{refresh_error}`"
                 )
             await interaction.followup.send(content=content, embeds=embeds, ephemeral=True)
@@ -287,6 +381,7 @@ class MovieCommandGuideCog(commands.Cog):
                     last_success_at=latest_success,
                     source_health_lines=source_lines,
                 ),
+                view=MovieStatusActionView(self),
                 ephemeral=True,
             )
         except Exception as error:  # noqa: BLE001
@@ -307,16 +402,16 @@ def build_movie_guide_home_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🎬 SniperPlug Movie Ticket Guide",
         description=(
-            "Use this panel to learn every movie-ticket command and check official free-ticket offers and screenings.\n\n"
-            "**Fastest route:** press **Check Latest Drops** below, or run `/movies latest`."
+            "Use this panel to check official free-ticket offers and screenings without memorizing commands.\n\n"
+            "**Fastest route:** press **Check Latest Drops**. For automatic alerts, press **Setup Status** and then **Use This Channel for Alerts**."
         ),
         color=GUIDE_COLOR,
     )
     embed.add_field(
         name="👤 Everyone can use",
         value=(
-            "`/movies latest` — refresh and show active ticket codes and screening leads.\n"
-            "`/movies status` — show alert status and each source's health.\n"
+            "**Check Latest Drops** — refresh and show current ticket codes and screening leads.\n"
+            "**Setup Status** — show source health and this server's alert destination.\n"
             "`/movies sources` — explain Atom, Fandango, Gofobo, and unconnected private sources.\n"
             "`/movies-help` — reopen this guide privately."
         ),
@@ -325,17 +420,17 @@ def build_movie_guide_home_embed() -> discord.Embed:
     embed.add_field(
         name="🛠️ Server managers",
         value=(
-            "`/movies setup alert_channel:#channel` — enable automatic alerts.\n"
+            "**Setup Status → Use This Channel for Alerts** — one-tap automatic setup for the current text channel.\n"
+            "`/movies setup alert_channel:#channel` — choose a different alert channel manually.\n"
             "`/movies scan` — check every connected official source immediately.\n"
             "`/movies test-alert` — verify that the configured channel works.\n"
-            "`/movies disable` — stop automatic movie alerts.\n"
-            "`/movies-panel target_channel:#channel` — post this permanent guide."
+            "`/movies disable` — stop automatic movie alerts."
         ),
         inline=False,
     )
     embed.add_field(
         name="👇 Pick a guide section",
-        value="Use the dropdown for step-by-step instructions, examples, and safety details.",
+        value="Use the dropdown for details, examples, and safety limits.",
         inline=False,
     )
     embed.set_footer(text="Official codes and screening passes can still expire, fill, or run out early.")
@@ -360,7 +455,7 @@ def _build_start_section() -> discord.Embed:
     )
     embed.add_field(
         name="1. Check what is live now",
-        value="Press **Check Latest Drops** on the panel or run `/movies latest`.",
+        value="Press **Check Latest Drops** on the panel.",
         inline=False,
     )
     embed.add_field(
@@ -378,7 +473,7 @@ def _build_start_section() -> discord.Embed:
     )
     embed.add_field(
         name="For automatic alerts",
-        value="A server manager runs `/movies setup alert_channel:#movie-tickets` once.",
+        value="A server manager presses **Setup Status → Use This Channel for Alerts** once.",
         inline=False,
     )
     return embed
@@ -387,12 +482,12 @@ def _build_start_section() -> discord.Embed:
 def _build_user_section() -> discord.Embed:
     embed = discord.Embed(title="🎟️ Commands Anyone Can Use", color=GUIDE_COLOR)
     embed.add_field(
-        name="`/movies latest`",
-        value="Refreshes Atom, Fandango, and Gofobo, then privately shows verified cached results with artwork and restrictions.",
+        name="Check Latest Drops",
+        value="Refreshes Atom, Fandango, and Gofobo, then privately shows recently confirmed results with artwork and restrictions.",
         inline=False,
     )
     embed.add_field(
-        name="`/movies status`",
+        name="Setup Status",
         value="Shows this server's alert channel, health for every connected source, code/screening counts, and delivery total.",
         inline=False,
     )
@@ -410,10 +505,15 @@ def _build_user_section() -> discord.Embed:
 
 
 def _build_admin_section() -> discord.Embed:
-    embed = discord.Embed(title="⚙️ Server Setup Commands", color=GUIDE_COLOR)
+    embed = discord.Embed(title="⚙️ Server Setup", color=GUIDE_COLOR)
+    embed.add_field(
+        name="One-tap setup",
+        value="Press **Setup Status**, then **Use This Channel for Alerts**. Requires **Manage Server**.",
+        inline=False,
+    )
     embed.add_field(
         name="`/movies setup alert_channel:#movie-tickets`",
-        value="Enables automatic alerts from every connected official source. Requires **Manage Server**.",
+        value="Use this only when you want alerts in a different channel than the one containing the panel.",
         inline=False,
     )
     embed.add_field(
@@ -429,11 +529,6 @@ def _build_admin_section() -> discord.Embed:
     embed.add_field(
         name="`/movies disable`",
         value="Stops automatic delivery without deleting the saved channel configuration.",
-        inline=False,
-    )
-    embed.add_field(
-        name="`/movies-panel target_channel:#channel`",
-        value="Posts this permanent guide. Omit the channel option to use the current text channel.",
         inline=False,
     )
     return embed
@@ -461,8 +556,8 @@ def _build_safety_section() -> discord.Embed:
     embed.add_field(
         name="What cannot be guaranteed",
         value=(
-            "A verified code may expire or hit its limit. A Gofobo announcement may be unavailable near your ZIP, "
-            "fill before you claim, or issue a pass that still does not guarantee theater admission."
+            "A verified code may expire or hit its limit. Gofobo often reveals the actual theater/date/time only after a ZIP lookup, "
+            "and a pass can still fill before you claim or before admission."
         ),
         inline=False,
     )
@@ -485,7 +580,7 @@ def build_movie_status_embed(
     local_screening_count: int = 0,
     source_health_lines: list[str] | None = None,
 ) -> discord.Embed:
-    embed = discord.Embed(title="📡 Movie Alert Setup Status", color=GUIDE_COLOR)
+    embed = discord.Embed(title="📡 Movie Alert Status", color=GUIDE_COLOR)
     embed.add_field(name="Automatic alerts", value="Enabled" if enabled else "Disabled", inline=True)
     embed.add_field(
         name="Destination",
@@ -503,12 +598,14 @@ def build_movie_status_embed(
         if last_error:
             health = f"Last error: `{clean_text(last_error)[:700]}`"
     embed.add_field(name="Official source health", value=health, inline=False)
-    if not enabled:
-        embed.add_field(
-            name="Enable alerts",
-            value="Run `/movies setup alert_channel:#movie-tickets` with **Manage Server** permission.",
-            inline=False,
-        )
+    embed.add_field(
+        name="Alert destination",
+        value=(
+            "Managers can press **Use This Channel for Alerts** below to enable alerts here or move the existing destination here. "
+            "No slash-command syntax required."
+        ),
+        inline=False,
+    )
     return embed
 
 
@@ -542,7 +639,7 @@ def _selected_value(interaction: discord.Interaction) -> str:
 async def _send_component_error(interaction: discord.Interaction, error: Exception) -> None:
     message = (
         "That movie panel action hit an error, but it was acknowledged safely. "
-        "Try `/movies-help` or the matching `/movies` command while the error is logged."
+        "Try reopening `/movies-help` while the error is logged."
     )
     try:
         if interaction.response.is_done():

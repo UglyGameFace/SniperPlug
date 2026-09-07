@@ -114,6 +114,14 @@ def augment_candidate_selected_offer_identity(item: dict[str, Any], candidate: A
         attrs.setdefault("walmartSeller", "yes")
 
     candidate.variant_attributes = attrs
+
+    # SourceCandidate owns the final Walmart payable-price policy. Re-run that
+    # existing authoritative normalization after adding explicit identity so a
+    # newly recognized marketplace seller still requires known shipping and a
+    # first-party seller keeps the same selected-offer price/reference behavior.
+    apply_truth = getattr(candidate, "_apply_walmart_selected_offer_truth", None)
+    if callable(apply_truth):
+        apply_truth()
     return candidate
 
 

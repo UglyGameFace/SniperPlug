@@ -1,95 +1,68 @@
 # Active Task
 
 ## Task / outcome
-**SP-WM-DEAL-DELIVERY-STALL — restore Walmart deal delivery end-to-end.**
+**SP-MOVIE-TICKETS-RECOVERY — restore SniperPlug movie tickets end-to-end.**
 
-Target outcome: catalog discovery feeds exact verification, strict selected-offer/current/reference proof produces eligible Walmart deals, page recovery stays paced, verified deals fan out before maintenance, and proof/shipping/dedupe safety remains intact.
+Target outcome: `/movies` shows only recently confirmed official offers/screenings, current source layouts parse safely, healthy sources continue when one source is blocked, Gofobo local screenings persist and deliver, setup/status/latest/panel interactions give truthful actionable health instead of stale results or circular recovery instructions, and delivery/feedback safety remains intact.
 
 ## Scope
-`catalog discovery → selected-offer normalization → fresh proof → exact-detail queue → claim → Walmart official detail/exact-search/page recovery → exact result persistence → Walmart/external fanout → bounded maintenance`
+`official Atom/Fandango/Gofobo fetch → fail-closed parse → per-source state/backoff → durable drop cache → freshness gate → /movies latest/status/panel → configured channel delivery → feedback controls`
 
-Do not switch to unrelated watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
+Do not switch to unrelated Walmart, watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
 
 ## Status
-**PR #257 is merged to `main` as `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`. Implementation and exact-head validation are complete. Active work is production acceptance of the merged Walmart delivery path.**
+**IN PROGRESS on branch `fix/movie-tickets-end-to-end-258`.**
 
-Merged:
-- #256 `Restore Walmart deal verification throughput` → `2b057b6b02b96c44699be69baa915fe9e0d07a97`
-- #257 `Recover Walmart exact prices and trusted references` → `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`
+Previous Walmart delivery work (#256/#257) remains merged on `main`; its production acceptance is paused by the explicit task switch and stays backlog/context only.
 
-Validated #257 head: `edff57a27fb2e7d342970d0bf2deed782dbbffca`
+## Root cause / findings
+- Production logs show Atom returning HTTP 403 and entering a six-hour access backoff while the last verified cache is preserved.
+- Movie cache rows have no serving-time freshness ceiling. A source can fail for days/weeks while old rows remain `active=1` and `/movies latest` still presents them as active.
+- Current Atom public promotions layout no longer requires the old `Film Promotions` section; the parser currently requires both Film + Partner sections, so a legitimate current partner-only page is treated as structurally invalid and old Atom rows are preserved instead of safely clearing to zero public reusable codes.
+- Multi-source runtime declares `local_screening` deliverable, but `MovieTicketStore.replace_active_drops()` and `list_active_drops()` hard-filter to `public_reusable`; Gofobo screenings can be parsed then silently discarded by storage.
+- Registered runtime is a single inherited monitor, not duplicate pumps; the Atom and multi-source startup log lines come from one cog loading through `super()`.
+- Manual/guide latest paths can swallow partial-source failures and then display old cached rows without telling the user which source is stale.
+- Movie panel component fallback tells users to try another movie command/restart even when the underlying failure is upstream; those instructions cannot fix an Atom 403 and create a dead-end recovery loop.
 
-## #256 live acceptance findings
-Proven improved after #256:
-- catalog discovery remained healthy and safe fresh proof became nonzero again: examples **3/98**, **11/98**, **10/96**
-- exact verification produced real verified rows again: examples **3/24**, **10/24**, **10/24**
-- page retry/suppression collapsed to **page 0 / page suppressed 0** across repeated post-deploy batches
-- exact fetch/store timings returned to sane ranges; supplied post-deploy logs did not show the old 8-10 second Walmart maintenance stalls
-- runtime reported `maintenance_after_all_fanout=true`
+## Planned implementation
+1. Make current Atom promotions structure valid when the official promotions page is confirmed even if `Film Promotions` is absent; continue excluding partner/account-specific codes.
+2. Add a bounded source-freshness policy so stale source caches are hidden from user-facing active results rather than shown indefinitely; preserve durable rows for recovery/history.
+3. Keep raw per-source cached rows available internally for HTTP 304 recovery so freshness filtering cannot erase a still-current unchanged snapshot.
+4. Persist/list both safe deliverable classifications: `public_reusable` and `local_screening`.
+5. Surface partial-source degradation in scan outcomes/status/latest/panel instead of treating one healthy source as a fully healthy refresh.
+6. Replace circular panel error guidance with truthful source/application health guidance and no fake user-side fix for upstream access blocks.
+7. Add regressions for partner-only Atom pages, stale-cache hiding, 304 recovery behavior, Gofobo persistence, partial-source health, and user-facing recovery messaging.
 
-The remaining blocker exposed by #256 was exact current/reference recovery:
-- repeated exact batches failed as `api_price_missing`, including **8/8** and **24/24** batches
-- verified fresh rows usually had no trusted reference; example **10 verified / 0 official was prices / 9 no reference / 0 markdowns**
+## Validation required
+- targeted movie parser/store/runtime/guide/feedback tests
+- `python -m pip check`
+- `python -m compileall -q sniperplug scripts tests`
+- `python scripts/smoke_imports.py`
+- native libsql process tests where available
+- full pytest suite on the exact PR head
+- final diff/review inspection
 
-## #257 root cause
-- Canonical exact verification tried official Affiliate exact search as a recovery source only when seller/offer identity was missing.
-- If official detail had complete identity but no numeric current price, verification returned `api_price_missing` without trying exact search, even though exact search is an exact-ID-checked official API path that can supply current price.
-- A strict fresh discovery snapshot could safely prove current selected-offer price while lacking a trusted Walmart was/regular/original reference. It returned immediately as verified and became `verified_no_reference` without a same-cycle exact-search opportunity to recover a trusted reference.
+## Production acceptance required
+After merge/deploy:
+1. Old Atom rows are no longer shown as current once Atom confirmation is stale.
+2. A valid current Atom page with no public free-ticket codes clears old Atom results safely instead of preserving them as active.
+3. Atom 403 remains contained/backed off without poisoning Fandango/Gofobo health.
+4. Gofobo local screening leads can persist, appear in `/movies latest`, and deliver when present.
+5. `/movies status`, `/movies latest`, and guide-panel controls distinguish healthy, degraded, and stale sources without telling users to perform ineffective setup/restart rituals.
+6. Fresh eligible movie alerts still dedupe and post to configured channels, and feedback controls remain functional.
 
-## #257 merged implementation
-- Keep `_fetch_exact_candidate_off_loop()` as the only canonical proof implementation.
-- Add an exact-search-only provider view with HTML forcibly disabled.
-- Hide the fresh discovery snapshot only during the recovery pass so it must use official exact search rather than short-circuiting on the same snapshot.
-- On canonical `api_price_missing`, run one exact-ID Affiliate search recovery through the canonical verifier.
-- Limit same-cycle trusted-reference enrichment to strict fresh-snapshot candidates that already have valid current-price proof, avoiding an extra exact-search call for every generic no-reference row.
-- Failed reference recovery preserves the already-valid no-reference candidate and cannot route it to HTML.
-- Recovery remains active while the real HTML challenge circuit is open; that circuit suppresses HTML, not healthy official API work.
-- Exact item ID, seller, offer, marketplace, shipping, variant, current-price, and trusted-reference gates remain unchanged.
-
-## #257 validation / results
-Exact validated head `edff57a27fb2e7d342970d0bf2deed782dbbffca`, Termux Ubuntu/glibc aarch64, Python 3.12.14:
-- `python -m pip check`: passed during environment validation
-- `python -m compileall -q sniperplug scripts tests`: **passed**, exit 0
-- `python scripts/smoke_imports.py`: **passed**, 37 modules / 22 symbols, exit 0
-- native `libsql==0.1.11` built/installed locally on ARM
-- `tests/test_libsql_process_connection.py`: **10 passed**, exit 0
-- full suite: **1,286 passed**, exit 0
-- one unrelated Python `audioop` deprecation warning
-- final PR head matched the validated SHA exactly
-- final PR state: mergeable, no inline review threads, no submitted reviews
-- Qodo review bot was unavailable because its subscription was inactive; this was not a code-review finding
-
-GitHub-hosted Actions remained infrastructure-blocked before execution on the validated head (`runner_id=0`, empty runner name, `steps=[]`). Those red workflow conclusions were not code-test failures.
-
-## Remaining Definition of Done — production acceptance
-Deploy/restart current `main`, then live-prove all of the following:
-1. `api_price_missing` materially drops from the repeated 8/8 and 24/24 pattern.
-2. Exact-search recovery produces verified current-price rows when official detail omits price.
-3. `official was prices` / trusted references become nonzero when Walmart actually exposes a trusted native reference.
-4. `markdowns` become nonzero when a verified current/reference pair crosses the configured threshold.
-5. Fresh no-reference candidates remain valid if reference enrichment fails; they must not become HTML retries.
-6. Page retry/suppression remains zero or correctly paced; no multi-request HTML burst returns.
-7. Eligible verified markdowns reach Walmart/external fanout and then posts/DMs.
-8. Exact fetch/store and Turso maintenance remain off the old 8-10 second hot-path stall pattern.
-
-Only after these live checks pass call Walmart deal delivery restored and close this task.
-
-## Risks / boundaries
-- No catalog/relevance neighbor may donate exact price/reference; Walmart exact search must return the requested exact item ID.
-- Trusted reference rules remain unchanged. Existing MSRP/list/retail/marketplace-context blocks remain in force.
-- Product-page HTML parsing was not blindly changed without raw live page evidence.
+Only after those live checks pass call movie tickets restored and close this task.
 
 ## Backlog — not active
+- SP-WM-DEAL-DELIVERY-STALL production acceptance
 - SP-GATEWAY-EVENT-LOOP-LAG
 - SP-SETUP-DELIVERY-UX
 - SP-DM-DELIVERY-STARVATION
 - SP-DM-NEW-LOW-ALERT
 - SP-WM-CASH-PDP-AMOUNT
+- eBay watcher PR #200
 - HP/Target standalone watcher deployment/acceptance
-- SP-TURSO-READ-AMPLIFICATION acceptance
-- SP-TURSO-WRITE-AMPLIFICATION acceptance
-- SP-DEALS-DISCOVER-HARDENING-244 live acceptance
 - SniperPlug-Site work
 
 ## Next step
-Deploy/restart the latest `main` build and inspect fresh production Walmart catalog/exact/fanout logs against the eight acceptance checks above.
+Implement the movie source/storage/freshness/UX repair on this branch, add regressions, then validate the exact head before merge.

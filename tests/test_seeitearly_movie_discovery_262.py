@@ -57,6 +57,14 @@ def test_current_combined_card_preserves_visible_title_punctuation() -> None:
     )
 
 
+def test_slug_boundary_preserves_hyphenated_visible_title() -> None:
+    raw = "2 free passes SEP 12 Spider-Man: Brand New Day Action · Adventure"
+    assert (
+        extract_seeitearly_card_title(raw, "/movies/spider-man-brand-new-day")
+        == "Spider-Man: Brand New Day"
+    )
+
+
 def test_parser_accepts_only_movie_cards_with_explicit_free_pass_count() -> None:
     parsed = parse_seeitearly_upcoming_html(
         _document(

@@ -33,6 +33,9 @@ from sniperplug.services.walmart_global_catalog_autoscan import (
 from sniperplug.services.walmart_global_deal_fanout_bulk import (
     fanout_recent_exact_walmart_deals,
 )
+from sniperplug.services.walmart_exact_queue_maintenance import (
+    maybe_prune_walmart_exact_queue_bounded,
+)
 from sniperplug.services.walmart_exact_queue_pressure import (
     bounded_pressure_summary,
     load_walmart_exact_queue_pressure,
@@ -107,7 +110,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             "scheduled_rechecks_never_drain=true "
             "request_level_provider_priority=true fixed_rate_exact_worker=true "
             "catalog_cannot_own_exact_worker=true bounded_queue_pressure=true "
-            "background_full_queue_scans=false",
+            "queue_cleanup_after_fanout=true background_full_queue_scans=false",
             platform.python_version(),
             sys.platform,
             GLOBAL_DISCOVERY_ROUTES_PER_BATCH,
@@ -433,6 +436,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     ):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()
+                    await self._run_walmart_post_fanout_maintenance()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -486,6 +490,27 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
         )
         if result.events_claimed or result.public_posts or result.dm_sent:
             legacy.log.info(result.summary_line())
+
+    async def _run_walmart_post_fanout_maintenance(self) -> None:
+        """Run bounded queue retention only after every current deal fanout path."""
+
+        try:
+            cleanup = await maybe_prune_walmart_exact_queue_bounded(
+                self.bot.db.require_conn()
+            )
+            if cleanup.deleted:
+                legacy.log.info(
+                    "Walmart exact queue post-fanout cleanup deleted=%s",
+                    cleanup.deleted,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Maintenance must never turn a successful verification/fanout cycle
+            # into a failed deal-delivery cycle. The bounded cleaner retries later.
+            legacy.log.exception(
+                "Walmart exact queue post-fanout cleanup failed safely"
+            )
 
     def _log_global_result_notes(self, warnings) -> None:
         for warning in tuple(warnings or ()):

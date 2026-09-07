@@ -8,6 +8,7 @@ from typing import Any
 
 from sniperplug.services.walmart_exact_fetch_pacing import (
     fetch_exact_candidate_with_page_pacing,
+    page_html_probe_remaining_seconds,
     _page_challenge_circuit_open,
     _page_challenge_circuit_remaining_seconds,
 )
@@ -19,9 +20,6 @@ from sniperplug.services.walmart_exact_queue_bulk_persistence import (
 from sniperplug.services.walmart_exact_queue_drain import (
     PAGE_RECOVERY_CLAIM_CAP,
     claim_due_rows_batched,
-)
-from sniperplug.services.walmart_exact_queue_maintenance import (
-    maybe_prune_walmart_exact_queue_bounded,
 )
 from sniperplug.services.walmart_exact_queue_pressure import (
     load_walmart_exact_queue_pressure,
@@ -96,19 +94,25 @@ async def process_actionable_walmart_exact_queue_batch(
     ordinary claims immediately. Scheduling decisions use a tightly bounded
     pressure snapshot rather than rereading the scheduled-recheck backlog.
 
-    Walmart HTML is now isolated from normal exact throughput. Fresh catalog
-    proof and official item-detail/exact-search run first for every claim. Only
-    one claim per pacing window may attempt the product-page fallback, and the
-    first challenge-class response opens the existing provider circuit
-    immediately. While that circuit is open, a tiny two-row page-recovery lane
-    remains claimable because those rows still get official API/exact-search
-    recovery without touching HTML.
+    Walmart HTML is isolated from normal exact throughput. Fresh catalog proof
+    and official item-detail/exact-search run first for every claim. Only one
+    claim per pacing window may attempt the product-page fallback, and the first
+    challenge-class response opens the existing provider circuit immediately.
+    While that circuit is open, a tiny two-row page-recovery lane remains
+    claimable because those rows still get official API/exact-search recovery
+    without touching HTML.
 
-    Fresh discovery proof and page-challenge circuit state are reported directly
-    in the worker summary. This makes a zero-promotion batch explainable without
-    weakening proof: the log now distinguishes no snapshot input, strict snapshot
-    rejection, paced page deferrals, ordinary API/page retries, and page requests
-    suppressed by the challenge circuit.
+    A page-retry row is already known to require recovery. While the single HTML
+    probe slot is merely paced (rather than challenge-blocked), do not lease old
+    page-retry rows that can only be deferred again. Fresh/pending work still gets
+    its official API attempt at normal throughput. This removes pointless lease
+    and outcome writes without weakening proof or suppressing newly complete API
+    identity.
+
+    Queue retention cleanup is deliberately not performed here. This function
+    returns as soon as verification state is durable so the caller can fan out
+    verified deals before any maintenance DELETE is allowed to use the shared
+    process-isolated Turso worker.
     """
 
     if db is None or provider is None or limit <= 0:
@@ -118,9 +122,9 @@ async def process_actionable_walmart_exact_queue_batch(
     maintenance = await maintain_terminal_identity_rows_bounded(db)
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
-    await maybe_prune_walmart_exact_queue_bounded(conn, now=now)
 
     page_circuit_remaining = _page_challenge_circuit_remaining_seconds(provider)
+    page_probe_remaining = page_html_probe_remaining_seconds(provider)
 
     pressure_before = await load_walmart_exact_queue_pressure(
         db,
@@ -133,11 +137,17 @@ async def process_actionable_walmart_exact_queue_batch(
         effective_limit = max(effective_limit, DRAIN_BATCH_SIZE)
         effective_concurrency = max(effective_concurrency, DRAIN_CONCURRENCY)
     mode = "drain" if drain_mode else "normal"
-    page_recovery_claim_cap = (
-        API_ONLY_PAGE_RECOVERY_CLAIM_CAP
-        if page_circuit_remaining > 0
-        else PAGE_RECOVERY_CLAIM_CAP
-    )
+
+    if page_circuit_remaining > 0:
+        page_recovery_claim_cap = API_ONLY_PAGE_RECOVERY_CLAIM_CAP
+    elif page_probe_remaining > 0:
+        # Existing page_retry rows already failed official identity once. Until
+        # the one-per-minute HTML slot is available, leasing them only produces
+        # another page_pacing_deferred write. New/retry rows remain claimable and
+        # may still succeed from current official API data.
+        page_recovery_claim_cap = 0
+    else:
+        page_recovery_claim_cap = PAGE_RECOVERY_CLAIM_CAP
 
     claim_started = time.monotonic()
     claims = await claim_due_rows_batched(

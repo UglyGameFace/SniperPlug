@@ -26,7 +26,6 @@ from sniperplug.services.walmart_exact_verification_queue import (
     _compact_text,
     _price_to_cents,
     _row_get,
-    maybe_prune_walmart_exact_verification_queue,
 )
 
 
@@ -141,6 +140,10 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     999-variable limit. A normal 75-100 row pass therefore uses no writes when
     every row is a recent unchanged rediscovery, and at most two statements
     when the complete pass is genuinely new or changed.
+
+    Retention cleanup is intentionally not owned by discovery. The exact worker
+    runs the bounded cleaner only after verified-deal fanout, so catalog enqueue
+    can never put a maintenance DELETE in front of an alert that is ready to send.
     """
 
     if db is None:
@@ -362,7 +365,6 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
 
     if write_statements:
         await conn.commit()
-    await maybe_prune_walmart_exact_verification_queue(conn, now=now)
     pressure = await load_walmart_exact_queue_pressure(db)
     return _BoundedVerificationQueueEnqueueResult(
         discovered=discovered,

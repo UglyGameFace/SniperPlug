@@ -55,6 +55,8 @@ from sniperplug.services.walmart_fanout_decisions import (
 
 
 FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+FANOUT_CLEANUP_FOLLOWUP_SECONDS = 5 * 60
+FANOUT_CLEANUP_BATCH_SIZE = 100
 FANOUT_EVENT_KEY_VERSION = "v2"
 FANOUT_CURSOR_INDEX = f"idx_{QUEUE_TABLE}_fanout_cursor"
 FANOUT_CURSOR_INDEX_SQL = f"""
@@ -186,42 +188,55 @@ def _lock(state: _FanoutRuntimeState, name: str) -> asyncio.Lock:
 
 
 async def ensure_global_deal_event_tables_once(db: Any) -> None:
-    """Initialize durable fanout schema, decision provenance, and queue cursor."""
+    """Initialize fanout schema only; retention is post-delivery maintenance."""
+
+    conn = db.require_conn()
+    state = _state_for(conn)
+    if state.schema_ready:
+        return
+    async with _lock(state, "schema_lock"):
+        if state.schema_ready:
+            return
+        await legacy.ensure_global_deal_event_tables(db)
+        await ensure_walmart_fanout_decision_table(db)
+        await conn.execute(FANOUT_CURSOR_INDEX_SQL)
+        await conn.commit()
+        state.schema_ready = True
+        state.next_cleanup_monotonic = (
+            time.monotonic() + FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS
+        )
+
+
+async def maybe_prune_global_deal_event_storage_bounded(db: Any) -> tuple[int, int]:
+    """Prune fanout events/provenance only after current deal delivery is done."""
 
     conn = db.require_conn()
     state = _state_for(conn)
     if not state.schema_ready:
-        async with _lock(state, "schema_lock"):
-            if not state.schema_ready:
-                await legacy.ensure_global_deal_event_tables(db)
-                await ensure_walmart_fanout_decision_table(db)
-                await conn.execute(FANOUT_CURSOR_INDEX_SQL)
-                await conn.commit()
-                state.schema_ready = True
-                state.next_cleanup_monotonic = (
-                    time.monotonic() + FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS
-                )
-                return
-
+        await ensure_global_deal_event_tables_once(db)
     if time.monotonic() < state.next_cleanup_monotonic:
-        return
+        return 0, 0
+
     async with _lock(state, "cleanup_lock"):
         if time.monotonic() < state.next_cleanup_monotonic:
-            return
-        cutoff = (
-            datetime.now(timezone.utc)
-            - timedelta(days=legacy.EVENT_RETENTION_DAYS)
-        ).isoformat()
-        await conn.execute(
-            f"DELETE FROM {legacy.EVENT_TABLE} "
-            "WHERE processed_at IS NOT NULL AND first_seen_at < ?",
-            (cutoff,),
+            return 0, 0
+        event_rows = await legacy.prune_global_deal_events_bounded(
+            db,
+            limit=FANOUT_CLEANUP_BATCH_SIZE,
         )
-        await conn.commit()
-        await prune_walmart_fanout_decisions(db)
-        state.next_cleanup_monotonic = (
-            time.monotonic() + FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS
+        decision_rows = await prune_walmart_fanout_decisions(
+            db,
+            limit=FANOUT_CLEANUP_BATCH_SIZE,
         )
+        state.next_cleanup_monotonic = time.monotonic() + (
+            FANOUT_CLEANUP_FOLLOWUP_SECONDS
+            if (
+                event_rows >= FANOUT_CLEANUP_BATCH_SIZE
+                or decision_rows >= FANOUT_CLEANUP_BATCH_SIZE
+            )
+            else FANOUT_SCHEMA_CLEANUP_INTERVAL_SECONDS
+        )
+        return event_rows, decision_rows
 
 
 async def fanout_recent_exact_walmart_deals(
@@ -234,7 +249,8 @@ async def fanout_recent_exact_walmart_deals(
     Every public destination decision is persisted before the global event is
     finalized. That historical provenance lets owner health distinguish a true
     missing-post gap from an event that was legitimately below threshold, muted,
-    quality-blocked, or deduped when fanout actually ran.
+    quality-blocked, or deduped when fanout actually ran. Retention is owned by
+    the runner after fanout so maintenance cannot sit in front of a ready alert.
     """
 
     db = getattr(bot, "db", None)

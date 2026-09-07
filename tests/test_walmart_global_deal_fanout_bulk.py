@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 from sniperplug.services import walmart_global_deal_fanout_bulk as bulk
@@ -12,6 +13,9 @@ RUNNER = (ROOT / "sniperplug/cogs/global_auto_scan_runner.py").read_text(
 )
 BULK_SOURCE = (
     ROOT / "sniperplug/services/walmart_global_deal_fanout_bulk.py"
+).read_text(encoding="utf-8")
+LEGACY_SOURCE = (
+    ROOT / "sniperplug/services/walmart_global_deal_fanout.py"
 ).read_text(encoding="utf-8")
 
 
@@ -68,6 +72,72 @@ def test_fanout_schema_initializes_once_per_connection(monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_post_fanout_storage_cleanup_is_bounded_and_throttled(monkeypatch) -> None:
+    async def run() -> None:
+        calls: list[tuple[str, int]] = []
+
+        async def ensure(_db) -> None:
+            return None
+
+        async def prune_events(_db, *, limit: int) -> int:
+            calls.append(("events", limit))
+            return limit
+
+        async def prune_decisions(_db, *, limit: int = 500) -> int:
+            calls.append(("decisions", limit))
+            return 7
+
+        monkeypatch.setattr(
+            bulk.legacy,
+            "ensure_global_deal_event_tables",
+            ensure,
+        )
+        monkeypatch.setattr(
+            bulk.legacy,
+            "prune_global_deal_events_bounded",
+            prune_events,
+        )
+        monkeypatch.setattr(
+            bulk,
+            "prune_walmart_fanout_decisions",
+            prune_decisions,
+        )
+
+        conn = FakeConnection()
+        db = FakeDatabase(conn)
+        await bulk.ensure_global_deal_event_tables_once(db)
+        state = bulk._state_for(conn)
+        state.next_cleanup_monotonic = 0.0
+
+        before = time.monotonic()
+        first = await bulk.maybe_prune_global_deal_event_storage_bounded(db)
+        second = await bulk.maybe_prune_global_deal_event_storage_bounded(db)
+
+        assert first == (bulk.FANOUT_CLEANUP_BATCH_SIZE, 7)
+        assert second == (0, 0)
+        assert calls == [
+            ("events", bulk.FANOUT_CLEANUP_BATCH_SIZE),
+            ("decisions", bulk.FANOUT_CLEANUP_BATCH_SIZE),
+        ]
+        assert state.next_cleanup_monotonic >= before + bulk.FANOUT_CLEANUP_FOLLOWUP_SECONDS
+
+    asyncio.run(run())
+
+
+def test_schema_paths_do_not_delete_before_fanout() -> None:
+    legacy_schema = LEGACY_SOURCE.split(
+        "async def ensure_global_deal_event_tables", 1
+    )[1].split("async def prune_global_deal_events_bounded", 1)[0]
+    bulk_schema = BULK_SOURCE.split(
+        "async def ensure_global_deal_event_tables_once", 1
+    )[1].split("async def maybe_prune_global_deal_event_storage_bounded", 1)[0]
+
+    assert "DELETE FROM" not in legacy_schema
+    assert "DELETE FROM" not in bulk_schema
+    assert "SELECT deal_key" in LEGACY_SOURCE
+    assert "LIMIT ?" in LEGACY_SOURCE
+
+
 def test_fanout_summary_exposes_every_public_skip_reason() -> None:
     result = bulk.GlobalDealFanoutResult(
         candidates_loaded=5,
@@ -105,4 +175,5 @@ def test_bulk_fanout_replaces_per_event_sql_loops() -> None:
 def test_production_runner_uses_bulk_fanout_runtime() -> None:
     assert "walmart_global_deal_fanout_bulk" in RUNNER
     assert "bulk_fanout=true" in RUNNER
+    assert "maintenance_after_all_fanout=true" in RUNNER
     assert "from sniperplug.services.walmart_global_deal_fanout import" not in RUNNER

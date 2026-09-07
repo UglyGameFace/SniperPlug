@@ -14,7 +14,12 @@ from sniperplug.services.walmart_exact_verification_queue import (
 )
 
 
-CLEANUP_BATCH_SIZE = 500
+# Cleanup shares the single process-isolated Turso worker with live verification,
+# Discord persistence, and other services. Production observed the previous
+# 500-ID DELETE holding that worker for 8+ seconds. Keep each maintenance write
+# much smaller; the production runner invokes this cleaner only after deal fanout
+# and defers it while another catalog/reconciliation fanout owner is active.
+CLEANUP_BATCH_SIZE = 100
 CLEANUP_FOLLOWUP_SECONDS = 5 * 60
 _STATE_ATTR = "_sniperplug_walmart_cleanup_state"
 _FALLBACK_STATES: dict[int, "_CleanupState"] = {}
@@ -42,9 +47,10 @@ async def maybe_prune_walmart_exact_queue_bounded(
 
     A remote ``DELETE ... WHERE last_seen_at < ?`` still creates a write request
     even when zero rows qualify. Production showed that no-op statement taking
-    almost fourteen seconds during startup. The local replica now identifies a
-    bounded set first; the Turso primary receives a write only when exact item IDs
-    actually need removal.
+    almost fourteen seconds during startup, and later a 500-ID cleanup DELETE
+    held the shared Turso worker for more than eight seconds. The local bounded
+    preselection remains authoritative; the primary receives a small write only
+    when exact item IDs actually need removal.
     """
 
     state = _state_for(conn)

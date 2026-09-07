@@ -199,6 +199,20 @@ def test_dropdown_acknowledges_before_sending_private_section() -> None:
     assert followup.messages[0]["embed"].title == "🎬 Start Here"
 
 
+def test_alerts_here_acknowledges_before_migrating_old_panel() -> None:
+    start = COG.index("async def alerts_here_button")
+    end = COG.index("async def on_error", start)
+    handler = COG[start:end]
+
+    assert "interaction.response.defer(ephemeral=True, thinking=True)" in handler
+    assert handler.index("interaction.response.defer") < handler.index(
+        "refresh_public_panel_from_interaction"
+    )
+    assert handler.index("refresh_public_panel_from_interaction") < handler.index(
+        "enable_alerts_here"
+    )
+
+
 def test_component_failures_have_a_visible_fallback() -> None:
     assert "async def on_error(" in COG
     assert "await _send_component_error(interaction, error)" in COG

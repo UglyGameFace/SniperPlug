@@ -51,6 +51,7 @@ Acceptance failure discovered:
 - The generic-title denylist omitted CTA labels such as `LEARN MORE` and `MORE INFO`.
 - Heading capture stopped at h3 even though current cards may use deeper heading levels.
 - Title-only candidates had no explicit safe fallback when a title-specific link could not be associated.
+- A persisted bad Gofobo row could survive a parser deployment if the first post-deploy request returned 304 and reused the old durable row without a new response body.
 
 Implemented in #261:
 - Reject generic CTA labels as movie/event titles and strip CTA suffixes from mixed card text.
@@ -60,11 +61,12 @@ Implemented in #261:
 - Fall back to the official Gofobo ZIP search when a title is known but a title-specific URL cannot be proven.
 - Accept the current official Gofobo image CDN host observed on the public site.
 - Make Gofobo validity/restriction text state explicitly that theater/date/time are ZIP-gated and must be checked on Gofobo.
+- Force one unconditional Gofobo homepage fetch per bot process before normal ETag/Last-Modified requests resume, so a parser deployment receives a real body capable of replacing previously accepted bad cache rows.
 - Add **Use This Channel for Alerts** to the private Setup Status result. The action requires Manage Server, validates bot permissions, saves the exact channel snowflake, and immediately runs a source scan.
 - Rework the guide so primary actions are buttons first and slash-command syntax is secondary.
 
 ## Validation required for #261
-- targeted Gofobo parser/actionability tests
+- targeted Gofobo parser/actionability/cache-revalidation tests
 - movie guide/status action tests
 - existing movie parser/store/runtime/feedback regressions
 - `python -m pip check`
@@ -82,8 +84,9 @@ After #261 merge/deploy:
 2. Current Gofobo upcoming movie/event names must appear in the alert when the official page exposes them.
 3. Title-specific official links are used when proven; otherwise the alert falls back to Gofobo's official ZIP search without inventing theater/date/time.
 4. Gofobo alerts are concise enough to answer: what movie/event is this, is a public code exposed, and what do I do next?
-5. Setup Status exposes one-click current-channel configuration for a manager and successfully persists/delivers to that exact channel.
-6. Atom stale-cache handling, source isolation, exact snowflakes, dedupe, and feedback behavior remain intact.
+5. The first post-deploy Gofobo scan replaces the existing bad CTA cache instead of re-confirming it through HTTP 304.
+6. Setup Status exposes one-click current-channel configuration for a manager and successfully persists/delivers to that exact channel.
+7. Atom stale-cache handling, source isolation, exact snowflakes, dedupe, and feedback behavior remain intact.
 
 Only after these live checks pass call movie tickets restored and close this task.
 
@@ -92,6 +95,7 @@ Only after these live checks pass call movie tickets restored and close this tas
 - Stale rows are hidden, not blindly deleted.
 - Only the two already-supported public classifications are deliverable.
 - Gofobo theater/date/time are not guessed when the public source requires a ZIP/account lookup.
+- The unconditional Gofobo body fetch happens once per process; normal conditional request behavior resumes afterward.
 - Pre-migration real Discord delivery/feedback snowflakes stored as unsafe legacy INTEGER values are not guessed back into live controls.
 
 ## Backlog — not active

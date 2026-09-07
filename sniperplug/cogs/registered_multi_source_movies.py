@@ -9,7 +9,7 @@ import aiohttp
 import discord
 from discord import app_commands
 
-from sniperplug.cogs.movie_tickets import MovieScanOutcome
+from sniperplug.cogs.movie_tickets import MOVIE_POLL_SECONDS, MovieScanOutcome, _discord_time
 from sniperplug.cogs.multi_source_movie_tickets import (
     MovieTicketsCog as MultiSourceMovieTicketsCog,
     build_multi_source_movie_drop_embed,
@@ -34,6 +34,8 @@ from sniperplug.services.movie_ticket_recovery import (
 )
 from sniperplug.services.movie_ticket_snowflake_store import SnowflakeSafeMovieTicketStore
 from sniperplug.services.seeitearly_screenings import (
+    ADVANCE_SCREENINGS_URL,
+    ONE_IOTA_URL,
     SEEITEARLY_SOURCE_KEY,
     SEEITEARLY_UPCOMING_URL,
     SeeItEarlyUpcomingClient,
@@ -45,6 +47,7 @@ log = logging.getLogger("sniperplug.movie_tickets.multi_source")
 SOURCE_BACKOFF_SECONDS = (120, 300, 900, 1800)
 SOURCE_ACCESS_BLOCK_BACKOFF_SECONDS = 6 * 60 * 60
 TOTAL_FAILURE_LOG_INTERVAL_SECONDS = 15 * 60
+SEEITEARLY_AUTO_POLL_SECONDS = 10 * 60
 CONNECTED_SOURCE_KEYS = (
     ATOM_SOURCE_KEY,
     FANDANGO_SOURCE_KEY,
@@ -67,6 +70,7 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
         super().__init__(bot)
         self.store = SnowflakeSafeMovieTicketStore(bot.db)
         self._seeitearly_lock = asyncio.Lock()
+        self._seeitearly_next_auto_scan_monotonic = 0.0
         self._source_failure_counts: dict[str, int] = {}
         self._source_retry_after: dict[str, float] = {}
         self._source_access_blocked: set[str] = set()
@@ -127,6 +131,58 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
             "Stale cached offers are hidden until their source validates again.",
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="status",
+        description="Show movie-ticket destination, connected-source health, and delivery totals.",
+    )
+    async def status(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        guild_id = int(interaction.guild_id)
+        config = await self.store.get_config(guild_id)
+        active = await self.store.list_active_drops(limit=100)
+        sent_count = await self.store.count_sent_for_guild(guild_id)
+        public_codes = sum(1 for drop in active if drop.classification == "public_reusable")
+        screening_leads = sum(1 for drop in active if drop.classification == "local_screening")
+        states = await self._connected_source_states()
+        successful_times = [state.last_success_at for state in states.values() if state.last_success_at]
+        latest_success = max(successful_times) if successful_times else ""
+
+        embed = discord.Embed(title="🎬 Movie Ticket Monitor", color=discord.Color.gold())
+        embed.add_field(name="Alerts", value="Enabled" if config.enabled else "Disabled", inline=True)
+        embed.add_field(
+            name="Channel",
+            value=f"<#{config.alert_channel_id}>" if config.alert_channel_id else "Not configured",
+            inline=True,
+        )
+        embed.add_field(name="Reusable ticket codes", value=str(public_codes), inline=True)
+        embed.add_field(name="Screening/discovery leads", value=str(screening_leads), inline=True)
+        embed.add_field(name="Delivered to this server", value=str(sent_count), inline=True)
+        embed.add_field(name="Latest successful check", value=_discord_time(latest_success), inline=True)
+        embed.add_field(
+            name="Check cadence",
+            value=(
+                f"Direct sources: every {MOVIE_POLL_SECONDS} seconds • "
+                f"SeeItEarly discovery: every {SEEITEARLY_AUTO_POLL_SECONDS // 60} minutes automatically • "
+                "Check Now/manual refresh can check sooner"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Connected source health",
+            value="\n".join(self._source_health_lines(states))[:1024],
+            inline=False,
+        )
+        embed.set_footer(
+            text=(
+                "Atom/Fandango/Gofobo are direct alert sources. SeeItEarly is supplemental discovery and is not auto-posted as an issuer alert."
+            )
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(
         name="latest",
@@ -210,6 +266,56 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
             content += f"\n⚠️ {warning}"
         await interaction.followup.send(content, ephemeral=True)
 
+    @app_commands.command(
+        name="sources",
+        description="Show direct, supplemental, and manual movie-ticket sources.",
+    )
+    async def sources(self, interaction: discord.Interaction) -> None:
+        embed = discord.Embed(
+            title="🎟️ Movie Ticket & Screening Sources",
+            description=(
+                "SniperPlug separates direct issuer pages from supplemental discovery so an aggregated lead is never presented as stronger proof than it is."
+            ),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="✅ Direct monitored + automatic alerts",
+            value=(
+                f"[Atom Promotions]({ATOM_PROMOTIONS_URL}) — public reusable promotions.\n"
+                f"[Fandango Offers]({FANDANGO_OFFERS_URL}) — ticket offers, with purchase requirements labeled.\n"
+                f"[Gofobo]({GOFOBO_HOME_URL}) — local screening announcements and public pass/code links."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔎 Automated supplemental discovery",
+            value=(
+                f"[SeeItEarly]({SEEITEARLY_UPCOMING_URL}) — bounded public screening discovery across multiple providers. "
+                "SniperPlug caps these leads, labels them aggregated, and does **not** auto-post them as direct issuer alerts."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🌐 Extra manual directories",
+            value=(
+                f"[AdvanceScreenings]({ADVANCE_SCREENINGS_URL}) • [1iota]({ONE_IOTA_URL})\n"
+                "These can contain screenings missing from the connected feeds. They are linked for manual checking while automated parsing remains fail-closed."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔒 Private/account sources not scraped",
+            value=(
+                "Private emails, SMS/app pushes, account-only invitations, studio mailing lists, and unique partner codes require a safe consented connection. "
+                "SniperPlug does not guess them, bypass logins, or republish gated codes."
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text="Direct sources can alert automatically; supplemental/manual sources are labeled separately."
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     async def _scan_official_source(
         self,
         *,
@@ -229,6 +335,13 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
         )
 
         for label, source_key, scanner in source_scans:
+            if source_key == SEEITEARLY_SOURCE_KEY and not manual_refresh:
+                next_auto_scan = float(
+                    getattr(self, "_seeitearly_next_auto_scan_monotonic", 0.0) or 0.0
+                )
+                if time.monotonic() < next_auto_scan:
+                    continue
+
             remaining = self._source_backoff_remaining(source_key)
             hard_blocked = source_key in self._source_access_blocked
             if remaining > 0 and (not manual_refresh or hard_blocked):
@@ -259,6 +372,10 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
                 continue
 
             self._clear_source_failure(source_key)
+            if source_key == SEEITEARLY_SOURCE_KEY:
+                self._seeitearly_next_auto_scan_monotonic = (
+                    time.monotonic() + SEEITEARLY_AUTO_POLL_SECONDS
+                )
             outcomes.append(outcome)
 
         self._last_source_scan_errors = tuple(errors)

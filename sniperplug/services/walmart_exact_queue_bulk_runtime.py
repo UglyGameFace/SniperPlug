@@ -21,9 +21,6 @@ from sniperplug.services.walmart_exact_queue_drain import (
     PAGE_RECOVERY_CLAIM_CAP,
     claim_due_rows_batched,
 )
-from sniperplug.services.walmart_exact_queue_maintenance import (
-    maybe_prune_walmart_exact_queue_bounded,
-)
 from sniperplug.services.walmart_exact_queue_pressure import (
     load_walmart_exact_queue_pressure,
 )
@@ -112,9 +109,10 @@ async def process_actionable_walmart_exact_queue_batch(
     and outcome writes without weakening proof or suppressing newly complete API
     identity.
 
-    Queue pruning is maintenance, not deal verification. It therefore runs only
-    on an idle exact-worker cycle. A slow Turso DELETE can no longer sit in front
-    of a batch that already has claimable deals waiting to be verified/fanned out.
+    Queue retention cleanup is deliberately not performed here. This function
+    returns as soon as verification state is durable so the caller can fan out
+    verified deals before any maintenance DELETE is allowed to use the shared
+    process-isolated Turso worker.
     """
 
     if db is None or provider is None or limit <= 0:
@@ -160,10 +158,6 @@ async def process_actionable_walmart_exact_queue_batch(
     )
     claim_seconds = max(0.0, time.monotonic() - claim_started)
     if not claims:
-        # Cleanup is deliberately idle-only. It shares the same process-isolated
-        # Turso worker as every other database operation and must not delay live
-        # deal verification or fanout when claimable work exists.
-        await maybe_prune_walmart_exact_queue_bounded(conn, now=now)
         return ExactQueueRuntimeResult(
             pending_total=pressure_before.due_now,
             terminal_quarantined=maintenance.quarantined,

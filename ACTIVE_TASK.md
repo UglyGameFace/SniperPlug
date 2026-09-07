@@ -1,108 +1,98 @@
 # Active Task
 
-## Status
-**Active — SP-AUTOSCAN-COVERAGE-STALL.** Walmart catalog depth, fresh-proof exact verification, terminal rescue, page-retry rescue, truthful queue health, and historical fanout provenance are live-proven after PRs #253/#254. PR #255 now has green pre-merge validation for the remaining Walmart safety issue: a product-page HTML burst when a 15-minute challenge cooldown expires. The fix isolates HTML behind a single paced probe while keeping fresh catalog proof and official API/exact-search verification moving at normal exact-worker throughput. Production live acceptance of #255 is still required after merge. HP and Target remain separate standalone watcher acceptance items and are not being deployed until the owner is ready.
+## Task / outcome
+**SP-WM-DEAL-DELIVERY-STALL — restore Walmart deal delivery end-to-end.**
+
+Target outcome: catalog discovery must continue feeding exact verification, strict selected-offer proof must recover when Walmart uses current seller/merchant aliases, page pacing must not churn known page-retry rows, verified deals must fan out before maintenance uses the shared Turso worker, and all proof/shipping/dedupe safety must remain intact.
 
 ## Scope
-Repair autoscan coverage without weakening exact proof or hammering Walmart HTML. Scope includes truthful backlog-vs-claimable health, deep catalog coverage, strict fresh-proof rescue, bounded page recovery, durable delivery-decision provenance, safe product-page request pacing, and eventual production activation of separate HP/Target watcher apps. Preserve exact item/offer/seller/variant/condition/fulfillment/current-price/reference proof, durable leases, dedupe, price history, and bounded Turso behavior.
+Active path only:
+
+`catalog discovery → selected-offer normalization → fresh proof → exact-detail queue → claim → Walmart API/page recovery → exact result persistence → Walmart/external fanout → bounded maintenance`
+
+Do not switch to unrelated watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
+
+## Status
+**Implementation complete on draft PR #256; local pre-merge validation is green for all Termux-executable tests. GitHub-hosted CI remains infrastructure-blocked before any workflow step starts. Production acceptance still required after merge.**
+
+Branch: `fix/walmart-deal-delivery-stall-256`
+PR: #256 `Restore Walmart deal verification throughput`
 
 ## Root cause / findings
-- Original live health showed **20,005 exact rows, 1,074 due page-recovery rows, 0 actively verifying, 12,390 terminal identity blocks, and 6 current-rule eligible events without durable post receipts**.
-- PR #253 fixed the original coverage stall: catalog depth rotates through pages 1-40 inside the existing two-page-per-route request budget; page recovery remains claimable in a two-row API-only lane while HTML is blocked; strict fresh catalog proof can rescue page/terminal rows; fanout decisions are persisted.
-- PR #254 exposed the selected page window in production logs so deep coverage can be verified directly.
-- New live evidence shows the remaining challenge pattern is specifically **HTML fallback burstiness**, not the rotating catalog itself. The exact worker can enter **24/4 drain mode**. When the HTML circuit expires, several claims can already be inside `fetch_product_detail_payload()` before the old two-challenge circuit trips.
-- Concrete production examples: **13:44:06** logged `page_challenge=5` plus `page_circuit_open=19`; **13:59:20** again logged `page_challenge=5` plus `page_circuit_open=18`. Five real challenged page requests in one drain batch is the behavior being removed.
-- The fixed-rate exact worker also yields only one second after an overlong cycle, so a 30-37 second page-heavy batch can otherwise be followed almost immediately by another cycle.
-- Fresh catalog snapshots and official API/exact-search continue to verify real products while HTML is blocked, including many 8/8 and 24/24 batches. Therefore the safe solution is to isolate/rate-limit HTML only, not slow the full deal pipeline.
-- The pacing helper deliberately reuses the existing canonical exact verifier instead of creating a second seller/offer proof implementation. An isolated synthetic open-circuit view obtains the verifier's fresh/API-only result first; only a true need for HTML may advance to the paced real-provider pass.
-- Direct/manual active-deal rechecks were inspected separately. They are user-triggered, guard/cache protected, and bounded to low concurrency; they are not the background 24/4 burst that produced the live challenge pattern.
+- Sep 7 production catalog discovery was healthy: pages 7-8/40 returned 98 products, 98 unique candidates, and 98 usable item IDs.
+- Safe fresh proof collapsed to effectively 0 for those 98, strongly tracking missing selected seller/marketplace identity in current Walmart payload shapes.
+- Exact drain batches claimed 24 rows at a time and verified 0; 47 of 48 recent claims became `page_pacing_deferred`.
+- #255's one-per-60-second HTML safety guard correctly prevented request bursts, but the queue still leased many rows already known to need page recovery while the single HTML slot was unavailable, creating pointless lease/outcome writes.
+- Turso's single process-isolated worker was also being held by maintenance and queue writes for 8-10 seconds.
+- Production catalog bulk enqueue still called the older blind exact-queue prune even though a newer bounded cleaner existed elsewhere. Cleanup ownership was duplicated.
+- Exact verification also performed cleanup before returning to the caller, and fanout schema initialization contained a retention DELETE before delivery work. Housekeeping could therefore sit directly in front of a ready alert.
 
-## Changes already live — PR #253
-- Keep a **2-row** `page_retry` lane claimable while the HTML circuit is open; those claims use official API/exact-search only.
-- Queue health labels the full page-recovery number as backlog and reports recovery mode, cap, claimable-this-batch, and HTML cooldown.
-- Strict fresh official catalog snapshots may immediately rearm `incomplete_identity` / `identity_mismatch`; weak proof stays terminal.
-- Full catalog passes rotate through two-page windows across pages **1-40** with no request-count increase per route.
-- Persist bounded per-guild Walmart fanout decisions so delivery health can distinguish real unexplained gaps from historical threshold/category/quality/dedupe outcomes.
-- HP/Target `not_started` health names the standalone entrypoint and same-Turso requirement.
+## Changes in PR #256
+- Expanded the existing authoritative selected-offer normalizer in `walmart_marketplace_comp.py` to recognize explicit current Walmart seller/merchant aliases, including `merchantInfo`, `merchantName`, merchant IDs, scalar seller/merchant values, marketplace aliases, explicit Walmart-first-party flags, and the repo's existing known Walmart seller IDs.
+- Identity is read only from the selected offer first and exact item root second. Sibling offers are never scanned for seller identity.
+- Existing `SourceCandidate` Walmart payable-price normalization remains authoritative, so third-party shipping still fails closed and delivered-price math is unchanged.
+- Known `page_retry` rows are not leased while the single HTML probe slot is merely paced. Fresh/pending work still receives normal official API/exact-search verification.
+- Removed the legacy blind prune call from production catalog bulk enqueue.
+- Removed exact-queue retention cleanup from the verification runtime so durable verified results return immediately for fanout.
+- Reduced exact-queue bounded cleanup from 500 IDs to 100 IDs per write.
+- Production runner now performs maintenance only after Walmart fanout and external verified-event fanout, and skips maintenance while catalog/reconciliation fanout ownership is active.
+- Removed retention DELETE behavior from fanout schema initialization and added bounded post-fanout event/decision cleanup.
+- Updated stale architecture/static tests to validate the new three-way page-lane policy and new cleanup ownership instead of old source syntax.
 
-## Changes already live — PR #254
-- Forward the catalog discovery note that contains the selected **page window / 40** and durable completed-pass count. This was observability-only.
+## Safety / conflict cleanup
+- Walmart HTML challenge circuit remains enabled and authoritative.
+- HTML remains one paced probe; first challenge-class response still opens the circuit immediately.
+- No public threshold, DM rule, dedupe rule, selected-offer/variant proof, reference-price proof, catalog depth, or price-history rule was weakened.
+- Marketplace shipping remains fail-closed when shipping is unknown.
+- Sibling offers cannot donate selected seller identity.
+- Duplicate seller-identity shim created during implementation was removed; alias handling now lives in the existing selected-offer normalizer.
+- Production cleanup ownership is centralized after fanout instead of being duplicated across catalog enqueue, exact verification, and schema initialization.
 
-## Live acceptance already passed before #255
-- **Deep catalog coverage:** production has explicitly logged deep windows including **39-40/40** with real returned products. Later pass 104 correctly rotated to **7-8/40**.
-- **Fresh proof during HTML cooldown:** repeated 8/8 and 24/24 exact batches verify with fetch time around 0.00-0.01s while the page circuit is open.
-- **Official API deals during HTML cooldown:** production continues to recover official was prices and markdowns while page HTML is suppressed.
-- **Terminal rescue:** multiple catalog batches have logged `terminal identity rescued > 0`; terminal blocked count fell materially even while the queue grew.
-- **Page-retry rescue:** at **14:12:33 Aug 15**, catalog telemetry logged `safe fresh proof 50 • page retries rescued 1 • terminal identity rescued 1 • verified changes rearmed 1`.
-- **Truthful health:** the latest owner health separated **16,518 page-recovery backlog** from **2 claimable this batch**, identified API-only mode and the current HTML cooldown, and reported **11,515 terminal** / **9,162 verified** rows.
-- **Delivery provenance:** latest health had historical destination decisions for **80/80** events; old events are no longer mislabeled as confirmed missed posts merely because current rules differ.
+## Validation / results
+### Termux Ubuntu aarch64, Python 3.12.14
+Validated exact PR code locally after fixing the one genuine stale test discovered by the first run.
 
-## PR #255 page pacing change
-Branch: `fix/walmart-page-request-pacing-255`
+- Targeted affected regression set: **32 passed**, 1 unrelated `audioop` deprecation warning.
+- `python -m pip check`: **passed** (`No broken requirements found`).
+- `python -m compileall -q sniperplug scripts tests`: **passed**, exit 0.
+- `python scripts/smoke_imports.py`: **passed**, 37 modules / 22 symbols, exit 0.
+- Full Termux-compatible suite: **1,272 passed**, 1 unrelated `audioop` deprecation warning, exit 0.
+- Six tests in `tests/test_libsql_process_connection.py` cannot execute on this phone because `requirements.txt` intentionally excludes native `libsql==0.1.11` on `aarch64`. Their failures were all the same pre-test worker startup import error: `ModuleNotFoundError: No module named 'libsql'`.
+- The first real local full run exposed one #256-related stale static assertion in `tests/test_walmart_live_gate_240.py`; it was corrected on branch commit `9fe904721c62dffa74acf1495f1e73baf5d7cb67`, after which the affected set and all Termux-executable tests passed.
 
-Implementation:
-- Keep `_fetch_exact_candidate_off_loop()` as the canonical proof implementation.
-- First run each claim through an isolated API-only view of that verifier. Valid strict fresh catalog proof or complete official item-detail/exact-search proof returns immediately.
-- Only a claim whose canonical API-only result says HTML is still required may advance to the real provider path.
-- Product-page HTML becomes a **single process/provider probe at most once per 60 seconds** when the real circuit is closed.
-- The probe slot is reserved synchronously in the provider's existing circuit state so concurrent 8/2 or 24/4 claims cannot race multiple HTML fallbacks through.
-- If no probe slot is available, the row remains fail-closed as `page_retry` with `retry_kind=page_pacing_deferred`; fresh/API work for other rows continues.
-- The **first** challenge/403/429 from a paced real-provider pass immediately opens the existing **15-minute** provider circuit. It no longer waits for two challenge responses while other requests are in flight.
-- While the circuit is open, HTML remains fully suppressed and the existing two-row page-recovery lane gets official API/exact-search attempts only.
-- No proof gate, public threshold, DM rule, dedupe rule, catalog depth, or queue ownership rule is weakened.
-
-## #255 pre-merge validation — passed
-- Targeted concurrency regression proves **4 concurrent API-incomplete claims issue exactly 1 HTML-capable fallback**; the other 3 fail closed as `page_pacing_deferred`.
-- Complete official API identity still verifies while HTML pacing is occupied.
-- Strict fresh catalog proof bypasses API and HTML entirely.
-- First paced challenge opens the real circuit immediately; the following claim makes no additional HTML request.
-- The 60-second reservation cannot be double-reserved.
-- Full CI after cleanup: **1,272 passed**, 1 unrelated Python `audioop` deprecation warning.
-- `pip check` passed.
-- `python -m compileall -q sniperplug tests *.py` passed.
-- Import smoke workflow passed.
-- All three PR workflows are green.
-- Changed-file inspection shows only `ACTIVE_TASK.md`, the new pacing helper, exact bulk runtime wiring, the updated static guard, and the new pacing regression tests.
-- Inline review threads: none. Submitted reviews: none. Qodo only posted a billing-paused informational comment, not a code finding.
-- Production acceptance remains separate: do **not** call the burst issue production-fixed until live logs after merge show no multi-challenge batch while fresh/API verification still produces deals.
+### GitHub Actions blocker
+For the current #256 heads, GitHub Actions creates the jobs but assigns no runner: `runner_id=0`, empty runner name, `steps=[]`. The workflows fail before checkout or any Python command executes. This is CI infrastructure/account runner assignment failure evidence, not a test failure. Do not label those runs as code-red.
 
 ## Remaining Definition of Done
-1. Merge #255, then live-prove that a cooldown expiry cannot produce a multi-request HTML burst; a challenge may still occur because Walmart controls its site, but SniperPlug must send only the paced probe and immediately hold further HTML.
-2. Confirm fresh/API exact verification and real deal fanout continue while HTML is paced/held.
-3. Start `SniperPlug-HP-Watcher` against the shared Turso DB and confirm health changes from `not_started` to a real cycle state **when the owner is ready**.
-4. Start `SniperPlug-Target-Watcher` against the shared Turso DB with `TARGET_REDSKY_API_KEY` and confirm a real cycle state **when the owner is ready**. Target also needs a saved exact local store for this server.
-5. Only then close SP-AUTOSCAN-COVERAGE-STALL unless the owner explicitly defers/narrows those watcher acceptance items.
+1. Obtain one x86_64/hosted run of the six native `libsql` process tests (normally supplied by GitHub Actions) and the normal full workflows once GitHub assigns a runner.
+2. Final PR diff/review-thread inspection and update PR validation text to the exact final head.
+3. Mark #256 ready and merge only when pre-merge evidence is sufficient and the head has not moved unexpectedly.
+4. After merge/deploy, live-prove:
+   - safe fresh proof is nonzero again when explicit current seller/merchant identity exists;
+   - exact batches verify real rows instead of repeated 0/24 page-pacing churn;
+   - known page-retry rows are not repeatedly leased while the probe slot is occupied;
+   - Walmart/external fanout produces processed events/posts/DMs for eligible verified deals;
+   - HTML remains paced with no multi-request challenge burst;
+   - maintenance no longer blocks the hot delivery path for 8-10 seconds.
+5. Only after live acceptance call Walmart deal delivery restored and close this active task.
 
-## Watcher state / pacing constraint
-- HP local standalone folder has already been prepared and its Turso URL/token presence was confirmed, but **nothing has been uploaded/deployed**.
-- Target's local `TARGET_REDSKY_API_KEY` is currently missing and this server has no Target location configured.
-- Do not initiate watcher deployment until the owner explicitly says they are ready.
+## Blockers / risks
+- GitHub-hosted Actions currently never receives a runner, so the native x86_64 libsql tests and standard hosted workflows cannot execute there yet.
+- Product-page HTML parser itself was not changed without raw live page evidence; this task fixes identity normalization from official payloads, page-retry scheduling, and delivery-path backpressure without blind parser edits.
+- Live Walmart payload/traffic acceptance is still required after merge.
 
-## Safety constraints
-- Do not disable or weaken the Walmart challenge circuit.
-- Do not use Walmart HTML while the circuit is open.
-- Do not promote page/terminal rows from weak relevance text; only strict fresh selected-offer proof or the normal exact proof path may rescue them.
-- Do not increase catalog requests per route/pass; depth must rotate within the existing two-page budget.
-- Do not slow fresh catalog proof or complete official API exact verification merely to protect the HTML fallback.
-- Do not delete price history, offer memory, queue identity history, dedupe, user settings, or feedback summaries to improve counters.
-- Do not run duplicate HP/Target watcher owners inside the Discord bot.
+## Backlog — not active
+- SP-GATEWAY-EVENT-LOOP-LAG
+- SP-SETUP-DELIVERY-UX
+- SP-DM-DELIVERY-STARVATION
+- SP-DM-NEW-LOW-ALERT
+- SP-WM-REFERENCE-PRICE-RECOVERY
+- SP-WM-CASH-PDP-AMOUNT
+- HP/Target standalone watcher deployment/acceptance
+- SP-TURSO-READ-AMPLIFICATION acceptance
+- SP-TURSO-WRITE-AMPLIFICATION acceptance
+- SP-DEALS-DISCOVER-HARDENING-244 live acceptance
+- SniperPlug-Site work
 
-## Separate backlog signal
-- Discord gateway has still reported roughly **41.3s** behind in live samples. Keep this as **SP-GATEWAY-EVENT-LOOP-LAG** and do not switch implementation tasks without an explicit FORCE SWITCH unless evidence proves the active autoscan path is directly responsible.
-
-## Suspended tasks
-- **SP-TURSO-READ-AMPLIFICATION** — suspended at post-#252 live quota-slope gate; last clean anchor **466,696,732 rows read at 6:09 PM Aug 14**.
-- **SP-TURSO-WRITE-AMPLIFICATION** — suspended at final rows-written slope gate.
-- **SP-DEALS-DISCOVER-HARDENING-244** — suspended at live acceptance, not closed.
-- **SP-WM-MISSED-DEALS-236** — suspended, not closed.
-
-## Backlog
-- **SP-GATEWAY-EVENT-LOOP-LAG**
-- **SP-SETUP-DELIVERY-UX**
-- **SP-DM-DELIVERY-STARVATION**
-- **SP-DM-NEW-LOW-ALERT**
-- **SP-WM-REFERENCE-PRICE-RECOVERY**
-- **SP-WM-CASH-PDP-AMOUNT**
-- Resume quota slope acceptance after this task closes.
-- Resume #244 live acceptance after active autoscan work closes.
-- Resume SniperPlug-Site work later.
+## Next step
+Keep #256 as the only active implementation task. Recheck the final head/workflows and obtain the remaining native x86_64 validation when a runner becomes available; then merge and perform production acceptance.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -49,7 +50,10 @@ FANOUT_INGEST_LIMIT = 150
 FANOUT_EVENT_LIMIT = 20
 EVENT_RETENTION_DAYS = 30
 EVENT_LEASE_SECONDS = 30 * 60
+EVENT_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+EVENT_CLEANUP_BATCH_SIZE = 100
 _FANOUT_LOCK = asyncio.Lock()
+_LAST_EVENT_CLEANUP_MONOTONIC = 0.0
 log = logging.getLogger("sniperplug.autoscan.fanout")
 
 
@@ -93,6 +97,8 @@ class _ClaimedEvent:
 
 
 async def ensure_global_deal_event_tables(db: Any) -> None:
+    """Initialize fanout schema only; retention must never precede delivery."""
+
     conn = db.require_conn()
     await conn.execute(
         f"""
@@ -134,17 +140,57 @@ async def ensure_global_deal_event_tables(db: Any) -> None:
         """,
         (STATE_KEY, now),
     )
+    await conn.commit()
+
+
+async def prune_global_deal_events_bounded(
+    db: Any,
+    *,
+    limit: int = EVENT_CLEANUP_BATCH_SIZE,
+) -> int:
+    """Delete one bounded batch of already-processed, expired fanout events."""
+
+    conn = db.require_conn()
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=EVENT_RETENTION_DAYS)
     ).isoformat()
-    await conn.execute(
+    bounded_limit = max(1, min(int(limit), 500))
+    cursor = await conn.execute(
         f"""
-        DELETE FROM {EVENT_TABLE}
+        SELECT deal_key
+        FROM {EVENT_TABLE}
         WHERE processed_at IS NOT NULL AND first_seen_at < ?
+        ORDER BY first_seen_at ASC
+        LIMIT ?
         """,
-        (cutoff,),
+        (cutoff, bounded_limit),
+    )
+    keys = [
+        str(_row_get(row, "deal_key", 0) or "").strip()
+        for row in await cursor.fetchall()
+    ]
+    keys = [key for key in keys if key]
+    if not keys:
+        return 0
+    placeholders = ",".join("?" for _ in keys)
+    await conn.execute(
+        f"DELETE FROM {EVENT_TABLE} WHERE deal_key IN ({placeholders})",
+        tuple(keys),
     )
     await conn.commit()
+    return len(keys)
+
+
+async def maybe_prune_global_deal_events_after_fanout(db: Any) -> int:
+    """Run bounded legacy retention only after current fanout work is complete."""
+
+    global _LAST_EVENT_CLEANUP_MONOTONIC
+    now = time.monotonic()
+    if now - _LAST_EVENT_CLEANUP_MONOTONIC < EVENT_CLEANUP_INTERVAL_SECONDS:
+        return 0
+    deleted = await prune_global_deal_events_bounded(db)
+    _LAST_EVENT_CLEANUP_MONOTONIC = time.monotonic()
+    return deleted
 
 
 async def fanout_recent_exact_walmart_deals(
@@ -157,7 +203,8 @@ async def fanout_recent_exact_walmart_deals(
     The verification watermark prevents high-ranked rows from starving later
     rows. Every accepted event stores the exact candidate snapshot used to
     create it. Durable database leases prevent overlapping bot processes from
-    sending the same event concurrently during deploys or failover.
+    sending the same event concurrently during deploys or failover. Retention
+    cleanup runs only after current delivery work, never in front of it.
     """
 
     db = getattr(bot, "db", None)
@@ -175,6 +222,7 @@ async def fanout_recent_exact_walmart_deals(
             limit=max(1, int(event_limit)),
         )
         if not claimed_events:
+            await maybe_prune_global_deal_events_after_fanout(db)
             return GlobalDealFanoutResult(
                 candidates_loaded=ingested.loaded,
                 exact_cards=ingested.exact_cards,
@@ -325,6 +373,7 @@ async def fanout_recent_exact_walmart_deals(
                 )
                 totals["events_processed"] += 1
 
+        await maybe_prune_global_deal_events_after_fanout(db)
         return GlobalDealFanoutResult(
             candidates_loaded=ingested.loaded,
             exact_cards=ingested.exact_cards,

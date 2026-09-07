@@ -11,10 +11,17 @@ from sniperplug.cogs import registered_multi_source_movies as runtime
 from sniperplug.services.fandango_movie_offers import FANDANGO_SOURCE_KEY
 from sniperplug.services.gofobo_screenings import GOFOBO_SOURCE_KEY
 from sniperplug.services.movie_ticket_drops import ATOM_SOURCE_KEY
+from sniperplug.services.seeitearly_screenings import SEEITEARLY_SOURCE_KEY
 
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTERED = (ROOT / "sniperplug/cogs/registered_multi_source_movies.py").read_text(encoding="utf-8")
+ALL_SOURCE_KEYS = (
+    ATOM_SOURCE_KEY,
+    FANDANGO_SOURCE_KEY,
+    GOFOBO_SOURCE_KEY,
+    SEEITEARLY_SOURCE_KEY,
+)
 
 
 class FakeStore:
@@ -34,6 +41,16 @@ def make_cog():
     cog._last_source_scan_errors = ()
     cog.store = FakeStore()
     return cog
+
+
+def install_all_failures(cog) -> None:
+    async def fail(*, target_guild_id=None):
+        raise asyncio.TimeoutError("upstream timeout")
+
+    cog._scan_atom_source = fail
+    cog._scan_fandango_source = fail
+    cog._scan_gofobo_source = fail
+    cog._scan_seeitearly_source = fail
 
 
 def test_source_backoff_escalates_and_clears(monkeypatch) -> None:
@@ -77,20 +94,14 @@ def test_transient_network_failures_are_classified_without_traceback_spam() -> N
 def test_automatic_total_outage_preserves_cache_without_raising() -> None:
     async def run() -> None:
         cog = make_cog()
-
-        async def fail(*, target_guild_id=None):
-            raise asyncio.TimeoutError("upstream timeout")
-
-        cog._scan_atom_source = fail
-        cog._scan_fandango_source = fail
-        cog._scan_gofobo_source = fail
+        install_all_failures(cog)
 
         outcome = await cog._scan_official_source(target_guild_id=None)
 
         assert outcome.modified is False
         assert outcome.active_count == 1
         assert outcome.delivered_count == 0
-        assert len(cog._source_failure_counts) == 3
+        assert len(cog._source_failure_counts) == len(ALL_SOURCE_KEYS) == 4
 
     asyncio.run(run())
 
@@ -98,15 +109,9 @@ def test_automatic_total_outage_preserves_cache_without_raising() -> None:
 def test_manual_total_outage_still_surfaces_complete_reason() -> None:
     async def run() -> None:
         cog = make_cog()
+        install_all_failures(cog)
 
-        async def fail(*, target_guild_id=None):
-            raise asyncio.TimeoutError("upstream timeout")
-
-        cog._scan_atom_source = fail
-        cog._scan_fandango_source = fail
-        cog._scan_gofobo_source = fail
-
-        with pytest.raises(RuntimeError, match="All official movie-ticket sources failed"):
+        with pytest.raises(RuntimeError, match="All movie-ticket sources failed"):
             await cog._scan_official_source(target_guild_id=123)
 
     asyncio.run(run())
@@ -117,14 +122,13 @@ def test_manual_refresh_explains_when_every_source_is_hard_blocked(monkeypatch) 
         cog = make_cog()
         now = 1000.0
         monkeypatch.setattr(runtime.time, "monotonic", lambda: now)
-        source_keys = (ATOM_SOURCE_KEY, FANDANGO_SOURCE_KEY, GOFOBO_SOURCE_KEY)
-        cog._source_access_blocked.update(source_keys)
-        for source_key in source_keys:
+        cog._source_access_blocked.update(ALL_SOURCE_KEYS)
+        for source_key in ALL_SOURCE_KEYS:
             cog._source_retry_after[source_key] = now + 3600
 
         with pytest.raises(
             RuntimeError,
-            match="All official movie-ticket sources are cooling down",
+            match="All movie-ticket sources are cooling down",
         ):
             await cog._scan_official_source(target_guild_id=123)
 
@@ -138,8 +142,9 @@ def test_registered_runtime_overrides_scan_with_cached_backoff_lane() -> None:
     assert "TOTAL_FAILURE_LOG_INTERVAL_SECONDS = 15 * 60" in REGISTERED
     assert "durable cache retained and other sources continued" in REGISTERED
     assert "stale public cache hidden after freshness window" in REGISTERED
-    assert "All official movie-ticket sources are temporarily unavailable" in REGISTERED
-    assert "All official movie-ticket sources are cooling down" in REGISTERED
+    assert "All movie-ticket sources are temporarily unavailable" in REGISTERED
+    assert "All movie-ticket sources are cooling down" in REGISTERED
+    assert '("SeeItEarly", SEEITEARLY_SOURCE_KEY, self._scan_seeitearly_source)' in REGISTERED
     assert "if attempted == 0" in REGISTERED
     assert "manual_refresh = target_guild_id is not None" in REGISTERED
     assert "hard_blocked = source_key in self._source_access_blocked" in REGISTERED

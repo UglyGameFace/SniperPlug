@@ -5,7 +5,7 @@ import logging
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import aiohttp
 
@@ -35,10 +35,12 @@ SEEITEARLY_MAX_ACTIVE_DROPS = 3
 # links only until each site has a stable fail-closed automated parsing contract.
 ADVANCE_SCREENINGS_URL = "https://www.advancescreenings.com/"
 ONE_IOTA_URL = "https://1iota.com/"
-CINEFIND_URL = "https://www.cinefind.app/"
-SCREENING_SQUAD_URL = "https://www.screeningsquad.com/"
 
 _FREE_PASS_RE = re.compile(r"\b(?P<count>\d{1,4})\s+free\s+pass(?:es)?\b", re.IGNORECASE)
+_CARD_PREFIX_RE = re.compile(
+    r"^\s*\d{1,4}\s+free\s+pass(?:es)?\s+[A-Za-z]{3}\s+\d{1,2}\s+",
+    re.IGNORECASE,
+)
 _GENERIC_TITLES = frozenset(
     {
         "all months",
@@ -80,8 +82,8 @@ class _SeeItEarlyUpcomingParser(HTMLParser):
     """Extract bounded title-level free-pass leads from the public upcoming page.
 
     The page is a national discovery index, not an original pass issuer. We only
-    accept title links that are paired with explicit ``N free pass(es)`` text in
-    nearby page content. Paid-only/release-only cards are ignored.
+    accept movie-detail links paired with explicit ``N free pass(es)`` evidence.
+    Paid-only/release-only cards are ignored.
     """
 
     def __init__(self) -> None:
@@ -113,9 +115,10 @@ class _SeeItEarlyUpcomingParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag.lower() != "a" or not self._active_href:
             return
-        title = clean_seeitearly_title(" ".join(self._active_parts))
+        raw_link_text = clean_text(" ".join(self._active_parts))
+        title = extract_seeitearly_card_title(raw_link_text, self._active_href)
         context = clean_text(" ".join(self._recent_text[-10:]))
-        match = _FREE_PASS_RE.search(context)
+        match = _FREE_PASS_RE.search(raw_link_text) or _FREE_PASS_RE.search(context)
         if title and match:
             free_count = int(match.group("count"))
             if free_count > 0:
@@ -129,9 +132,9 @@ class _SeeItEarlyUpcomingParser(HTMLParser):
                     self.candidates.append(candidate)
         self._active_href = ""
         self._active_parts = []
-        # A free-pass count belongs to the movie card we just consumed. Clear
-        # nearby context here so one title can never donate its count to the
-        # next paid/release-only title on the page.
+        # A free-pass count belongs to the movie card/link we just consumed.
+        # Clear nearby context so one title cannot donate "free" proof to the
+        # next paid/release-only movie.
         self._recent_text = []
 
 
@@ -147,8 +150,8 @@ def parse_seeitearly_upcoming_html(html_text: str) -> SeeItEarlyParseResult:
     page_text = normalize_text(html_text)
     document_valid = (
         "releasing soon" in page_text
-        and "free pass" in page_text
         and "seeitearly" in page_text
+        and ("free pass" in page_text or "/movies/" in html_text.lower())
     )
     if not document_valid:
         return SeeItEarlyParseResult((), False, len(parser.candidates))
@@ -165,6 +168,40 @@ def parse_seeitearly_upcoming_html(html_text: str) -> SeeItEarlyParseResult:
     return SeeItEarlyParseResult(tuple(by_title.values()), True, len(parser.candidates))
 
 
+def extract_seeitearly_card_title(raw_link_text: str, href: str) -> str:
+    """Extract exact title text from SeeItEarly's current combined card link.
+
+    Current links can render as ``32 free passes SEP 10 The Uprising Drama ·
+    Action · History``. The safe movie URL provides the title slug, so use its
+    word count to slice only the title portion after the free-pass/date prefix.
+    This preserves page capitalization/punctuation without guessing genre text
+    into the title or issuing another HTTP request per movie.
+    """
+
+    raw = clean_text(raw_link_text)
+    safe_href = safe_seeitearly_url(href)
+    if not raw or not safe_href:
+        return ""
+
+    without_prefix = _CARD_PREFIX_RE.sub("", raw, count=1).strip()
+    slug = unquote((urlparse(safe_href).path or "").rstrip("/").split("/")[-1])
+    slug_words = [part for part in slug.split("-") if part]
+
+    if _CARD_PREFIX_RE.match(raw) and slug_words:
+        visible_words = without_prefix.split()
+        if len(visible_words) >= len(slug_words):
+            candidate = " ".join(visible_words[: len(slug_words)])
+            # The exact visible punctuation may differ from the slug (Don't vs
+            # dont). Compare normalized text before trusting the slice.
+            if normalize_text(candidate) == normalize_text(" ".join(slug_words)):
+                return clean_seeitearly_title(candidate)
+        # SEO slugs are still safer than treating genres/card chrome as title.
+        return clean_seeitearly_title(" ".join(slug_words).title())
+
+    # Test/legacy card shape where the anchor contains only the title.
+    return clean_seeitearly_title(raw)
+
+
 def clean_seeitearly_title(value: str) -> str:
     title = clean_text(value)
     normalized = normalize_text(title)
@@ -172,7 +209,6 @@ def clean_seeitearly_title(value: str) -> str:
         return ""
     if len(title) < 2 or len(title) > 180:
         return ""
-    # Reject card chrome/counts accidentally captured as an anchor title.
     if _FREE_PASS_RE.fullmatch(title):
         return ""
     return title

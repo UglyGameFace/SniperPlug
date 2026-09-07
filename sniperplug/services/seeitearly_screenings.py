@@ -172,10 +172,10 @@ def extract_seeitearly_card_title(raw_link_text: str, href: str) -> str:
     """Extract exact title text from SeeItEarly's current combined card link.
 
     Current links can render as ``32 free passes SEP 10 The Uprising Drama ·
-    Action · History``. The safe movie URL provides the title slug, so use its
-    word count to slice only the title portion after the free-pass/date prefix.
-    This preserves page capitalization/punctuation without guessing genre text
-    into the title or issuing another HTTP request per movie.
+    Action · History``. The safe movie URL supplies a title identity boundary.
+    Match progressively longer visible prefixes to that identity so punctuation,
+    apostrophes, and hyphenated words stay exactly as the page displays them,
+    without letting following genre/card chrome become part of the title.
     """
 
     raw = clean_text(raw_link_text)
@@ -188,12 +188,11 @@ def extract_seeitearly_card_title(raw_link_text: str, href: str) -> str:
     slug_words = [part for part in slug.split("-") if part]
 
     if _CARD_PREFIX_RE.match(raw) and slug_words:
+        target_identity = _title_identity(" ".join(slug_words))
         visible_words = without_prefix.split()
-        if len(visible_words) >= len(slug_words):
-            candidate = " ".join(visible_words[: len(slug_words)])
-            # Match punctuation-insensitively, then keep the page's exact visible
-            # punctuation/casing rather than converting the SEO slug into a title.
-            if _title_identity(candidate) == _title_identity(" ".join(slug_words)):
+        for end in range(1, len(visible_words) + 1):
+            candidate = " ".join(visible_words[:end])
+            if _title_identity(candidate) == target_identity:
                 return clean_seeitearly_title(candidate)
         # SEO slugs remain safer than treating genres/card chrome as title.
         return clean_seeitearly_title(" ".join(slug_words).title())

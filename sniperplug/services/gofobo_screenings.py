@@ -343,9 +343,8 @@ def _drop_from_gofobo_block(block: _RawGofoboScreening) -> MovieTicketDrop | Non
         raw_lines.append(f"{GOFOBO_IMAGE_MARKER}{image_url}")
 
     restrictions = (
-        "Availability is ZIP/postal-code specific; Gofobo may show different theaters or no screening in your area.",
-        "A free Gofobo account and successful pass claim may be required; an announcement is not a guaranteed pass.",
-        "A claimed pass still does not guarantee admission when a screening reaches capacity.",
+        "Availability is ZIP/postal-code specific; Gofobo can show different theaters or no screening in your area.",
+        "Pass inventory can fill quickly, and a claimed pass still does not guarantee admission after capacity is reached.",
     )
     return MovieTicketDrop(
         drop_id=gofobo_drop_id(title=title, offer_url=offer_url),
@@ -357,8 +356,8 @@ def _drop_from_gofobo_block(block: _RawGofoboScreening) -> MovieTicketDrop | Non
         ticket_limit=1,
         offer_url=offer_url,
         validity_text=(
-            "Gofobo currently lists this movie/event as an upcoming screening lead. "
-            "Enter your ZIP/postal code on Gofobo for the actual theater, date, time, and remaining pass availability."
+            "Gofobo lists this title as an upcoming screening. Open the official listing and enter your ZIP/postal code "
+            "for the actual theater, date, time, and remaining pass availability."
         ),
         restrictions=restrictions,
         raw_text="\n".join(raw_lines)[:8000],
@@ -432,17 +431,25 @@ def gofobo_has_public_code(raw_text: str) -> bool:
 
 
 class GofoboUpcomingClient:
+    # On the first successful Gofobo request of each process, intentionally omit
+    # persisted validators. Parser upgrades must get one real response body so a
+    # previously accepted bad durable row (for example title="LEARN MORE") can
+    # be replaced immediately after deployment instead of being blessed forever
+    # by a 304. Normal ETag/Last-Modified requests resume after that one body.
+    _process_full_body_confirmed = False
+
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
 
     async def fetch(self, state: MovieTicketSourceState | None = None) -> GofoboFetchResult:
+        force_full_body = not type(self)._process_full_body_confirmed
         headers = {
             "Accept": "text/html,application/xhtml+xml",
             "User-Agent": GOFOBO_USER_AGENT,
         }
-        if state and state.etag:
+        if not force_full_body and state and state.etag:
             headers["If-None-Match"] = state.etag
-        if state and state.last_modified:
+        if not force_full_body and state and state.last_modified:
             headers["If-Modified-Since"] = state.last_modified
 
         timeout = aiohttp.ClientTimeout(total=GOFOBO_REQUEST_TIMEOUT_SECONDS, connect=5)
@@ -456,6 +463,10 @@ class GofoboUpcomingClient:
             if not safe_gofobo_url(final_url):
                 raise RuntimeError("Gofobo request redirected outside the official Gofobo allowlist.")
             if response.status == 304:
+                if force_full_body:
+                    raise RuntimeError(
+                        "Official Gofobo returned HTTP 304 to the required full-body cache refresh."
+                    )
                 return GofoboFetchResult(
                     not_modified=True,
                     etag=response.headers.get("ETag", state.etag if state else ""),
@@ -473,6 +484,7 @@ class GofoboUpcomingClient:
                 html_text = payload.decode(charset, errors="replace")
             except LookupError:
                 html_text = payload.decode("utf-8", errors="replace")
+            type(self)._process_full_body_confirmed = True
             return GofoboFetchResult(
                 not_modified=False,
                 html=html_text,

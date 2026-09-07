@@ -492,7 +492,14 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             legacy.log.info(result.summary_line())
 
     async def _run_walmart_post_fanout_maintenance(self) -> None:
-        """Run bounded queue retention only after every current deal fanout path."""
+        """Run bounded queue retention only when no other fanout owner is active."""
+
+        # Catalog and reconciliation both invoke the same Walmart/external fanout
+        # paths. Their fanout calls return early to another caller when the shared
+        # fanout lock is occupied, so the exact worker must not mistake that early
+        # return for "fanout finished" and start a DELETE underneath the owner.
+        if self._catalog_active or self._reconciliation_active:
+            return
 
         try:
             cleanup = await maybe_prune_walmart_exact_queue_bounded(

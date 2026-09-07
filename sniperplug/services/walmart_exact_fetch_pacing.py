@@ -9,6 +9,7 @@ from sniperplug.services.walmart_exact_queue_runtime import (
     PAGE_CHALLENGE_CIRCUIT_COOLDOWN_SECONDS,
     _PAGE_CIRCUIT_STATE_ATTR,
     _fetch_exact_candidate_off_loop,
+    _is_fresh_snapshot_candidate,
     _is_page_challenge_retry_kind,
     _page_challenge_circuit_open,
     _page_challenge_circuit_remaining_seconds,
@@ -118,6 +119,11 @@ async def fetch_exact_candidate_with_page_pacing(
     page HTML, so it cannot promote search relevance neighbors or stale catalog
     price as exact proof.
 
+    Reference enrichment is intentionally limited to strict fresh-snapshot
+    candidates, which is the production failure mode this recovery targets. That
+    avoids adding a second exact-search call to every generic verified no-reference
+    row and keeps official API volume bounded.
+
     When the real HTML circuit is already open, this same price/reference recovery
     remains active; the circuit suppresses HTML, not healthy official exact-search
     work. When the real circuit is closed, only a claim whose API-only result says
@@ -221,11 +227,15 @@ async def _recover_api_price_or_reference(
             return recovered
         return candidate, status, error
 
-    # A verified candidate is already valid current-price proof. If it lacks a
+    # A strict fresh snapshot is already valid current-price proof. If it lacks a
     # trusted Walmart reference, exact search may enrich it with a same-item
     # was/regular/original price. Failure to find one must never downgrade the
     # already-valid candidate or send the request to HTML.
-    if candidate is not None and _trusted_reference(candidate) is None:
+    if (
+        candidate is not None
+        and _is_fresh_snapshot_candidate(candidate)
+        and _trusted_reference(candidate) is None
+    ):
         recovered = await _try_official_exact_search_recovery(
             provider,
             claim,

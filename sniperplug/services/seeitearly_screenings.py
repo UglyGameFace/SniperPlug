@@ -191,15 +191,23 @@ def extract_seeitearly_card_title(raw_link_text: str, href: str) -> str:
         visible_words = without_prefix.split()
         if len(visible_words) >= len(slug_words):
             candidate = " ".join(visible_words[: len(slug_words)])
-            # The exact visible punctuation may differ from the slug (Don't vs
-            # dont). Compare normalized text before trusting the slice.
-            if normalize_text(candidate) == normalize_text(" ".join(slug_words)):
+            # Match punctuation-insensitively, then keep the page's exact visible
+            # punctuation/casing rather than converting the SEO slug into a title.
+            if _title_identity(candidate) == _title_identity(" ".join(slug_words)):
                 return clean_seeitearly_title(candidate)
-        # SEO slugs are still safer than treating genres/card chrome as title.
+        # SEO slugs remain safer than treating genres/card chrome as title.
         return clean_seeitearly_title(" ".join(slug_words).title())
 
     # Test/legacy card shape where the anchor contains only the title.
     return clean_seeitearly_title(raw)
+
+
+def _title_identity(value: str) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        re.sub(r"[^a-z0-9]+", " ", clean_text(value).lower()),
+    ).strip()
 
 
 def clean_seeitearly_title(value: str) -> str:

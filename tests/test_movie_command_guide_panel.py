@@ -7,6 +7,7 @@ from typing import Any
 
 from sniperplug.cogs.movie_command_guide import (
     GUIDE_ENABLE_HERE_ID,
+    GUIDE_ENABLE_HERE_PANEL_ID,
     GUIDE_LATEST_ID,
     GUIDE_SELECT_ID,
     GUIDE_STATUS_ID,
@@ -42,6 +43,9 @@ class _FakeResponse:
     async def defer(self, **_: Any) -> None:
         self.deferred = True
 
+    async def send_message(self, *_: Any, **__: Any) -> None:
+        self.deferred = True
+
     def is_done(self) -> bool:
         return self.deferred
 
@@ -50,8 +54,20 @@ class _FakeFollowup:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
 
-    async def send(self, **kwargs: Any) -> None:
+    async def send(self, *args: Any, **kwargs: Any) -> None:
+        if args:
+            kwargs["content"] = args[0]
         self.messages.append(kwargs)
+
+
+class _FakePanelMessage:
+    def __init__(self) -> None:
+        self.id = 7312026
+        self.author = SimpleNamespace(id=999)
+        self.edits: list[dict[str, Any]] = []
+
+    async def edit(self, **kwargs: Any) -> None:
+        self.edits.append(kwargs)
 
 
 def test_runtime_registers_one_movie_command_guide_cog() -> None:
@@ -67,29 +83,25 @@ def test_guide_commands_are_available_and_panel_posting_is_manager_only() -> Non
     assert "target_channel: discord.TextChannel | None = None" in COG
 
 
-def test_home_panel_leads_with_actions_instead_of_command_memorization() -> None:
+def test_home_panel_is_action_first_not_a_command_manual() -> None:
     embed = build_movie_guide_home_embed()
     rendered = "\n".join(
         [embed.title or "", embed.description or ""]
         + [f"{field.name}\n{field.value}" for field in embed.fields]
     )
-    for action in (
-        "Check Latest Drops",
-        "Setup Status",
-        "Use This Channel for Alerts",
-    ):
+    for action in ("Check Now", "Alerts Here", "Status"):
         assert action in rendered
-    for command in (
-        "/movies sources",
-        "/movies setup alert_channel:#channel",
-        "/movies scan",
-        "/movies test-alert",
-        "/movies disable",
-        "/movies-help",
+    for source_name in (
+        "Atom",
+        "Fandango",
+        "Gofobo",
+        "SeeItEarly",
+        "AdvanceScreenings",
+        "1iota",
     ):
-        assert command in rendered
-    for source_name in ("Atom", "Fandango", "Gofobo"):
         assert source_name in rendered
+    assert "/movies setup alert_channel:#channel" not in rendered
+    assert "/movies test-alert" not in rendered
 
 
 def test_every_guide_section_has_clear_instructional_content() -> None:
@@ -100,30 +112,56 @@ def test_every_guide_section_has_clear_instructional_content() -> None:
         assert all(field.name and field.value for field in embed.fields)
 
 
-def test_panel_view_is_persistent_and_has_live_controls() -> None:
-    view = MovieGuidePanelView.__new__(MovieGuidePanelView)
+def test_panel_view_is_persistent_and_uses_explicit_action_rows() -> None:
+    bot = _FakeBot()
+    guide_cog = MovieCommandGuideCog(bot)  # type: ignore[arg-type]
+    view = MovieGuidePanelView(guide_cog)
     assert GUIDE_SELECT_ID == "movies:guide:section"
     assert GUIDE_LATEST_ID == "movies:guide:latest"
     assert GUIDE_STATUS_ID == "movies:guide:status"
     assert GUIDE_ENABLE_HERE_ID == "movies:guide:enable_here"
+    assert GUIDE_ENABLE_HERE_PANEL_ID == "movies:guide:enable_here_panel"
     assert "timeout=None" in COG
     assert "self.bot.add_view(MovieGuidePanelView(self))" in COG
-    assert "await self.cog.send_latest_from_panel(interaction)" in COG
-    assert "await self.cog.send_status_from_panel(interaction)" in COG
-    assert 'label="Atom"' in COG
-    assert 'label="Fandango"' in COG
-    assert 'label="Gofobo"' in COG
-    assert view is not None
+
+    items = {getattr(item, "label", ""): item for item in view.children}
+    for label in ("Check Now", "Status", "Alerts Here"):
+        assert label in items
+        assert items[label].row == 1
+    for label in ("Atom", "Fandango", "Gofobo"):
+        assert label in items
+        assert items[label].row == 2
+    for label in ("SeeItEarly", "AdvanceScreenings", "1iota"):
+        assert label in items
+        assert items[label].row == 3
 
 
-def test_status_action_view_exposes_manager_gated_current_channel_setup() -> None:
+def test_status_action_view_uses_shared_current_channel_setup() -> None:
     view = MovieStatusActionView(None)  # type: ignore[arg-type]
     button = next(item for item in view.children if getattr(item, "custom_id", None) == GUIDE_ENABLE_HERE_ID)
     assert button.label == "Use This Channel for Alerts"
+    assert "await self.cog.enable_alerts_here(interaction)" in COG
     assert "guild_permissions.manage_guild" in COG
     assert "MovieTicketConfig(" in COG
     assert "alert_channel_id=int(channel.id)" in COG
     assert "movie_cog.store.save_config" in COG
+
+
+def test_old_permanent_panel_self_refreshes_exact_interaction_message() -> None:
+    bot = _FakeBot()
+    guide_cog = MovieCommandGuideCog(bot)  # type: ignore[arg-type]
+    message = _FakePanelMessage()
+    interaction = SimpleNamespace(guild_id=456, message=message)
+
+    refreshed = asyncio.run(guide_cog.refresh_public_panel_from_interaction(interaction))  # type: ignore[arg-type]
+
+    assert refreshed is True
+    assert len(message.edits) == 1
+    assert message.edits[0]["embed"].title == "🎬 Free Movie Tickets & Screenings"
+    refreshed_view = message.edits[0]["view"]
+    assert isinstance(refreshed_view, MovieGuidePanelView)
+    labels = {getattr(item, "label", "") for item in refreshed_view.children}
+    assert {"Check Now", "Status", "Alerts Here"}.issubset(labels)
 
 
 def test_movie_group_cog_is_resolved_by_registered_name_and_type() -> None:
@@ -150,6 +188,7 @@ def test_dropdown_acknowledges_before_sending_private_section() -> None:
         data={"values": ["start"]},
         user=SimpleNamespace(id=123),
         guild_id=456,
+        message=None,
     )
 
     asyncio.run(select.callback(interaction))  # type: ignore[arg-type]

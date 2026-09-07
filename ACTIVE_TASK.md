@@ -1,95 +1,79 @@
 # Active Task
 
 ## Task / outcome
-**SP-WM-DEAL-DELIVERY-STALL — restore Walmart deal delivery end-to-end.**
+**SP-MOVIE-TICKETS-RECOVERY — restore SniperPlug movie tickets end-to-end.**
 
-Target outcome: catalog discovery feeds exact verification, strict selected-offer/current/reference proof produces eligible Walmart deals, page recovery stays paced, verified deals fan out before maintenance, and proof/shipping/dedupe safety remains intact.
+Target outcome: `/movies` shows only recently confirmed official offers/screenings, current source layouts parse safely, healthy sources continue when one source is blocked, Gofobo local screenings persist and deliver, setup/status/latest/panel interactions give truthful health instead of stale results or circular recovery instructions, and delivery/feedback snowflakes remain exact.
 
 ## Scope
-`catalog discovery → selected-offer normalization → fresh proof → exact-detail queue → claim → Walmart official detail/exact-search/page recovery → exact result persistence → Walmart/external fanout → bounded maintenance`
+`official Atom/Fandango/Gofobo fetch → fail-closed parse → per-source state/backoff → durable drop cache → freshness gate → /movies latest/status/panel → configured channel delivery → feedback controls`
 
-Do not switch to unrelated watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
+Do not switch to unrelated Walmart, watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
 
 ## Status
-**PR #257 is merged to `main` as `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`. Implementation and exact-head validation are complete. Active work is production acceptance of the merged Walmart delivery path.**
+**Draft PR #260 is open on branch `fix/movie-tickets-end-to-end-258`. Implementation is complete enough for exact-head validation; do not merge until targeted/full tests are green.**
 
-Merged:
-- #256 `Restore Walmart deal verification throughput` → `2b057b6b02b96c44699be69baa915fe9e0d07a97`
-- #257 `Recover Walmart exact prices and trusted references` → `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`
+Previous Walmart delivery work (#256/#257) remains merged on `main`; its production acceptance is paused by the explicit task switch and stays backlog/context only.
 
-Validated #257 head: `edff57a27fb2e7d342970d0bf2deed782dbbffca`
+## Root cause / findings
+- Production Atom requests return HTTP 403 and enter a six-hour access backoff.
+- Movie cache rows had no serving-time freshness ceiling, so a source could fail for days/weeks while old rows remained `active=1` and were still presented as current.
+- Current Atom promotions can legitimately render `Partner Promotions` without the old mandatory `Film Promotions` section. The old parser treated that as invalid and preserved stale public codes instead of safely accepting zero current public reusable codes.
+- Multi-source runtime declared `local_screening` deliverable, but base storage hard-filtered to `public_reusable`; Gofobo screenings could be parsed and then silently discarded.
+- Movie config already used TEXT Discord snowflakes because Turso/libSQL can coerce large numeric IDs, while delivery/message/user feedback IDs still used INTEGER.
+- The Atom and multi-source startup log lines come from one inherited registered cog, not duplicate pollers.
+- Partial source failures were easy to mistake for a complete successful refresh, and setup guidance could imply rerunning setup would fix an upstream access block.
 
-## #256 live acceptance findings
-Proven improved after #256:
-- catalog discovery remained healthy and safe fresh proof became nonzero again: examples **3/98**, **11/98**, **10/96**
-- exact verification produced real verified rows again: examples **3/24**, **10/24**, **10/24**
-- page retry/suppression collapsed to **page 0 / page suppressed 0** across repeated post-deploy batches
-- exact fetch/store timings returned to sane ranges; supplied post-deploy logs did not show the old 8-10 second Walmart maintenance stalls
-- runtime reported `maintenance_after_all_fanout=true`
+## Implemented in #260
+- Added `movie_ticket_recovery.py` with a strict current-Atom compatibility parser, source freshness helpers, and truthful source-health rendering.
+- Partner-only Atom promotions pages are accepted only when the existing parser itself finds the exact Partner Promotions heading on an Atom Promotions document; challenge/access-denied pages remain invalid and partner/account-specific codes remain excluded.
+- Added a two-hour source confirmation window for user-facing active results. Stale rows remain durable but are hidden from current results.
+- Added an internal `include_stale=True` lane only for HTTP 304 recovery; a successful 304 immediately refreshes source success state.
+- Production `SnowflakeSafeMovieTicketStore` now persists/lists both `public_reusable` and `local_screening`.
+- Added exact-TEXT `movie_ticket_deliveries_v2` and `movie_ticket_feedback_v2` tables for guild/channel/message/user IDs. Legacy sent-drop dedupe is preserved without trusting large legacy snowflakes back into Python.
+- Feedback resolution/votes use exact-text IDs for new alerts; unsafe legacy real-world snowflakes are not guessed.
+- Registered Atom scan uses the current-layout parser.
+- `/movies setup`, `/movies latest`, `/movies scan`, and inherited status source lines now distinguish partial/upstream degradation, hide stale cache, and state that setup cannot bypass official-site 403/429/access blocks.
+- Added regressions for current Atom partner-only pages, block pages, stale cache + 304 recovery, Gofobo persistence, 19-digit delivery/feedback snowflakes, source health, and recovery messaging.
 
-The remaining blocker exposed by #256 was exact current/reference recovery:
-- repeated exact batches failed as `api_price_missing`, including **8/8** and **24/24** batches
-- verified fresh rows usually had no trusted reference; example **10 verified / 0 official was prices / 9 no reference / 0 markdowns**
+## Validation required
+- targeted movie parser/store/runtime/guide/feedback tests
+- `python -m pip check`
+- `python -m compileall -q sniperplug scripts tests`
+- `python scripts/smoke_imports.py`
+- native libsql process tests where available
+- full pytest suite on the exact PR head
+- final diff/review inspection
 
-## #257 root cause
-- Canonical exact verification tried official Affiliate exact search as a recovery source only when seller/offer identity was missing.
-- If official detail had complete identity but no numeric current price, verification returned `api_price_missing` without trying exact search, even though exact search is an exact-ID-checked official API path that can supply current price.
-- A strict fresh discovery snapshot could safely prove current selected-offer price while lacking a trusted Walmart was/regular/original reference. It returned immediately as verified and became `verified_no_reference` without a same-cycle exact-search opportunity to recover a trusted reference.
+GitHub-hosted Actions is currently infrastructure-blocked before execution on this PR as well (`runner_id=0`, empty runner name, `steps=[]`); those red conclusions are not code-test failures.
 
-## #257 merged implementation
-- Keep `_fetch_exact_candidate_off_loop()` as the only canonical proof implementation.
-- Add an exact-search-only provider view with HTML forcibly disabled.
-- Hide the fresh discovery snapshot only during the recovery pass so it must use official exact search rather than short-circuiting on the same snapshot.
-- On canonical `api_price_missing`, run one exact-ID Affiliate search recovery through the canonical verifier.
-- Limit same-cycle trusted-reference enrichment to strict fresh-snapshot candidates that already have valid current-price proof, avoiding an extra exact-search call for every generic no-reference row.
-- Failed reference recovery preserves the already-valid no-reference candidate and cannot route it to HTML.
-- Recovery remains active while the real HTML challenge circuit is open; that circuit suppresses HTML, not healthy official API work.
-- Exact item ID, seller, offer, marketplace, shipping, variant, current-price, and trusted-reference gates remain unchanged.
+## Production acceptance required
+After merge/deploy:
+1. Old Atom rows are no longer shown as current once Atom confirmation is stale.
+2. A valid current Atom page with no public free-ticket codes clears old Atom results safely instead of preserving them as active.
+3. Atom 403 remains contained/backed off without poisoning Fandango/Gofobo health.
+4. Gofobo local screening leads can persist, appear in `/movies latest`, and deliver when present.
+5. `/movies status`, `/movies latest`, setup, scan, and guide-panel source results distinguish healthy/degraded/stale state without fake user-side fixes.
+6. Fresh eligible alerts still dedupe and post to configured channels, and new feedback controls round-trip exact Discord IDs.
 
-## #257 validation / results
-Exact validated head `edff57a27fb2e7d342970d0bf2deed782dbbffca`, Termux Ubuntu/glibc aarch64, Python 3.12.14:
-- `python -m pip check`: passed during environment validation
-- `python -m compileall -q sniperplug scripts tests`: **passed**, exit 0
-- `python scripts/smoke_imports.py`: **passed**, 37 modules / 22 symbols, exit 0
-- native `libsql==0.1.11` built/installed locally on ARM
-- `tests/test_libsql_process_connection.py`: **10 passed**, exit 0
-- full suite: **1,286 passed**, exit 0
-- one unrelated Python `audioop` deprecation warning
-- final PR head matched the validated SHA exactly
-- final PR state: mergeable, no inline review threads, no submitted reviews
-- Qodo review bot was unavailable because its subscription was inactive; this was not a code-review finding
-
-GitHub-hosted Actions remained infrastructure-blocked before execution on the validated head (`runner_id=0`, empty runner name, `steps=[]`). Those red workflow conclusions were not code-test failures.
-
-## Remaining Definition of Done — production acceptance
-Deploy/restart current `main`, then live-prove all of the following:
-1. `api_price_missing` materially drops from the repeated 8/8 and 24/24 pattern.
-2. Exact-search recovery produces verified current-price rows when official detail omits price.
-3. `official was prices` / trusted references become nonzero when Walmart actually exposes a trusted native reference.
-4. `markdowns` become nonzero when a verified current/reference pair crosses the configured threshold.
-5. Fresh no-reference candidates remain valid if reference enrichment fails; they must not become HTML retries.
-6. Page retry/suppression remains zero or correctly paced; no multi-request HTML burst returns.
-7. Eligible verified markdowns reach Walmart/external fanout and then posts/DMs.
-8. Exact fetch/store and Turso maintenance remain off the old 8-10 second hot-path stall pattern.
-
-Only after these live checks pass call Walmart deal delivery restored and close this task.
+Only after those live checks pass call movie tickets restored and close this task.
 
 ## Risks / boundaries
-- No catalog/relevance neighbor may donate exact price/reference; Walmart exact search must return the requested exact item ID.
-- Trusted reference rules remain unchanged. Existing MSRP/list/retail/marketplace-context blocks remain in force.
-- Product-page HTML parsing was not blindly changed without raw live page evidence.
+- No anti-bot bypass, proxy rotation, CAPTCHA evasion, or private/account-source scraping was added.
+- Stale rows are hidden, not blindly deleted.
+- Only the two already-supported public classifications are deliverable.
+- Pre-migration real Discord delivery/feedback snowflakes stored as unsafe legacy INTEGER values are not guessed back into live controls.
 
 ## Backlog — not active
+- SP-WM-DEAL-DELIVERY-STALL production acceptance
 - SP-GATEWAY-EVENT-LOOP-LAG
 - SP-SETUP-DELIVERY-UX
 - SP-DM-DELIVERY-STARVATION
 - SP-DM-NEW-LOW-ALERT
 - SP-WM-CASH-PDP-AMOUNT
+- eBay watcher PR #200
 - HP/Target standalone watcher deployment/acceptance
-- SP-TURSO-READ-AMPLIFICATION acceptance
-- SP-TURSO-WRITE-AMPLIFICATION acceptance
-- SP-DEALS-DISCOVER-HARDENING-244 live acceptance
 - SniperPlug-Site work
 
 ## Next step
-Deploy/restart the latest `main` build and inspect fresh production Walmart catalog/exact/fanout logs against the eight acceptance checks above.
+Validate the exact #260 head locally, fix only evidence-backed failures, then inspect the final diff/review state before merge.

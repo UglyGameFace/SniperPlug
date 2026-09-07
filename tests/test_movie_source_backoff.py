@@ -31,6 +31,7 @@ def make_cog():
     cog._source_retry_after = {}
     cog._source_access_blocked = set()
     cog._last_total_failure_log_monotonic = 0.0
+    cog._last_source_scan_errors = ()
     cog.store = FakeStore()
     return cog
 
@@ -135,7 +136,8 @@ def test_registered_runtime_overrides_scan_with_cached_backoff_lane() -> None:
     assert "SOURCE_BACKOFF_SECONDS = (120, 300, 900, 1800)" in REGISTERED
     assert "SOURCE_ACCESS_BLOCK_BACKOFF_SECONDS = 6 * 60 * 60" in REGISTERED
     assert "TOTAL_FAILURE_LOG_INTERVAL_SECONDS = 15 * 60" in REGISTERED
-    assert "preserved verified cache and continued other sources" in REGISTERED
+    assert "durable cache retained and other sources continued" in REGISTERED
+    assert "stale public cache hidden after freshness window" in REGISTERED
     assert "All official movie-ticket sources are temporarily unavailable" in REGISTERED
     assert "All official movie-ticket sources are cooling down" in REGISTERED
     assert "if attempted == 0" in REGISTERED

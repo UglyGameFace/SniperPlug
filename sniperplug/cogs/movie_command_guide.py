@@ -187,6 +187,8 @@ class MovieGuidePanelView(discord.ui.View):
         row=1,
     )
     async def alerts_here_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
         await self.cog.refresh_public_panel_from_interaction(interaction)
         await self.cog.enable_alerts_here(interaction)
 

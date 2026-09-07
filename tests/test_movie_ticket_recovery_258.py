@@ -289,6 +289,6 @@ def test_registered_runtime_explains_setup_cannot_bypass_access_blocks() -> None
     source = Path("sniperplug/cogs/registered_multi_source_movies.py").read_text(
         encoding="utf-8"
     )
-    assert "rerunning setup cannot bypass an official site's 403/429/access block" in source
+    assert "rerunning setup cannot bypass a source site's 403/429/access block" in source
     assert "Old cached offers are intentionally hidden" in source
     assert "include_stale=True" in source

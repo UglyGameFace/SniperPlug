@@ -8,6 +8,7 @@ from sniperplug.services.seeitearly_screenings import (
     SEEITEARLY_SOURCE_KEY,
     SEEITEARLY_UPCOMING_URL,
     clean_seeitearly_title,
+    extract_seeitearly_card_title,
     parse_seeitearly_upcoming_html,
     safe_seeitearly_url,
 )
@@ -28,6 +29,28 @@ def _document(cards: str) -> str:
       </body>
     </html>
     """
+
+
+def test_current_combined_card_link_extracts_only_real_movie_title() -> None:
+    # Production currently exposes one link containing count + date + title + genres.
+    raw = "32 free passes SEP 10 The Uprising Drama · Action · History"
+    href = "/movies/the-uprising"
+    assert extract_seeitearly_card_title(raw, href) == "The Uprising"
+
+    parsed = parse_seeitearly_upcoming_html(
+        _document(f'<a href="{href}">{raw}</a>')
+    )
+    assert parsed.document_valid is True
+    assert [drop.title for drop in parsed.drops] == ["The Uprising"]
+    assert "32 free screening passes" in parsed.drops[0].validity_text
+
+
+def test_current_combined_card_preserves_visible_title_punctuation() -> None:
+    raw = "1 free pass SEP 11 Oasis: Don't Look Back in Anger Documentary · Music"
+    assert (
+        extract_seeitearly_card_title(raw, "/movies/oasis-dont-look-back-in-anger")
+        == "Oasis: Don't Look Back in Anger"
+    )
 
 
 def test_parser_accepts_only_movie_cards_with_explicit_free_pass_count() -> None:

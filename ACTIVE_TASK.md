@@ -18,8 +18,8 @@ Do not switch to unrelated Walmart, watcher, gateway, setup, DM, or site work wi
 #261 merge: `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`
 #261 full-suite evidence: **1,301 passed**, native libsql **10 passed**, compile/import/pip checks green.
 
-#262 implementation head before task-bookkeeping commits: `b10e727e1c92583d7e106ebf2f824f6ff9bba83d`
-#262 bookkeeping head before this pin: `5981146ac2ecee30d2cd3a554b8c641d8631f03e`
+#262 implementation head before bookkeeping: `b10e727e1c92583d7e106ebf2f824f6ff9bba83d`
+#262 final-head bookkeeping parent: `6999cdf6a9feba4d01f47333f1e4ab6385c01fbc`
 #262 PR: `https://github.com/UglyGameFace/SniperPlug/pull/262`
 
 GitHub-hosted workflow attempts on `b10e727e1c92583d7e106ebf2f824f6ff9bba83d`:
@@ -109,7 +109,7 @@ Still required before merge-ready:
 - full pytest suite on exact final head
 - confirm final Actions/review state
 
-Current review state before final-head pin:
+Current review state before final-head bookkeeping:
 - inline review threads: none
 - submitted reviews: none
 - PR comments: none
@@ -147,4 +147,4 @@ Only after these live checks pass call movie tickets restored and close this tas
 - SniperPlug-Site work
 
 ## Next step
-Treat the resulting commit from this final-head pin as the exact #262 validation head, inspect its three GitHub Actions attempts once, and run the full exact-head validation as soon as an executable runner is available. Keep PR #262 draft until that evidence exists; after merge, perform live July-31-panel and expanded-source acceptance before closing this task.
+The resulting commit from this record update is the exact #262 validation head. Inspect its three GitHub Actions attempts once, and run the full exact-head validation as soon as an executable runner is available. Keep PR #262 draft until that evidence exists; after merge, perform live July-31-panel and expanded-source acceptance before closing this task.

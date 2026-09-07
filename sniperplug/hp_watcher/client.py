@@ -76,6 +76,12 @@ class HPStoreClient:
                 )
             text = await response.text(errors="replace")
             if response.status != 200:
+                log.warning(
+                    "HP document request returned non-success status=%s requested_url=%s final_url=%s",
+                    response.status,
+                    url,
+                    str(response.url),
+                )
                 raise RuntimeError(f"HP request returned HTTP {response.status} for {url}")
             return HTTPDocument(
                 url=str(response.url),
@@ -120,8 +126,9 @@ class HPStoreClient:
         if session is None:
             raise RuntimeError("HPStoreClient must be used as an async context manager")
 
+        attempt_count = max(1, int(attempts))
         last_error: Exception | None = None
-        for attempt in range(max(1, int(attempts))):
+        for attempt in range(attempt_count):
             try:
                 async with self._semaphore:
                     response = await session.request(
@@ -130,7 +137,7 @@ class HPStoreClient:
                         headers=headers,
                         allow_redirects=True,
                     )
-                if response.status in {429, 500, 502, 503, 504} and attempt + 1 < attempts:
+                if response.status in {429, 500, 502, 503, 504} and attempt + 1 < attempt_count:
                     retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
                     response.release()
                     await asyncio.sleep(max(retry_after, 0.8 * (2**attempt)))
@@ -140,9 +147,19 @@ class HPStoreClient:
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError) as error:
                 last_error = error
-                if attempt + 1 >= attempts:
+                if attempt + 1 >= attempt_count:
                     break
                 await asyncio.sleep(0.8 * (2**attempt))
+
+        log.warning(
+            "HP transport request exhausted retries method=%s url=%s attempts=%s timeout_s=%.1f error_type=%s error=%s",
+            method,
+            url,
+            attempt_count,
+            self.settings.request_timeout_seconds,
+            type(last_error).__name__ if last_error is not None else "unknown",
+            str(last_error or "")[:240],
+        )
         raise RuntimeError(f"HP request failed for {url}: {last_error}") from last_error
 
 

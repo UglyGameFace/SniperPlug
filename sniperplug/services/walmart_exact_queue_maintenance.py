@@ -17,8 +17,8 @@ from sniperplug.services.walmart_exact_verification_queue import (
 # Cleanup shares the single process-isolated Turso worker with live verification,
 # Discord persistence, and other services. Production observed the previous
 # 500-ID DELETE holding that worker for 8+ seconds. Keep each maintenance write
-# much smaller; busy exact-worker cycles now skip cleanup entirely and an idle
-# cycle can continue another bounded chunk after five minutes.
+# much smaller; the production runner invokes this cleaner only after deal fanout
+# and defers it while another catalog/reconciliation fanout owner is active.
 CLEANUP_BATCH_SIZE = 100
 CLEANUP_FOLLOWUP_SECONDS = 5 * 60
 _STATE_ATTR = "_sniperplug_walmart_cleanup_state"

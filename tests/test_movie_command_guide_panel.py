@@ -6,12 +6,14 @@ from types import SimpleNamespace
 from typing import Any
 
 from sniperplug.cogs.movie_command_guide import (
+    GUIDE_ENABLE_HERE_ID,
     GUIDE_LATEST_ID,
     GUIDE_SELECT_ID,
     GUIDE_STATUS_ID,
     MovieCommandGuideCog,
     MovieGuidePanelView,
     MovieGuideSectionSelect,
+    MovieStatusActionView,
     build_movie_guide_home_embed,
     build_movie_guide_section_embed,
 )
@@ -65,22 +67,25 @@ def test_guide_commands_are_available_and_panel_posting_is_manager_only() -> Non
     assert "target_channel: discord.TextChannel | None = None" in COG
 
 
-def test_home_panel_explains_every_current_movie_command() -> None:
+def test_home_panel_leads_with_actions_instead_of_command_memorization() -> None:
     embed = build_movie_guide_home_embed()
     rendered = "\n".join(
         [embed.title or "", embed.description or ""]
         + [f"{field.name}\n{field.value}" for field in embed.fields]
     )
+    for action in (
+        "Check Latest Drops",
+        "Setup Status",
+        "Use This Channel for Alerts",
+    ):
+        assert action in rendered
     for command in (
-        "/movies latest",
-        "/movies status",
         "/movies sources",
         "/movies setup alert_channel:#channel",
         "/movies scan",
         "/movies test-alert",
         "/movies disable",
         "/movies-help",
-        "/movies-panel target_channel:#channel",
     ):
         assert command in rendered
     for source_name in ("Atom", "Fandango", "Gofobo"):
@@ -100,6 +105,7 @@ def test_panel_view_is_persistent_and_has_live_controls() -> None:
     assert GUIDE_SELECT_ID == "movies:guide:section"
     assert GUIDE_LATEST_ID == "movies:guide:latest"
     assert GUIDE_STATUS_ID == "movies:guide:status"
+    assert GUIDE_ENABLE_HERE_ID == "movies:guide:enable_here"
     assert "timeout=None" in COG
     assert "self.bot.add_view(MovieGuidePanelView(self))" in COG
     assert "await self.cog.send_latest_from_panel(interaction)" in COG
@@ -108,6 +114,16 @@ def test_panel_view_is_persistent_and_has_live_controls() -> None:
     assert 'label="Fandango"' in COG
     assert 'label="Gofobo"' in COG
     assert view is not None
+
+
+def test_status_action_view_exposes_manager_gated_current_channel_setup() -> None:
+    view = MovieStatusActionView(None)  # type: ignore[arg-type]
+    button = next(item for item in view.children if getattr(item, "custom_id", None) == GUIDE_ENABLE_HERE_ID)
+    assert button.label == "Use This Channel for Alerts"
+    assert "guild_permissions.manage_guild" in COG
+    assert "MovieTicketConfig(" in COG
+    assert "alert_channel_id=int(channel.id)" in COG
+    assert "movie_cog.store.save_config" in COG
 
 
 def test_movie_group_cog_is_resolved_by_registered_name_and_type() -> None:

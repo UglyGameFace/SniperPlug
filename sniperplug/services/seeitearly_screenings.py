@@ -203,11 +203,11 @@ def extract_seeitearly_card_title(raw_link_text: str, href: str) -> str:
 
 
 def _title_identity(value: str) -> str:
-    return re.sub(
-        r"\s+",
-        " ",
-        re.sub(r"[^a-z0-9]+", " ", clean_text(value).lower()),
-    ).strip()
+    # URL slugs normally remove apostrophes entirely (don't -> dont), while the
+    # visible title retains them. Collapse apostrophes before the broader
+    # punctuation normalization so that comparison does not destroy display text.
+    text = clean_text(value).lower().replace("'", "").replace("’", "")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text)).strip()
 
 
 def clean_seeitearly_title(value: str) -> str:

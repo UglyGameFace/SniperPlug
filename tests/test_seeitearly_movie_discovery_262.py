@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+from sniperplug.cogs import registered_multi_source_movies as runtime
+from sniperplug.cogs.movie_tickets import MovieScanOutcome
 from sniperplug.cogs.registered_multi_source_movies import build_seeitearly_discovery_embed
+from sniperplug.services.movie_ticket_drops import MovieTicketSourceState
 from sniperplug.services.seeitearly_screenings import (
     SEEITEARLY_MAX_ACTIVE_DROPS,
     SEEITEARLY_SOURCE_KEY,
@@ -148,6 +152,64 @@ def test_registered_runtime_scans_but_never_auto_delivers_supplemental_source() 
     assert "_deliver_drops" not in supplemental_scan
     assert "delivered_count" not in supplemental_scan
     assert "                    0," in supplemental_scan
+
+
+def test_automatic_discovery_is_paced_but_manual_refresh_bypasses_pacing(monkeypatch) -> None:
+    class _Store:
+        async def list_active_drops(self, *, limit: int):
+            assert limit == 100
+            return []
+
+    async def run() -> None:
+        cog = object.__new__(runtime.MovieTicketsCog)
+        cog.store = _Store()
+        cog._source_failure_counts = {}
+        cog._source_retry_after = {}
+        cog._source_access_blocked = set()
+        cog._last_total_failure_log_monotonic = 0.0
+        cog._last_source_scan_errors = ()
+        cog._seeitearly_next_auto_scan_monotonic = 0.0
+
+        calls = {"atom": 0, "fandango": 0, "gofobo": 0, "seeitearly": 0}
+
+        def scanner(name: str):
+            async def _scan(*, target_guild_id=None):
+                del target_guild_id
+                calls[name] += 1
+                state = MovieTicketSourceState(source_key=name, last_success_at="2026-09-07T20:00:00+00:00")
+                return MovieScanOutcome(False, 0, 0, state)
+
+            return _scan
+
+        cog._scan_atom_source = scanner("atom")
+        cog._scan_fandango_source = scanner("fandango")
+        cog._scan_gofobo_source = scanner("gofobo")
+        cog._scan_seeitearly_source = scanner("seeitearly")
+
+        monkeypatch.setattr(runtime.time, "monotonic", lambda: 1000.0)
+        await cog._scan_official_source(target_guild_id=None)
+        await cog._scan_official_source(target_guild_id=None)
+        await cog._scan_official_source(target_guild_id=123)
+
+        assert calls == {"atom": 3, "fandango": 3, "gofobo": 3, "seeitearly": 2}
+        assert cog._seeitearly_next_auto_scan_monotonic == 1000.0 + runtime.SEEITEARLY_AUTO_POLL_SECONDS
+
+    asyncio.run(run())
+
+
+def test_registered_status_and_sources_describe_expanded_source_truth() -> None:
+    assert "SEEITEARLY_AUTO_POLL_SECONDS = 10 * 60" in REGISTERED
+    assert '@app_commands.command(\n        name="status"' in REGISTERED
+    assert 'name="Connected source health"' in REGISTERED
+    assert 'name="Check cadence"' in REGISTERED
+    assert "Check Now/manual refresh can check sooner" in REGISTERED
+    assert '@app_commands.command(\n        name="sources"' in REGISTERED
+    assert "Direct monitored + automatic alerts" in REGISTERED
+    assert "Automated supplemental discovery" in REGISTERED
+    assert "Extra manual directories" in REGISTERED
+    assert "Private/account sources not scraped" in REGISTERED
+    assert "AdvanceScreenings" in REGISTERED
+    assert "1iota" in REGISTERED
 
 
 def test_public_upcoming_url_is_https_seeitearly() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from sniperplug.services.walmart_exact_fetch_pacing import (
     fetch_exact_candidate_with_page_pacing,
 )
 from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
+from sniperplug.services.walmart_exact_queue_runtime import _PAGE_CIRCUIT_STATE_ATTR
 from sniperplug.services.walmart_fresh_discovery_proof import (
     build_fresh_discovery_offer_snapshot,
 )
@@ -164,6 +166,38 @@ def test_identity_only_detail_recovers_current_and_reference_from_exact_search()
         assert candidate.api_current_price == 20.0
         assert _trusted_reference(candidate) == 80.0
         assert candidate.seller_name == "Walmart"
+        assert inner.detail_calls == 1
+        assert inner.search_calls == 1
+        assert provider.page_calls == 0
+
+    asyncio.run(run())
+
+
+def test_price_recovery_still_runs_while_real_html_circuit_is_open() -> None:
+    async def run() -> None:
+        item_id = "910104"
+        inner = RecoveryInner(
+            detail_payload=detail_identity_without_price(item_id),
+            search_payload=exact_search_with_price_and_reference(item_id),
+        )
+        setattr(
+            inner,
+            _PAGE_CIRCUIT_STATE_ATTR,
+            {"events": [], "until": time.monotonic() + 300.0},
+        )
+        provider = RecoveryProvider(inner)
+
+        candidate, status, error = await fetch_exact_candidate_with_page_pacing(
+            provider,
+            queue_claim(item_id),
+            timeout_seconds=5.0,
+        )
+
+        assert status == "verified"
+        assert error == ""
+        assert candidate is not None
+        assert candidate.current_price == 20.0
+        assert _trusted_reference(candidate) == 80.0
         assert inner.detail_calls == 1
         assert inner.search_calls == 1
         assert provider.page_calls == 0

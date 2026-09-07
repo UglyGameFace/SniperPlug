@@ -307,6 +307,10 @@ def _select_identity_candidate(
                     return item
         if exact_id:
             return exact_id[0]
+        if normalized_preferred:
+            for item in candidates:
+                if item.get("sku") == normalized_preferred and not item.get("product_id"):
+                    return item
     if normalized_preferred:
         for item in complete:
             if item.get("sku") == normalized_preferred:

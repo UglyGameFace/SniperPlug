@@ -14,6 +14,9 @@ from sniperplug.services.walmart_fresh_discovery_proof import (
 from sniperplug.services.walmart_metadata_install import install_walmart_product_metadata
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class FakeDatabase:
     def __init__(self, conn: object) -> None:
         self.conn = conn
@@ -156,7 +159,6 @@ def test_explicit_first_party_flag_can_supply_missing_walmart_name() -> None:
 def test_paced_probe_does_not_reclaim_known_page_retry_lane(monkeypatch) -> None:
     async def run() -> None:
         captured: dict[str, int] = {}
-        cleanup_calls = 0
 
         async def noop_schema(_db) -> None:
             return None
@@ -173,16 +175,10 @@ def test_paced_probe_does_not_reclaim_known_page_retry_lane(monkeypatch) -> None
             captured["limit"] = limit
             return []
 
-        async def fake_cleanup(_conn, *, now):
-            nonlocal cleanup_calls
-            cleanup_calls += 1
-            return SimpleNamespace(deleted=0, skipped_noop_write=True)
-
         monkeypatch.setattr(bulk_runtime, "ensure_exact_runtime_schema_once", noop_schema)
         monkeypatch.setattr(bulk_runtime, "maintain_terminal_identity_rows_bounded", fake_maintenance)
         monkeypatch.setattr(bulk_runtime, "load_walmart_exact_queue_pressure", fake_pressure)
         monkeypatch.setattr(bulk_runtime, "claim_due_rows_batched", fake_claim)
-        monkeypatch.setattr(bulk_runtime, "maybe_prune_walmart_exact_queue_bounded", fake_cleanup)
         monkeypatch.setattr(bulk_runtime, "_page_challenge_circuit_remaining_seconds", lambda _provider: 0)
         monkeypatch.setattr(bulk_runtime, "_page_challenge_circuit_open", lambda _provider: False)
         monkeypatch.setattr(bulk_runtime, "page_html_probe_remaining_seconds", lambda _provider: 41)
@@ -195,19 +191,30 @@ def test_paced_probe_does_not_reclaim_known_page_retry_lane(monkeypatch) -> None
         )
 
         assert captured["cap"] == 0
-        assert cleanup_calls == 1
+        assert captured["limit"] == 8
         assert result.pending_total == 12
 
     asyncio.run(run())
 
 
-def test_queue_cleanup_is_idle_only_in_exact_worker_source() -> None:
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "sniperplug/services/walmart_exact_queue_bulk_runtime.py"
+def test_queue_cleanup_has_one_production_owner_after_fanout() -> None:
+    bulk_runtime_source = (
+        ROOT / "sniperplug/services/walmart_exact_queue_bulk_runtime.py"
     ).read_text(encoding="utf-8")
-    idle_block = source.split("if not claims:", 1)[1].split("semaphore =", 1)[0]
-    busy_block = source.split("semaphore =", 1)[1]
+    enqueue_source = (
+        ROOT / "sniperplug/services/walmart_exact_verification_queue_bulk.py"
+    ).read_text(encoding="utf-8")
+    runner_source = (
+        ROOT / "sniperplug/cogs/global_auto_scan_runner.py"
+    ).read_text(encoding="utf-8")
 
-    assert "maybe_prune_walmart_exact_queue_bounded" in idle_block
-    assert "maybe_prune_walmart_exact_queue_bounded" not in busy_block
+    assert "maybe_prune_walmart_exact_queue_bounded" not in bulk_runtime_source
+    assert "maybe_prune_walmart_exact_verification_queue" not in enqueue_source
+
+    exact_worker = runner_source.split(
+        "async def _walmart_exact_verification_worker", 1
+    )[1].split("async def _event_loop_watchdog", 1)[0]
+    fanout_index = exact_worker.index("await self._fanout_external_verified_events()")
+    cleanup_index = exact_worker.index("await self._run_walmart_post_fanout_maintenance()")
+    assert fanout_index < cleanup_index
+    assert "maybe_prune_walmart_exact_queue_bounded" in runner_source

@@ -3,7 +3,7 @@
 ## Task / outcome
 **SP-MOVIE-TICKETS-RECOVERY — restore SniperPlug movie tickets end-to-end.**
 
-Target outcome: `/movies` shows only recently confirmed official offers/screenings, current source layouts parse safely, healthy sources continue when one source is blocked, Gofobo local screenings persist and deliver, setup/status/latest/panel interactions give truthful actionable health instead of stale results or circular recovery instructions, and delivery/feedback safety remains intact.
+Target outcome: `/movies` shows only recently confirmed official offers/screenings, current source layouts parse safely, healthy sources continue when one source is blocked, Gofobo local screenings persist and deliver, setup/status/latest/panel interactions give truthful health instead of stale results or circular recovery instructions, and delivery/feedback snowflakes remain exact.
 
 ## Scope
 `official Atom/Fandango/Gofobo fetch → fail-closed parse → per-source state/backoff → durable drop cache → freshness gate → /movies latest/status/panel → configured channel delivery → feedback controls`
@@ -11,27 +11,30 @@ Target outcome: `/movies` shows only recently confirmed official offers/screenin
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
 
 ## Status
-**IN PROGRESS on branch `fix/movie-tickets-end-to-end-258`.**
+**Draft PR #260 is open on branch `fix/movie-tickets-end-to-end-258`. Implementation is complete enough for exact-head validation; do not merge until targeted/full tests are green.**
 
 Previous Walmart delivery work (#256/#257) remains merged on `main`; its production acceptance is paused by the explicit task switch and stays backlog/context only.
 
 ## Root cause / findings
-- Production logs show Atom returning HTTP 403 and entering a six-hour access backoff while the last verified cache is preserved.
-- Movie cache rows have no serving-time freshness ceiling. A source can fail for days/weeks while old rows remain `active=1` and `/movies latest` still presents them as active.
-- Current Atom public promotions layout no longer requires the old `Film Promotions` section; the parser currently requires both Film + Partner sections, so a legitimate current partner-only page is treated as structurally invalid and old Atom rows are preserved instead of safely clearing to zero public reusable codes.
-- Multi-source runtime declares `local_screening` deliverable, but `MovieTicketStore.replace_active_drops()` and `list_active_drops()` hard-filter to `public_reusable`; Gofobo screenings can be parsed then silently discarded by storage.
-- Registered runtime is a single inherited monitor, not duplicate pumps; the Atom and multi-source startup log lines come from one cog loading through `super()`.
-- Manual/guide latest paths can swallow partial-source failures and then display old cached rows without telling the user which source is stale.
-- Movie panel component fallback tells users to try another movie command/restart even when the underlying failure is upstream; those instructions cannot fix an Atom 403 and create a dead-end recovery loop.
+- Production Atom requests return HTTP 403 and enter a six-hour access backoff.
+- Movie cache rows had no serving-time freshness ceiling, so a source could fail for days/weeks while old rows remained `active=1` and were still presented as current.
+- Current Atom promotions can legitimately render `Partner Promotions` without the old mandatory `Film Promotions` section. The old parser treated that as invalid and preserved stale public codes instead of safely accepting zero current public reusable codes.
+- Multi-source runtime declared `local_screening` deliverable, but base storage hard-filtered to `public_reusable`; Gofobo screenings could be parsed and then silently discarded.
+- Movie config already used TEXT Discord snowflakes because Turso/libSQL can coerce large numeric IDs, while delivery/message/user feedback IDs still used INTEGER.
+- The Atom and multi-source startup log lines come from one inherited registered cog, not duplicate pollers.
+- Partial source failures were easy to mistake for a complete successful refresh, and setup guidance could imply rerunning setup would fix an upstream access block.
 
-## Planned implementation
-1. Make current Atom promotions structure valid when the official promotions page is confirmed even if `Film Promotions` is absent; continue excluding partner/account-specific codes.
-2. Add a bounded source-freshness policy so stale source caches are hidden from user-facing active results rather than shown indefinitely; preserve durable rows for recovery/history.
-3. Keep raw per-source cached rows available internally for HTTP 304 recovery so freshness filtering cannot erase a still-current unchanged snapshot.
-4. Persist/list both safe deliverable classifications: `public_reusable` and `local_screening`.
-5. Surface partial-source degradation in scan outcomes/status/latest/panel instead of treating one healthy source as a fully healthy refresh.
-6. Replace circular panel error guidance with truthful source/application health guidance and no fake user-side fix for upstream access blocks.
-7. Add regressions for partner-only Atom pages, stale-cache hiding, 304 recovery behavior, Gofobo persistence, partial-source health, and user-facing recovery messaging.
+## Implemented in #260
+- Added `movie_ticket_recovery.py` with a strict current-Atom compatibility parser, source freshness helpers, and truthful source-health rendering.
+- Partner-only Atom promotions pages are accepted only when the existing parser itself finds the exact Partner Promotions heading on an Atom Promotions document; challenge/access-denied pages remain invalid and partner/account-specific codes remain excluded.
+- Added a two-hour source confirmation window for user-facing active results. Stale rows remain durable but are hidden from current results.
+- Added an internal `include_stale=True` lane only for HTTP 304 recovery; a successful 304 immediately refreshes source success state.
+- Production `SnowflakeSafeMovieTicketStore` now persists/lists both `public_reusable` and `local_screening`.
+- Added exact-TEXT `movie_ticket_deliveries_v2` and `movie_ticket_feedback_v2` tables for guild/channel/message/user IDs. Legacy sent-drop dedupe is preserved without trusting large legacy snowflakes back into Python.
+- Feedback resolution/votes use exact-text IDs for new alerts; unsafe legacy real-world snowflakes are not guessed.
+- Registered Atom scan uses the current-layout parser.
+- `/movies setup`, `/movies latest`, `/movies scan`, and inherited status source lines now distinguish partial/upstream degradation, hide stale cache, and state that setup cannot bypass official-site 403/429/access blocks.
+- Added regressions for current Atom partner-only pages, block pages, stale cache + 304 recovery, Gofobo persistence, 19-digit delivery/feedback snowflakes, source health, and recovery messaging.
 
 ## Validation required
 - targeted movie parser/store/runtime/guide/feedback tests
@@ -42,16 +45,24 @@ Previous Walmart delivery work (#256/#257) remains merged on `main`; its product
 - full pytest suite on the exact PR head
 - final diff/review inspection
 
+GitHub-hosted Actions is currently infrastructure-blocked before execution on this PR as well (`runner_id=0`, empty runner name, `steps=[]`); those red conclusions are not code-test failures.
+
 ## Production acceptance required
 After merge/deploy:
 1. Old Atom rows are no longer shown as current once Atom confirmation is stale.
 2. A valid current Atom page with no public free-ticket codes clears old Atom results safely instead of preserving them as active.
 3. Atom 403 remains contained/backed off without poisoning Fandango/Gofobo health.
 4. Gofobo local screening leads can persist, appear in `/movies latest`, and deliver when present.
-5. `/movies status`, `/movies latest`, and guide-panel controls distinguish healthy, degraded, and stale sources without telling users to perform ineffective setup/restart rituals.
-6. Fresh eligible movie alerts still dedupe and post to configured channels, and feedback controls remain functional.
+5. `/movies status`, `/movies latest`, setup, scan, and guide-panel source results distinguish healthy/degraded/stale state without fake user-side fixes.
+6. Fresh eligible alerts still dedupe and post to configured channels, and new feedback controls round-trip exact Discord IDs.
 
 Only after those live checks pass call movie tickets restored and close this task.
+
+## Risks / boundaries
+- No anti-bot bypass, proxy rotation, CAPTCHA evasion, or private/account-source scraping was added.
+- Stale rows are hidden, not blindly deleted.
+- Only the two already-supported public classifications are deliverable.
+- Pre-migration real Discord delivery/feedback snowflakes stored as unsafe legacy INTEGER values are not guessed back into live controls.
 
 ## Backlog — not active
 - SP-WM-DEAL-DELIVERY-STALL production acceptance
@@ -65,4 +76,4 @@ Only after those live checks pass call movie tickets restored and close this tas
 - SniperPlug-Site work
 
 ## Next step
-Implement the movie source/storage/freshness/UX repair on this branch, add regressions, then validate the exact head before merge.
+Validate the exact #260 head locally, fix only evidence-backed failures, then inspect the final diff/review state before merge.

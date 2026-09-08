@@ -3,10 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sniperplug.services.atom_indexed_promotions import (
-    install_atom_indexed_fallback,
-    is_atom_indexed_fallback_marker,
-)
+from sniperplug.services.atom_indexed_promotions import is_atom_indexed_fallback_marker
 from sniperplug.services.movie_ticket_drops import (
     AtomPromotionParseResult,
     MovieTicketSourceState,
@@ -14,12 +11,6 @@ from sniperplug.services.movie_ticket_drops import (
     parse_atom_promotions_html,
 )
 
-
-# The registered runtime imports this recovery layer after importing the canonical
-# Atom client class. Installing the wrapper mutates that same class object once, so
-# every existing reference keeps one authoritative fetch path with a bounded
-# access-block fallback instead of creating a second Atom monitor.
-install_atom_indexed_fallback()
 
 # Movie-ticket inventory can disappear quickly. Durable rows stay in storage for
 # recovery/history, but a source that has not been successfully confirmed for two

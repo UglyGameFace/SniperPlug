@@ -11,51 +11,37 @@ Target outcome: the permanent movie panel remains useful across deployments, cur
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
 
 ## Status
-**#260 and #261 are merged. Draft PR #262 is open with implementation frozen pending executable validation. GitHub Actions is currently failing before any workflow step starts, so #262 is not merge-ready yet.**
+**Implementation and local validation for #262 are complete and #262 is merged. Active phase is live production acceptance of the existing July 31 permanent panel and expanded source coverage.**
 
 #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
 #261 validated head: `0275ab55f8c2f7f616700aa8c1305430ab610e6f`
 #261 merge: `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`
-#261 full-suite evidence: **1,301 passed**, native libsql **10 passed**, compile/import/pip checks green.
-
-#262 implementation head before bookkeeping: `b10e727e1c92583d7e106ebf2f824f6ff9bba83d`
-#262 final-head bookkeeping parent: `6999cdf6a9feba4d01f47333f1e4ab6385c01fbc`
-#262 PR: `https://github.com/UglyGameFace/SniperPlug/pull/262`
-
-GitHub-hosted workflow attempts on `b10e727e1c92583d7e106ebf2f824f6ff9bba83d`:
-- Import smoke check run `34170139111`: failure before execution; job has no logs and no steps.
-- Python Check run `34170139110`: failure before execution; job has no logs and no steps.
-- Python tests run `34170139157`: failure before execution; job has no logs and no steps.
-
-These are infrastructure/runner-start failures, not code-test failures. No green test claim is made for #262 yet.
+#262 validated head: `ac9bf854b9286152ada113ac1aabd5e306462e71`
+#262 merge: `00335c0943c6b9fc214329c8468b35049ac9b23b`
 
 Previous Walmart delivery work (#256/#257) remains merged; its production acceptance is paused by the explicit task switch.
 
-## Production findings after #261
-Proven healthy/improved:
+## Production findings before #262
+Proven healthy/improved after #260/#261:
 - Atom stale month-old cache is hidden while Atom's upstream HTTP 403 is reported truthfully.
 - Fandango and Gofobo remain independently healthy when Atom is blocked.
-- Gofobo stale CTA cache was replaced and generic CTA-title parsing is covered by #261.
+- Gofobo stale CTA cache was replaced and generic CTA-title parsing is covered.
 
-Remaining UX/coverage defects shown live:
-- The permanent panel originally posted July 31 still displays its old command-heavy embed because `/movies-panel` never persisted the panel message/channel ID. Persistent custom IDs keep its controls alive, but Discord does not rewrite the historical message body after code updates.
-- Setup Status can describe **Use This Channel for Alerts** while Discord may not visibly render that private component in the user's viewport. A durable setup action must live on the permanent panel itself.
-- The old panel lets Discord.py auto-pack controls, so core actions can be visually displaced by source-link buttons.
-- The source surface is too narrow if only Atom/Fandango/Gofobo are exposed.
+Remaining defects observed live before #262:
+- The permanent panel originally posted July 31 still displayed old command-heavy copy because `/movies-panel` never persisted its message/channel ID.
+- Setup Status could describe **Use This Channel for Alerts** while Discord did not reliably surface that private component in the visible viewport.
+- Auto-packed component layout could visually displace core controls.
+- Source coverage was too narrow if only Atom/Fandango/Gofobo were exposed.
 
-## #262 root cause / implementation
+## #262 implementation
 ### Permanent panel migration
-- Use `interaction.message` as the authoritative identity of an old permanent panel. On the next dropdown/button interaction, edit that exact historical message in place with the current embed and view.
+- Uses `interaction.message` as the authoritative identity of an old permanent panel and edits that exact historical message in place on the next interaction.
 - No channel-history scan, guessed message ID, or delete/repost migration.
-- Use explicit component rows:
-  - row 0: task dropdown
-  - row 1: **Check Now · Status · Alerts Here**
-  - row 2: Atom · Fandango · Gofobo
-  - row 3: supplemental/manual screening directories
-- Add durable **Alerts Here** directly to the permanent panel. It shares the same Manage Server, bot-permission, exact-channel config, and immediate-refresh path as the private backup action.
-- **Alerts Here acknowledges the Discord interaction before editing the historical panel**, preventing message-edit latency from causing a false interaction timeout.
-- Rewrite the permanent guide to be action-first. Slash commands remain advanced fallbacks rather than the main instructions.
-- Registered `/movies status` and `/movies sources` are overridden so fallback commands describe the expanded source model truthfully instead of inheriting old three-source/official-only copy.
+- Explicit component rows keep **Check Now · Status · Alerts Here** together.
+- **Alerts Here** is durable on the permanent panel, manager-gated, validates bot permissions, saves the exact current channel, enables monitoring, and runs an immediate refresh.
+- Alerts Here acknowledges Discord before panel-edit/setup work to avoid interaction timeout races.
+- Guide copy is action-first; slash commands remain fallback/advanced controls.
+- Registered `/movies status` and `/movies sources` now describe direct, supplemental, and manual source tiers truthfully.
 
 ### Source expansion
 Direct monitored/auto-deliverable sources remain:
@@ -66,62 +52,54 @@ Direct monitored/auto-deliverable sources remain:
 Added automated **supplemental discovery**:
 - SeeItEarly public upcoming-screening index
 - maximum 3 active leads
-- requires explicit `N free pass(es)` evidence paired with a same-card title
-- safe HTTPS host allowlist, bounded response size/timeouts, ETag/Last-Modified support
-- classified/labeled as aggregated discovery, never as the original issuer
+- explicit free-pass evidence required
+- safe HTTPS host allowlist, bounded size/timeouts, ETag/Last-Modified support
+- classified as aggregated discovery, never as the original issuer
 - included in Check Now/latest and connected-source health
-- **never auto-posted to alert channels**, preventing duplicate aggregator/direct-source blasts
-- automatic SeeItEarly refresh is paced to **10 minutes** while manual Check Now/scan bypasses that pacing
-- free-pass context is cleared after each movie card so one title cannot donate its free-pass count to the next title
-- current combined-card title extraction uses the safe movie-detail slug as an identity boundary while preserving visible punctuation/apostrophes/hyphens such as `Oasis: Don't Look Back in Anger` and `Spider-Man: Brand New Day`
+- never auto-posted to alert channels
+- automatic refresh paced to 10 minutes; manual Check Now/scan bypasses pacing
+- adjacent-card free-pass context is isolated
+- title identity uses the movie-detail slug boundary while preserving visible punctuation/apostrophes/hyphens
 
-Added manual screening-directory links on the permanent panel:
+Added manual permanent-panel source links:
 - AdvanceScreenings
 - 1iota
 
-Additional public candidates audited but not automated without stronger fail-closed source contracts:
+Audited but intentionally not automated without stronger fail-closed contracts:
 - Cinefind
 - Screening Squad
 
-## Validation evidence / required
-Implemented regression coverage now includes:
-- old permanent panel self-refreshes the exact interaction message
-- fixed component rows keep Check Now/Status/Alerts Here together
-- Alerts Here acknowledgement occurs before old-panel migration/setup work
-- SeeItEarly production-shaped combined-card title parsing
-- punctuation/apostrophe/hyphen preservation at the slug identity boundary
-- adjacent-card free-pass count cannot bleed into another title
-- off-site SeeItEarly URLs fail closed
-- SeeItEarly active discoveries capped at 3
-- supplemental discovery embed cannot masquerade as direct issuer proof
-- registered runtime scans SeeItEarly but its scanner never calls direct alert delivery
-- automatic SeeItEarly refresh is paced while manual refresh bypasses pacing
-- registered status/sources expose direct vs supplemental vs manual source truth
-- four-source backoff/outage tests updated
-- older #258/#261 wording/actionability regressions updated only where the expanded source model changed the contract
+## #262 validation evidence
+Exact validated head: `ac9bf854b9286152ada113ac1aabd5e306462e71`.
 
-Still required before merge-ready:
-- execute targeted movie regression set on exact final head
-- `python -m pip check`
-- `python -m compileall -q sniperplug scripts tests`
-- import smoke
-- native libsql process suite
-- full pytest suite on exact final head
-- confirm final Actions/review state
+Linux/Ubuntu Python 3.12 validation on that exact head:
+- targeted movie regressions: **44 passed**
+- `python -m pip check`: clean
+- `python -m compileall -q sniperplug scripts tests`: exit 0
+- import smoke: **37 modules, 22 symbols**
+- native libsql process suite: **10 passed**
+- full pytest suite: **1,316 passed**
+- `FULL PYTEST EXIT=0`
+- `git diff origin/main...HEAD --check`: clean
+- final HEAD remained exact
+- only warning: Discord.py/Python `audioop` deprecation, unrelated to this task
 
-Current review state before final-head bookkeeping:
-- inline review threads: none
-- submitted reviews: none
-- PR comments: none
-- changed files: 9 expected movie-task files only
+GitHub Actions infrastructure failed before checkout on the exact head and on one explicit rerun for all three workflows (`steps=null`, no logs). Workflow YAML uses normal `ubuntu-latest`; these were not code-test failures. Local exact-head validation is the executable evidence used for merge.
 
-## Production acceptance after merge/deploy
-1. Interacting with the July 31 permanent panel edits that same message in place to the current action-first panel; no repost is required.
-2. The permanent panel visibly shows **Check Now**, **Status**, and **Alerts Here** together.
+Final merge review state:
+- PR mergeable
+- 9 changed files, all scoped to movie tickets
+- no inline review threads
+- no submitted reviews
+- no PR comments
+
+## Production acceptance after deploy
+1. Interacting with the July 31 permanent panel edits that same message in place to the current action-first panel; no repost required.
+2. The panel visibly shows **Check Now**, **Status**, and **Alerts Here** together.
 3. **Alerts Here** in `#free-movie-tickets` acknowledges immediately, enables alerts, and saves that exact channel for a manager.
-4. Status then shows alerts enabled and the correct destination, direct-source cadence, supplemental cadence, and truthful source health.
+4. Status then shows alerts enabled and the correct destination, direct-source cadence, supplemental cadence, and truthful connected-source health.
 5. Current Gofobo results remain real movie/event names, never CTA labels.
-6. SeeItEarly appears as bounded supplemental discovery/health only and never claims to be the original pass issuer.
+6. SeeItEarly appears only as bounded supplemental discovery/health and never claims to be the original pass issuer.
 7. SeeItEarly does not create automatic duplicate channel alerts and is not fetched every 60 seconds automatically.
 8. AdvanceScreenings and 1iota are available as manual source links.
 9. Atom stale-cache handling, direct-source isolation, exact snowflakes, dedupe, and feedback remain intact.
@@ -147,4 +125,4 @@ Only after these live checks pass call movie tickets restored and close this tas
 - SniperPlug-Site work
 
 ## Next step
-The resulting commit from this record update is the exact #262 validation head. Inspect its three GitHub Actions attempts once, and run the full exact-head validation as soon as an executable runner is available. Keep PR #262 draft until that evidence exists; after merge, perform live July-31-panel and expanded-source acceptance before closing this task.
+Deploy latest `main`, then perform live acceptance on the existing July 31 panel and expanded source surface. Do not close the task until those production checks pass.

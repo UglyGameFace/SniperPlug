@@ -54,7 +54,7 @@ def test_result_action_view_gives_each_source_an_obvious_numbered_button() -> No
         "#4 Find Pass",
     ]
     assert [button.row for button in buttons] == [0, 0, 1, 1]
-    assert all(button.style is discord.ButtonStyle.link for button in buttons)
+    assert all(button.style == discord.ButtonStyle.link for button in buttons)
     assert [button.url for button in buttons] == [drop.offer_url for drop in drops]
 
 
@@ -67,6 +67,30 @@ def test_result_action_labels_are_short_and_source_specific() -> None:
     assert len(label) <= 80
     assert url == drop.offer_url
     assert emoji == "🔎"
+
+
+def test_known_source_with_bad_url_falls_back_only_to_its_own_public_page() -> None:
+    gofobo = _drop(GOFOBO_SOURCE_KEY, "Gofobo Movie", "javascript:alert(1)")
+    seeitearly = _drop(SEEITEARLY_SOURCE_KEY, "SeeItEarly Movie", "not-a-url")
+
+    _label, gofobo_url, _emoji = movie_result_action(gofobo, 1)
+    _label, seeitearly_url, _emoji = movie_result_action(seeitearly, 2)
+
+    assert "gofobo.com" in gofobo_url
+    assert "seeitearly.com" in seeitearly_url
+    assert "atomtickets.com" not in gofobo_url
+    assert "atomtickets.com" not in seeitearly_url
+
+
+def test_unknown_source_with_bad_url_does_not_get_a_fake_button() -> None:
+    drop = _drop("future_unknown_source", "Mystery Movie", "javascript:alert(1)")
+    view = build_movie_result_actions_view([drop])
+    embed = discord.Embed(title="Mystery")
+
+    annotate_movie_result_embeds([embed], [drop])
+
+    assert list(view.children) == []
+    assert "No safe direct result link" in embed.fields[0].value
 
 
 def test_result_cards_explicitly_point_to_matching_button() -> None:

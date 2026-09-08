@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sniperplug.services.atom_indexed_promotions import is_atom_indexed_fallback_marker
+from sniperplug.services.atom_indexed_promotions import parse_atom_indexed_fallback_marker
 from sniperplug.services.movie_ticket_drops import (
     AtomPromotionParseResult,
     MovieTicketSourceState,
@@ -132,20 +132,38 @@ def movie_source_health_text(
     last_error = str(getattr(state, "last_error", "") or "").strip()
     last_modified = str(getattr(state, "last_modified", "") or "").strip()
     confirmed = _discord_time(last_success)
-    indexed_fallback = is_atom_indexed_fallback_marker(last_modified)
+    indexed_state = parse_atom_indexed_fallback_marker(last_modified)
 
-    if indexed_fallback and last_success:
-        if fresh:
+    if indexed_state is not None and last_success:
+        # The normal scan loop can reuse a confirmed fallback state every minute.
+        # Do not display that cache-reuse timestamp as if Bing was re-confirmed at
+        # the same time. Health is based on the persisted index observation.
+        indexed_age = movie_source_cache_age_seconds(
+            None,
+            fallback_seen_at=indexed_state.indexed_at,
+            now=now,
+        )
+        indexed_fresh = (
+            indexed_age is not None
+            and indexed_age <= MOVIE_SOURCE_CACHE_MAX_AGE_SECONDS
+        )
+        indexed_confirmed = _discord_time(indexed_state.indexed_at)
+        direct_blocked = _discord_time(indexed_state.direct_blocked_at)
+        if indexed_fresh:
             health = (
-                f"Indexed fallback current • direct Atom HTTP access blocked • "
-                f"canonical promotions page confirmed via public index {confirmed} • "
+                f"Indexed fallback current • direct Atom HTTP access blocked since {direct_blocked} • "
+                f"canonical promotions page confirmed via public index {indexed_confirmed} • "
                 "public reusable codes are not inferred from index snippets"
             )
+            if last_error:
+                health += f" • refresh error: `{_compact(last_error, 180)}`"
         else:
             health = (
-                f"Indexed fallback stale • last indexed confirmation {confirmed} • "
+                f"Indexed fallback stale • last indexed confirmation {indexed_confirmed} • "
                 "cached results hidden until either direct Atom or the public index validates again"
             )
+            if last_error:
+                health += f" • refresh error: `{_compact(last_error, 180)}`"
     elif not last_success:
         health = "Waiting for first successful confirmation"
         if last_error:

@@ -44,11 +44,11 @@ class FakeSession:
         return self.responses.pop(0)
 
 
-def test_duckduckgo_parser_accepts_redirected_official_atom_detail() -> None:
+def test_duckduckgo_parser_accepts_relative_redirected_official_atom_detail() -> None:
     target = f"{ATOM_PROMOTIONS_URL}/tmobile-tuesdays-mutiny"
     html = f"""
     <html><body>
-      <a class="result__a" href="//duckduckgo.com/l/?uddg={quote(target, safe='')}">
+      <a class="result__a" href="/l/?kh=-1&amp;uddg={quote(target, safe='')}">
         T-Mobile Tuesdays - Mutiny | Atom, Your Ticket to More
       </a>
     </body></html>
@@ -63,6 +63,20 @@ def test_duckduckgo_parser_accepts_redirected_official_atom_detail() -> None:
     parsed = parse_current_atom_promotions_html(confirmation.synthetic_html)
     assert parsed.document_valid is True
     assert parsed.drops == ()
+
+
+def test_duckduckgo_parser_accepts_protocol_relative_redirect() -> None:
+    target = f"{ATOM_PROMOTIONS_URL}/get-the-new-atom-app"
+    html = f"""
+    <html><body>
+      <a class="result__a" href="//duckduckgo.com/l/?uddg={quote(target, safe='')}">
+        Get the New Atom Tickets App | Atom Tickets Promotion
+      </a>
+    </body></html>
+    """
+    confirmation = parse_duckduckgo_atom_confirmation_html(html)
+    assert confirmation is not None
+    assert confirmation.canonical_url == target
 
 
 def test_duckduckgo_parser_prefers_hub_and_rejects_bad_results() -> None:
@@ -102,7 +116,7 @@ async def test_client_falls_back_to_duckduckgo_when_bing_has_no_atom_result() ->
     atom_target = f"{ATOM_PROMOTIONS_URL}/atom-rewards-refer-a-friend-offer-terms"
     ddg_html = f"""
     <html><body>
-      <a class="result__a" href="{atom_target}">
+      <a class="result__a" href="/l/?kh=-1&amp;uddg={quote(atom_target, safe='')}">
         Atom Rewards Refer a Friend Offer Terms | Atom Tickets
       </a>
     </body></html>

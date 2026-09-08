@@ -3,87 +3,137 @@
 ## Task / outcome
 **SP-MOVIE-TICKETS-RECOVERY — restore SniperPlug movie tickets end-to-end.**
 
-Target outcome: `/movies` shows only recently confirmed official offers/screenings, current source layouts parse safely, healthy sources continue when one source is blocked, Gofobo local screenings persist and deliver as actionable movie/event leads, setup/status/latest/panel interactions work without command memorization, and delivery/feedback snowflakes remain exact.
+Target outcome: the permanent movie panel remains useful across deployments, current free-ticket/screening sources are freshness-qualified and truthfully classified, managers can configure alerts directly from the panel, and no stale/generic/aggregated result is presented as stronger proof than the source actually provides.
 
 ## Scope
-`official Atom/Fandango/Gofobo fetch → fail-closed parse → per-source state/backoff → durable drop cache → freshness gate → actionable /movies latest/status/panel → configured channel delivery → feedback controls`
+`public movie source fetch/discovery → fail-closed parse → per-source state/backoff → durable freshness-qualified cache → actionable permanent panel/latest/status → configured direct-source alert delivery → feedback controls`
 
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
 
 ## Status
-**PR #260 and corrective follow-up PR #261 are merged. Production acceptance is now the only remaining gate before this task can be called restored.**
+**#260 and #261 are merged. Draft PR #262 is open with implementation frozen pending executable validation. GitHub Actions is currently failing before any workflow step starts, so #262 is not merge-ready yet.**
 
 #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
 #261 validated head: `0275ab55f8c2f7f616700aa8c1305430ab610e6f`
-#261 merge commit: `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`
+#261 merge: `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`
+#261 full-suite evidence: **1,301 passed**, native libsql **10 passed**, compile/import/pip checks green.
 
-#261 exact-head validation evidence:
-- targeted movie regression set: **57 passed**
-- `python -m pip check`: passed
-- compileall: exit 0
-- import smoke: **37 modules / 22 symbols**, exit 0
-- native libsql process suite: **10 passed**, exit 0
-- full pytest suite: **1,301 passed**, exit 0
-- only 1 upstream `audioop` deprecation warning
-- final diff: only 5 expected files
+#262 implementation head before bookkeeping: `b10e727e1c92583d7e106ebf2f824f6ff9bba83d`
+#262 final-head bookkeeping parent: `6999cdf6a9feba4d01f47333f1e4ab6385c01fbc`
+#262 PR: `https://github.com/UglyGameFace/SniperPlug/pull/262`
+
+GitHub-hosted workflow attempts on `b10e727e1c92583d7e106ebf2f824f6ff9bba83d`:
+- Import smoke check run `34170139111`: failure before execution; job has no logs and no steps.
+- Python Check run `34170139110`: failure before execution; job has no logs and no steps.
+- Python tests run `34170139157`: failure before execution; job has no logs and no steps.
+
+These are infrastructure/runner-start failures, not code-test failures. No green test claim is made for #262 yet.
+
+Previous Walmart delivery work (#256/#257) remains merged; its production acceptance is paused by the explicit task switch.
+
+## Production findings after #261
+Proven healthy/improved:
+- Atom stale month-old cache is hidden while Atom's upstream HTTP 403 is reported truthfully.
+- Fandango and Gofobo remain independently healthy when Atom is blocked.
+- Gofobo stale CTA cache was replaced and generic CTA-title parsing is covered by #261.
+
+Remaining UX/coverage defects shown live:
+- The permanent panel originally posted July 31 still displays its old command-heavy embed because `/movies-panel` never persisted the panel message/channel ID. Persistent custom IDs keep its controls alive, but Discord does not rewrite the historical message body after code updates.
+- Setup Status can describe **Use This Channel for Alerts** while Discord may not visibly render that private component in the user's viewport. A durable setup action must live on the permanent panel itself.
+- The old panel lets Discord.py auto-pack controls, so core actions can be visually displaced by source-link buttons.
+- The source surface is too narrow if only Atom/Fandango/Gofobo are exposed.
+
+## #262 root cause / implementation
+### Permanent panel migration
+- Use `interaction.message` as the authoritative identity of an old permanent panel. On the next dropdown/button interaction, edit that exact historical message in place with the current embed and view.
+- No channel-history scan, guessed message ID, or delete/repost migration.
+- Use explicit component rows:
+  - row 0: task dropdown
+  - row 1: **Check Now · Status · Alerts Here**
+  - row 2: Atom · Fandango · Gofobo
+  - row 3: supplemental/manual screening directories
+- Add durable **Alerts Here** directly to the permanent panel. It shares the same Manage Server, bot-permission, exact-channel config, and immediate-refresh path as the private backup action.
+- **Alerts Here acknowledges the Discord interaction before editing the historical panel**, preventing message-edit latency from causing a false interaction timeout.
+- Rewrite the permanent guide to be action-first. Slash commands remain advanced fallbacks rather than the main instructions.
+- Registered `/movies status` and `/movies sources` are overridden so fallback commands describe the expanded source model truthfully instead of inheriting old three-source/official-only copy.
+
+### Source expansion
+Direct monitored/auto-deliverable sources remain:
+- Atom
+- Fandango
+- Gofobo
+
+Added automated **supplemental discovery**:
+- SeeItEarly public upcoming-screening index
+- maximum 3 active leads
+- requires explicit `N free pass(es)` evidence paired with a same-card title
+- safe HTTPS host allowlist, bounded response size/timeouts, ETag/Last-Modified support
+- classified/labeled as aggregated discovery, never as the original issuer
+- included in Check Now/latest and connected-source health
+- **never auto-posted to alert channels**, preventing duplicate aggregator/direct-source blasts
+- automatic SeeItEarly refresh is paced to **10 minutes** while manual Check Now/scan bypasses that pacing
+- free-pass context is cleared after each movie card so one title cannot donate its free-pass count to the next title
+- current combined-card title extraction uses the safe movie-detail slug as an identity boundary while preserving visible punctuation/apostrophes/hyphens such as `Oasis: Don't Look Back in Anger` and `Spider-Man: Brand New Day`
+
+Added manual screening-directory links on the permanent panel:
+- AdvanceScreenings
+- 1iota
+
+Additional public candidates audited but not automated without stronger fail-closed source contracts:
+- Cinefind
+- Screening Squad
+
+## Validation evidence / required
+Implemented regression coverage now includes:
+- old permanent panel self-refreshes the exact interaction message
+- fixed component rows keep Check Now/Status/Alerts Here together
+- Alerts Here acknowledgement occurs before old-panel migration/setup work
+- SeeItEarly production-shaped combined-card title parsing
+- punctuation/apostrophe/hyphen preservation at the slug identity boundary
+- adjacent-card free-pass count cannot bleed into another title
+- off-site SeeItEarly URLs fail closed
+- SeeItEarly active discoveries capped at 3
+- supplemental discovery embed cannot masquerade as direct issuer proof
+- registered runtime scans SeeItEarly but its scanner never calls direct alert delivery
+- automatic SeeItEarly refresh is paced while manual refresh bypasses pacing
+- registered status/sources expose direct vs supplemental vs manual source truth
+- four-source backoff/outage tests updated
+- older #258/#261 wording/actionability regressions updated only where the expanded source model changed the contract
+
+Still required before merge-ready:
+- execute targeted movie regression set on exact final head
+- `python -m pip check`
+- `python -m compileall -q sniperplug scripts tests`
+- import smoke
+- native libsql process suite
+- full pytest suite on exact final head
+- confirm final Actions/review state
+
+Current review state before final-head bookkeeping:
 - inline review threads: none
 - submitted reviews: none
+- PR comments: none
+- changed files: 9 expected movie-task files only
 
-GitHub-hosted Actions still reports infrastructure failures before execution on the validated head; sampled jobs have no executed steps. Local Linux Python 3.12/native-libsql validation is the code evidence for #261.
-
-Previous Walmart delivery work (#256/#257) remains merged on `main`; its production acceptance is paused by the explicit task switch and stays backlog/context only.
-
-## Root cause / findings
-- Production Atom requests return HTTP 403 and enter source backoff.
-- Before #260, stale movie cache rows could remain active indefinitely and be presented as current.
-- Current Atom promotions can validly render `Partner Promotions` without the old `Film Promotions` section.
-- Before #260, Gofobo `local_screening` results could be parsed and then silently discarded by storage filtering.
-- Delivery/feedback Discord snowflakes required exact TEXT storage under Turso/libSQL.
-- After #260, production proved Gofobo persistence worked but exposed a second defect: live Gofobo alerts could use CTA text such as **`LEARN MORE`** as the movie title.
-- Current Gofobo cards can separate movie/event headings from generic CTA links and can use deeper heading levels.
-- A persisted bad Gofobo row could survive a parser deploy through HTTP 304 without a fresh response body.
-- Setup Status still required users to reconstruct slash-command syntax instead of offering a direct action.
-
-## Implemented
-#260:
-- source freshness gate with durable-but-hidden stale cache
-- current Atom compatibility parser
-- independent source degradation/backoff
-- Gofobo `local_screening` persistence/delivery
-- exact-TEXT delivery/feedback snowflakes
-- truthful setup/latest/status recovery messaging
-
-#261:
-- rejects generic Gofobo CTA labels as titles and strips CTA suffixes from mixed card text
-- captures h1-h6 headings in the official upcoming section
-- pairs real title headings with following official CTA detail links
-- coalesces duplicate title candidates and prefers title-specific official URLs
-- falls back to the official Gofobo ZIP search when a specific URL cannot be proven
-- recognizes the current official Gofobo image CDN host
-- shortens Gofobo restriction copy and explicitly keeps theater/date/time ZIP-gated
-- forces one unconditional Gofobo body fetch per process before normal ETag/Last-Modified behavior resumes, replacing old bad CTA cache after deploy
-- adds **Use This Channel for Alerts** to private Setup Status with Manage Server and channel-permission checks
-- makes guide actions button-first while keeping slash commands available
-
-## Remaining production acceptance
-After deploy/restart:
-1. No Gofobo alert uses `LEARN MORE`, `MORE INFO`, `VIEW DETAILS`, or similar CTA text as a movie/event title.
-2. Current Gofobo movie/event names appear when exposed by the official page.
-3. Title-specific official links are used when proven; otherwise the alert uses official ZIP search without inventing theater/date/time.
-4. Gofobo alerts are concise enough to answer what the movie/event is, whether a public code exists, and what to do next.
-5. The first post-deploy Gofobo scan replaces the existing bad CTA cache instead of re-confirming it through HTTP 304.
-6. Setup Status exposes one-click current-channel configuration for a manager and persists/delivers to that exact channel.
-7. Atom stale-cache handling, source isolation, exact snowflakes, dedupe, and feedback remain intact.
+## Production acceptance after merge/deploy
+1. Interacting with the July 31 permanent panel edits that same message in place to the current action-first panel; no repost is required.
+2. The permanent panel visibly shows **Check Now**, **Status**, and **Alerts Here** together.
+3. **Alerts Here** in `#free-movie-tickets` acknowledges immediately, enables alerts, and saves that exact channel for a manager.
+4. Status then shows alerts enabled and the correct destination, direct-source cadence, supplemental cadence, and truthful source health.
+5. Current Gofobo results remain real movie/event names, never CTA labels.
+6. SeeItEarly appears as bounded supplemental discovery/health only and never claims to be the original pass issuer.
+7. SeeItEarly does not create automatic duplicate channel alerts and is not fetched every 60 seconds automatically.
+8. AdvanceScreenings and 1iota are available as manual source links.
+9. Atom stale-cache handling, direct-source isolation, exact snowflakes, dedupe, and feedback remain intact.
 
 Only after these live checks pass call movie tickets restored and close this task.
 
 ## Risks / boundaries
-- No anti-bot bypass, proxy rotation, CAPTCHA evasion, or private/account-source scraping is added.
-- Stale rows are hidden, not blindly deleted.
-- Only the already-supported public classifications are deliverable.
-- Gofobo theater/date/time are not guessed when the public source requires ZIP/account lookup.
-- The unconditional Gofobo body fetch happens once per process; normal conditional request behavior resumes afterward.
-- Unsafe pre-migration legacy INTEGER snowflakes are not guessed back into live controls.
+- No anti-bot bypass, proxy rotation, CAPTCHA evasion, login/account scraping, or gated-code republishing.
+- Aggregators are labeled as aggregators and cannot silently become direct-source proof.
+- No theater/date/time is guessed when a source requires ZIP/account lookup.
+- SeeItEarly automation is bounded and supplemental; direct automatic alerts remain Atom/Fandango/Gofobo only.
+- Stale rows remain durable but are hidden from current results.
 
 ## Backlog — not active
 - SP-WM-DEAL-DELIVERY-STALL production acceptance
@@ -97,4 +147,4 @@ Only after these live checks pass call movie tickets restored and close this tas
 - SniperPlug-Site work
 
 ## Next step
-Deploy/restart `main` at or after merge commit `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`, then run live `/movies latest` and Setup Status acceptance against the real Gofobo result before closing this task.
+The resulting commit from this record update is the exact #262 validation head. Inspect its three GitHub Actions attempts once, and run the full exact-head validation as soon as an executable runner is available. Keep PR #262 draft until that evidence exists; after merge, perform live July-31-panel and expanded-source acceptance before closing this task.

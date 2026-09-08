@@ -5,6 +5,8 @@ from typing import Any
 
 from sniperplug.cogs.movie_command_guide import (
     GUIDE_ENABLE_HERE_ID,
+    GUIDE_ENABLE_HERE_PANEL_ID,
+    MovieGuidePanelView,
     MovieStatusActionView,
     build_movie_status_embed,
 )
@@ -133,11 +135,20 @@ def test_first_gofobo_fetch_after_process_start_ignores_old_validators_once() ->
     assert session.request_headers[1]["If-Modified-Since"] == "Sun, 06 Sep 2026 12:00:00 GMT"
 
 
-def test_status_panel_exposes_one_click_current_channel_setup() -> None:
-    view = MovieStatusActionView(None)  # type: ignore[arg-type]
-    button = next(item for item in view.children if getattr(item, "custom_id", None) == GUIDE_ENABLE_HERE_ID)
+def test_setup_is_durable_on_permanent_panel_with_private_backup() -> None:
+    private_view = MovieStatusActionView(None)  # type: ignore[arg-type]
+    private_button = next(
+        item for item in private_view.children if getattr(item, "custom_id", None) == GUIDE_ENABLE_HERE_ID
+    )
+    assert private_button.label == "Use This Channel for Alerts"
 
-    assert button.label == "Use This Channel for Alerts"
+    panel = MovieGuidePanelView(None)  # type: ignore[arg-type]
+    durable_button = next(
+        item for item in panel.children if getattr(item, "custom_id", None) == GUIDE_ENABLE_HERE_PANEL_ID
+    )
+    assert durable_button.label == "Alerts Here"
+    assert durable_button.row == 1
+
     embed = build_movie_status_embed(
         enabled=False,
         alert_channel_id=None,
@@ -148,5 +159,6 @@ def test_status_panel_exposes_one_click_current_channel_setup() -> None:
         source_health_lines=["Gofobo: Healthy"],
     )
     rendered = "\n".join(f"{field.name}\n{field.value}" for field in embed.fields)
-    assert "Use This Channel for Alerts" in rendered
-    assert "No slash-command syntax required" in rendered
+    assert "Alerts Here" in rendered
+    assert "permanent movie panel" in rendered
+    assert "No slash-command syntax required" not in rendered

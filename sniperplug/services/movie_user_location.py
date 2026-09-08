@@ -27,6 +27,7 @@ ZIP_LOOKUP_TIMEOUT_SECONDS = 8
 SEEITEARLY_CITY_TIMEOUT_SECONDS = 10
 MAX_NEARBY_POSTAL_PLACES = 11
 MAX_CITY_PAGES_PER_LOOKUP = 8
+MAX_CITY_PAGE_CONCURRENCY = 4
 LOCATION_CACHE_SECONDS = 30 * 60
 CITY_PAGE_CACHE_SECONDS = 10 * 60
 
@@ -194,10 +195,23 @@ async def filter_movie_drops_for_location(
     if not candidate_places:
         candidate_places = (primary,)
 
+    # Do not serialize up to eight independent city requests. At a 10-second
+    # source timeout that could make one Local click take more than a minute.
+    # Four concurrent requests keeps latency bounded without hammering the source.
+    semaphore = asyncio.Semaphore(MAX_CITY_PAGE_CONCURRENCY)
+
+    async def fetch_place(place: MovieZipPlace) -> frozenset[str] | None:
+        async with semaphore:
+            try:
+                return await _fetch_seeitearly_city_movie_slugs(session, place)
+            except Exception:  # noqa: BLE001 - one broken city must not poison all local proof.
+                return None
+
+    slug_results = await asyncio.gather(*(fetch_place(place) for place in candidate_places))
+
     local_movie_slugs: set[str] = set()
     successful_places: list[MovieZipPlace] = []
-    for place in candidate_places:
-        slugs = await _fetch_seeitearly_city_movie_slugs(session, place)
+    for place, slugs in zip(candidate_places, slug_results, strict=True):
         if slugs is None:
             continue
         successful_places.append(place)
@@ -242,7 +256,7 @@ async def validate_movie_zip_live(
     zip_code: str,
 ) -> MovieZipPlace:
     normalized = normalize_movie_zip(zip_code)
-    primary, _nearby = await _lookup_zip_places_uncached(session, normalized)
+    primary, _nearby = await _resolve_zip_places_for_zip(session, normalized)
     return primary
 
 
@@ -250,16 +264,25 @@ async def _resolve_zip_places(
     session: aiohttp.ClientSession,
     preference: MovieUserLocationPreference,
 ) -> tuple[MovieZipPlace, tuple[MovieZipPlace, ...]]:
+    return await _resolve_zip_places_for_zip(session, preference.zip_code)
+
+
+async def _resolve_zip_places_for_zip(
+    session: aiohttp.ClientSession,
+    zip_code: str,
+) -> tuple[MovieZipPlace, tuple[MovieZipPlace, ...]]:
+    normalized = normalize_movie_zip(zip_code)
     now = time.monotonic()
     async with _CACHE_LOCK:
-        cached = _LOCATION_CACHE.get(preference.zip_code)
+        cached = _LOCATION_CACHE.get(normalized)
         if cached and cached[0] > now:
             return cached[1], cached[2]
 
-    primary, nearby = await _lookup_zip_places_uncached(session, preference.zip_code)
+    primary, nearby = await _lookup_zip_places_uncached(session, normalized)
+    expires_at = time.monotonic() + LOCATION_CACHE_SECONDS
     async with _CACHE_LOCK:
-        _LOCATION_CACHE[preference.zip_code] = (
-            now + LOCATION_CACHE_SECONDS,
+        _LOCATION_CACHE[normalized] = (
+            expires_at,
             primary,
             nearby,
         )

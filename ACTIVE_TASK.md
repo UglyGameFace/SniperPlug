@@ -11,7 +11,7 @@ Target outcome: the existing July 31 permanent movie panel remains useful across
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
 
 ## Status
-**#265, #266, and #267 are merged and exact-head validated. Production acceptance proved Atom recovery is still incomplete. #268 is the active implementation slice.**
+**#265, #266, and #267 are merged and exact-head validated. Production acceptance proved Atom recovery is still incomplete. #268 is open as the active draft implementation slice.**
 
 Movie milestones:
 - #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
@@ -66,7 +66,7 @@ Atom's published terms grant public search engines permission to index its publi
 - Preserve Bing RSS as the first indexed confirmation source.
 - If Bing returns no allowlisted Atom result, query DuckDuckGo's public no-JS HTML search surface with the same bounded Atom directory query.
 - Parse only DuckDuckGo result-title anchors (`result__a`).
-- Decode DuckDuckGo result redirects only through the explicit `uddg` target parameter.
+- Decode DuckDuckGo direct, protocol-relative, and common relative `/l/?...&uddg=...` result redirects only through the explicit `uddg` target parameter.
 - Re-run every candidate through the same strict Atom promotion URL normalizer used by #266.
 - Require Atom + promotion/offer/ticket identity in the result title.
 - Prefer the canonical `/promotions` hub when available; otherwise accept the first strictly allowlisted one-level detail page.
@@ -86,7 +86,7 @@ Exact head `a7de3231f7089b0e956f99cb7e2f2d97dcf6db37`: targeted passed, pip chec
 
 ### #268
 **Not yet validated.** New regression coverage includes:
-- DuckDuckGo redirect decoding to an official Atom promo detail URL;
+- DuckDuckGo relative and protocol-relative redirect decoding to official Atom promo detail URLs;
 - canonical hub preference;
 - rejection of off-domain/wrong-path/non-result/non-Atom candidates;
 - the exact production shape: Bing 200 with no Atom result followed by successful second-index confirmation;
@@ -124,4 +124,4 @@ Do not call the movie-ticket task restored until #268 Atom production acceptance
 - SniperPlug-Site work
 
 ## Next step
-Open #268 as draft, inspect the final diff/review state, freeze an exact head, then run targeted + full Python 3.12/native-libsql validation in the known-good Ubuntu/PRoot environment before ready/merge.
+Freeze the current #268 head, run targeted + full Python 3.12/native-libsql validation in the known-good Ubuntu/PRoot environment, inspect the final exact-head diff, and only then mark ready/merge.

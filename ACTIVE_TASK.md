@@ -11,7 +11,7 @@ Target outcome: the existing July 31 permanent movie panel remains useful across
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
 
 ## Status
-**#265 and #266 are merged and exact-head validated. #267 is the active implementation after production showed the permanent panel's Check Now action returning Discord's `This interaction failed`.**
+**#265, #266, and #267 are merged and exact-head validated. The active task is now production acceptance of the movie-ticket recovery stack.**
 
 Movie milestones:
 - #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
@@ -23,6 +23,8 @@ Movie milestones:
 - #265 merge: `d4d22c704c4a38c7a094f2d09f553583c6a6f3d7`
 - #266 validated head: `b03fe817dfb70395a40082c35c31d74259b40683`
 - #266 merge: `28554dd415e382c7f703d2c623e921d13b14cb5a`
+- #267 validated head: `a7de3231f7089b0e956f99cb7e2f2d97dcf6db37`
+- #267 merge: `6feaa14ac6bf327a57000adf9e20f76542d9cbd6`
 
 ## Root cause / findings
 Production direct Atom still receives HTTP 403. #263's indexed recovery also failed because it asked Bing to confirm one exact URL using `url:www.atomtickets.com/promotions` and rejected legitimate official detail pages such as `/promotions/<slug>`.
@@ -94,12 +96,20 @@ Exact head `b03fe817dfb70395a40082c35c31d74259b40683` on Ubuntu/PRoot Python 3.1
 - final HEAD matched the exact validated SHA
 
 ### #267
-Pending exact-head Python 3.12/native-libsql validation. Do not merge until targeted dispatch tests, affected movie tests, compile/import smoke, native libsql, full pytest, and diff check are green on one frozen SHA.
+Exact head `a7de3231f7089b0e956f99cb7e2f2d97dcf6db37` on Ubuntu/PRoot Python 3.12 + native libsql:
+- targeted #267 movie tests: passed
+- pip check clean
+- compileall exit 0
+- import smoke: 37 modules / 22 symbols
+- native libsql: 10 passed
+- full pytest: **1,362 passed, 1 warning**
+- diff check and worktree clean
+- final HEAD matched the exact validated SHA
 
-The lone warning in prior runs is the existing discord.py `audioop` deprecation warning. GitHub-hosted Actions have repeatedly terminated before checkout with no executable steps; such red checks are not treated as executed test failures.
+The lone warning is the existing discord.py `audioop` deprecation warning. GitHub-hosted Actions have repeatedly terminated before checkout with no executable steps; such red checks are not treated as executed test failures.
 
 ## Production acceptance
-After deploying the #267 merge plus latest `main`:
+After deploying latest `main`:
 1. Pressing **Check Now** on the existing July 31 permanent panel must receive an immediate Discord acknowledgement instead of `This interaction failed`.
 2. Check Now must then return private movie results or a visible safe error.
 3. Optional ZIP controls are visible and usable without forcing setup.
@@ -134,4 +144,4 @@ Do not call the movie-ticket task restored until #267 live Check Now acceptance,
 - SniperPlug-Site work
 
 ## Next step
-Validate frozen #267 exact head in the known-good Ubuntu/PRoot Python 3.12 + native-libsql environment. If green, merge guarded by expected head SHA, deploy latest `main`, then press **Check Now** on the existing July 31 panel and inspect live logs/status. Do not switch tasks until that production acceptance is resolved.
+Deploy latest `main`, then perform live production acceptance on the existing July 31 panel: press **Check Now**, exercise Set ZIP / Use Local / Show All / Clear ZIP, and inspect Atom source health after the next refresh. Do not switch tasks until that production acceptance is resolved.

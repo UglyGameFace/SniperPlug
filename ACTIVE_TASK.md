@@ -3,115 +3,151 @@
 ## Task / outcome
 **SP-MOVIE-TICKETS-RECOVERY — restore SniperPlug movie tickets end-to-end.**
 
-Target outcome: the permanent movie panel remains useful across deployments, current free-ticket/screening sources are freshness-qualified and truthfully classified, managers can configure alerts directly from the panel, and no stale/generic/aggregated result is presented as stronger proof than the source actually provides.
+Target outcome: the existing July 31 permanent movie panel stays useful across deployments; current free-ticket and screening sources are freshness-qualified and truthfully classified; managers can configure alerts directly from the panel; Atom degradation does not poison the whole movie surface; and movie cards include trustworthy poster artwork when the connected source exposes it.
 
 ## Scope
-`public movie source fetch/discovery → fail-closed parse → per-source state/backoff → durable freshness-qualified cache → actionable permanent panel/latest/status → configured direct-source alert delivery → feedback controls`
+`public movie source fetch/discovery → fail-closed parse → per-source state/backoff/fallback → durable freshness-qualified cache → poster enrichment → actionable permanent panel/latest/status → configured direct-source alert delivery → feedback controls`
 
-Do not switch to unrelated Walmart, watcher, gateway, setup, DM, or site work without an explicit FORCE SWITCH.
+Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
 
 ## Status
-**Implementation and local validation for #262 are complete and #262 is merged. Active phase is live production acceptance of the existing July 31 permanent panel and expanded source coverage.**
+**#262 is merged and its production acceptance exposed two remaining defects now owned by draft PR #263: Atom direct HTTP 403 and missing dependable artwork on supplemental movie cards. #263 implementation is frozen pending executable exact-head validation.**
 
-#260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
-#261 validated head: `0275ab55f8c2f7f616700aa8c1305430ab610e6f`
-#261 merge: `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`
-#262 validated head: `ac9bf854b9286152ada113ac1aabd5e306462e71`
-#262 merge: `00335c0943c6b9fc214329c8468b35049ac9b23b`
+Prior movie milestones:
+- #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
+- #261 validated head: `0275ab55f8c2f7f616700aa8c1305430ab610e6f`
+- #261 merge: `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`
+- #262 validated head: `ac9bf854b9286152ada113ac1aabd5e306462e71`
+- #262 merge: `00335c0943c6b9fc214329c8468b35049ac9b23b`
 
-Previous Walmart delivery work (#256/#257) remains merged; its production acceptance is paused by the explicit task switch.
+Previous Walmart delivery work (#256/#257) remains merged; its production acceptance is paused by the explicit movie-task switch.
 
-## Production findings before #262
-Proven healthy/improved after #260/#261:
-- Atom stale month-old cache is hidden while Atom's upstream HTTP 403 is reported truthfully.
-- Fandango and Gofobo remain independently healthy when Atom is blocked.
-- Gofobo stale CTA cache was replaced and generic CTA-title parsing is covered.
+## Production findings after #262
+Proven healthy:
+- The July 31 permanent panel can migrate in place and the action-first controls work.
+- Fandango, Gofobo, and SeeItEarly can continue independently when Atom fails.
+- SeeItEarly supplemental discovery is bounded and does not auto-post as a direct issuer.
+- Exact Snowflake-safe movie persistence, source freshness, dedupe, and feedback remain in the registered runtime.
 
-Remaining defects observed live before #262:
-- The permanent panel originally posted July 31 still displayed old command-heavy copy because `/movies-panel` never persisted its message/channel ID.
-- Setup Status could describe **Use This Channel for Alerts** while Discord did not reliably surface that private component in the visible viewport.
-- Auto-packed component layout could visually displace core controls.
-- Source coverage was too narrow if only Atom/Fandango/Gofobo were exposed.
+Remaining defects observed live:
+1. Atom's canonical promotions page is publicly live, but the hosted SniperPlug aiohttp request receives HTTP 403 and the source becomes stale/unavailable.
+2. Fandango/Gofobo already expose artwork paths, but SeeItEarly cards had no poster resolution path, leaving live movie cards visually incomplete.
 
-## #262 implementation
-### Permanent panel migration
-- Uses `interaction.message` as the authoritative identity of an old permanent panel and edits that exact historical message in place on the next interaction.
-- No channel-history scan, guessed message ID, or delete/repost migration.
-- Explicit component rows keep **Check Now · Status · Alerts Here** together.
-- **Alerts Here** is durable on the permanent panel, manager-gated, validates bot permissions, saves the exact current channel, enables monitoring, and runs an immediate refresh.
-- Alerts Here acknowledges Discord before panel-edit/setup work to avoid interaction timeout races.
-- Guide copy is action-first; slash commands remain fallback/advanced controls.
-- Registered `/movies status` and `/movies sources` now describe direct, supplemental, and manual source tiers truthfully.
+## Root cause / research for #263
+### Atom
+- Atom's canonical `/promotions` page is the issuer surface for current promo terms.
+- Current public evidence shows the canonical page is indexed and reachable outside the hosted SniperPlug request.
+- Atom's official Partner API is automation-friendly for productions/showtimes/order metadata but does not provide a documented promotions-list endpoint, so an API-key-only migration would not solve this source.
+- Bypassing Atom's access controls with CAPTCHA evasion, rotating proxies, browser impersonation, or login scraping is outside scope.
+- A bounded public search-index confirmation can verify only the exact canonical Atom promotions URL. It is weaker evidence than a direct issuer fetch and therefore cannot supply or infer a reusable promo code.
 
-### Source expansion
-Direct monitored/auto-deliverable sources remain:
-- Atom
-- Fandango
-- Gofobo
+### Artwork
+- The existing runtime already has one poster resolver shared by latest/results/delivery embeds.
+- Fandango and Gofobo already provide source-specific image markers.
+- Atom artwork already accepts only known Atom image hosts.
+- SeeItEarly movie-detail pages expose poster imagery through their own Next image proxy backed by `image.tmdb.org`; this can be safely unwrapped without requiring a separate TMDB API key.
 
-Added automated **supplemental discovery**:
-- SeeItEarly public upcoming-screening index
-- maximum 3 active leads
-- explicit free-pass evidence required
-- safe HTTPS host allowlist, bounded size/timeouts, ETag/Last-Modified support
-- classified as aggregated discovery, never as the original issuer
-- included in Check Now/latest and connected-source health
-- never auto-posted to alert channels
-- automatic refresh paced to 10 minutes; manual Check Now/scan bypasses pacing
-- adjacent-card free-pass context is isolated
-- title identity uses the movie-detail slug boundary while preserving visible punctuation/apostrophes/hyphens
+## Authoritative execution path
+`registered_multi_source_movies.MovieTicketsCog`
+→ `_scan_official_source`
+→ `_scan_atom_source` / Fandango / Gofobo / SeeItEarly
+→ `AtomPromotionsClient.fetch` for Atom
+→ direct Atom 200/304 when available
+→ only direct Atom 401/403/429 may enter `AtomIndexedPromotionsClient`
+→ exact canonical Bing RSS confirmation
+→ zero-public-code partner-only compatibility document
+→ existing `parse_current_atom_promotions_html`
+→ durable source state / freshness
+→ existing poster resolver
+→ existing embeds/panel/delivery
 
-Added manual permanent-panel source links:
-- AdvanceScreenings
-- 1iota
+There is no second Atom monitor and no duplicate movie-artwork pipeline.
 
-Audited but intentionally not automated without stronger fail-closed contracts:
-- Cinefind
-- Screening Squad
+## #263 changes
+### Atom access recovery
+- Direct Atom remains authoritative.
+- Only explicit direct Atom HTTP 401/403/429 can invoke indexed fallback.
+- Fallback accepts only HTTPS `atomtickets.com/promotions` exactly; off-host results and promotion subpages fail closed.
+- Search-index snippets never become promo-code proof.
+- A confirmed fallback produces a partner-only zero-public-code shell so stale public reusable codes are cleared instead of revived.
+- Fallback state persists two timestamps in the existing source-state marker:
+  - last public-index confirmation
+  - last direct Atom access block
+- Cooldown lanes are persisted across restarts:
+  - under 30 minutes after index confirmation: no Atom request and no Bing request
+  - after 30 minutes but before six hours: refresh Bing only
+  - after six hours: clean direct Atom reprobe with fallback validators stripped
+- A Bing refresh preserves the original direct-block timestamp, so refreshing the index cannot postpone direct Atom recovery forever.
+- A successful direct Atom reprobe immediately returns ordinary ETag/Last-Modified state.
+- Status renders `Indexed fallback` and uses the real persisted index-confirmation timestamp rather than the minute-by-minute scan-loop cache-reuse time.
 
-## #262 validation evidence
-Exact validated head: `ac9bf854b9286152ada113ac1aabd5e306462e71`.
+### Movie posters
+- Existing Fandango and Gofobo artwork behavior is unchanged.
+- Atom keeps its strict Atom-host artwork path.
+- SeeItEarly `/movies/...` detail pages can now feed the existing poster resolver.
+- SeeItEarly's `/_next/image` proxy is unwrapped only when the underlying HTTPS host is `image.tmdb.org`.
+- Wrong SeeItEarly pages, off-domain redirects, insecure schemes, and arbitrary external image hosts fail closed.
+- Existing Discord embed image rendering is reused; no second render path was introduced.
 
-Linux/Ubuntu Python 3.12 validation on that exact head:
-- targeted movie regressions: **44 passed**
-- `python -m pip check`: clean
-- `python -m compileall -q sniperplug scripts tests`: exit 0
-- import smoke: **37 modules, 22 symbols**
-- native libsql process suite: **10 passed**
-- full pytest suite: **1,316 passed**
-- `FULL PYTEST EXIT=0`
-- `git diff origin/main...HEAD --check`: clean
-- final HEAD remained exact
-- only warning: Discord.py/Python `audioop` deprecation, unrelated to this task
+## Regression coverage added
+`tests/test_atom_indexed_fallback_263.py` covers:
+- exact canonical Atom RSS acceptance and off-domain/subpage rejection
+- backward-compatible fallback marker parsing
+- indexed shell cannot invent a reusable code
+- initial direct 403 → indexed confirmation
+- fresh index state performs zero network requests
+- 30-minute index refresh does not reprobe Atom or reset the six-hour direct block timer
+- six-hour direct reprobe strips fallback validators and restores ordinary direct state
+- non-access HTTP failures do not invoke fallback
+- source health displays the real index/direct-block observations, not cache-reuse time
 
-GitHub Actions infrastructure failed before checkout on the exact head and on one explicit rerun for all three workflows (`steps=null`, no logs). Workflow YAML uses normal `ubuntu-latest`; these were not code-test failures. Local exact-head validation is the executable evidence used for merge.
+`tests/test_movie_ticket_images_copy.py` adds:
+- SeeItEarly movie-detail poster extraction through its image proxy
+- TMDB image allowlist enforcement
+- wrong-page/off-domain image rejection
 
-Final merge review state:
-- PR mergeable
-- 9 changed files, all scoped to movie tickets
-- no inline review threads
-- no submitted reviews
-- no PR comments
+## Validation / results
+### Existing #262 evidence
+Exact #262 validated head `ac9bf854b9286152ada113ac1aabd5e306462e71` on Linux/Ubuntu Python 3.12:
+- targeted movie regressions: 44 passed
+- pip check clean
+- compileall exit 0
+- import smoke: 37 modules, 22 symbols
+- native libsql process suite: 10 passed
+- full pytest: 1,316 passed
+- diff check clean
 
-## Production acceptance after deploy
-1. Interacting with the July 31 permanent panel edits that same message in place to the current action-first panel; no repost required.
-2. The panel visibly shows **Check Now**, **Status**, and **Alerts Here** together.
-3. **Alerts Here** in `#free-movie-tickets` acknowledges immediately, enables alerts, and saves that exact channel for a manager.
-4. Status then shows alerts enabled and the correct destination, direct-source cadence, supplemental cadence, and truthful connected-source health.
-5. Current Gofobo results remain real movie/event names, never CTA labels.
-6. SeeItEarly appears only as bounded supplemental discovery/health and never claims to be the original pass issuer.
-7. SeeItEarly does not create automatic duplicate channel alerts and is not fetched every 60 seconds automatically.
-8. AdvanceScreenings and 1iota are available as manual source links.
-9. Atom stale-cache handling, direct-source isolation, exact snowflakes, dedupe, and feedback remain intact.
+### #263 current validation state
+- Structural diff review performed against current `main`; six implementation/test files are scoped to Atom recovery and movie artwork before this task-record update.
+- GitHub Actions triggered on implementation head `69fe8b196597174390e7e70dc4072aa388dba5fc` but all three jobs failed before checkout: `runner_id=0`, empty runner name, and `steps=[]` for Python tests, Python Check, and Import smoke check. These are runner/infrastructure failures, not executed code-test failures.
+- Exact-head executable #263 validation is still required. Do not mark ready or merge until targeted tests, pip check, compileall, import smoke, native libsql, full pytest, and diff check pass on the final branch head.
 
-Only after these live checks pass call movie tickets restored and close this task.
+## Cleanup / conflict review
+- No anti-bot bypass or duplicate Atom fetcher was introduced.
+- Temporary import-time fallback patching used during investigation was removed; the authoritative `AtomPromotionsClient.fetch` owns the fallback behavior deterministically.
+- Existing Fandango/Gofobo source and artwork paths remain authoritative for those providers.
+- SeeItEarly remains supplemental and non-auto-deliverable.
+- No unrelated backlog work is included in #263.
 
 ## Risks / boundaries
-- No anti-bot bypass, proxy rotation, CAPTCHA evasion, login/account scraping, or gated-code republishing.
-- Aggregators are labeled as aggregators and cannot silently become direct-source proof.
-- No theater/date/time is guessed when a source requires ZIP/account lookup.
-- SeeItEarly automation is bounded and supplemental; direct automatic alerts remain Atom/Fandango/Gofobo only.
-- Stale rows remain durable but are hidden from current results.
+- Public search indexes are fallback evidence and can lag the issuer; they are never used to infer current reusable codes.
+- If both direct Atom and the exact public index cannot validate, Atom must remain degraded rather than guessing.
+- Current public Atom promotions may contain partner-supplied/private codes; those are not republished or fabricated.
+- No CAPTCHA evasion, proxy rotation, browser impersonation, account/login scraping, gated-code guessing, or private invitation scraping.
+- Poster enrichment is best-effort and must never block ticket discovery/delivery if artwork is unavailable.
+
+## Production acceptance after #263 deploy
+1. Atom no longer sits indefinitely as a month-old stale source solely because the hosted request receives 403; Status truthfully reports indexed fallback when that is the active evidence tier.
+2. Indexed fallback does not resurrect any old reusable Atom code and never presents partner/private codes as public.
+3. Repeated one-minute movie scans do not hit Atom or Bing every minute while fallback state is fresh.
+4. Bing is refreshed on the bounded index cadence and direct Atom is reprobed on the longer access-block cadence.
+5. If Atom direct access recovers, Status returns to ordinary direct-source health automatically.
+6. SeeItEarly cards display a real movie poster when its movie-detail page exposes an allowed TMDB asset.
+7. Fandango/Gofobo/Atom existing artwork remains intact.
+8. Missing artwork remains a harmless visual fallback, never a reason to suppress a valid ticket/screening result.
+9. July 31 panel migration, alert destination, exact snowflakes, freshness, dedupe, and feedback remain intact.
+
+Only after executable validation and these live checks pass call movie tickets restored and close this task.
 
 ## Backlog — not active
 - SP-WM-DEAL-DELIVERY-STALL production acceptance
@@ -125,4 +161,4 @@ Only after these live checks pass call movie tickets restored and close this tas
 - SniperPlug-Site work
 
 ## Next step
-Deploy latest `main`, then perform live acceptance on the existing July 31 panel and expanded source surface. Do not close the task until those production checks pass.
+Run exact-head #263 validation in the known-good Python 3.12/native-libsql Termux environment. If every executable check is green, update PR #263's external validation record without changing the branch head, mark it ready, merge with exact-head protection, deploy, then perform the production acceptance checklist above.

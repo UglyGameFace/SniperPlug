@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from sniperplug.services.atom_indexed_promotions import parse_atom_indexed_fallback_marker
 from sniperplug.services.movie_ticket_drops import (
     AtomPromotionParseResult,
     MovieTicketSourceState,
@@ -46,6 +47,11 @@ def parse_current_atom_promotions_html(html_text: str) -> AtomPromotionParseResu
     parser itself found the exact Partner Promotions heading but no Film
     Promotions heading. That state is valid with zero public reusable drops. A
     challenge/access-denied document is never accepted as an empty success.
+
+    The indexed Atom fallback deliberately produces this same partner-only shell:
+    it can confirm that the canonical promotions URL is present in a public index,
+    but it cannot prove a reusable code. That lets us clear stale codes without
+    upgrading search-index evidence into direct issuer proof.
     """
 
     parsed = parse_atom_promotions_html(html_text)
@@ -124,9 +130,41 @@ def movie_source_health_text(
     fresh = movie_source_cache_is_fresh(state, now=now)
     last_success = str(getattr(state, "last_success_at", "") or "").strip()
     last_error = str(getattr(state, "last_error", "") or "").strip()
+    last_modified = str(getattr(state, "last_modified", "") or "").strip()
     confirmed = _discord_time(last_success)
+    indexed_state = parse_atom_indexed_fallback_marker(last_modified)
 
-    if not last_success:
+    if indexed_state is not None and last_success:
+        # The normal scan loop can reuse a confirmed fallback state every minute.
+        # Do not display that cache-reuse timestamp as if Bing was re-confirmed at
+        # the same time. Health is based on the persisted index observation.
+        indexed_age = movie_source_cache_age_seconds(
+            None,
+            fallback_seen_at=indexed_state.indexed_at,
+            now=now,
+        )
+        indexed_fresh = (
+            indexed_age is not None
+            and indexed_age <= MOVIE_SOURCE_CACHE_MAX_AGE_SECONDS
+        )
+        indexed_confirmed = _discord_time(indexed_state.indexed_at)
+        direct_blocked = _discord_time(indexed_state.direct_blocked_at)
+        if indexed_fresh:
+            health = (
+                f"Indexed fallback current • direct Atom HTTP access blocked since {direct_blocked} • "
+                f"canonical promotions page confirmed via public index {indexed_confirmed} • "
+                "public reusable codes are not inferred from index snippets"
+            )
+            if last_error:
+                health += f" • refresh error: `{_compact(last_error, 180)}`"
+        else:
+            health = (
+                f"Indexed fallback stale • last indexed confirmation {indexed_confirmed} • "
+                "cached results hidden until either direct Atom or the public index validates again"
+            )
+            if last_error:
+                health += f" • refresh error: `{_compact(last_error, 180)}`"
+    elif not last_success:
         health = "Waiting for first successful confirmation"
         if last_error:
             health += f" • last error: `{_compact(last_error, 220)}`"

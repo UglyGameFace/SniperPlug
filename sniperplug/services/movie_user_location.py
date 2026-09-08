@@ -63,15 +63,13 @@ _LOCATION_CACHE: dict[str, tuple[float, MovieZipPlace, tuple[MovieZipPlace, ...]
 _CITY_PAGE_CACHE: dict[str, tuple[float, frozenset[str]]] = {}
 _CACHE_LOCK = asyncio.Lock()
 _SCHEMA_LOCK = asyncio.Lock()
-_SCHEMA_READY_DB_IDS: set[int] = set()
 
 
 async def ensure_movie_user_location_table(db: Any) -> None:
-    db_key = id(db)
-    if db_key in _SCHEMA_READY_DB_IDS:
+    if bool(getattr(db, "_movie_user_location_schema_ready", False)):
         return
     async with _SCHEMA_LOCK:
-        if db_key in _SCHEMA_READY_DB_IDS:
+        if bool(getattr(db, "_movie_user_location_schema_ready", False)):
             return
         conn = db.require_conn()
         await conn.executescript(
@@ -86,7 +84,7 @@ async def ensure_movie_user_location_table(db: Any) -> None:
             """
         )
         await conn.commit()
-        _SCHEMA_READY_DB_IDS.add(db_key)
+        setattr(db, "_movie_user_location_schema_ready", True)
 
 
 async def get_movie_user_location(
@@ -539,7 +537,7 @@ def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 
 
 def _row_value(row: Any, key: str) -> Any:
-    try:
-        return row[key]
-    except (KeyError, TypeError, IndexError):
-        return None
++    try:
++        return row[key]
++    except (KeyError, TypeError, IndexError):
++        return None

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 import xml.etree.ElementTree as ET
@@ -12,9 +12,6 @@ from sniperplug.services.movie_ticket_drops import (
     ATOM_PROMOTIONS_URL,
     ATOM_REQUEST_TIMEOUT_SECONDS,
     ATOM_USER_AGENT,
-    AtomFetchResult,
-    AtomPromotionsClient,
-    MovieTicketSourceState,
     clean_text,
     normalize_text,
 )
@@ -25,7 +22,6 @@ BING_ALLOWED_HOSTS = frozenset({"bing.com", "www.bing.com"})
 ATOM_INDEXED_FALLBACK_PREFIX = "indexed-fallback:"
 ATOM_INDEX_MAX_RESPONSE_BYTES = 512_000
 ATOM_INDEX_QUERY = "url:www.atomtickets.com/promotions"
-_ATOM_INDEX_INSTALL_SENTINEL = "_sniperplug_indexed_fallback_installed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,55 +149,3 @@ class AtomIndexedPromotionsClient:
                 "Bing did not return the exact canonical Atom promotions page, so indexed fallback could not confirm it."
             )
         return confirmation
-
-
-def _direct_atom_access_blocked(error: Exception) -> bool:
-    text = clean_text(str(error)).lower()
-    if "official atom promotions page returned http" not in text:
-        return False
-    return any(f"http {status}" in text for status in (401, 403, 429))
-
-
-def install_atom_indexed_fallback() -> None:
-    """Wrap the authoritative Atom fetch method with a blocked-access fallback.
-
-    The direct Atom request always runs first. Only Atom's explicit 401/403/429
-    response can enter the Bing index path. Parser failures, timeouts, DNS errors,
-    and unrelated HTTP failures keep their existing behavior.
-
-    A fallback marker is stored in ``last_modified`` so source health can explain
-    exactly what happened. Before the next direct probe, that marker and any old
-    ETag are stripped because index metadata is not a legal HTTP validator. A
-    subsequent direct 200 therefore restores ordinary Atom state immediately.
-    """
-
-    if getattr(AtomPromotionsClient, _ATOM_INDEX_INSTALL_SENTINEL, False):
-        return
-
-    direct_fetch = AtomPromotionsClient.fetch
-
-    async def fetch_with_indexed_fallback(
-        self: AtomPromotionsClient,
-        state: MovieTicketSourceState | None = None,
-    ) -> AtomFetchResult:
-        direct_state = state
-        if state is not None and is_atom_indexed_fallback_marker(state.last_modified):
-            direct_state = replace(state, etag="", last_modified="")
-
-        try:
-            return await direct_fetch(self, direct_state)
-        except RuntimeError as error:
-            if not _direct_atom_access_blocked(error):
-                raise
-
-            confirmation = await AtomIndexedPromotionsClient(self.session).confirm_canonical_page()
-            return AtomFetchResult(
-                not_modified=False,
-                html=confirmation.synthetic_html,
-                etag="",
-                last_modified=confirmation.state_marker,
-                final_url=confirmation.canonical_url,
-            )
-
-    AtomPromotionsClient.fetch = fetch_with_indexed_fallback  # type: ignore[method-assign]
-    setattr(AtomPromotionsClient, _ATOM_INDEX_INSTALL_SENTINEL, True)

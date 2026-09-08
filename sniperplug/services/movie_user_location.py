@@ -428,18 +428,18 @@ class _SeeItEarlyCityParser(HTMLParser):
         normalized_tag = tag.lower()
         if self._heading_tag and normalized_tag == self._heading_tag:
             heading = normalize_text(" ".join(self._heading_parts))
+            heading_key = heading.replace("'", "").replace("’", "")
             self._heading_tag = ""
             self._heading_parts = []
-            if heading.startswith("what s playing in") or heading.startswith("whats playing in"):
+            if heading_key.startswith("whats playing in"):
                 self._in_playing_section = True
                 self._entry_free = None
                 return
             if self._in_playing_section and (
-                heading.startswith("film events")
-                or heading.startswith("where it s happening")
-                or heading.startswith("where its happening")
-                or heading.startswith("popular theaters")
-                or heading.startswith("releasing soon")
+                heading_key.startswith("film events")
+                or heading_key.startswith("where its happening")
+                or heading_key.startswith("popular theaters")
+                or heading_key.startswith("releasing soon")
             ):
                 self._in_playing_section = False
                 self._entry_free = None

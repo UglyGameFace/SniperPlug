@@ -36,6 +36,14 @@ def _drop(source_key: str, title: str, url: str) -> MovieTicketDrop:
     )
 
 
+def _link_buttons(view: discord.ui.View) -> list[discord.ui.Button]:
+    return [
+        item
+        for item in view.children
+        if isinstance(item, discord.ui.Button) and item.style == discord.ButtonStyle.link
+    ]
+
+
 def test_result_action_view_gives_each_source_an_obvious_numbered_button() -> None:
     drops = [
         _drop(ATOM_SOURCE_KEY, "Atom Movie", "https://www.atomtickets.com/promotions"),
@@ -45,25 +53,40 @@ def test_result_action_view_gives_each_source_an_obvious_numbered_button() -> No
     ]
 
     view = build_movie_result_actions_view(drops)
-    buttons = list(view.children)
+    buttons = _link_buttons(view)
 
     assert [button.label for button in buttons] == [
-        "#1 Open Atom Promo",
-        "#2 Open Offer",
-        "#3 Check ZIP / Claim",
-        "#4 Find Pass",
+        "#1 Atom Movie • Open Promo",
+        "#2 Fandango Movie • Open Offer",
+        "#3 Gofobo Movie • Check ZIP / Claim",
+        "#4 SeeItEarly Movie • Find Pass",
     ]
     assert [button.row for button in buttons] == [0, 0, 1, 1]
-    assert all(button.style == discord.ButtonStyle.link for button in buttons)
     assert [button.url for button in buttons] == [drop.offer_url for drop in drops]
 
 
-def test_result_action_labels_are_short_and_source_specific() -> None:
+def test_manual_result_view_keeps_location_controls_on_last_row() -> None:
+    view = build_movie_result_actions_view([])
+    buttons = [item for item in view.children if isinstance(item, discord.ui.Button)]
+
+    assert [button.label for button in buttons] == [
+        "Set / Change ZIP",
+        "Use Local",
+        "Show All",
+        "Clear ZIP",
+    ]
+    assert all(button.row == 4 for button in buttons)
+    assert all(button.style != discord.ButtonStyle.link for button in buttons)
+
+
+def test_result_action_labels_keep_title_and_fit_discord_limit() -> None:
     long_title = "A Movie Title " * 30
     drop = _drop(SEEITEARLY_SOURCE_KEY, long_title, "https://seeitearly.com/movies/long-title")
     label, url, emoji = movie_result_action(drop, 8)
 
-    assert label == "#8 Find Pass"
+    assert label.startswith("#8 A Movie Title")
+    assert label.endswith("• Find Pass")
+    assert "…" in label
     assert len(label) <= 80
     assert url == drop.offer_url
     assert emoji == "🔎"
@@ -82,14 +105,14 @@ def test_known_source_with_bad_url_falls_back_only_to_its_own_public_page() -> N
     assert "atomtickets.com" not in seeitearly_url
 
 
-def test_unknown_source_with_bad_url_does_not_get_a_fake_button() -> None:
+def test_unknown_source_with_bad_url_does_not_get_a_fake_result_link() -> None:
     drop = _drop("future_unknown_source", "Mystery Movie", "javascript:alert(1)")
     view = build_movie_result_actions_view([drop])
     embed = discord.Embed(title="Mystery")
 
     annotate_movie_result_embeds([embed], [drop])
 
-    assert list(view.children) == []
+    assert _link_buttons(view) == []
     assert "No safe direct result link" in embed.fields[0].value
 
 
@@ -104,10 +127,10 @@ def test_result_cards_explicitly_point_to_matching_button() -> None:
 
     assert returned is embeds
     assert embeds[0].fields[0].name == "👇 Result #1 action"
-    assert "#1 Check ZIP / Claim" in embeds[0].fields[0].value
+    assert "#1 Movie One • Check ZIP / Claim" in embeds[0].fields[0].value
     assert "do not need to tap the card title" in embeds[0].fields[0].value.lower()
     assert embeds[1].fields[0].name == "👇 Result #2 action"
-    assert "#2 Find Pass" in embeds[1].fields[0].value
+    assert "#2 Movie Two • Find Pass" in embeds[1].fields[0].value
 
 
 def test_slash_latest_attaches_numbered_result_actions() -> None:

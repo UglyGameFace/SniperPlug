@@ -3,133 +3,161 @@
 ## Task / outcome
 **SP-MOVIE-TICKETS-RECOVERY — restore SniperPlug movie tickets end-to-end.**
 
-Target outcome: the existing July 31 permanent movie panel stays useful across deployments; current free-ticket and screening sources are freshness-qualified and truthfully classified; managers can configure alerts directly from the panel; Atom degradation does not poison the whole movie surface; movie cards include trustworthy poster artwork when available; and users always get an obvious action to open/claim a result without needing to discover that a Discord embed title is clickable.
+Target outcome: the existing July 31 permanent movie panel stays useful across deployments; current free-ticket and screening sources are freshness-qualified and truthfully classified; managers can configure alerts directly from the panel; Atom degradation does not poison the whole movie surface; movie cards include trustworthy poster artwork when available; manual results have obvious open/claim actions; and users can optionally save a private ZIP/radius so local browsing does not treat long road trips as nearby screenings.
 
 ## Scope
-`public movie source fetch/discovery → fail-closed parse → per-source state/backoff/fallback → durable freshness-qualified cache → poster enrichment → actionable permanent panel/latest/status → obvious per-result open/claim controls → configured direct-source alert delivery → feedback controls`
+`public movie source fetch/discovery → fail-closed parse → per-source state/backoff/fallback → durable freshness-qualified cache → poster enrichment → actionable panel/latest/status → obvious result actions → optional per-user ZIP/radius local view → configured direct-source alert delivery → feedback controls`
 
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
 
 ## Status
-**#263 is merged and production acceptance exposed one remaining user-facing navigation defect. Follow-up branch `fix/movie-result-ctas-264` adds explicit result actions and is awaiting exact-head executable validation.**
+**#264 is merged. Follow-up branch `fix/movie-user-location-265` implements optional per-user movie ZIP/radius browsing and is awaiting exact-head executable validation.**
 
 Movie milestones:
 - #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
 - #261 merge: `e49acaab9a2c21531407a62ec8cb3622f4d84b6c`
 - #262 merge: `00335c0943c6b9fc214329c8468b35049ac9b23b`
-- #263 validated head: `52dedfd4813886ce09ee877f19d08d566e233448`
 - #263 merge: `85e26ffa76a8a76fe6aac32c98393e2cbd5c54ee`
+- #264 validated head: `01f638eb5e0c80564fddc00d2eb8a05a81206042`
+- #264 merge: `6e745529a13d881a9e651d2cc6dfd221cb7ef4e1`
 
-Previous Walmart delivery work (#256/#257) remains merged; its production acceptance is paused by the explicit movie-task switch.
+Previous Walmart delivery work remains merged; its production acceptance is paused by the explicit movie-task switch.
 
-## Production finding after #263
-The backend/source/artwork changes are not sufficient UX by themselves. Manual movie result cards from both:
-1. `/movies latest`, and
-2. the permanent July 31 panel's **Check Now** action
-were sent as embeds with no attached result-action view. The embed title carried a URL, so a user who already knew Discord titles can be tapped could navigate, but there was no obvious open/claim button.
+## Production finding after #264 work
+SeeItEarly correctly exposed screening discovery, but a user entering ZIP `06484` on the source site still saw New York screening options around 60.9 miles away. A free screening that requires a roughly 120-mile round trip is not meaningfully local for many users.
 
-This is distinct from automatic public movie alerts: `MovieTicketFeedbackView` already gives auto-posted Atom/Fandango/Gofobo alerts an explicit source link button alongside Worked/Didn't work feedback. That working path must remain unchanged.
+The correct product behavior is optional personalization rather than a forced setup wall:
+- users may browse all results without a ZIP;
+- a user may privately save a ZIP and choose 10/25/50/100 miles;
+- Local mode must fail closed on distance/location proof;
+- Show All must remain available at any time;
+- one user's movie ZIP must never alter guild-wide automatic alert configuration.
 
 ## Authoritative execution paths
-### Manual slash result
-`registered_multi_source_movies.MovieTicketsCog.latest`
+### Manual results
+`/movies latest` and July-panel **Check Now**
 → freshness-qualified `store.list_active_drops(limit=8)`
-→ existing poster-aware `_build_drop_embeds`
-→ numbered result annotation
+→ poster-aware embeds
 → shared `build_movie_result_actions_view`
-→ one ephemeral Discord response with cards + explicit link buttons
+→ numbered open/claim links + optional personal location controls
 
-### Permanent panel result
-`MovieCommandGuideCog.send_latest_from_panel`
-→ registered movie cog scan/store/build path
-→ same numbered annotation
-→ same `build_movie_result_actions_view`
-→ one ephemeral Discord response with cards + explicit link buttons
+### Personal location controls
+`Set / Change ZIP`
+→ strict US ZIP/radius validation
+→ live Zippopotam.us ZIP resolution
+→ exact-TEXT per-user persistence
+→ immediate conservative Local result view
+
+`Use Local`
+→ saved ZIP/radius
+→ nearest postal places from Zippopotam.us
+→ Haversine distance bound
+→ SeeItEarly public city pages inside radius
+→ accept only explicitly **Free** movie links inside the city's **What's playing** section
+→ hide distance-unverified local-screening rows
+
+`Show All`
+→ freshness-qualified broad feed without deleting the saved ZIP
+
+`Clear ZIP`
+→ delete only that user's movie-location preference
+→ guild alert destination/config remains untouched
 
 ### Public automatic alerts
-Existing `_deliver_drops` / delivery persistence
-→ `MovieTicketFeedbackView`
-→ Worked / Didn't work + existing official source link button
+Existing direct-source delivery and `MovieTicketFeedbackView` remain unchanged. Per-user location is manual/ephemeral browsing context only.
 
-No replacement or duplicate public alert-control path is introduced.
+## #265 implementation
+- Added `sniperplug/services/movie_user_location.py`.
+- Added exact-TEXT `movie_ticket_user_location_v2` keyed by Discord user ID.
+- ZIP accepts a valid five-digit US ZIP or ZIP+4 and stores the first five digits.
+- Radius is restricted to 10, 25, 50, or 100 miles; default is 25.
+- Zippopotam.us is used as the no-key postal resolver for city/state/coordinates and nearest postal places.
+- Nearby postal places are distance-bounded with Haversine math before SeeItEarly pages are checked.
+- Network work is bounded and cached: ZIP resolution 30 minutes, city pages 10 minutes, at most 8 city pages per Local lookup.
+- Local mode preserves non-screening/global promotions.
+- SeeItEarly screening leads require a matching movie on an in-radius public city page.
+- City parsing is restricted to the **What's playing** section and requires an explicit **Free** label. Paid entries, unknown-status entries, Releasing Soon links, and off-site links cannot prove a local free screening.
+- Gofobo/other title-only local-screening rows remain behind Show All until their feed exposes distance-safe locality proof.
+- The shared #264 result view now also exposes `Set / Change ZIP`, `Use Local`, `Show All`, and `Clear ZIP` on the fifth Discord component row while preserving up to 8 numbered result links on rows 0-3.
+- Location controls live only on ephemeral manual result views; they do not modify guild movie alert configuration.
 
-## #264 implementation
-- Added shared `sniperplug/cogs/movie_result_actions.py` rather than duplicating button logic between slash and panel surfaces.
-- Up to 8 manual results receive numbered, source-specific link buttons:
-  - Atom: `#N Open Atom Promo`
-  - Fandango: `#N Open Offer`
-  - Gofobo: `#N Check ZIP / Claim`
-  - SeeItEarly: `#N Find Pass`
-- Buttons use each result's exact `offer_url` when present and only the corresponding source's known public page as that source's fallback.
-- Buttons are packed two per row across at most four rows, staying within Discord's five-row component limit while remaining usable on mobile.
-- Each result card receives a first field such as `👇 Result #N action` that tells the user exactly which numbered button to tap and explicitly says the title does not need to be tapped.
-- `/movies latest` and permanent-panel **Check Now** both use the same shared annotation + view.
-- Guide copy now describes the numbered actions rather than teaching hidden title-link behavior.
-- Existing automatic public alert feedback/source buttons are untouched.
+## Regression coverage
+`tests/test_movie_user_location_265.py` covers:
+- ZIP / ZIP+4 normalization and invalid ZIP rejection
+- allowed radius values
+- exact large Discord user-ID TEXT round trip
+- save/read/clear lifecycle
+- national promo preservation in Local mode
+- in-radius SeeItEarly match retention
+- roughly 60-mile New York example excluded from a 25-mile Shelton preference
+- distance-unverified Gofobo/local rows hidden
+- fail-closed behavior when city pages cannot be confirmed
+- Haversine distance sanity
+- optional location controls and row placement
+- no guild movie config mutation
 
-## Regression coverage added
-`tests/test_movie_result_actions_264.py` covers:
-- Atom/Fandango/Gofobo/SeeItEarly source-specific labels
-- exact result URL preservation
-- numbering and two-buttons-per-row layout
-- label length safety
-- card annotation and explicit no-title-tap guidance
-- `/movies latest` wiring to the shared view
-- permanent-panel **Check Now** wiring to the same view
-- preservation of the existing public `MovieTicketFeedbackView` controls
+`tests/test_movie_user_location_parser_265.py` covers:
+- only explicitly Free entries in What's playing are accepted
+- Paid and unknown-status entries are rejected
+- Releasing Soon links are rejected
+- a Free badge inside the movie link is accepted
+- off-site links are rejected
 
-## Existing #263 behavior that must remain intact
-- Direct Atom remains authoritative; only 401/403/429 may enter exact-canonical public-index fallback.
-- Indexed fallback never infers/republishes reusable promo codes.
-- Persisted cooldown lanes remain: under 30m no Atom/Bing request, 30m-to-6h Bing-only refresh, >=6h direct Atom reprobe.
+Existing #264 result-action regressions were updated to distinguish source link buttons from the new personal location controls.
+
+## Existing behavior that must remain intact
+- #264 visible numbered result buttons in `/movies latest` and panel Check Now.
+- Direct Atom remains authoritative; only access-block statuses can use the indexed fallback.
+- Indexed Atom fallback never infers reusable promo codes.
+- Atom fallback cooldown lanes remain intact.
 - Fandango/Gofobo artwork remains intact.
-- SeeItEarly may use only allowed TMDB poster assets from its own movie-detail path.
-- SeeItEarly remains supplemental and non-auto-deliverable.
-- July 31 panel migration, alert destination, exact Snowflakes, freshness, dedupe, and feedback remain intact.
+- SeeItEarly poster enrichment remains allowlisted and supplemental/non-auto-deliverable.
+- July 31 panel migration, guild alert destination, exact Snowflakes, source freshness, delivery dedupe, and feedback remain intact.
 
 ## Validation / results
-### #263 baseline
-Exact #263 validated head `52dedfd4813886ce09ee877f19d08d566e233448` on Linux/Ubuntu Python 3.12:
-- targeted movie regressions: 94 passed
+### #264 baseline
+Exact head `01f638eb5e0c80564fddc00d2eb8a05a81206042` on Linux/Ubuntu Python 3.12:
+- targeted movie regressions: 61 passed
 - pip check clean
 - compileall exit 0
 - import smoke: 37 modules / 22 symbols
 - native libsql: 10 passed
-- full pytest: 1,328 passed
+- full pytest: 1,336 passed
 - diff check clean
 
-### #264 current state
-- Structural execution-path inspection complete.
-- Current diff is limited to the shared result-action helper, the two manual result surfaces, new regressions, and this task record.
-- Executable exact-head validation is still required before ready/merge.
-- GitHub-hosted Actions have recently failed before checkout with `runner_id=0` / `steps=[]`; if repeated, do not represent those infrastructure results as executed code tests.
+### #265 current state
+- implementation and regression-writing in progress/structural review
+- exact-head executable validation is still required before ready/merge
+- GitHub-hosted Actions have repeatedly failed before checkout with `runner_id=0` / `steps=[]`; do not represent those infrastructure failures as executed tests
 
 Required before ready/merge:
-- targeted #264 + affected movie tests
+- targeted #265 + affected #264/movie tests
 - `python -m pip check`
 - `python -m compileall -q sniperplug scripts tests`
 - `python scripts/smoke_imports.py`
 - native libsql process tests
 - full `PYTHONHASHSEED=0 python -m pytest -q`
 - `git diff origin/main...HEAD --check`
-- final HEAD verification
-- final PR diff/review-thread inspection
+- exact final HEAD verification
+- final PR diff / review-thread inspection
 
-## Production acceptance after #264 deploy
-1. `/movies latest` shows visible numbered action buttons under the returned result cards.
-2. Permanent July 31 panel → **Check Now** shows the same visible numbered actions.
-3. Every displayed card tells the user which matching button to press.
-4. A user can reach the claim/source page without knowing the embed title is clickable.
-5. Gofobo's action clearly communicates ZIP/claim behavior; SeeItEarly clearly communicates pass discovery.
-6. Existing public auto-post feedback + official link controls remain present.
-7. #263 Atom fallback, source health, posters, freshness, dedupe, Snowflake safety, and panel migration remain intact.
+## Production acceptance after #265 deploy
+1. Manual result views visibly show Set/Change ZIP, Use Local, Show All, and Clear ZIP.
+2. A user can browse without ever setting ZIP.
+3. Saving ZIP `06484` and radius 25 validates as Shelton, CT and immediately returns a conservative Local view.
+4. A New York option around 60 miles away is not presented as local under the 25-mile preference.
+5. Only explicitly free SeeItEarly city entries may satisfy Local mode.
+6. Show All restores broader screening discovery without erasing the saved preference.
+7. Clear ZIP removes only that user's preference.
+8. Another user's results and the guild's automatic alert destination are unchanged.
+9. #263/#264 Atom fallback, posters, source health, numbered result buttons, public feedback controls, freshness, and dedupe remain intact.
 
-Only after executable validation and these live checks pass call movie tickets restored and close this task.
+Only after exact-head executable validation and these live checks pass call the movie-ticket task restored.
 
 ## Risks / boundaries
-- Link buttons navigate only to already-accepted result/source URLs; they do not weaken source proof or classify an aggregator as an issuer.
-- Manual result actions do not create extra network requests.
-- Public auto-alert delivery behavior is deliberately unchanged.
+- Zippopotam.us nearby lookup returns only the nearest 11 postal places. Local mode is intentionally conservative and must not claim exhaustive coverage for a wide radius.
+- At most 8 nearby city pages are checked per Local lookup to bound traffic.
+- Failure to confirm locality hides a screening from Local mode rather than falsely locating it; Show All remains the escape hatch.
 - No CAPTCHA evasion, proxy rotation, browser impersonation, account/login scraping, gated-code guessing, or private invitation scraping.
 
 ## Backlog — not active
@@ -144,4 +172,4 @@ Only after executable validation and these live checks pass call movie tickets r
 - SniperPlug-Site work
 
 ## Next step
-Open the #264 draft PR, inspect its final scoped diff and review state, then run exact-head Python 3.12/native-libsql validation. Merge only the exact validated SHA, deploy, and verify the visible numbered controls in both `/movies latest` and July-panel **Check Now**.
+Open draft #265, inspect the final scoped diff/review state, freeze an exact validation SHA, then run Python 3.12/native-libsql targeted and full validation. Merge only that exact tested SHA.

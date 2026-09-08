@@ -390,6 +390,11 @@ def _decode_duckduckgo_result_url(value: str | None) -> str:
         return ""
     if text.startswith("//"):
         text = f"https:{text}"
+    elif text.startswith("/"):
+        # DuckDuckGo HTML commonly emits relative result redirects such as
+        # /l/?kh=-1&uddg=https%3A%2F%2Fexample.com. Resolve only against an
+        # allowlisted DuckDuckGo origin, then extract the explicit target below.
+        text = f"https://duckduckgo.com{text}"
     parsed = urlparse(text)
     host = (parsed.hostname or "").lower()
     if host in {"duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com"} and parsed.path.startswith("/l/"):

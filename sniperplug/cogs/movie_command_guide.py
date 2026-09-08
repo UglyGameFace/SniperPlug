@@ -171,6 +171,11 @@ class MovieGuidePanelView(discord.ui.View):
         row=1,
     )
     async def latest_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        # Acknowledge at the persistent-view dispatch boundary. Do not rely on
+        # the delegated cog method to be reached before Discord's interaction
+        # deadline; old/reloaded panel bindings must still get an immediate ACK.
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
         await self.cog.send_latest_from_panel(interaction)
 
     @discord.ui.button(
@@ -403,7 +408,10 @@ class MovieCommandGuideCog(commands.Cog):
         )
 
     async def send_latest_from_panel(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # The persistent button normally acknowledges before delegation. Keep
+        # this guard for direct callers/tests and to avoid double-defer errors.
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             await self.refresh_public_panel_from_interaction(interaction)
             movie_cog = self._movie_cog()

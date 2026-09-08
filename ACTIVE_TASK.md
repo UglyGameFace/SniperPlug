@@ -11,7 +11,7 @@ Target outcome: the existing July 31 permanent movie panel remains useful across
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
 
 ## Status
-**#265 and #266 are merged and exact-head validated. Active phase is production acceptance for optional ZIP/local browsing plus Atom fallback v2.**
+**#265 and #266 are merged and exact-head validated. #267 is the active implementation after production showed the permanent panel's Check Now action returning Discord's `This interaction failed`.**
 
 Movie milestones:
 - #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
@@ -34,6 +34,8 @@ Research confirmed:
 - Official Atom `/promotions/<slug>` pages are publicly indexed.
 
 #266 therefore moved indexed confirmation to directory-level search while preserving a strict Atom-only URL allowlist and zero-code fail-closed behavior.
+
+Production acceptance after #266 then exposed a separate permanent-panel interaction defect: pressing **Check Now** returned Discord's `This interaction failed`. The delegated `send_latest_from_panel()` method already deferred immediately, but the persistent `MovieGuidePanelView.latest_button` itself did not acknowledge before delegation. `Alerts Here` already used the safer boundary-ack pattern. Startup inspection confirmed `MovieCommandGuideCog` is loaded in `setup_hook()` and its `cog_load()` registers the persistent view before command sync, with no duplicate Check Now custom-ID registration found.
 
 ## #265 implementation
 - Optional per-user ZIP, stored as exact TEXT Discord user ID.
@@ -63,6 +65,12 @@ Research confirmed:
 - Existing persisted 30-minute index refresh and six-hour direct Atom reprobe timers remain unchanged.
 - Source health says an **official Atom promotions URL** was index-confirmed instead of falsely claiming the canonical hub was confirmed.
 
+## #267 implementation
+- `MovieGuidePanelView.latest_button` now acknowledges the Discord component immediately at the persistent-view dispatch boundary before delegated movie work.
+- `send_latest_from_panel()` now defers only when the interaction has not already been acknowledged, preventing double-defer while remaining safe for direct callers/tests.
+- Source refresh, cached fallback, result rendering, ZIP/local controls, and old-panel self-refresh behavior remain unchanged.
+- New regression coverage verifies ACK-before-delegate ordering, no double ACK, and inner-handler safety after a boundary ACK.
+
 ## Validation / results
 ### #265
 Exact head `69ab983b82032e826a90f9dcb741477bf907685f` on Ubuntu/PRoot Python 3.12 + native libsql:
@@ -85,27 +93,33 @@ Exact head `b03fe817dfb70395a40082c35c31d74259b40683` on Ubuntu/PRoot Python 3.1
 - diff check and worktree clean
 - final HEAD matched the exact validated SHA
 
-The lone warning in both runs is the existing discord.py `audioop` deprecation warning. GitHub-hosted Actions remained red because jobs terminated before checkout with no executable steps; they were not executed test failures.
+### #267
+Pending exact-head Python 3.12/native-libsql validation. Do not merge until targeted dispatch tests, affected movie tests, compile/import smoke, native libsql, full pytest, and diff check are green on one frozen SHA.
+
+The lone warning in prior runs is the existing discord.py `audioop` deprecation warning. GitHub-hosted Actions have repeatedly terminated before checkout with no executable steps; such red checks are not treated as executed test failures.
 
 ## Production acceptance
-After deploying latest `main`:
-1. Optional ZIP controls are visible and usable without forcing setup.
-2. ZIP `06484` with radius 25 resolves to Shelton, CT and does not present ~60-mile New York screenings as local.
-3. Only explicitly free SeeItEarly city entries may satisfy Local mode.
-4. Show All restores broader discovery without erasing the saved preference.
-5. Clear ZIP removes only that user's preference.
-6. Another user's browsing and guild alert destination remain unchanged.
-7. Direct Atom may still report HTTP-blocked, but indexed fallback must succeed when Bing returns an allowlisted official Atom promotions URL.
-8. Status should read `Indexed fallback current` and `official Atom promotions URL confirmed via public index`, not `Stale/unavailable` solely because Bing omitted the canonical hub URL.
-9. No stale public Atom codes may reappear from index snippets.
-10. A successful future direct Atom reprobe must immediately restore direct authority and normal direct health.
-11. Fandango, Gofobo, SeeItEarly, posters, title-labeled result buttons, alert delivery, freshness, dedupe, and feedback must remain intact.
+After deploying the #267 merge plus latest `main`:
+1. Pressing **Check Now** on the existing July 31 permanent panel must receive an immediate Discord acknowledgement instead of `This interaction failed`.
+2. Check Now must then return private movie results or a visible safe error.
+3. Optional ZIP controls are visible and usable without forcing setup.
+4. ZIP `06484` with radius 25 resolves to Shelton, CT and does not present ~60-mile New York screenings as local.
+5. Only explicitly free SeeItEarly city entries may satisfy Local mode.
+6. Show All restores broader discovery without erasing the saved preference.
+7. Clear ZIP removes only that user's preference.
+8. Another user's browsing and guild alert destination remain unchanged.
+9. Direct Atom may still report HTTP-blocked, but indexed fallback must succeed when Bing returns an allowlisted official Atom promotions URL.
+10. Status should read `Indexed fallback current` and `official Atom promotions URL confirmed via public index`, not `Stale/unavailable` solely because Bing omitted the canonical hub URL.
+11. No stale public Atom codes may reappear from index snippets.
+12. A successful future direct Atom reprobe must immediately restore direct authority and normal direct health.
+13. Fandango, Gofobo, SeeItEarly, posters, title-labeled result buttons, alert delivery, freshness, dedupe, and feedback must remain intact.
 
-Do not call the movie-ticket task restored until #265 live locality acceptance and #266 Atom recovery both pass production checks.
+Do not call the movie-ticket task restored until #267 live Check Now acceptance, #265 live locality acceptance, and #266 Atom recovery all pass production checks.
 
 ## Risks / boundaries
 - Local mode is intentionally conservative and not exhaustive at wide radii because the nearby postal source is bounded.
 - Indexed fallback proves only that Bing currently exposes an allowlisted official Atom promotions URL; it does not prove a reusable code or remaining promotion inventory.
+- #267 hardens the component-dispatch ACK boundary; if production still shows `This interaction failed`, collect the exact timestamp/startup/error logs because that would indicate the callback is not being dispatched at all or the event loop is blocked before component dispatch.
 - No CAPTCHA evasion, proxy rotation, browser impersonation, account/login scraping, gated-code guessing, or private invitation scraping.
 
 ## Backlog — not active
@@ -120,4 +134,4 @@ Do not call the movie-ticket task restored until #265 live locality acceptance a
 - SniperPlug-Site work
 
 ## Next step
-Deploy latest `main` and run live production acceptance against the existing July 31 panel, ZIP/local browsing, and Atom source status. Do not resume implementation unless live evidence shows a concrete failure on the merged path.
+Validate frozen #267 exact head in the known-good Ubuntu/PRoot Python 3.12 + native-libsql environment. If green, merge guarded by expected head SHA, deploy latest `main`, then press **Check Now** on the existing July 31 panel and inspect live logs/status. Do not switch tasks until that production acceptance is resolved.

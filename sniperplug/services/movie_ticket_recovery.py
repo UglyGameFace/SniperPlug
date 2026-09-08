@@ -49,9 +49,9 @@ def parse_current_atom_promotions_html(html_text: str) -> AtomPromotionParseResu
     challenge/access-denied document is never accepted as an empty success.
 
     The indexed Atom fallback deliberately produces this same partner-only shell:
-    it can confirm that the canonical promotions URL is present in a public index,
-    but it cannot prove a reusable code. That lets us clear stale codes without
-    upgrading search-index evidence into direct issuer proof.
+    it can confirm that an allowlisted official Atom promotions URL is present in
+    a public index, but it cannot prove a reusable code. That lets us clear stale
+    codes without upgrading search-index evidence into direct issuer proof.
     """
 
     parsed = parse_atom_promotions_html(html_text)
@@ -152,7 +152,7 @@ def movie_source_health_text(
         if indexed_fresh:
             health = (
                 f"Indexed fallback current • direct Atom HTTP access blocked since {direct_blocked} • "
-                f"canonical promotions page confirmed via public index {indexed_confirmed} • "
+                f"official Atom promotions URL confirmed via public index {indexed_confirmed} • "
                 "public reusable codes are not inferred from index snippets"
             )
             if last_error:

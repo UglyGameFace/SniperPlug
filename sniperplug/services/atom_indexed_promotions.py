@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
+import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 
@@ -22,13 +23,22 @@ BING_ALLOWED_HOSTS = frozenset({"bing.com", "www.bing.com"})
 ATOM_INDEXED_FALLBACK_PREFIX = "indexed-fallback:"
 ATOM_DIRECT_BLOCK_MARKER = ";direct-blocked:"
 ATOM_INDEX_MAX_RESPONSE_BYTES = 512_000
-ATOM_INDEX_QUERY = "url:www.atomtickets.com/promotions"
+# Bing's documented `site:` operator searches a directory tree, unlike `url:`
+# which checks one exact URL. Production proved the exact-URL query can omit the
+# hub while legitimate official Atom /promotions/<slug> pages remain indexed.
+ATOM_INDEX_QUERY = "site:www.atomtickets.com/promotions Atom Tickets promotion offer"
 ATOM_INDEX_RECHECK_SECONDS = 30 * 60
 ATOM_DIRECT_REPROBE_SECONDS = 6 * 60 * 60
+_ATOM_PROMOTION_PATH_RE = re.compile(
+    r"^/promotions(?:/([A-Za-z0-9][A-Za-z0-9-]{0,199}))?/?$"
+)
+_INDEX_IDENTITY_TERMS = frozenset({"promotion", "promo", "offer", "ticket"})
 
 
 @dataclass(frozen=True, slots=True)
 class AtomIndexedConfirmation:
+    # Compatibility name retained from #263. This can now be either the
+    # canonical hub or one strictly allowlisted official promotion detail URL.
     canonical_url: str
     title: str
     snippet: str
@@ -45,18 +55,20 @@ class AtomIndexedConfirmation:
     def synthetic_html(self) -> str:
         """Return a zero-public-code Atom shell for the existing fail-closed parser.
 
-        Indexed confirmation proves only that Bing currently exposes the exact
-        canonical Atom promotions page. It is deliberately insufficient proof for
-        a public reusable promo code, so this document contains Partner Promotions
-        only. The current Atom parser therefore clears stale public codes instead
-        of resurrecting them from month-old durable history.
+        Indexed confirmation proves only that a current Bing result points to an
+        official Atom promotions URL. It is deliberately insufficient proof for
+        a public reusable promo code, so this document contains Partner
+        Promotions only. The current Atom parser therefore clears stale public
+        codes instead of resurrecting them from search snippets or old history.
         """
 
         snippet = escape(self.snippet[:1200])
+        official_url = escape(self.canonical_url)
         return (
             "<!doctype html><html><head><title>Atom Tickets Promotions</title></head>"
             "<body><h1>Atom Tickets Promotions</h1><h2>Partner Promotions</h2>"
-            f"<p>Canonical Atom promotions page confirmed in a public search index at {escape(self.observed_at)}.</p>"
+            f"<p>Official Atom promotions URL confirmed in a public search index at {escape(self.observed_at)}.</p>"
+            f"<p>Indexed URL: {official_url}</p>"
             f"<p>{snippet}</p></body></html>"
         )
 
@@ -117,6 +129,20 @@ def atom_indexed_fallback_age_seconds(value: str | None, *, now: datetime | None
 
 
 def normalize_atom_canonical_url(value: str | None) -> str:
+    """Normalize only the canonical promotions hub (legacy/public contract)."""
+
+    normalized = normalize_atom_indexed_promotion_url(value)
+    return ATOM_PROMOTIONS_URL if normalized == ATOM_PROMOTIONS_URL else ""
+
+
+def normalize_atom_indexed_promotion_url(value: str | None) -> str:
+    """Allow only Atom's hub or one-level official promotion detail pages.
+
+    Search-index fallback is intentionally narrower than the general Atom URL
+    allowlist. Query strings/fragments are discarded, deeper paths are rejected,
+    and no redirect/off-domain URL can become issuer evidence.
+    """
+
     text = clean_text(value)
     if not text:
         return ""
@@ -125,10 +151,13 @@ def normalize_atom_canonical_url(value: str | None) -> str:
         return ""
     if (parsed.hostname or "").lower() not in {"atomtickets.com", "www.atomtickets.com"}:
         return ""
-    path = (parsed.path or "/").rstrip("/") or "/"
-    if path != "/promotions":
+    match = _ATOM_PROMOTION_PATH_RE.fullmatch(parsed.path or "/")
+    if match is None:
         return ""
-    return ATOM_PROMOTIONS_URL
+    slug = match.group(1)
+    if not slug:
+        return ATOM_PROMOTIONS_URL
+    return f"{ATOM_PROMOTIONS_URL}/{slug}"
 
 
 def parse_bing_atom_confirmation_rss(
@@ -136,7 +165,12 @@ def parse_bing_atom_confirmation_rss(
     *,
     observed_at: str | None = None,
 ) -> AtomIndexedConfirmation | None:
-    """Accept only the exact canonical Atom promotions result from Bing RSS."""
+    """Confirm an official Atom promotions URL from Bing RSS.
+
+    Prefer the canonical hub when Bing returns it. If Bing omits the hub, accept
+    a strictly allowlisted one-level `/promotions/<slug>` page. Search snippets
+    are identity hints only and can never supply a reusable promo code.
+    """
 
     try:
         root = ET.fromstring(xml_text)
@@ -144,22 +178,24 @@ def parse_bing_atom_confirmation_rss(
         return None
 
     timestamp = observed_at or datetime.now(UTC).isoformat()
+    detail_candidate: AtomIndexedConfirmation | None = None
     for item in root.findall(".//item"):
         title = clean_text(item.findtext("title"))
-        link = normalize_atom_canonical_url(item.findtext("link"))
+        link = normalize_atom_indexed_promotion_url(item.findtext("link"))
         description = clean_text(item.findtext("description"))
-        identity = normalize_text(f"{title} {description}")
-        if not link:
+        if not link or not _indexed_identity_is_atom_promotion(title, description):
             continue
-        if "atom" not in identity or "promotion" not in identity:
-            continue
-        return AtomIndexedConfirmation(
+        confirmation = AtomIndexedConfirmation(
             canonical_url=link,
             title=title or "Atom Tickets Promotions",
             snippet=description,
             observed_at=timestamp,
         )
-    return None
+        if link == ATOM_PROMOTIONS_URL:
+            return confirmation
+        if detail_candidate is None:
+            detail_candidate = confirmation
+    return detail_candidate
 
 
 class AtomIndexedPromotionsClient:
@@ -169,6 +205,8 @@ class AtomIndexedPromotionsClient:
         self.session = session
 
     async def confirm_canonical_page(self) -> AtomIndexedConfirmation:
+        # Method name is retained for compatibility with #263 callers/tests. The
+        # returned confirmation can now safely point at an official detail page.
         headers = {
             "Accept": "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.1",
             "User-Agent": ATOM_USER_AGENT,
@@ -203,9 +241,16 @@ class AtomIndexedPromotionsClient:
         confirmation = parse_bing_atom_confirmation_rss(xml_text)
         if confirmation is None:
             raise RuntimeError(
-                "Bing did not return the exact canonical Atom promotions page, so indexed fallback could not confirm it."
+                "Bing did not return an allowlisted official Atom promotions URL, so indexed fallback could not confirm it."
             )
         return confirmation
+
+
+def _indexed_identity_is_atom_promotion(title: str, description: str) -> bool:
+    identity = normalize_text(f"{title} {description}")
+    if "atom" not in identity:
+        return False
+    return any(term in identity for term in _INDEX_IDENTITY_TERMS)
 
 
 def _parse_iso(value: str | None) -> datetime | None:

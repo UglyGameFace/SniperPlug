@@ -9,6 +9,10 @@ import aiohttp
 import discord
 from discord import app_commands
 
+from sniperplug.cogs.movie_result_actions import (
+    annotate_movie_result_embeds,
+    build_movie_result_actions_view,
+)
 from sniperplug.cogs.movie_tickets import MOVIE_POLL_SECONDS, MovieScanOutcome, _discord_time
 from sniperplug.cogs.multi_source_movie_tickets import (
     MovieTicketsCog as MultiSourceMovieTicketsCog,
@@ -219,15 +223,18 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
 
         content = (
             f"Found **{len(drops)}** recently confirmed movie-ticket offer(s) or screening lead(s). "
+            "Use the numbered buttons below each result stack to open or claim it. "
             "Direct sources are verified at their issuer page; supplemental discovery is labeled separately."
         )
         if refresh_error:
             content += f"\n⚠️ Some live sources could not be confirmed: `{refresh_error}`"
         elif warning:
             content += f"\n⚠️ {warning}"
+        embeds = annotate_movie_result_embeds(await self._build_drop_embeds(drops), drops)
         await interaction.followup.send(
             content=content,
-            embeds=await self._build_drop_embeds(drops),
+            embeds=embeds,
+            view=build_movie_result_actions_view(drops),
             ephemeral=True,
         )
 

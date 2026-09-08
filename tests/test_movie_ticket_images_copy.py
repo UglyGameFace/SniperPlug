@@ -3,6 +3,8 @@ from sniperplug.services.movie_ticket_artwork import (
     extract_atom_movie_image_url,
     normalize_public_code,
     safe_atom_image_url,
+    safe_movie_image_url,
+    safe_seeitearly_movie_url,
 )
 from sniperplug.services.movie_ticket_drops import MovieTicketDrop
 
@@ -13,6 +15,8 @@ POSTER_URL = (
     "v1785343652/ingestion-images-archive-prod/archive/"
     "1785343651883_386514_cops_0.jpg"
 )
+TMDB_POSTER_URL = "https://image.tmdb.org/t/p/w500/7jCV8dkRFK3DGJ4dTqlvrMTFPwZ.jpg"
+SEEITEARLY_MOVIE_URL = "https://seeitearly.com/movies/practical-magic-2"
 
 
 def _drop(code: str = "ATOMICECREAM") -> MovieTicketDrop:
@@ -50,6 +54,29 @@ def test_movie_artwork_allowlist_rejects_non_atom_assets() -> None:
     assert safe_atom_image_url("https://images.atomtickets.com/poster/example.jpg")
     assert safe_atom_image_url("https://example.com/fake-poster.jpg") == ""
     assert safe_atom_image_url("http://atom-tickets-res.cloudinary.com/poster.jpg") == ""
+
+
+def test_seeitearly_movie_page_can_supply_tmdb_poster_without_an_extra_api_key() -> None:
+    proxied = (
+        "https://seeitearly.com/_next/image?"
+        "q=75&url=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F"
+        "7jCV8dkRFK3DGJ4dTqlvrMTFPwZ.jpg&w=3840"
+    )
+    html = f'<html><body><img src="{proxied}" alt="Practical Magic 2 poster"></body></html>'
+    assert safe_seeitearly_movie_url(SEEITEARLY_MOVIE_URL) == SEEITEARLY_MOVIE_URL
+    assert safe_movie_image_url(proxied, page_url=SEEITEARLY_MOVIE_URL) == TMDB_POSTER_URL
+    assert extract_atom_movie_image_url(html, page_url=SEEITEARLY_MOVIE_URL) == TMDB_POSTER_URL
+
+
+def test_seeitearly_artwork_fails_closed_for_wrong_pages_or_external_images() -> None:
+    assert safe_seeitearly_movie_url("https://seeitearly.com/upcoming") == ""
+    assert safe_seeitearly_movie_url("https://example.com/movies/practical-magic-2") == ""
+    assert safe_movie_image_url("https://example.com/poster.jpg", page_url=SEEITEARLY_MOVIE_URL) == ""
+    evil_proxy = (
+        "https://seeitearly.com/_next/image?"
+        "url=https%3A%2F%2Fexample.com%2Fposter.jpg&w=3840"
+    )
+    assert safe_movie_image_url(evil_proxy, page_url=SEEITEARLY_MOVIE_URL) == ""
 
 
 def test_promo_code_normalization_removes_quotes_backticks_and_spaces() -> None:

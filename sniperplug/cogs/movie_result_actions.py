@@ -128,12 +128,21 @@ class MovieZipModal(discord.ui.Modal, title="Movie screening location"):
             )
             return
 
-        preference = await save_movie_user_location(
-            self.movie_cog.bot.db,
-            user_id=self.user_id,
-            zip_code=zip_code,
-            radius_miles=radius,
-        )
+        try:
+            preference = await save_movie_user_location(
+                self.movie_cog.bot.db,
+                user_id=self.user_id,
+                zip_code=zip_code,
+                radius_miles=radius,
+            )
+        except Exception as error:  # noqa: BLE001 - persistence failures must not kill the interaction.
+            await interaction.followup.send(
+                "The ZIP was valid, but SniperPlug could not save your movie-location preference. "
+                f"Nothing was changed. Error: `{clean_text(str(error))[:300]}`",
+                ephemeral=True,
+            )
+            return
+
         await interaction.followup.send(
             f"✅ Saved privately for **your** movie browsing: **{place.city}, {place.state}** • "
             f"ZIP `{preference.zip_code}` • **{preference.radius_miles} mi**.\n"
@@ -157,9 +166,11 @@ class _SetMovieZipButton(discord.ui.Button):
         if movie_cog is None:
             await interaction.response.send_message("The movie-ticket monitor is unavailable.", ephemeral=True)
             return
-        current = await get_movie_user_location(movie_cog.bot.db, user_id=int(interaction.user.id))
+        # A modal must be the interaction's first response. Do not wait on Turso
+        # just to prefill fields; a slow database must never turn this button into
+        # Discord's generic "Interaction failed" message.
         await interaction.response.send_modal(
-            MovieZipModal(movie_cog, user_id=int(interaction.user.id), current=current)
+            MovieZipModal(movie_cog, user_id=int(interaction.user.id))
         )
 
 
@@ -177,15 +188,15 @@ class _UseLocalMovieButton(discord.ui.Button):
         if movie_cog is None:
             await interaction.response.send_message("The movie-ticket monitor is unavailable.", ephemeral=True)
             return
-        preference = await get_movie_user_location(movie_cog.bot.db, user_id=int(interaction.user.id))
-        if preference is None:
-            await interaction.response.send_message(
-                "Set your ZIP first, then **Use Local** will hide distance-unverified screening leads.",
-                ephemeral=True,
-            )
-            return
+        # Acknowledge before any database or network I/O. Turso and screening
+        # sources are allowed to be slow; Discord's interaction deadline is not.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await _send_personal_movie_results(interaction, movie_cog, show_all=False)
+        await _send_personal_movie_results(
+            interaction,
+            movie_cog,
+            show_all=False,
+            require_saved_location=True,
+        )
 
 
 class _ShowAllMoviesButton(discord.ui.Button):
@@ -221,7 +232,15 @@ class _ClearMovieZipButton(discord.ui.Button):
             await interaction.response.send_message("The movie-ticket monitor is unavailable.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        await clear_movie_user_location(movie_cog.bot.db, user_id=int(interaction.user.id))
+        try:
+            await clear_movie_user_location(movie_cog.bot.db, user_id=int(interaction.user.id))
+        except Exception as error:  # noqa: BLE001 - persistence failures must be visible after defer.
+            await interaction.followup.send(
+                "SniperPlug could not clear your movie ZIP right now. "
+                f"Error: `{clean_text(str(error))[:300]}`",
+                ephemeral=True,
+            )
+            return
         await interaction.followup.send(
             "Your personal movie ZIP was cleared. Nothing about the server's alert destination changed.",
             ephemeral=True,
@@ -287,9 +306,29 @@ async def _send_personal_movie_results(
     movie_cog: Any,
     *,
     show_all: bool,
+    require_saved_location: bool = False,
 ) -> None:
-    all_drops = await movie_cog.store.list_active_drops(limit=MAX_MANUAL_RESULT_ACTIONS)
-    preference = await get_movie_user_location(movie_cog.bot.db, user_id=int(interaction.user.id))
+    try:
+        all_drops = await movie_cog.store.list_active_drops(limit=MAX_MANUAL_RESULT_ACTIONS)
+        preference = await get_movie_user_location(
+            movie_cog.bot.db,
+            user_id=int(interaction.user.id),
+        )
+    except Exception as error:  # noqa: BLE001 - manual UI should fail visibly, never vanish.
+        await interaction.followup.send(
+            "SniperPlug could not load your movie results/location preference right now. "
+            f"Error: `{clean_text(str(error))[:300]}`",
+            ephemeral=True,
+        )
+        return
+
+    if require_saved_location and preference is None:
+        await interaction.followup.send(
+            "Set your ZIP first, then **Use Local** will hide distance-unverified screening leads.",
+            view=build_movie_result_actions_view(list(all_drops)),
+            ephemeral=True,
+        )
+        return
 
     if show_all or preference is None:
         selected = list(all_drops)
@@ -311,18 +350,27 @@ async def _send_personal_movie_results(
                 "The location resolver is temporarily unavailable, so distance-unverified screening leads are hidden."
             )
         else:
-            local = await filter_movie_drops_for_location(session, list(all_drops), preference)
-            selected = list(local.drops)
-            location_line = (
-                f"📍 **Local mode:** ZIP `{preference.zip_code}` • **{preference.radius_miles} mi** • "
-                f"confirmed local screening titles **{local.matched_screening_count}**"
-            )
-            if local.hidden_screening_count:
-                location_line += (
-                    f" • distance-unverified screening leads hidden **{local.hidden_screening_count}**"
+            try:
+                local = await filter_movie_drops_for_location(session, list(all_drops), preference)
+            except Exception as error:  # noqa: BLE001 - fail closed when local proof cannot be built.
+                selected = [drop for drop in all_drops if drop.classification != "local_screening"]
+                location_line = (
+                    f"📍 **Local mode:** ZIP `{preference.zip_code}` • **{preference.radius_miles} mi**. "
+                    "Local screening proof could not be refreshed, so distance-unverified screenings are hidden. "
+                    f"Error: `{clean_text(str(error))[:220]}`"
                 )
-            if local.note:
-                location_line += f"\n{local.note}"
+            else:
+                selected = list(local.drops)
+                location_line = (
+                    f"📍 **Local mode:** ZIP `{preference.zip_code}` • **{preference.radius_miles} mi** • "
+                    f"confirmed local screening titles **{local.matched_screening_count}**"
+                )
+                if local.hidden_screening_count:
+                    location_line += (
+                        f" • distance-unverified screening leads hidden **{local.hidden_screening_count}**"
+                    )
+                if local.note:
+                    location_line += f"\n{local.note}"
 
     if not selected:
         await interaction.followup.send(
@@ -333,10 +381,21 @@ async def _send_personal_movie_results(
         )
         return
 
-    embeds = annotate_movie_result_embeds(
-        await movie_cog._build_drop_embeds(selected),  # noqa: SLF001 - shared manual-result UI.
-        selected,
-    )
+    try:
+        embeds = annotate_movie_result_embeds(
+            await movie_cog._build_drop_embeds(selected),  # noqa: SLF001 - shared manual-result UI.
+            selected,
+        )
+    except Exception as error:  # noqa: BLE001 - preserve a usable interaction if artwork/rendering fails.
+        await interaction.followup.send(
+            location_line
+            + "\nSniperPlug found movie results but could not render their cards right now. "
+            f"Error: `{clean_text(str(error))[:220]}`",
+            view=build_movie_result_actions_view(selected),
+            ephemeral=True,
+        )
+        return
+
     await interaction.followup.send(
         content=(
             location_line

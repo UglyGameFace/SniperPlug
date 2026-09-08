@@ -11,7 +11,7 @@ Target outcome: the existing July 31 permanent movie panel remains useful across
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
 
 ## Status
-**#265, #266, and #267 are merged and exact-head validated. The active task is now production acceptance of the movie-ticket recovery stack.**
+**#265, #266, and #267 are merged and exact-head validated. Production acceptance proved Atom recovery is still incomplete. #268 is the active implementation slice.**
 
 Movie milestones:
 - #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
@@ -27,109 +27,89 @@ Movie milestones:
 - #267 merge: `6feaa14ac6bf327a57000adf9e20f76542d9cbd6`
 
 ## Root cause / findings
-Production direct Atom still receives HTTP 403. #263's indexed recovery also failed because it asked Bing to confirm one exact URL using `url:www.atomtickets.com/promotions` and rejected legitimate official detail pages such as `/promotions/<slug>`.
+Direct Atom promotion-page requests from production still return HTTP 403.
 
-Research confirmed:
-- Microsoft's `url:` operator checks one exact URL/domain index identity.
-- Microsoft's `site:` operator searches a site or directory tree.
-- Atom's canonical promotions hub is publicly live.
-- Official Atom `/promotions/<slug>` pages are publicly indexed.
+Earlier indexed recovery evolved in two steps:
+- #263 used Bing `url:` against one exact canonical `/promotions` URL and failed when Bing omitted that exact hub.
+- #266 switched to a strict `site:www.atomtickets.com/promotions` directory query and allowed the canonical hub or exactly one-level official `/promotions/<slug>` pages.
 
-#266 therefore moved indexed confirmation to directory-level search while preserving a strict Atom-only URL allowlist and zero-code fail-closed behavior.
+Production after #266 still reports:
+`Official Atom promotions page returned HTTP 403; indexed fallback also failed: Bing did not return an allowlisted official Atom promotions URL.`
 
-Production acceptance after #266 then exposed a separate permanent-panel interaction defect: pressing **Check Now** returned Discord's `This interaction failed`. The delegated `send_latest_from_panel()` method already deferred immediately, but the persistent `MovieGuidePanelView.latest_button` itself did not acknowledge before delegation. `Alerts Here` already used the safer boundary-ack pattern. Startup inspection confirmed `MovieCommandGuideCog` is loaded in `setup_hook()` and its `cog_load()` registers the persistent view before command sync, with no duplicate Check Now custom-ID registration found.
+This proves the remaining failure is no longer the Atom URL matcher. **Bing RSS itself is an unreliable single discovery dependency from the production host.** Public web research on 2026-09-08 can see the live Atom promotions hub and multiple official promotion-detail pages while SniperPlug's Bing RSS response exposes none.
 
-## #265 implementation
-- Optional per-user ZIP, stored as exact TEXT Discord user ID.
-- Radius choices: 10 / 25 / 50 / 100 miles; default 25.
-- `Set / Change ZIP`, `Use Local`, `Show All`, and `Clear ZIP` controls on manual result views.
-- Zippopotam.us ZIP/nearby resolution with Haversine distance bounds.
-- SeeItEarly city-page proof restricted to explicitly **Free** entries inside **What's playing**.
-- Distance-unverified screening leads are hidden in Local mode while national/non-screening promos remain available.
-- ZIP validation shares the location cache with the immediate Local view.
-- At most 8 nearby city pages considered and at most 4 fetched concurrently.
-- Set/Change ZIP opens its modal before Turso work; Use Local defers before DB/network work.
-- DB/source/render failures return visible ephemeral errors and remain fail-closed.
-- Manual result buttons include the actual movie title within Discord's label limit.
-- Guild-wide automatic alert configuration is untouched by personal ZIP settings.
+Atom's published terms grant public search engines permission to index its public pages, so #268 consumes public search-index results rather than bypassing Atom's direct HTTP access control. Search snippets remain non-authoritative and can never create reusable promo codes.
 
-## #266 implementation
-- Direct Atom remains authoritative and is still tried first whenever its six-hour reprobe is due.
-- Indexed fallback still activates only after explicit Atom access-block responses: 401, 403, or 429.
-- Bing query changed from exact `url:` lookup to `site:www.atomtickets.com/promotions ...` directory search.
-- Canonical `/promotions` is preferred when present.
-- Otherwise exactly one-level official `/promotions/<slug>` URLs are allowed.
-- HTTPS plus exact `atomtickets.com` / `www.atomtickets.com` host requirement remains fail-closed.
-- HTTP, off-domain, nested promotion paths, encoded-path tricks, unrelated Atom paths, and unsupported Atom subdomains are rejected.
-- Query strings and fragments are stripped from accepted indexed URLs.
-- Search result title/description must still identify Atom plus promotion/offer/ticket context.
-- Indexed snippets never produce reusable promo codes; stale Atom codes are cleared rather than inferred.
-- Existing persisted 30-minute index refresh and six-hour direct Atom reprobe timers remain unchanged.
-- Source health says an **official Atom promotions URL** was index-confirmed instead of falsely claiming the canonical hub was confirmed.
+## Existing merged behavior that must remain intact
+### #265
+- Optional per-user ZIP stored with exact TEXT Discord user ID.
+- Radius choices 10 / 25 / 50 / 100 miles, default 25.
+- Set/Change ZIP, Use Local, Show All, Clear ZIP.
+- Zippopotam ZIP/nearby resolution + Haversine bounds.
+- SeeItEarly local proof only from explicitly Free entries inside What's playing.
+- Distance-unverified screenings hidden in Local mode; broad discovery remains under Show All.
+- Result buttons carry actual movie titles.
 
-## #267 implementation
-- `MovieGuidePanelView.latest_button` now acknowledges the Discord component immediately at the persistent-view dispatch boundary before delegated movie work.
-- `send_latest_from_panel()` now defers only when the interaction has not already been acknowledged, preventing double-defer while remaining safe for direct callers/tests.
-- Source refresh, cached fallback, result rendering, ZIP/local controls, and old-panel self-refresh behavior remain unchanged.
-- New regression coverage verifies ACK-before-delegate ordering, no double ACK, and inner-handler safety after a boundary ACK.
+### #266
+- Direct Atom remains authoritative and is reprobed every six hours while blocked.
+- Indexed fallback activates only after 401/403/429.
+- Strict HTTPS `atomtickets.com` / `www.atomtickets.com` allowlist.
+- Only `/promotions` or one-level `/promotions/<slug>` URLs qualify.
+- Search snippets produce zero reusable codes.
+- 30-minute indexed refresh / six-hour direct reprobe markers remain persistent.
+
+### #267
+- Permanent-panel Check Now acknowledges at the Discord component boundary before delegated work.
+- No double-defer for already acknowledged interactions.
+
+## #268 implementation
+- Preserve Bing RSS as the first indexed confirmation source.
+- If Bing returns no allowlisted Atom result, query DuckDuckGo's public no-JS HTML search surface with the same bounded Atom directory query.
+- Parse only DuckDuckGo result-title anchors (`result__a`).
+- Decode DuckDuckGo result redirects only through the explicit `uddg` target parameter.
+- Re-run every candidate through the same strict Atom promotion URL normalizer used by #266.
+- Require Atom + promotion/offer/ticket identity in the result title.
+- Prefer the canonical `/promotions` hub when available; otherwise accept the first strictly allowlisted one-level detail page.
+- Keep indexed snippets non-authoritative: synthetic fallback HTML still yields zero reusable promo codes and clears stale Atom code history.
+- Keep direct Atom first and preserve all cooldown/reprobe behavior.
+- Report both index-provider failures when neither index can confirm an official Atom URL.
 
 ## Validation / results
 ### #265
-Exact head `69ab983b82032e826a90f9dcb741477bf907685f` on Ubuntu/PRoot Python 3.12 + native libsql:
-- targeted movie tests: passed
-- pip check clean
-- compileall exit 0
-- import smoke: 37 modules / 22 symbols
-- native libsql: 10 passed
-- full pytest: **1,353 passed, 1 warning**
-- diff check and worktree clean
+Ubuntu/PRoot Python 3.12 + native libsql: targeted passed, pip check clean, compileall 0, import smoke 37 modules / 22 symbols, native libsql 10 passed, full pytest **1,353 passed, 1 warning**, diff/worktree clean.
 
 ### #266
-Exact head `b03fe817dfb70395a40082c35c31d74259b40683` on Ubuntu/PRoot Python 3.12 + native libsql:
-- targeted Atom v2 + affected movie tests: passed
-- pip check clean
-- compileall exit 0
-- import smoke: 37 modules / 22 symbols
-- native libsql: 10 passed
-- full pytest: **1,359 passed, 1 warning**
-- diff check and worktree clean
-- final HEAD matched the exact validated SHA
+Exact head `b03fe817dfb70395a40082c35c31d74259b40683`: targeted passed, pip check clean, compileall 0, import smoke 37/22, native libsql 10 passed, full pytest **1,359 passed, 1 warning**, diff/worktree clean.
 
 ### #267
-Exact head `a7de3231f7089b0e956f99cb7e2f2d97dcf6db37` on Ubuntu/PRoot Python 3.12 + native libsql:
-- targeted #267 movie tests: passed
-- pip check clean
-- compileall exit 0
-- import smoke: 37 modules / 22 symbols
-- native libsql: 10 passed
-- full pytest: **1,362 passed, 1 warning**
-- diff check and worktree clean
-- final HEAD matched the exact validated SHA
+Exact head `a7de3231f7089b0e956f99cb7e2f2d97dcf6db37`: targeted passed, pip check clean, compileall 0, import smoke 37/22, native libsql 10 passed, full pytest **1,362 passed, 1 warning**, diff/worktree clean.
 
-The lone warning is the existing discord.py `audioop` deprecation warning. GitHub-hosted Actions have repeatedly terminated before checkout with no executable steps; such red checks are not treated as executed test failures.
+### #268
+**Not yet validated.** New regression coverage includes:
+- DuckDuckGo redirect decoding to an official Atom promo detail URL;
+- canonical hub preference;
+- rejection of off-domain/wrong-path/non-result/non-Atom candidates;
+- the exact production shape: Bing 200 with no Atom result followed by successful second-index confirmation;
+- stopping after Bing when Bing succeeds;
+- combined provider diagnostics when both indexes fail;
+- fallback synthetic HTML remains zero-code.
+
+The lone known warning in prior runs is the existing discord.py `audioop` deprecation warning. GitHub-hosted Actions have repeatedly terminated before checkout with no executable steps; such red checks are not treated as executed test failures.
 
 ## Production acceptance
-After deploying latest `main`:
-1. Pressing **Check Now** on the existing July 31 permanent panel must receive an immediate Discord acknowledgement instead of `This interaction failed`.
-2. Check Now must then return private movie results or a visible safe error.
-3. Optional ZIP controls are visible and usable without forcing setup.
-4. ZIP `06484` with radius 25 resolves to Shelton, CT and does not present ~60-mile New York screenings as local.
-5. Only explicitly free SeeItEarly city entries may satisfy Local mode.
-6. Show All restores broader discovery without erasing the saved preference.
-7. Clear ZIP removes only that user's preference.
-8. Another user's browsing and guild alert destination remain unchanged.
-9. Direct Atom may still report HTTP-blocked, but indexed fallback must succeed when Bing returns an allowlisted official Atom promotions URL.
-10. Status should read `Indexed fallback current` and `official Atom promotions URL confirmed via public index`, not `Stale/unavailable` solely because Bing omitted the canonical hub URL.
-11. No stale public Atom codes may reappear from index snippets.
-12. A successful future direct Atom reprobe must immediately restore direct authority and normal direct health.
-13. Fandango, Gofobo, SeeItEarly, posters, title-labeled result buttons, alert delivery, freshness, dedupe, and feedback must remain intact.
+After #268 is validated, merged, and deployed:
+1. Direct Atom may still be HTTP 403.
+2. If Bing RSS omits Atom but DuckDuckGo exposes an allowlisted official Atom promotions URL, Atom source health must become `Indexed fallback current` instead of `Stale/unavailable`.
+3. No reusable promo code may be inferred from either search index.
+4. A future successful direct Atom reprobe must immediately restore direct authority.
+5. Check Now, ZIP/local filtering, Show All, posters, title-labeled result buttons, Fandango, Gofobo, SeeItEarly, alert delivery, freshness, dedupe, and feedback must remain intact.
 
-Do not call the movie-ticket task restored until #267 live Check Now acceptance, #265 live locality acceptance, and #266 Atom recovery all pass production checks.
+Do not call the movie-ticket task restored until #268 Atom production acceptance passes.
 
 ## Risks / boundaries
-- Local mode is intentionally conservative and not exhaustive at wide radii because the nearby postal source is bounded.
-- Indexed fallback proves only that Bing currently exposes an allowlisted official Atom promotions URL; it does not prove a reusable code or remaining promotion inventory.
-- #267 hardens the component-dispatch ACK boundary; if production still shows `This interaction failed`, collect the exact timestamp/startup/error logs because that would indicate the callback is not being dispatched at all or the event loop is blocked before component dispatch.
+- Public search indexes can independently omit results or rate-limit; #268 removes Bing as a single point of failure but still fails closed if neither index confirms Atom.
+- DuckDuckGo HTML is a public no-JS search surface, not a formal paid API, so parser breakage/rate-limiting remains possible and is surfaced as provider-specific failure rather than silently accepted.
+- Indexed confirmation proves only that a public index currently exposes an allowlisted official Atom promotions URL. It does not prove a reusable code or remaining inventory.
 - No CAPTCHA evasion, proxy rotation, browser impersonation, account/login scraping, gated-code guessing, or private invitation scraping.
 
 ## Backlog — not active
@@ -144,4 +124,4 @@ Do not call the movie-ticket task restored until #267 live Check Now acceptance,
 - SniperPlug-Site work
 
 ## Next step
-Deploy latest `main`, then perform live production acceptance on the existing July 31 panel: press **Check Now**, exercise Set ZIP / Use Local / Show All / Clear ZIP, and inspect Atom source health after the next refresh. Do not switch tasks until that production acceptance is resolved.
+Open #268 as draft, inspect the final diff/review state, freeze an exact head, then run targeted + full Python 3.12/native-libsql validation in the known-good Ubuntu/PRoot environment before ready/merge.

@@ -8,6 +8,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.cogs.movie_result_actions import (
+    annotate_movie_result_embeds,
+    build_movie_result_actions_view,
+)
 from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
 from sniperplug.services.fandango_movie_offers import FANDANGO_OFFERS_URL
 from sniperplug.services.gofobo_screenings import GOFOBO_HOME_URL
@@ -427,9 +431,13 @@ class MovieCommandGuideCog(commands.Cog):
                 await interaction.followup.send(message, ephemeral=True)
                 return
 
-            embeds = await movie_cog._build_drop_embeds(drops)  # noqa: SLF001
+            embeds = annotate_movie_result_embeds(
+                await movie_cog._build_drop_embeds(drops),  # noqa: SLF001
+                drops,
+            )
             content = (
                 f"Found **{len(drops)}** recently confirmed ticket offer(s) or screening lead(s). "
+                "Use the numbered buttons below to open or claim a matching result. "
                 "Direct-source and supplemental discovery results are labeled separately."
             )
             if refresh_error:
@@ -437,7 +445,12 @@ class MovieCommandGuideCog(commands.Cog):
                     "\nSome sources could not be refreshed live; only freshness-qualified results are shown: "
                     f"`{refresh_error}`"
                 )
-            await interaction.followup.send(content=content, embeds=embeds, ephemeral=True)
+            await interaction.followup.send(
+                content=content,
+                embeds=embeds,
+                view=build_movie_result_actions_view(drops),
+                ephemeral=True,
+            )
         except Exception as error:  # noqa: BLE001 - always return a visible component result.
             log.exception("Movie guide latest button failed guild=%s", interaction.guild_id)
             await _send_component_error(interaction, error)
@@ -506,7 +519,10 @@ def build_movie_guide_home_embed() -> discord.Embed:
     )
     embed.add_field(
         name="🎟️ Check now",
-        value="Press **Check Now** to refresh every connected source and privately show current results.",
+        value=(
+            "Press **Check Now** to refresh every connected source and privately show current results. "
+            "Every result gets an obvious numbered open/claim button below the cards."
+        ),
         inline=False,
     )
     embed.add_field(
@@ -562,7 +578,10 @@ def _build_start_section() -> discord.Embed:
     )
     embed.add_field(
         name="3. Claim from the linked provider",
-        value="Open the result, verify your city/date/rules, and claim before free inventory fills.",
+        value=(
+            "Tap the numbered **Open / Claim** button that matches the result card. "
+            "You never need to know that a Discord embed title happens to be clickable."
+        ),
         inline=False,
     )
     embed.add_field(
@@ -577,7 +596,10 @@ def _build_user_section() -> discord.Embed:
     embed = discord.Embed(title="🎟️ Find Tickets", color=GUIDE_COLOR)
     embed.add_field(
         name="Check Now",
-        value="Refreshes Atom, Fandango, Gofobo, and bounded SeeItEarly discovery, then shows freshness-qualified results privately.",
+        value=(
+            "Refreshes Atom, Fandango, Gofobo, and bounded SeeItEarly discovery, then shows freshness-qualified results privately. "
+            "Each result has a matching numbered action button below the cards."
+        ),
         inline=False,
     )
     embed.add_field(
@@ -590,7 +612,7 @@ def _build_user_section() -> discord.Embed:
     )
     embed.add_field(
         name="Advanced fallback",
-        value="`/movies latest` refreshes results and `/movies sources` explains source coverage.",
+        value="`/movies latest` refreshes results with the same action buttons and `/movies sources` explains source coverage.",
         inline=False,
     )
     return embed

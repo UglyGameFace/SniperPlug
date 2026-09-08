@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any
@@ -348,16 +348,27 @@ class AtomPromotionsClient:
         self.session = session
 
     async def fetch(self, state: MovieTicketSourceState | None = None) -> AtomFetchResult:
+        # An indexed-fallback marker is SniperPlug state, not a legal HTTP
+        # validator. Strip it (and any stale ETag paired with it) before probing
+        # Atom again so direct service can recover immediately when access opens.
+        direct_state = state
+        if state is not None:
+            from sniperplug.services.atom_indexed_promotions import is_atom_indexed_fallback_marker
+
+            if is_atom_indexed_fallback_marker(state.last_modified):
+                direct_state = replace(state, etag="", last_modified="")
+
         headers = {
             "Accept": "text/html,application/xhtml+xml",
             "User-Agent": ATOM_USER_AGENT,
         }
-        if state and state.etag:
-            headers["If-None-Match"] = state.etag
-        if state and state.last_modified:
-            headers["If-Modified-Since"] = state.last_modified
+        if direct_state and direct_state.etag:
+            headers["If-None-Match"] = direct_state.etag
+        if direct_state and direct_state.last_modified:
+            headers["If-Modified-Since"] = direct_state.last_modified
 
         timeout = aiohttp.ClientTimeout(total=ATOM_REQUEST_TIMEOUT_SECONDS, connect=5)
+        blocked_status = 0
         async with self.session.get(
             ATOM_PROMOTIONS_URL,
             headers=headers,
@@ -367,30 +378,57 @@ class AtomPromotionsClient:
             final_url = str(response.url)
             if not safe_atom_url(final_url):
                 raise RuntimeError("Atom promotions request redirected outside the official Atom allowlist.")
-            if response.status == 304:
+            if response.status in {401, 403, 429}:
+                blocked_status = int(response.status)
+            elif response.status == 304:
                 return AtomFetchResult(
                     not_modified=True,
-                    etag=response.headers.get("ETag", state.etag if state else ""),
-                    last_modified=response.headers.get("Last-Modified", state.last_modified if state else ""),
+                    etag=response.headers.get("ETag", direct_state.etag if direct_state else ""),
+                    last_modified=response.headers.get(
+                        "Last-Modified",
+                        direct_state.last_modified if direct_state else "",
+                    ),
                     final_url=final_url,
                 )
-            if response.status != 200:
+            elif response.status != 200:
                 raise RuntimeError(f"Official Atom promotions page returned HTTP {response.status}.")
-            payload = await response.read()
-            if len(payload) > ATOM_MAX_RESPONSE_BYTES:
-                raise RuntimeError("Official Atom promotions page exceeded the safe response-size limit.")
-            charset = response.charset or "utf-8"
-            try:
-                html_text = payload.decode(charset, errors="replace")
-            except LookupError:
-                html_text = payload.decode("utf-8", errors="replace")
-            return AtomFetchResult(
-                not_modified=False,
-                html=html_text,
-                etag=response.headers.get("ETag", ""),
-                last_modified=response.headers.get("Last-Modified", ""),
-                final_url=final_url,
-            )
+            else:
+                payload = await response.read()
+                if len(payload) > ATOM_MAX_RESPONSE_BYTES:
+                    raise RuntimeError("Official Atom promotions page exceeded the safe response-size limit.")
+                charset = response.charset or "utf-8"
+                try:
+                    html_text = payload.decode(charset, errors="replace")
+                except LookupError:
+                    html_text = payload.decode("utf-8", errors="replace")
+                return AtomFetchResult(
+                    not_modified=False,
+                    html=html_text,
+                    etag=response.headers.get("ETag", ""),
+                    last_modified=response.headers.get("Last-Modified", ""),
+                    final_url=final_url,
+                )
+
+        # The direct Atom response has been released before the fallback performs
+        # its own bounded request. Search-index evidence only confirms the exact
+        # canonical promotions page; it never supplies or guesses a promo code.
+        from sniperplug.services.atom_indexed_promotions import AtomIndexedPromotionsClient
+
+        try:
+            confirmation = await AtomIndexedPromotionsClient(self.session).confirm_canonical_page()
+        except Exception as fallback_error:
+            raise RuntimeError(
+                f"Official Atom promotions page returned HTTP {blocked_status}; "
+                f"indexed fallback also failed: {clean_text(str(fallback_error))[:300]}"
+            ) from fallback_error
+
+        return AtomFetchResult(
+            not_modified=False,
+            html=confirmation.synthetic_html,
+            etag="",
+            last_modified=confirmation.state_marker,
+            final_url=confirmation.canonical_url,
+        )
 
 
 class MovieTicketStore:

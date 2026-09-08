@@ -348,15 +348,55 @@ class AtomPromotionsClient:
         self.session = session
 
     async def fetch(self, state: MovieTicketSourceState | None = None) -> AtomFetchResult:
-        # An indexed-fallback marker is SniperPlug state, not a legal HTTP
-        # validator. Strip it (and any stale ETag paired with it) before probing
-        # Atom again so direct service can recover immediately when access opens.
-        direct_state = state
-        if state is not None:
-            from sniperplug.services.atom_indexed_promotions import is_atom_indexed_fallback_marker
+        from sniperplug.services.atom_indexed_promotions import (
+            ATOM_DIRECT_REPROBE_SECONDS,
+            ATOM_INDEX_RECHECK_SECONDS,
+            AtomIndexedPromotionsClient,
+            atom_indexed_fallback_age_seconds,
+            build_atom_indexed_fallback_marker,
+            parse_atom_indexed_fallback_marker,
+        )
 
-            if is_atom_indexed_fallback_marker(state.last_modified):
-                direct_state = replace(state, etag="", last_modified="")
+        # Indexed fallback state carries two persisted observations: the last
+        # successful public-index confirmation and the last direct Atom access
+        # block. While the direct block is cooling down, avoid hitting Atom again.
+        # The public index is refreshed more often so the fallback itself cannot
+        # silently become stale. Both windows survive process restarts.
+        indexed_state = None
+        indexed_ages = None
+        if state is not None:
+            indexed_state = parse_atom_indexed_fallback_marker(state.last_modified)
+            indexed_ages = atom_indexed_fallback_age_seconds(state.last_modified)
+
+        if indexed_state is not None and indexed_ages is not None:
+            indexed_age, direct_blocked_age = indexed_ages
+            if direct_blocked_age < ATOM_DIRECT_REPROBE_SECONDS:
+                if indexed_age < ATOM_INDEX_RECHECK_SECONDS:
+                    return AtomFetchResult(
+                        not_modified=True,
+                        etag="",
+                        last_modified=state.last_modified,
+                        final_url=ATOM_PROMOTIONS_URL,
+                    )
+
+                confirmation = await AtomIndexedPromotionsClient(self.session).confirm_canonical_page()
+                return AtomFetchResult(
+                    not_modified=False,
+                    html=confirmation.synthetic_html,
+                    etag="",
+                    last_modified=build_atom_indexed_fallback_marker(
+                        indexed_at=confirmation.observed_at,
+                        direct_blocked_at=indexed_state.direct_blocked_at,
+                    ),
+                    final_url=confirmation.canonical_url,
+                )
+
+        # An indexed-fallback marker is SniperPlug state, not a legal HTTP
+        # validator. Once the six-hour direct reprobe is due, strip it (and any
+        # stale ETag paired with it) before probing Atom again.
+        direct_state = state
+        if indexed_state is not None:
+            direct_state = replace(state, etag="", last_modified="")
 
         headers = {
             "Accept": "text/html,application/xhtml+xml",
@@ -412,8 +452,6 @@ class AtomPromotionsClient:
         # The direct Atom response has been released before the fallback performs
         # its own bounded request. Search-index evidence only confirms the exact
         # canonical promotions page; it never supplies or guesses a promo code.
-        from sniperplug.services.atom_indexed_promotions import AtomIndexedPromotionsClient
-
         try:
             confirmation = await AtomIndexedPromotionsClient(self.session).confirm_canonical_page()
         except Exception as fallback_error:

@@ -62,22 +62,31 @@ class MovieLocalFilterResult:
 _LOCATION_CACHE: dict[str, tuple[float, MovieZipPlace, tuple[MovieZipPlace, ...]]] = {}
 _CITY_PAGE_CACHE: dict[str, tuple[float, frozenset[str]]] = {}
 _CACHE_LOCK = asyncio.Lock()
+_SCHEMA_LOCK = asyncio.Lock()
+_SCHEMA_READY_DB_IDS: set[int] = set()
 
 
 async def ensure_movie_user_location_table(db: Any) -> None:
-    conn = db.require_conn()
-    await conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS movie_ticket_user_location_v2 (
-            user_id TEXT PRIMARY KEY,
-            zip_code TEXT NOT NULL,
-            radius_miles INTEGER NOT NULL DEFAULT 25,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
-    await conn.commit()
+    db_key = id(db)
+    if db_key in _SCHEMA_READY_DB_IDS:
+        return
+    async with _SCHEMA_LOCK:
+        if db_key in _SCHEMA_READY_DB_IDS:
+            return
+        conn = db.require_conn()
+        await conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS movie_ticket_user_location_v2 (
+                user_id TEXT PRIMARY KEY,
+                zip_code TEXT NOT NULL,
+                radius_miles INTEGER NOT NULL DEFAULT 25,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        await conn.commit()
+        _SCHEMA_READY_DB_IDS.add(db_key)
 
 
 async def get_movie_user_location(
@@ -174,10 +183,10 @@ async def filter_movie_drops_for_location(
 ) -> MovieLocalFilterResult:
     """Return a conservative local view of manual movie results.
 
-    Reusable/global promotions remain visible. Local-screening rows require
-    positive location evidence. SeeItEarly can be matched against its public city
-    pages; title-only screening rows from other sources stay behind Show All when
-    their current feed does not expose distance-safe location metadata.
+    Global/reusable promotions remain visible. A screening row requires positive
+    free + local evidence. SeeItEarly can be matched against the free entries in
+    its public city pages; title-only screening rows from other sources remain
+    available through Show All when their current feed lacks distance-safe proof.
     """
 
     primary, nearby = await _resolve_zip_places(session, preference)
@@ -213,12 +222,12 @@ async def filter_movie_drops_for_location(
     if not successful_places:
         note = (
             "No SeeItEarly city page could be confirmed for the nearby postal places, "
-            "so distance-unverified screening leads are hidden in Local mode."
+            "so distance-unverified screenings are hidden in Local mode."
         )
     elif matched_screenings == 0:
         note = (
-            f"No connected SeeItEarly screening title matched a confirmed city page within "
-            f"{preference.radius_miles} miles of ZIP {preference.zip_code}."
+            "No connected free SeeItEarly screening title matched a confirmed city page "
+            f"within {preference.radius_miles} miles of ZIP {preference.zip_code}."
         )
 
     return MovieLocalFilterResult(
@@ -274,9 +283,10 @@ async def _lookup_zip_places_uncached(
             session,
             f"{ZIP_LOOKUP_BASE_URL}/nearby/us/{quote(zip_code)}",
         )
-    except Exception:
+    except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, ValueError):
         nearby_payload = None
 
+    seen = {_place_identity(primary)}
     for raw in _iter_place_rows(nearby_payload):
         place = _place_from_row(raw)
         if place is None:
@@ -294,8 +304,10 @@ async def _lookup_zip_places_uncached(
             longitude=place.longitude,
             distance_miles=distance,
         )
-        if _place_identity(candidate) not in {_place_identity(item) for item in nearby_places}:
+        identity = _place_identity(candidate)
+        if identity not in seen:
             nearby_places.append(candidate)
+            seen.add(identity)
         if len(nearby_places) >= MAX_NEARBY_POSTAL_PLACES + 1:
             break
 
@@ -328,20 +340,33 @@ def _place_from_zip_payload(payload: Any) -> MovieZipPlace | None:
 
 def _iter_place_rows(payload: Any) -> tuple[dict[str, Any], ...]:
     if isinstance(payload, dict):
-        rows = payload.get("places")
-        if isinstance(rows, list):
-            return tuple(row for row in rows if isinstance(row, dict))
+        for key in ("places", "nearby", "results", "data"):
+            rows = payload.get(key)
+            if isinstance(rows, list):
+                return tuple(row for row in rows if isinstance(row, dict))
     if isinstance(payload, list):
         return tuple(row for row in payload if isinstance(row, dict))
     return ()
 
 
 def _place_from_row(row: dict[str, Any]) -> MovieZipPlace | None:
-    city = str(row.get("place name") or row.get("place_name") or "").strip()
-    state = str(row.get("state abbreviation") or row.get("state_abbreviation") or "").strip().upper()
+    city = str(
+        row.get("place name")
+        or row.get("place_name")
+        or row.get("name")
+        or row.get("city")
+        or ""
+    ).strip()
+    state = str(
+        row.get("state abbreviation")
+        or row.get("state_abbreviation")
+        or row.get("state code")
+        or row.get("state_code")
+        or ""
+    ).strip().upper()
     try:
-        latitude = float(row.get("latitude"))
-        longitude = float(row.get("longitude"))
+        latitude = float(row.get("latitude", row.get("lat")))
+        longitude = float(row.get("longitude", row.get("lon", row.get("lng"))))
     except (TypeError, ValueError):
         return None
     if not city or len(state) != 2:
@@ -350,12 +375,25 @@ def _place_from_row(row: dict[str, Any]) -> MovieZipPlace | None:
 
 
 class _SeeItEarlyCityParser(HTMLParser):
+    """Collect only explicitly free movie links from the city's playing section."""
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.movie_slugs: set[str] = set()
+        self._heading_tag = ""
+        self._heading_parts: list[str] = []
+        self._in_playing_section = False
+        self._entry_free: bool | None = None
+        self._active_movie_slug = ""
+        self._active_free: bool | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() != "a":
+        normalized_tag = tag.lower()
+        if not self._heading_tag and normalized_tag in {"h1", "h2", "h3", "h4"}:
+            self._heading_tag = normalized_tag
+            self._heading_parts = []
+
+        if normalized_tag != "a" or not self._in_playing_section:
             return
         data = {str(key).lower(): str(value or "") for key, value in attrs}
         absolute = urljoin(SEEITEARLY_HOME_URL, data.get("href", ""))
@@ -364,9 +402,57 @@ class _SeeItEarlyCityParser(HTMLParser):
             return
         parts = [part for part in (parsed.path or "").split("/") if part]
         if len(parts) == 2 and parts[0].lower() == "movies":
-            slug = _normalize_slug(parts[1])
-            if slug:
-                self.movie_slugs.add(slug)
+            self._active_movie_slug = _normalize_slug(parts[1])
+            self._active_free = self._entry_free
+
+    def handle_data(self, data: str) -> None:
+        text = " ".join(str(data or "").split())
+        if not text:
+            return
+        if self._heading_tag:
+            self._heading_parts.append(text)
+        if not self._in_playing_section:
+            return
+
+        normalized = normalize_text(text)
+        if normalized == "free" or normalized.startswith("free pass"):
+            self._entry_free = True
+            if self._active_movie_slug:
+                self._active_free = True
+        elif normalized == "paid" or normalized.startswith("buy ticket"):
+            self._entry_free = False
+            if self._active_movie_slug:
+                self._active_free = False
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        if self._heading_tag and normalized_tag == self._heading_tag:
+            heading = normalize_text(" ".join(self._heading_parts))
+            self._heading_tag = ""
+            self._heading_parts = []
+            if heading.startswith("what s playing in") or heading.startswith("whats playing in"):
+                self._in_playing_section = True
+                self._entry_free = None
+                return
+            if self._in_playing_section and (
+                heading.startswith("film events")
+                or heading.startswith("where it s happening")
+                or heading.startswith("where its happening")
+                or heading.startswith("popular theaters")
+                or heading.startswith("releasing soon")
+            ):
+                self._in_playing_section = False
+                self._entry_free = None
+                self._active_movie_slug = ""
+                self._active_free = None
+                return
+
+        if normalized_tag == "a" and self._active_movie_slug:
+            if self._in_playing_section and self._active_free is True:
+                self.movie_slugs.add(self._active_movie_slug)
+            self._active_movie_slug = ""
+            self._active_free = None
+            self._entry_free = None
 
 
 async def _fetch_seeitearly_city_movie_slugs(

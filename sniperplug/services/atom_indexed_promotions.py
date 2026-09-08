@@ -20,8 +20,11 @@ from sniperplug.services.movie_ticket_drops import (
 BING_SEARCH_URL = "https://www.bing.com/search"
 BING_ALLOWED_HOSTS = frozenset({"bing.com", "www.bing.com"})
 ATOM_INDEXED_FALLBACK_PREFIX = "indexed-fallback:"
+ATOM_DIRECT_BLOCK_MARKER = ";direct-blocked:"
 ATOM_INDEX_MAX_RESPONSE_BYTES = 512_000
 ATOM_INDEX_QUERY = "url:www.atomtickets.com/promotions"
+ATOM_INDEX_RECHECK_SECONDS = 30 * 60
+ATOM_DIRECT_REPROBE_SECONDS = 6 * 60 * 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +36,10 @@ class AtomIndexedConfirmation:
 
     @property
     def state_marker(self) -> str:
-        return f"{ATOM_INDEXED_FALLBACK_PREFIX}{self.observed_at}"
+        return build_atom_indexed_fallback_marker(
+            indexed_at=self.observed_at,
+            direct_blocked_at=self.observed_at,
+        )
 
     @property
     def synthetic_html(self) -> str:
@@ -55,8 +61,59 @@ class AtomIndexedConfirmation:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class AtomIndexedFallbackState:
+    indexed_at: str
+    direct_blocked_at: str
+
+
+def build_atom_indexed_fallback_marker(*, indexed_at: str, direct_blocked_at: str) -> str:
+    return (
+        f"{ATOM_INDEXED_FALLBACK_PREFIX}{clean_text(indexed_at)}"
+        f"{ATOM_DIRECT_BLOCK_MARKER}{clean_text(direct_blocked_at)}"
+    )
+
+
+def parse_atom_indexed_fallback_marker(value: str | None) -> AtomIndexedFallbackState | None:
+    text = str(value or "")
+    if not text.startswith(ATOM_INDEXED_FALLBACK_PREFIX):
+        return None
+    payload = text[len(ATOM_INDEXED_FALLBACK_PREFIX) :]
+    if ATOM_DIRECT_BLOCK_MARKER in payload:
+        indexed_at, direct_blocked_at = payload.split(ATOM_DIRECT_BLOCK_MARKER, 1)
+    else:
+        # Backward compatibility with the first marker shape used while #263 was
+        # being developed. Treat that one timestamp as both observations.
+        indexed_at = payload
+        direct_blocked_at = payload
+    if _parse_iso(indexed_at) is None or _parse_iso(direct_blocked_at) is None:
+        return None
+    return AtomIndexedFallbackState(
+        indexed_at=clean_text(indexed_at),
+        direct_blocked_at=clean_text(direct_blocked_at),
+    )
+
+
 def is_atom_indexed_fallback_marker(value: str | None) -> bool:
-    return str(value or "").startswith(ATOM_INDEXED_FALLBACK_PREFIX)
+    return parse_atom_indexed_fallback_marker(value) is not None
+
+
+def atom_indexed_fallback_age_seconds(value: str | None, *, now: datetime | None = None) -> tuple[float, float] | None:
+    parsed = parse_atom_indexed_fallback_marker(value)
+    if parsed is None:
+        return None
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
+    indexed = _parse_iso(parsed.indexed_at)
+    blocked = _parse_iso(parsed.direct_blocked_at)
+    if indexed is None or blocked is None:
+        return None
+    return (
+        max(0.0, (current - indexed).total_seconds()),
+        max(0.0, (current - blocked).total_seconds()),
+    )
 
 
 def normalize_atom_canonical_url(value: str | None) -> str:
@@ -149,3 +206,16 @@ class AtomIndexedPromotionsClient:
                 "Bing did not return the exact canonical Atom promotions page, so indexed fallback could not confirm it."
             )
         return confirmation
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

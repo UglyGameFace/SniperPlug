@@ -151,7 +151,7 @@ def movie_source_health_text(
         direct_blocked = _discord_time(indexed_state.direct_blocked_at)
         if indexed_fresh:
             health = (
-                f"Indexed fallback available • direct Atom HTTP access blocked since {direct_blocked} • "
+                f"Indexed fallback current • direct Atom HTTP access blocked since {direct_blocked} • "
                 f"official Atom promotions URL confirmed via public index {indexed_confirmed} • "
                 "public reusable codes are not inferred from index snippets"
             )

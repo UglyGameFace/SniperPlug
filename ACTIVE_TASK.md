@@ -11,7 +11,7 @@ Target outcome: the existing July 31 permanent movie panel stays useful across d
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
 
 ## Status
-**#264 is merged. Follow-up branch `fix/movie-user-location-265` implements optional per-user movie ZIP/radius browsing and is awaiting exact-head executable validation.**
+**#264 is merged. Draft #265 on `fix/movie-user-location-265` now contains the optional per-user ZIP/radius implementation plus interaction/latency hardening. Current candidate head is `0c68592b5b4d160832832935a9c676554653ba12`; exact-head executable validation is still blocked by GitHub Actions failing before checkout.**
 
 Movie milestones:
 - #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
@@ -20,6 +20,10 @@ Movie milestones:
 - #263 merge: `85e26ffa76a8a76fe6aac32c98393e2cbd5c54ee`
 - #264 validated head: `01f638eb5e0c80564fddc00d2eb8a05a81206042`
 - #264 merge: `6e745529a13d881a9e651d2cc6dfd221cb7ef4e1`
+- #265 interaction hardening: `c5635fe1cda8ecad0acfc0f4c04fbb804b5d385a`
+- #265 interaction regressions: `63d3aa5b600b7b5957330b509bc85c1eb82151db`
+- #265 bounded lookup latency: `58221e148db26d081af1a83642db150b47b8f1ee`
+- #265 latency regressions / candidate head: `0c68592b5b4d160832832935a9c676554653ba12`
 
 Previous Walmart delivery work remains merged; its production acceptance is paused by the explicit movie-task switch.
 
@@ -43,16 +47,19 @@ The correct product behavior is optional personalization rather than a forced se
 
 ### Personal location controls
 `Set / Change ZIP`
+→ immediately open Discord modal before any Turso read
 → strict US ZIP/radius validation
-→ live Zippopotam.us ZIP resolution
+→ live Zippopotam.us ZIP/nearby resolution
+→ cache the resolved location for the immediate Local view
 → exact-TEXT per-user persistence
 → immediate conservative Local result view
 
 `Use Local`
+→ acknowledge/defer Discord interaction before DB/network work
 → saved ZIP/radius
 → nearest postal places from Zippopotam.us
 → Haversine distance bound
-→ SeeItEarly public city pages inside radius
+→ up to 8 SeeItEarly public city pages inside radius, at most 4 concurrent
 → accept only explicitly **Free** movie links inside the city's **What's playing** section
 → hide distance-unverified local-screening rows
 
@@ -60,6 +67,7 @@ The correct product behavior is optional personalization rather than a forced se
 → freshness-qualified broad feed without deleting the saved ZIP
 
 `Clear ZIP`
+→ defer first
 → delete only that user's movie-location preference
 → guild alert destination/config remains untouched
 
@@ -73,12 +81,18 @@ Existing direct-source delivery and `MovieTicketFeedbackView` remain unchanged. 
 - Radius is restricted to 10, 25, 50, or 100 miles; default is 25.
 - Zippopotam.us is used as the no-key postal resolver for city/state/coordinates and nearest postal places.
 - Nearby postal places are distance-bounded with Haversine math before SeeItEarly pages are checked.
-- Network work is bounded and cached: ZIP resolution 30 minutes, city pages 10 minutes, at most 8 city pages per Local lookup.
+- ZIP resolution is cached 30 minutes; SeeItEarly city pages are cached 10 minutes.
+- ZIP validation and the immediate Local view now share the same location cache instead of repeating the postal lookup.
+- At most 8 nearby city pages are checked per Local lookup and at most 4 are fetched concurrently, preventing a source timeout from serially stretching one click past a minute.
 - Local mode preserves non-screening/global promotions.
 - SeeItEarly screening leads require a matching movie on an in-radius public city page.
 - City parsing is restricted to the **What's playing** section and requires an explicit **Free** label. Paid entries, unknown-status entries, Releasing Soon links, and off-site links cannot prove a local free screening.
 - Gofobo/other title-only local-screening rows remain behind Show All until their feed exposes distance-safe locality proof.
-- The shared #264 result view now also exposes `Set / Change ZIP`, `Use Local`, `Show All`, and `Clear ZIP` on the fifth Discord component row while preserving up to 8 numbered result links on rows 0-3.
+- The shared #264 result view exposes `Set / Change ZIP`, `Use Local`, `Show All`, and `Clear ZIP` on the fifth Discord component row while preserving up to 8 numbered result links on rows 0-3.
+- Set/Change ZIP opens its modal before any database call so a slow Turso worker cannot cause Discord's generic interaction timeout.
+- Use Local acknowledges Discord before database/network work.
+- DB load/save/clear failures, locality refresh failures, and card-render failures return visible ephemeral errors instead of killing the interaction.
+- Locality refresh failure remains fail-closed: unverified screening rows are hidden while non-screening/global results remain usable.
 - Location controls live only on ephemeral manual result views; they do not modify guild movie alert configuration.
 
 ## Regression coverage
@@ -95,6 +109,13 @@ Existing direct-source delivery and `MovieTicketFeedbackView` remain unchanged. 
 - Haversine distance sanity
 - optional location controls and row placement
 - no guild movie config mutation
+- Set ZIP opens the modal without a pre-modal DB read
+- Use Local defers before slow result work
+- unexpected local-proof refresh failure keeps global results and hides unverified screenings
+
+`tests/test_movie_user_location_latency_265.py` covers:
+- live ZIP validation populates the cache reused by the immediate Local lookup
+- city-page checks run concurrently but never above the configured concurrency bound
 
 `tests/test_movie_user_location_parser_265.py` covers:
 - only explicitly Free entries in What's playing are accepted
@@ -103,7 +124,7 @@ Existing direct-source delivery and `MovieTicketFeedbackView` remain unchanged. 
 - a Free badge inside the movie link is accepted
 - off-site links are rejected
 
-Existing #264 result-action regressions were updated to distinguish source link buttons from the new personal location controls.
+Existing #264 result-action regressions were updated to distinguish source link buttons from the new personal location controls and to require movie titles in action labels.
 
 ## Existing behavior that must remain intact
 - #264 visible numbered result buttons in `/movies latest` and panel Check Now.
@@ -125,12 +146,23 @@ Exact head `01f638eb5e0c80564fddc00d2eb8a05a81206042` on Linux/Ubuntu Python 3.1
 - full pytest: 1,336 passed
 - diff check clean
 
-### #265 current state
-- implementation and regression-writing in progress/structural review
-- exact-head executable validation is still required before ready/merge
-- GitHub-hosted Actions have repeatedly failed before checkout with `runner_id=0` / `steps=[]`; do not represent those infrastructure failures as executed tests
+### #265 structural validation completed
+- final scoped file list inspected; changes remain inside the active movie task
+- PR is mergeable with no base conflicts
+- PR review/comment timeline currently has no review threads/comments
+- Zippopotam.us current documentation confirms `/{country}/{postalcode}` and `/nearby/{country}/{postalcode}`; nearby is limited to 11 places
+- current SeeItEarly city pages confirm `/cities/<city>-<state>` and a `What's playing` section with explicit Free/Paid classifications
+- interaction timing paths inspected after hardening
+- latency path inspected after cache reuse + concurrency cap
 
-Required before ready/merge:
+### #265 executable validation blocker
+Current candidate head before this task-record commit: `0c68592b5b4d160832832935a9c676554653ba12`.
+
+GitHub-hosted workflows for #265 repeatedly terminate before executing repository steps. The latest exact-head attempts return jobs with `steps=null` / no logs. A manual re-run was accepted by GitHub but produced a fresh job ID with the same no-steps failure. These are infrastructure failures, not executed test failures.
+
+This ChatGPT runtime has no mounted SniperPlug checkout and cannot resolve github.com directly, so it cannot truthfully substitute a local full-suite run.
+
+Still required before ready/merge:
 - targeted #265 + affected #264/movie tests
 - `python -m pip check`
 - `python -m compileall -q sniperplug scripts tests`
@@ -138,25 +170,30 @@ Required before ready/merge:
 - native libsql process tests
 - full `PYTHONHASHSEED=0 python -m pytest -q`
 - `git diff origin/main...HEAD --check`
-- exact final HEAD verification
+- exact final HEAD verification after this task-record commit
 - final PR diff / review-thread inspection
+
+Do not mark #265 ready or merge it until those executable checks run on the exact final head.
 
 ## Production acceptance after #265 deploy
 1. Manual result views visibly show Set/Change ZIP, Use Local, Show All, and Clear ZIP.
-2. A user can browse without ever setting ZIP.
-3. Saving ZIP `06484` and radius 25 validates as Shelton, CT and immediately returns a conservative Local view.
-4. A New York option around 60 miles away is not presented as local under the 25-mile preference.
-5. Only explicitly free SeeItEarly city entries may satisfy Local mode.
-6. Show All restores broader screening discovery without erasing the saved preference.
-7. Clear ZIP removes only that user's preference.
-8. Another user's results and the guild's automatic alert destination are unchanged.
-9. #263/#264 Atom fallback, posters, source health, numbered result buttons, public feedback controls, freshness, and dedupe remain intact.
+2. Set/Change ZIP opens promptly even if Turso is slow.
+3. Use Local acknowledges promptly before DB/source work.
+4. A user can browse without ever setting ZIP.
+5. Saving ZIP `06484` and radius 25 validates as Shelton, CT and immediately returns a conservative Local view without repeating the ZIP lookup.
+6. A New York option around 60 miles away is not presented as local under the 25-mile preference.
+7. Only explicitly free SeeItEarly city entries may satisfy Local mode.
+8. Show All restores broader screening discovery without erasing the saved preference.
+9. Clear ZIP removes only that user's preference.
+10. Local-source failure hides unverified screenings rather than breaking the interaction.
+11. Another user's results and the guild's automatic alert destination are unchanged.
+12. #263/#264 Atom fallback, posters, source health, numbered result buttons, public feedback controls, freshness, and dedupe remain intact.
 
 Only after exact-head executable validation and these live checks pass call the movie-ticket task restored.
 
 ## Risks / boundaries
 - Zippopotam.us nearby lookup returns only the nearest 11 postal places. Local mode is intentionally conservative and must not claim exhaustive coverage for a wide radius.
-- At most 8 nearby city pages are checked per Local lookup to bound traffic.
+- At most 8 nearby city pages are checked per Local lookup, with at most 4 concurrent source requests.
 - Failure to confirm locality hides a screening from Local mode rather than falsely locating it; Show All remains the escape hatch.
 - No CAPTCHA evasion, proxy rotation, browser impersonation, account/login scraping, gated-code guessing, or private invitation scraping.
 
@@ -172,4 +209,4 @@ Only after exact-head executable validation and these live checks pass call the 
 - SniperPlug-Site work
 
 ## Next step
-Open draft #265, inspect the final scoped diff/review state, freeze an exact validation SHA, then run Python 3.12/native-libsql targeted and full validation. Merge only that exact tested SHA.
+Treat the post-task-record #265 head as frozen. Run exact-head Python 3.12/native-libsql targeted and full validation as soon as a runner can actually execute steps. Only then mark the PR ready, merge that exact tested SHA, deploy, and complete the live production acceptance list.

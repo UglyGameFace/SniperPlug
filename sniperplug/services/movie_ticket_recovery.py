@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from sniperplug.services.atom_indexed_promotions import is_atom_indexed_fallback_marker
 from sniperplug.services.movie_ticket_drops import (
     AtomPromotionParseResult,
     MovieTicketSourceState,
@@ -46,6 +47,11 @@ def parse_current_atom_promotions_html(html_text: str) -> AtomPromotionParseResu
     parser itself found the exact Partner Promotions heading but no Film
     Promotions heading. That state is valid with zero public reusable drops. A
     challenge/access-denied document is never accepted as an empty success.
+
+    The indexed Atom fallback deliberately produces this same partner-only shell:
+    it can confirm that the canonical promotions URL is present in a public index,
+    but it cannot prove a reusable code. That lets us clear stale codes without
+    upgrading search-index evidence into direct issuer proof.
     """
 
     parsed = parse_atom_promotions_html(html_text)
@@ -124,9 +130,23 @@ def movie_source_health_text(
     fresh = movie_source_cache_is_fresh(state, now=now)
     last_success = str(getattr(state, "last_success_at", "") or "").strip()
     last_error = str(getattr(state, "last_error", "") or "").strip()
+    last_modified = str(getattr(state, "last_modified", "") or "").strip()
     confirmed = _discord_time(last_success)
+    indexed_fallback = is_atom_indexed_fallback_marker(last_modified)
 
-    if not last_success:
+    if indexed_fallback and last_success:
+        if fresh:
+            health = (
+                f"Indexed fallback current • direct Atom HTTP access blocked • "
+                f"canonical promotions page confirmed via public index {confirmed} • "
+                "public reusable codes are not inferred from index snippets"
+            )
+        else:
+            health = (
+                f"Indexed fallback stale • last indexed confirmation {confirmed} • "
+                "cached results hidden until either direct Atom or the public index validates again"
+            )
+    elif not last_success:
         health = "Waiting for first successful confirmation"
         if last_error:
             health += f" • last error: `{_compact(last_error, 220)}`"

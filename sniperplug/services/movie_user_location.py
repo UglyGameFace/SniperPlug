@@ -537,7 +537,7 @@ def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 
 
 def _row_value(row: Any, key: str) -> Any:
-+    try:
-+        return row[key]
-+    except (KeyError, TypeError, IndexError):
-+        return None
+    try:
+        return row[key]
+    except (KeyError, TypeError, IndexError):
+        return None

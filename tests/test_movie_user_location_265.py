@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import sniperplug.cogs.movie_result_actions as movie_actions
 import sniperplug.services.movie_user_location as movie_location
 from sniperplug.cogs.movie_result_actions import build_movie_result_actions_view
 from sniperplug.services.gofobo_screenings import GOFOBO_SOURCE_KEY
@@ -230,3 +231,144 @@ def test_location_slice_does_not_mutate_server_movie_alert_config() -> None:
     assert "save_config(" not in source
     assert "movie_ticket_config_v2" not in service
     assert "guild_id" not in service
+
+
+@pytest.mark.asyncio
+async def test_set_zip_button_opens_modal_without_database_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeUser:
+        id = USER_ID
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.modal = None
+
+        async def send_message(self, *_args, **_kwargs) -> None:
+            raise AssertionError("Set ZIP should open the modal, not send a fallback message.")
+
+        async def send_modal(self, modal) -> None:
+            self.modal = modal
+
+    class FakeInteraction:
+        user = FakeUser()
+
+        def __init__(self) -> None:
+            self.response = FakeResponse()
+
+    fake_cog = object()
+    monkeypatch.setattr(movie_actions, "_movie_cog", lambda _interaction: fake_cog)
+
+    async def forbidden_database_read(*_args, **_kwargs):
+        raise AssertionError("Set ZIP must not wait on Turso before opening its modal.")
+
+    monkeypatch.setattr(movie_actions, "get_movie_user_location", forbidden_database_read)
+
+    interaction = FakeInteraction()
+    await movie_actions._SetMovieZipButton().callback(interaction)
+
+    assert isinstance(interaction.response.modal, movie_actions.MovieZipModal)
+
+
+@pytest.mark.asyncio
+async def test_use_local_defers_before_loading_database_or_network_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+
+    class FakeUser:
+        id = USER_ID
+
+    class FakeResponse:
+        async def send_message(self, *_args, **_kwargs) -> None:
+            raise AssertionError("Use Local should defer before doing slow work.")
+
+        async def defer(self, *, ephemeral: bool, thinking: bool) -> None:
+            assert ephemeral is True
+            assert thinking is True
+            events.append("defer")
+
+    class FakeInteraction:
+        user = FakeUser()
+        response = FakeResponse()
+
+    fake_cog = object()
+    monkeypatch.setattr(movie_actions, "_movie_cog", lambda _interaction: fake_cog)
+
+    async def fake_send_results(_interaction, _cog, *, show_all: bool, require_saved_location: bool = False) -> None:
+        assert events == ["defer"]
+        assert show_all is False
+        assert require_saved_location is True
+        events.append("results")
+
+    monkeypatch.setattr(movie_actions, "_send_personal_movie_results", fake_send_results)
+
+    await movie_actions._UseLocalMovieButton().callback(FakeInteraction())
+
+    assert events == ["defer", "results"]
+
+
+@pytest.mark.asyncio
+async def test_personal_results_fail_closed_when_local_proof_refresh_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    national = _drop(
+        source_key=ATOM_SOURCE_KEY,
+        title="National Promo",
+        classification="public_reusable",
+        url="https://www.atomtickets.com/promotions",
+    )
+    screening = _drop(
+        source_key=SEEITEARLY_SOURCE_KEY,
+        title="Unverified Local Screening",
+        classification="local_screening",
+        url="https://seeitearly.com/movies/unverified-local-screening",
+    )
+    preference = MovieUserLocationPreference(USER_ID, "06484", 25)
+    rendered: list[MovieTicketDrop] = []
+    sent: list[dict[str, object]] = []
+
+    class FakeStore:
+        async def list_active_drops(self, *, limit: int):
+            assert limit == movie_actions.MAX_MANUAL_RESULT_ACTIONS
+            return [national, screening]
+
+    class FakeBot:
+        db = object()
+
+    class FakeSession:
+        closed = False
+
+    class FakeCog:
+        store = FakeStore()
+        bot = FakeBot()
+        _session = FakeSession()
+
+        async def _build_drop_embeds(self, selected):
+            rendered.extend(selected)
+            return []
+
+    class FakeUser:
+        id = USER_ID
+
+    class FakeFollowup:
+        async def send(self, *args, **kwargs) -> None:
+            sent.append({"args": args, **kwargs})
+
+    class FakeInteraction:
+        user = FakeUser()
+        followup = FakeFollowup()
+
+    async def fake_get_location(_db, *, user_id: int):
+        assert user_id == USER_ID
+        return preference
+
+    async def broken_local_filter(_session, _drops, _preference):
+        raise RuntimeError("source unavailable")
+
+    monkeypatch.setattr(movie_actions, "get_movie_user_location", fake_get_location)
+    monkeypatch.setattr(movie_actions, "filter_movie_drops_for_location", broken_local_filter)
+
+    await movie_actions._send_personal_movie_results(
+        FakeInteraction(),
+        FakeCog(),
+        show_all=False,
+    )
+
+    assert rendered == [national]
+    assert len(sent) == 1
+    assert "Local screening proof could not be refreshed" in str(sent[0].get("content", ""))

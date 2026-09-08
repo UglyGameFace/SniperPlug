@@ -27,6 +27,7 @@ from sniperplug.services.seeitearly_screenings import SEEITEARLY_SOURCE_KEY, SEE
 
 
 MAX_MANUAL_RESULT_ACTIONS = 8
+MAX_BUTTON_LABEL_LENGTH = 80
 
 
 def _safe_http_url(value: str) -> str:
@@ -39,22 +40,36 @@ def _safe_http_url(value: str) -> str:
     return cleaned
 
 
+def _movie_action_label(drop: MovieTicketDrop, number: int, action: str) -> str:
+    """Keep the movie identity visible while respecting Discord's label limit."""
+
+    prefix = f"#{number} "
+    suffix = f" • {action}"
+    title = clean_text(drop.title) or "Movie"
+    available = MAX_BUTTON_LABEL_LENGTH - len(prefix) - len(suffix)
+    if available <= 1:
+        return f"{prefix}{action}"[:MAX_BUTTON_LABEL_LENGTH]
+    if len(title) > available:
+        title = title[: available - 1].rstrip() + "…"
+    return f"{prefix}{title}{suffix}"
+
+
 def movie_result_action(drop: MovieTicketDrop, index: int) -> tuple[str, str, str]:
-    """Return a short visible CTA, destination URL, and emoji for one result card."""
+    """Return a title-identifying CTA, destination URL, and emoji for one result card."""
 
     number = max(1, int(index))
     offer_url = _safe_http_url(drop.offer_url)
 
     if drop.source_key == SEEITEARLY_SOURCE_KEY:
-        return f"#{number} Find Pass", offer_url or SEEITEARLY_UPCOMING_URL, "🔎"
+        return _movie_action_label(drop, number, "Find Pass"), offer_url or SEEITEARLY_UPCOMING_URL, "🔎"
     if drop.source_key == GOFOBO_SOURCE_KEY:
-        return f"#{number} Check ZIP / Claim", offer_url or GOFOBO_HOME_URL, "🎬"
+        return _movie_action_label(drop, number, "Check ZIP / Claim"), offer_url or GOFOBO_HOME_URL, "🎬"
     if drop.source_key == FANDANGO_SOURCE_KEY:
-        return f"#{number} Open Offer", offer_url or FANDANGO_OFFERS_URL, "🎟️"
+        return _movie_action_label(drop, number, "Open Offer"), offer_url or FANDANGO_OFFERS_URL, "🎟️"
     if drop.source_key == ATOM_SOURCE_KEY:
-        return f"#{number} Open Atom Promo", offer_url or ATOM_PROMOTIONS_URL, "⚛️"
+        return _movie_action_label(drop, number, "Open Promo"), offer_url or ATOM_PROMOTIONS_URL, "⚛️"
 
-    return f"#{number} Open Result", offer_url, "🎟️"
+    return _movie_action_label(drop, number, "Open Result"), offer_url, "🎟️"
 
 
 class MovieZipModal(discord.ui.Modal, title="Movie screening location"):
@@ -224,7 +239,7 @@ def build_movie_result_actions_view(drops: list[MovieTicketDrop]) -> discord.ui.
             continue
         view.add_item(
             discord.ui.Button(
-                label=label[:80],
+                label=label[:MAX_BUTTON_LABEL_LENGTH],
                 style=discord.ButtonStyle.link,
                 url=url,
                 emoji=emoji,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import urllib.parse
+from pathlib import Path
 from types import SimpleNamespace
 
 from sniperplug.providers.base import ProviderScanRequest
@@ -205,3 +206,11 @@ def test_api_price_missing_recovers_through_product_lookup_not_search_or_html() 
         assert provider.page_calls == 0
 
     asyncio.run(run())
+
+
+def test_bulk_runtime_marks_product_lookup_recovery_capability() -> None:
+    root = Path(__file__).resolve().parents[1]
+    runtime = (root / "sniperplug/services/walmart_exact_queue_bulk_runtime.py").read_text(
+        encoding="utf-8"
+    )
+    assert "exact_lookup=affiliate_items_ids_v274" in runtime

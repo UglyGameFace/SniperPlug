@@ -5,6 +5,8 @@ from pathlib import Path
 import discord
 
 from sniperplug.cogs.movie_result_actions import (
+    DISCORD_MESSAGE_EMBED_CHAR_LIMIT,
+    MOVIE_RESULT_EMBED_CHAR_BUDGET,
     annotate_movie_result_embeds,
     build_movie_result_actions_view,
     movie_result_action,
@@ -131,6 +133,45 @@ def test_result_cards_explicitly_point_to_matching_button() -> None:
     assert "do not need to tap the card title" in embeds[0].fields[0].value.lower()
     assert embeds[1].fields[0].name == "👇 Result #2 action"
     assert "#2 Movie Two • Find Pass" in embeds[1].fields[0].value
+
+
+def test_result_stack_compacts_before_discord_rejects_aggregate_embed_size() -> None:
+    drops = [
+        _drop(
+            GOFOBO_SOURCE_KEY,
+            f"Current Gofobo Movie {index}",
+            f"https://gofobo.com/main/local_movie_screenings/{6300 + index}",
+        )
+        for index in range(1, 9)
+    ]
+    embeds: list[discord.Embed] = []
+    for index in range(1, 9):
+        embed = discord.Embed(
+            title="🎬 GOFOBO FREE SCREENING ALERT",
+            description=(f"**Current Gofobo Movie {index}**\n" + "x" * 1200),
+            url=f"https://gofobo.com/main/local_movie_screenings/{6300 + index}",
+        )
+        embed.add_field(name="Validity", value="v" * 1024, inline=False)
+        embed.add_field(name="Important restrictions", value="r" * 1024, inline=False)
+        embed.add_field(name="Claim", value="c" * 800, inline=False)
+        embed.set_footer(text="source " + "f" * 200)
+        if index == 1:
+            embed.set_image(url="https://gofobo.com/assets/poster.jpg")
+        embeds.append(embed)
+
+    assert sum(len(embed) for embed in embeds) > DISCORD_MESSAGE_EMBED_CHAR_LIMIT
+
+    returned = annotate_movie_result_embeds(embeds, drops)
+
+    assert returned is embeds
+    assert len(returned) == len(drops) == 8
+    assert sum(len(embed) for embed in returned) <= MOVIE_RESULT_EMBED_CHAR_BUDGET
+    assert sum(len(embed) for embed in returned) < DISCORD_MESSAGE_EMBED_CHAR_LIMIT
+    assert returned[0].image.url == "https://gofobo.com/assets/poster.jpg"
+    for index, embed in enumerate(returned, start=1):
+        assert embed.fields[0].name == f"👇 Result #{index} action"
+        assert f"#{index} Current Gofobo Movie {index} • Check ZIP / Claim" in embed.fields[0].value
+        assert f"Current Gofobo Movie {index}" in (embed.description or "")
 
 
 def test_slash_latest_attaches_numbered_result_actions() -> None:

@@ -32,11 +32,12 @@ ATOM_INDEXED_FALLBACK_PREFIX = "indexed-fallback:"
 ATOM_DIRECT_BLOCK_MARKER = ";direct-blocked:"
 ATOM_INDEX_MAX_RESPONSE_BYTES = 512_000
 BING_RESULT_MAX_ENCODED_DESTINATION = 8192
-# Bing's documented `site:` operator searches a directory tree, unlike `url:`
-# which checks one exact URL. Production then proved Bing RSS itself can omit
-# Atom entirely even while public web indexes expose live official promo pages,
-# so the fallback now checks a second independent public index as well.
+# Keep provider-specific search syntax explicit. Bing's documented `site:`
+# operator can target the promotions directory directly, while DuckDuckGo
+# documents `site:` and `inurl:` independently and warns that advanced syntax
+# is best-effort rather than an API contract.
 ATOM_INDEX_QUERY = "site:www.atomtickets.com/promotions Atom Tickets promotion offer"
+DUCKDUCKGO_INDEX_QUERY = "site:atomtickets.com inurl:promotions Atom Tickets promotion offer"
 ATOM_INDEX_RECHECK_SECONDS = 30 * 60
 ATOM_DIRECT_REPROBE_SECONDS = 6 * 60 * 60
 _ATOM_PROMOTION_PATH_RE = re.compile(
@@ -353,7 +354,7 @@ class AtomIndexedPromotionsClient:
             "User-Agent": ATOM_USER_AGENT,
         }
         params = {
-            "q": ATOM_INDEX_QUERY,
+            "q": DUCKDUCKGO_INDEX_QUERY,
             "kl": "us-en",
         }
         html_text = await self._fetch_text(
@@ -401,23 +402,36 @@ class AtomIndexedPromotionsClient:
 
 
 def _decode_duckduckgo_result_url(value: str | None) -> str:
+    """Return only a direct Atom URL or an exact HTTPS DuckDuckGo redirect target."""
+
     text = clean_text(value)
     if not text:
         return ""
+
+    direct = normalize_atom_indexed_promotion_url(text)
+    if direct:
+        return direct
+
     if text.startswith("//"):
         text = f"https:{text}"
     elif text.startswith("/"):
         text = f"https://duckduckgo.com{text}"
+
     parsed = urlparse(text)
-    host = (parsed.hostname or "").lower()
-    if (
-        host in {"duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com"}
-        and parsed.path.startswith("/l/")
-    ):
-        values = parse_qs(parsed.query)
-        target = values.get("uddg", [""])[0]
-        return clean_text(target)
-    return text
+    if parsed.scheme != "https":
+        return ""
+    if (parsed.hostname or "").lower() not in DUCKDUCKGO_ALLOWED_HOSTS:
+        return ""
+    if (parsed.path or "") not in {"/l", "/l/"}:
+        return ""
+
+    values = parse_qs(parsed.query, keep_blank_values=True).get("uddg", [])
+    if len(values) != 1:
+        return ""
+    target = clean_text(values[0])
+    if not target:
+        return ""
+    return normalize_atom_indexed_promotion_url(target)
 
 
 def _indexed_identity_is_atom_promotion(title: str, description: str) -> bool:

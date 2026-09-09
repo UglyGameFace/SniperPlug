@@ -7,8 +7,10 @@ import pytest
 from sniperplug.services.atom_indexed_promotions import (
     ATOM_INDEX_QUERY,
     BING_SEARCH_URL,
+    DUCKDUCKGO_INDEX_QUERY,
     DUCKDUCKGO_SEARCH_URL,
     AtomIndexedPromotionsClient,
+    _decode_duckduckgo_result_url,
     parse_duckduckgo_atom_confirmation_html,
 )
 from sniperplug.services.movie_ticket_drops import ATOM_PROMOTIONS_URL
@@ -79,6 +81,28 @@ def test_duckduckgo_parser_accepts_protocol_relative_redirect() -> None:
     assert confirmation.canonical_url == target
 
 
+def test_duckduckgo_redirect_decoder_requires_exact_https_wrapper_and_one_target() -> None:
+    target = f"{ATOM_PROMOTIONS_URL}/valid-offer"
+    encoded = quote(target, safe="")
+
+    assert _decode_duckduckgo_result_url(target) == target
+    assert _decode_duckduckgo_result_url(f"/l/?uddg={encoded}") == target
+    assert _decode_duckduckgo_result_url(f"//duckduckgo.com/l/?uddg={encoded}") == target
+
+    rejected = (
+        f"http://duckduckgo.com/l/?uddg={encoded}",
+        f"https://duckduckgo.com/l/extra?uddg={encoded}",
+        f"https://evil.duckduckgo.com/l/?uddg={encoded}",
+        f"https://duckduckgo.com/l/?uddg={encoded}&uddg={encoded}",
+        "https://duckduckgo.com/l/?uddg=",
+        f"https://duckduckgo.com/l/?uddg={quote('https://example.com/promotions/fake', safe='')}",
+        f"https://duckduckgo.com/l/?uddg={quote('http://www.atomtickets.com/promotions/foo', safe='')}",
+        f"https://duckduckgo.com/l/?uddg={quote(ATOM_PROMOTIONS_URL + '/foo/bar', safe='')}",
+    )
+    for value in rejected:
+        assert _decode_duckduckgo_result_url(value) == ""
+
+
 def test_duckduckgo_parser_prefers_hub_and_rejects_bad_results() -> None:
     html = f"""
     <html><body>
@@ -133,10 +157,14 @@ async def test_client_falls_back_to_duckduckgo_when_bing_has_no_atom_result() ->
     assert confirmation.canonical_url == atom_target
     assert confirmation.index_provider == "DuckDuckGo public index"
     assert [call["url"] for call in session.calls] == [BING_SEARCH_URL, DUCKDUCKGO_SEARCH_URL]
-    for call in session.calls:
-        params = call.get("params")
-        assert isinstance(params, dict)
-        assert params.get("q") == ATOM_INDEX_QUERY
+
+    bing_params = session.calls[0].get("params")
+    ddg_params = session.calls[1].get("params")
+    assert isinstance(bing_params, dict)
+    assert isinstance(ddg_params, dict)
+    assert bing_params.get("q") == ATOM_INDEX_QUERY
+    assert ddg_params.get("q") == DUCKDUCKGO_INDEX_QUERY
+    assert ATOM_INDEX_QUERY != DUCKDUCKGO_INDEX_QUERY
 
 
 @pytest.mark.asyncio

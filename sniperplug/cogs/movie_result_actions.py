@@ -28,6 +28,8 @@ from sniperplug.services.seeitearly_screenings import SEEITEARLY_SOURCE_KEY, SEE
 
 MAX_MANUAL_RESULT_ACTIONS = 8
 MAX_BUTTON_LABEL_LENGTH = 80
+DISCORD_MESSAGE_EMBED_CHAR_LIMIT = 6000
+MOVIE_RESULT_EMBED_CHAR_BUDGET = 5800
 
 
 def _safe_http_url(value: str) -> str:
@@ -277,11 +279,136 @@ def build_movie_result_actions_view(drops: list[MovieTicketDrop]) -> discord.ui.
     return view
 
 
+def _copy_result_embed_visuals(source: discord.Embed, target: discord.Embed) -> None:
+    image_url = getattr(source.image, "url", None)
+    if image_url:
+        target.set_image(url=str(image_url))
+    thumbnail_url = getattr(source.thumbnail, "url", None)
+    if thumbnail_url:
+        target.set_thumbnail(url=str(thumbnail_url))
+
+
+def _compact_movie_result_embed(
+    source: discord.Embed,
+    drop: MovieTicketDrop,
+    *,
+    result_number: int,
+    char_budget: int,
+) -> discord.Embed:
+    label, url, _emoji = movie_result_action(drop, result_number)
+    description = clean_text(source.description or "")[:130]
+    compact = discord.Embed(
+        title=clean_text(source.title or "Movie result")[:120],
+        description=description,
+        url=source.url or None,
+        color=source.color,
+        timestamp=source.timestamp,
+    )
+    compact.add_field(
+        name=f"👇 Result #{result_number} action",
+        value=(
+            f"Use **{label}** below."
+            if url
+            else "No safe direct result link was provided; use the source buttons on the permanent panel."
+        )[:120],
+        inline=False,
+    )
+
+    code = clean_text(drop.code)
+    if code:
+        compact.add_field(name="Promo code", value=code[:80], inline=True)
+
+    classification = (
+        "Public reusable code"
+        if drop.classification == "public_reusable"
+        else "Screening/discovery lead"
+    )
+    if drop.source_key == SEEITEARLY_SOURCE_KEY:
+        classification += " • supplemental"
+    compact.add_field(name="Classification", value=classification[:80], inline=True)
+
+    verify_parts: list[str] = []
+    validity = clean_text(drop.validity_text)
+    if validity:
+        verify_parts.append(validity[:100])
+    if drop.restrictions:
+        restriction = clean_text(drop.restrictions[0])
+        if restriction:
+            verify_parts.append(restriction[:100])
+    verify_text = " • ".join(verify_parts) or "Verify availability and eligibility on the official source before claiming or traveling."
+    compact.add_field(name="Verify before claiming", value=verify_text[:200], inline=False)
+    compact.set_footer(text=f"Source: {clean_text(drop.source_label)[:80]}")
+    _copy_result_embed_visuals(source, compact)
+
+    if len(compact) <= char_budget:
+        return compact
+
+    # Emergency form is intentionally tiny but keeps identity, action, source,
+    # and any actual public code. It is preferable to Discord rejecting the
+    # entire result stack because multiple individually-valid embeds exceed the
+    # 6000-character per-message aggregate limit.
+    emergency = discord.Embed(
+        title=clean_text(source.title or "Movie result")[:80],
+        description=f"**{clean_text(drop.title)[:120] or 'Movie result'}**",
+        url=source.url or None,
+        color=source.color,
+        timestamp=source.timestamp,
+    )
+    emergency.add_field(
+        name=f"👇 Result #{result_number} action",
+        value=(f"Use **{label}** below." if url else "Use the permanent panel source buttons.")[:110],
+        inline=False,
+    )
+    if code:
+        emergency.add_field(name="Promo code", value=code[:80], inline=True)
+    emergency.add_field(
+        name="Verify",
+        value="Confirm current availability, eligibility, location, and terms on the linked source.",
+        inline=False,
+    )
+    emergency.set_footer(text=f"Source: {clean_text(drop.source_label)[:60]}")
+    _copy_result_embed_visuals(source, emergency)
+    return emergency
+
+
+def _fit_movie_result_embeds_to_discord_budget(
+    embeds: list[discord.Embed],
+    drops: list[MovieTicketDrop],
+) -> list[discord.Embed]:
+    if sum(len(embed) for embed in embeds) <= MOVIE_RESULT_EMBED_CHAR_BUDGET:
+        return embeds
+
+    paired_count = min(len(embeds), len(drops), MAX_MANUAL_RESULT_ACTIONS)
+    if paired_count <= 0:
+        return embeds
+
+    per_embed_budget = max(400, MOVIE_RESULT_EMBED_CHAR_BUDGET // paired_count - 5)
+    compacted = [
+        _compact_movie_result_embed(
+            embed,
+            drop,
+            result_number=index,
+            char_budget=per_embed_budget,
+        )
+        for index, (embed, drop) in enumerate(
+            zip(embeds[:paired_count], drops[:paired_count], strict=False),
+            start=1,
+        )
+    ]
+
+    # The emergency form above is smaller than the minimum per-card budget, so
+    # this invariant should always hold. Fail closed in development if a future
+    # card change violates it instead of rediscovering the limit in production.
+    if sum(len(embed) for embed in compacted) > MOVIE_RESULT_EMBED_CHAR_BUDGET:
+        raise ValueError("Movie result embeds still exceed Discord's aggregate embed character budget.")
+    return compacted
+
+
 def annotate_movie_result_embeds(
     embeds: list[discord.Embed],
     drops: list[MovieTicketDrop],
 ) -> list[discord.Embed]:
-    """Make the card/button relationship obvious without relying on title links."""
+    """Make card/button mapping obvious and keep the whole Discord message valid."""
 
     for result_number, (embed, drop) in enumerate(
         zip(embeds, drops[:MAX_MANUAL_RESULT_ACTIONS], strict=False),
@@ -298,6 +425,9 @@ def annotate_movie_result_embeds(
             value=value,
             inline=False,
         )
+
+    if sum(len(embed) for embed in embeds) > DISCORD_MESSAGE_EMBED_CHAR_LIMIT:
+        embeds[:] = _fit_movie_result_embeds_to_discord_budget(embeds, drops)
     return embeds
 
 

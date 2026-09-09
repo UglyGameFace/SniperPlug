@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape, unescape
@@ -22,6 +23,7 @@ from sniperplug.services.movie_ticket_drops import (
 
 BING_SEARCH_URL = "https://www.bing.com/search"
 BING_ALLOWED_HOSTS = frozenset({"bing.com", "www.bing.com"})
+BING_RESULT_WRAPPER_PATH = "/ck/a"
 DUCKDUCKGO_SEARCH_URL = "https://html.duckduckgo.com/html/"
 DUCKDUCKGO_ALLOWED_HOSTS = frozenset(
     {"html.duckduckgo.com", "duckduckgo.com", "www.duckduckgo.com"}
@@ -29,6 +31,7 @@ DUCKDUCKGO_ALLOWED_HOSTS = frozenset(
 ATOM_INDEXED_FALLBACK_PREFIX = "indexed-fallback:"
 ATOM_DIRECT_BLOCK_MARKER = ";direct-blocked:"
 ATOM_INDEX_MAX_RESPONSE_BYTES = 512_000
+BING_RESULT_MAX_ENCODED_DESTINATION = 8192
 # Bing's documented `site:` operator searches a directory tree, unlike `url:`
 # which checks one exact URL. Production then proved Bing RSS itself can omit
 # Atom entirely even while public web indexes expose live official promo pages,
@@ -39,13 +42,12 @@ ATOM_DIRECT_REPROBE_SECONDS = 6 * 60 * 60
 _ATOM_PROMOTION_PATH_RE = re.compile(
     r"^/promotions(?:/([A-Za-z0-9][A-Za-z0-9-]{0,199}))?/?$"
 )
+_BING_RESULT_DESTINATION_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _INDEX_IDENTITY_TERMS = frozenset({"promotion", "promo", "offer", "ticket"})
 
 
 @dataclass(frozen=True, slots=True)
 class AtomIndexedConfirmation:
-    # Compatibility name retained from #263. This can now be either the
-    # canonical hub or one strictly allowlisted official promotion detail URL.
     canonical_url: str
     title: str
     snippet: str
@@ -61,14 +63,7 @@ class AtomIndexedConfirmation:
 
     @property
     def synthetic_html(self) -> str:
-        """Return a zero-public-code Atom shell for the existing fail-closed parser.
-
-        Indexed confirmation proves only that a current public search index points
-        to an official Atom promotions URL. It is deliberately insufficient proof
-        for a public reusable promo code, so this document contains Partner
-        Promotions only. The current Atom parser therefore clears stale public
-        codes instead of resurrecting them from search snippets or old history.
-        """
+        """Return a zero-public-code Atom shell for the fail-closed parser."""
 
         snippet = escape(self.snippet[:1200])
         official_url = escape(self.canonical_url)
@@ -103,8 +98,6 @@ def parse_atom_indexed_fallback_marker(value: str | None) -> AtomIndexedFallback
     if ATOM_DIRECT_BLOCK_MARKER in payload:
         indexed_at, direct_blocked_at = payload.split(ATOM_DIRECT_BLOCK_MARKER, 1)
     else:
-        # Backward compatibility with the first marker shape used while #263 was
-        # being developed. Treat that one timestamp as both observations.
         indexed_at = payload
         direct_blocked_at = payload
     if _parse_iso(indexed_at) is None or _parse_iso(direct_blocked_at) is None:
@@ -142,20 +135,11 @@ def atom_indexed_fallback_age_seconds(
 
 
 def normalize_atom_canonical_url(value: str | None) -> str:
-    """Normalize only the canonical promotions hub (legacy/public contract)."""
-
     normalized = normalize_atom_indexed_promotion_url(value)
     return ATOM_PROMOTIONS_URL if normalized == ATOM_PROMOTIONS_URL else ""
 
 
 def normalize_atom_indexed_promotion_url(value: str | None) -> str:
-    """Allow only Atom's hub or one-level official promotion detail pages.
-
-    Search-index fallback is intentionally narrower than the general Atom URL
-    allowlist. Query strings/fragments are discarded, deeper paths are rejected,
-    and no redirect/off-domain URL can become issuer evidence.
-    """
-
     text = clean_text(value)
     if not text:
         return ""
@@ -173,12 +157,52 @@ def normalize_atom_indexed_promotion_url(value: str | None) -> str:
     return f"{ATOM_PROMOTIONS_URL}/{slug}"
 
 
+def normalize_bing_atom_result_url(value: str | None) -> str:
+    """Normalize direct Atom URLs or Bing's current `/ck/a` result wrappers."""
+
+    direct = normalize_atom_indexed_promotion_url(value)
+    if direct:
+        return direct
+
+    text = clean_text(value)
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme != "https":
+        return ""
+    if (parsed.hostname or "").lower() not in BING_ALLOWED_HOSTS:
+        return ""
+    if (parsed.path or "").rstrip("/") != BING_RESULT_WRAPPER_PATH:
+        return ""
+
+    destination_values = parse_qs(parsed.query, keep_blank_values=False).get("u", [])
+    if len(destination_values) != 1:
+        return ""
+    encoded = clean_text(destination_values[0])
+    if not encoded.startswith("a1"):
+        return ""
+    payload = encoded[2:]
+    if (
+        not payload
+        or len(payload) > BING_RESULT_MAX_ENCODED_DESTINATION
+        or _BING_RESULT_DESTINATION_RE.fullmatch(payload) is None
+    ):
+        return ""
+
+    padded = payload + ("=" * (-len(payload) % 4))
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    return normalize_atom_indexed_promotion_url(decoded)
+
+
 def parse_bing_atom_confirmation_rss(
     xml_text: str,
     *,
     observed_at: str | None = None,
 ) -> AtomIndexedConfirmation | None:
-    """Confirm an official Atom promotions URL from Bing RSS."""
+    """Confirm an official Atom promotion URL from direct or wrapped Bing RSS."""
 
     try:
         root = ET.fromstring(xml_text)
@@ -189,7 +213,7 @@ def parse_bing_atom_confirmation_rss(
     detail_candidate: AtomIndexedConfirmation | None = None
     for item in root.findall(".//item"):
         title = clean_text(item.findtext("title"))
-        link = normalize_atom_indexed_promotion_url(item.findtext("link"))
+        link = normalize_bing_atom_result_url(item.findtext("link"))
         description = clean_text(item.findtext("description"))
         if not link or not _indexed_identity_is_atom_promotion(title, description):
             continue
@@ -208,8 +232,6 @@ def parse_bing_atom_confirmation_rss(
 
 
 class _IndexAnchorParser(HTMLParser):
-    """Collect candidate search-result anchors without trusting search snippets."""
-
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.results: list[tuple[str, str]] = []
@@ -225,8 +247,6 @@ class _IndexAnchorParser(HTMLParser):
         if not href:
             return
         classes = set(values.get("class", "").split())
-        # DuckDuckGo HTML marks actual result titles with result__a. Keep the
-        # parser narrowly bound to that result surface rather than every link.
         if "result__a" not in classes:
             return
         self._href = href
@@ -253,8 +273,6 @@ def parse_duckduckgo_atom_confirmation_html(
     *,
     observed_at: str | None = None,
 ) -> AtomIndexedConfirmation | None:
-    """Confirm an allowlisted official Atom promo URL from DuckDuckGo HTML."""
-
     parser = _IndexAnchorParser()
     try:
         parser.feed(html_text)
@@ -290,8 +308,6 @@ class AtomIndexedPromotionsClient:
         self.session = session
 
     async def confirm_canonical_page(self) -> AtomIndexedConfirmation:
-        # Compatibility method name retained from #263. Production has now shown
-        # that Bing RSS can omit Atom entirely, so no single index is authoritative.
         errors: list[str] = []
         try:
             return await self._confirm_bing_rss()
@@ -391,13 +407,13 @@ def _decode_duckduckgo_result_url(value: str | None) -> str:
     if text.startswith("//"):
         text = f"https:{text}"
     elif text.startswith("/"):
-        # DuckDuckGo HTML commonly emits relative result redirects such as
-        # /l/?kh=-1&uddg=https%3A%2F%2Fexample.com. Resolve only against an
-        # allowlisted DuckDuckGo origin, then extract the explicit target below.
         text = f"https://duckduckgo.com{text}"
     parsed = urlparse(text)
     host = (parsed.hostname or "").lower()
-    if host in {"duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com"} and parsed.path.startswith("/l/"):
+    if (
+        host in {"duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com"}
+        and parsed.path.startswith("/l/")
+    ):
         values = parse_qs(parsed.query)
         target = values.get("uddg", [""])[0]
         return clean_text(target)

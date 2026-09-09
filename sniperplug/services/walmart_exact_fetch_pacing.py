@@ -225,7 +225,10 @@ async def _recover_api_price_or_reference(
         )
         if recovered[0] is not None:
             return recovered
-        return candidate, status, error
+        recovery_kind = _retry_kind_from_error(recovered[2])
+        if recovery_kind == "unclassified":
+            recovery_kind = f"status_{str(recovered[1] or 'unknown').strip().lower()}"
+        return candidate, status, f"{error}; recovery_kind={recovery_kind}"
 
     # A strict fresh snapshot is already valid current-price proof. If it lacks a
     # trusted Walmart reference, exact search may enrich it with a same-item

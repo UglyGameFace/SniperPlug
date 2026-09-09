@@ -11,11 +11,11 @@ Target outcome: production must prove which Walmart exact-recovery build is runn
 Do not switch to movie tickets, gateway lag, setup UX, DM redesign, watchers, site, Minecraft, or unrelated work without another explicit FORCE SWITCH.
 
 ## Status
-**Fresh production restart boundary is proven. PR #270 now carries bounded recovery diagnostics and has been integrated with current main so the next exact-head validation covers both this Walmart change and the latest merged repository state. Production acceptance still requires the new runtime marker plus post-deploy Walmart batches.**
+**Fresh production restart boundary is proven. PR #270 carries bounded Walmart recovery diagnostics and has now been integrated with main through merged PR #272, so exact-head validation must use the post-#272 branch head. Production acceptance still requires the new runtime marker plus post-deploy Walmart batches.**
 
 Active branch: `fix/walmart-production-acceptance-270`
-Current main integrated into branch: `60cc3f8b55d2543cfa396105f189ec2427462ca7`
-Main-integration merge commit before this task-record refresh: `33ea4cb0636fea295fd2b9756ee4afc4525c1967`
+Current main integrated into branch: `fe0558ea7795d773e0f17e52f8284153711a3b36`
+Main-integration merge commit before this task-record refresh: `7e2d991af157457665e09e92dcaf5227d8404cae`
 #257 merge: `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`
 #257 validated head: `edff57a27fb2e7d342970d0bf2deed782dbbffca`
 
@@ -80,27 +80,31 @@ That means repeated `api_price_missing` logs are ambiguous even on a post-#257 b
 - full suite 1,286 passed;
 - only unrelated `audioop` deprecation warning.
 
-Latest merged main `60cc3f8b55d2543cfa396105f189ec2427462ca7` also contains PR #271, whose exact head was validated in Termux/Ubuntu Python 3.12 with targeted movie regressions, live Gofobo acceptance, pip check, compileall, import smoke, native libsql tests, and full pytest **1,377 passed** before merge.
+Latest merged main `fe0558ea7795d773e0f17e52f8284153711a3b36` contains:
+- PR #271 Gofobo live-card extraction fix, validated with full pytest **1,377 passed** before merge;
+- PR #272 movie result embed-budget fix, exact head `279b70316a69f5eb0eb4b64ab110001ee85b8a30`, validated in Termux/Ubuntu Python 3.12 with targeted movie tests, current seven-result payload probe, pip check, compileall, import smoke, native libsql tests, full pytest **1,378 passed**, and diff/scope/conflict/clean-worktree checks before merge.
 
 ### PR #270 repository checks performed
-- branch was merged with current main using merge commit `33ea4cb0636fea295fd2b9756ee4afc4525c1967`;
-- PR is mergeable after integration;
+- branch was merged with latest main using merge commit `7e2d991af157457665e09e92dcaf5227d8404cae`;
+- the merge tree starts from PR #272 main and overlays only the four active Walmart/task files, preserving the merged movie changes without adding them to PR #270's diff;
 - PR diff remains exactly 4 scoped files relative to current main: task record, two Walmart recovery/runtime files, one focused Walmart regression file;
-- no Gofobo/movie implementation is introduced into the PR diff because those changes now come from the merged base;
 - inline review threads: none;
 - submitted reviews: none;
 - PR comments: none;
 - an isolated diagnostic-helper harness passed 4/4 cases for primary/recovery reason composition;
-- GitHub-hosted workflows on the integrated head again terminated before execution; sampled Python-tests job had `steps=null`, so those red statuses are not test results.
+- GitHub-hosted workflows have repeatedly terminated before execution with `steps=null`; those red statuses are not executed test failures.
+
+### Local validation delivery issue
+The first attempt to create `/tmp/validate-pr270.sh` in the Ubuntu/PRoot environment did not persist: the subsequent diagnostic showed the file did not exist and both syntax/run checks exited 127. No validation result was produced by that attempt. The next validation must use a persistent `/root` path or direct commands and must print its exact SHA/result before it is trusted.
 
 ### Still required before completion
-Exact-head executable validation has **not** yet run for the post-integration PR #270 head. Required:
+Exact-head executable validation has **not** yet run for the post-PR-#272 PR #270 head. Required:
 - targeted `tests/test_walmart_exact_price_recovery_257.py` plus relevant Walmart exact/bulk/page-pacing regressions;
 - `pip check`;
 - compileall;
 - import smoke;
 - native libsql process suite when available;
-- full pytest including the latest merged-main tests;
+- full pytest including latest merged-main tests;
 - diff check / conflict scan / clean worktree / final SHA recheck.
 
 Do not call PR #270 ready or the Walmart task fixed until those checks and production acceptance pass.
@@ -118,7 +122,7 @@ Then inspect the paired exact summary:
 Only after that evidence identifies a remaining failing stage may implementation change again. Fix that stage, not a guessed neighboring layer.
 
 ## Cleanup / conflicts
-- Current main was integrated without overwriting unrelated PR #271 Gofobo changes.
+- Current main through PR #272 is integrated without overwriting unrelated movie changes.
 - No competing Walmart implementation exists in this branch.
 - No proof/scheduling/fanout behavior changed.
 - No temporary bypass, page workaround, retry stack, or duplicate verifier was added.
@@ -137,8 +141,10 @@ Preserved state:
 - #268 exact validated head `9a52996ad5dae0c5ccd74e7238dc0fa8cd4f3e80`;
 - #268 targeted/pip/compile/import/native-libsql/full validation passed, full pytest **1,375 passed**;
 - #268 merge `e970b2dcb5854da06c25c9a9e9b42476975584fa`;
-- PR #271 later merged a separate Gofobo truthfulness fix into main at `60cc3f8b55d2543cfa396105f189ec2427462ca7`; it remains suspended movie-task state and is not part of the active Walmart implementation;
-- remaining movie step is production acceptance on the existing July 31 panel, especially Atom indexed fallback health;
+- PR #271 later merged Gofobo truthfulness at `60cc3f8b55d2543cfa396105f189ec2427462ca7`;
+- PR #272 later merged movie result embed-budget protection at `fe0558ea7795d773e0f17e52f8284153711a3b36`;
+- those movie changes are preserved in main but remain suspended from the active Walmart implementation task;
+- remaining movie step is production acceptance on the existing July 31 panel;
 - movie work must resume from that acceptance state, not from reimplementation.
 
 ## Backlog — not active
@@ -152,4 +158,4 @@ Preserved state:
 - SniperPlug-Site work
 
 ## Next step
-Run exact-head PR #270 validation on the current branch head after this record refresh. If green, update the PR body with the exact validated SHA/results, mark ready, merge only that SHA, deploy merged main, then judge the first Walmart exact batches using the new `price_recovery` marker and combined recovery reason telemetry.
+Run exact-head PR #270 validation on the current branch head after this record refresh, using a persistent `/root` validation script or direct shell commands. If green, update the PR body with the exact validated SHA/results, mark ready, merge only that SHA, deploy merged main, then judge the first Walmart exact batches using the new `price_recovery` marker and combined recovery reason telemetry.

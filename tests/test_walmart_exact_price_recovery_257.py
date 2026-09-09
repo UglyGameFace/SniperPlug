@@ -3,15 +3,24 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest
-from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
+from sniperplug.providers.walmart import (
+    WalmartAffiliateConfig,
+    WalmartProvider,
+    WalmartProviderError,
+)
 from sniperplug.services.walmart_exact_fetch_pacing import (
     fetch_exact_candidate_with_page_pacing,
 )
 from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
+from sniperplug.services.walmart_exact_queue_bulk_runtime import (
+    _recovery_kind_from_error,
+    _retry_reason_label,
+)
 from sniperplug.services.walmart_exact_queue_runtime import _PAGE_CIRCUIT_STATE_ATTR
 from sniperplug.services.walmart_fresh_discovery_proof import (
     build_fresh_discovery_offer_snapshot,
@@ -278,3 +287,45 @@ def test_failed_reference_recovery_preserves_valid_fresh_candidate() -> None:
         assert provider.page_calls == 0
 
     asyncio.run(run())
+
+
+def test_failed_price_recovery_exposes_exact_search_failure_without_changing_primary_retry() -> None:
+    async def run() -> None:
+        item_id = "910105"
+        inner = RecoveryInner(
+            detail_payload=detail_identity_without_price(item_id),
+            search_payload=None,
+            search_error=WalmartProviderError(
+                "fixture exact search returned no exact item",
+                retry_kind="api_exact_search_no_match",
+            ),
+        )
+        provider = RecoveryProvider(inner)
+
+        candidate, status, error = await fetch_exact_candidate_with_page_pacing(
+            provider,
+            queue_claim(item_id),
+            timeout_seconds=5.0,
+        )
+
+        assert candidate is None
+        assert status == "retry"
+        assert "retry_kind=api_price_missing" in error
+        assert "recovery_kind=api_exact_search_no_match" in error
+        assert _recovery_kind_from_error(error) == "api_exact_search_no_match"
+        assert _retry_reason_label(error) == (
+            "api_price_missing->api_exact_search_no_match"
+        )
+        assert inner.detail_calls == 1
+        assert inner.search_calls == 1
+        assert provider.page_calls == 0
+
+    asyncio.run(run())
+
+
+def test_bulk_runtime_marks_exact_id_price_recovery_capability() -> None:
+    root = Path(__file__).resolve().parents[1]
+    runtime = (root / "sniperplug/services/walmart_exact_queue_bulk_runtime.py").read_text(
+        encoding="utf-8"
+    )
+    assert "price_recovery=exact_id_search_v257" in runtime

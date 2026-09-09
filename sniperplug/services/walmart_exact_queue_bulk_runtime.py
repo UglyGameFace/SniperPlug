@@ -65,6 +65,26 @@ EXACT_WORKER_PRESSURE_CAP = 64
 API_ONLY_PAGE_RECOVERY_CLAIM_CAP = min(2, PAGE_RECOVERY_CLAIM_CAP)
 
 
+def _recovery_kind_from_error(error: str) -> str:
+    """Read the secondary exact-search recovery outcome without changing retry policy."""
+
+    for token in str(error or "").split():
+        if not token.startswith("recovery_kind="):
+            continue
+        value = token.split("=", 1)[1].strip().strip(",;:()[]{}")
+        if value:
+            return value[:80]
+    return ""
+
+
+def _retry_reason_label(error: str) -> str:
+    primary = _retry_kind_from_error(error)
+    recovery = _recovery_kind_from_error(error)
+    if recovery:
+        return f"{primary}->{recovery}"
+    return primary
+
+
 async def process_actionable_walmart_exact_queue_batch(
     db: Any,
     *,
@@ -246,7 +266,8 @@ async def process_actionable_walmart_exact_queue_batch(
             else:
                 counts["failed"] += 1
                 counts[_retry_error_bucket(status=status, error=error)] += 1
-                retry_reason_counts[retry_kind] = retry_reason_counts.get(retry_kind, 0) + 1
+                retry_reason = _retry_reason_label(error)
+                retry_reason_counts[retry_reason] = retry_reason_counts.get(retry_reason, 0) + 1
             continue
 
         counts["verified"] += 1
@@ -287,7 +308,7 @@ async def process_actionable_walmart_exact_queue_batch(
     log.info(
         "Walmart exact Turso write telemetry lease_rows=%s outcome_rows=%s "
         "offer_memory_rows=%s persistence_statements=%s "
-        "page_circuit_reschedule_rows=0",
+        "page_circuit_reschedule_rows=0 price_recovery=exact_id_search_v257",
         len(claims),
         persisted.queue_rows,
         persisted.offer_rows,

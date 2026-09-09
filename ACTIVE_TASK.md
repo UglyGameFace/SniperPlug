@@ -1,97 +1,153 @@
 # Active Task
 
 ## Task / outcome
-**SP-MOVIE-TICKETS-RECOVERY — restore SniperPlug movie tickets end-to-end and keep the existing July 31 permanent panel truthful and usable.**
+**SP-WM-DEAL-DELIVERY-STALL — restore live Walmart exact verification and verified-deal delivery without weakening proof gates.**
 
-Target outcome: current public movie offers/screening leads are discovered, freshness-qualified, truthfully labeled, optionally filtered by a user's ZIP/radius, and rendered through the existing permanent panel without Discord rejecting the response.
+Target outcome: production must prove which Walmart exact-recovery build is running, expose the exact stage behind any remaining `api_price_missing` failures, recover exact current/reference prices when Walmart supplies valid same-item data, and deliver qualifying verified deals through the existing fanout path.
 
 ## Scope
-`public source discovery → fail-closed parse → source health/backoff/fallback → durable current cache → poster enrichment → actionable panel/latest/status → personal ZIP/local view → configured alert delivery → feedback controls`
+`deployed-version proof → catalog discovery → exact queue claim → fresh proof/API detail → exact-ID Affiliate-search recovery → selected-offer/current/reference normalization → exact verification → durable fanout → public/DM delivery`
 
-Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
+Do not switch to movie tickets, gateway lag, setup UX, DM redesign, watchers, site, Minecraft, or unrelated work without another explicit FORCE SWITCH.
 
 ## Status
-**PR #272 is the single active draft.**
+**Fresh production restart boundary is proven. PR #270 carries bounded Walmart recovery diagnostics and has now been integrated with main through merged PR #272, so exact-head validation must use the post-#272 branch head. Production acceptance still requires the new runtime marker plus post-deploy Walmart batches.**
 
-Already completed under this task:
-- #268 fixed Atom indexed recovery and passed exact-head Termux/Ubuntu Python 3.12 validation. Production now truthfully reports Atom `Indexed fallback current` when direct Atom HTTP access is blocked, without inventing public codes.
-- #271 fixed current Gofobo image-card extraction. Exact head `8d5153d8730c96302f0d91aef6da07654fc0e3c6` passed targeted tests, live Gofobo acceptance, native libsql checks, full suite **1,377 passed**, diff/scope/cleanliness checks, then merged as `60cc3f8b55d2543cfa396105f189ec2427462ca7` and was deployed.
-- Production DB after #271 contained **4 Gofobo + 3 SeeItEarly = 7 active screening/discovery rows**, matching the live source evidence.
+Active branch: `fix/walmart-production-acceptance-270`
+Current main integrated into branch: `fe0558ea7795d773e0f17e52f8284153711a3b36`
+Main-integration merge commit before this task-record refresh: `7e2d991af157457665e09e92dcaf5227d8404cae`
+#257 merge: `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`
+#257 validated head: `edff57a27fb2e7d342970d0bf2deed782dbbffca`
 
-Production acceptance then exposed the next same-task failure: permanent-panel Check Now is acknowledged safely but Discord rejects the follow-up with HTTP 400 / error 50035: `In embeds: Embed size exceeds maximum size of 6000`.
+## Findings / root cause
+### 1. The newly supplied startup is a real process boundary
+The user supplied a later startup beginning at application timestamp `2026-09-08 23:45:22`, with:
+- Turso ready / DB connected at `23:45:27`;
+- runtime services ready at `23:45:31`;
+- slash sync at `23:45:32`;
+- `SniperPlug online` at `23:45:34`;
+- eligible Walmart fanout guilds at `23:45:35`.
 
-## Root cause / execution path
-The authoritative production manual-result paths are:
-- registered `/movies latest` in `registered_multi_source_movies.py`;
-- permanent-panel Check Now in `movie_command_guide.py`;
-- personal Local / Show All rendering in `movie_result_actions.py`.
+The previously supplied failing Walmart batches at approximately `23:14-23:15` occurred **before** this startup. They cannot be used to judge the restarted process.
 
-All three build up to eight detailed result embeds, call `annotate_movie_result_embeds`, then send those embeds in one Discord message. Individual cards are legal, but the aggregate character count of all embeds in one message can exceed Discord's 6000-character message-level embed limit. Restoring four Gofobo cards raised the current seven-result payload above that limit.
+### 2. Startup text still does not prove #257 is present
+The startup includes `maintenance_after_all_fanout=true`, but that architecture string already existed on the validated #256 head. PR #257 did not add a unique startup line. Therefore a restart timestamp after #257's merge is not sufficient proof that Discloud actually deployed that source rather than restarting an older artifact.
 
-Automatic issuer alerts send individual result cards and are not affected by this aggregate limit.
+### 3. Existing #257 failure reporting hides the secondary recovery result
+The authoritative production path is:
+1. `walmart_exact_queue_bulk_runtime.py`
+2. `fetch_exact_candidate_with_page_pacing()`
+3. `_fetch_exact_candidate_off_loop()`
+4. official exact detail
+5. on `api_price_missing`, #257 exact-ID Affiliate-search recovery
+6. canonical candidate/selected-offer normalization
+7. bulk persistence and fanout.
 
-## #272 implementation
-Branch: `fix/movie-embed-budget-272`
+Inspection found a concrete observability defect in #257: when the primary pass returns `api_price_missing`, the exact-ID recovery is attempted, but if that recovery also fails, `_recover_api_price_or_reference()` discards the recovery error and returns only the original `api_price_missing`. Production telemetry therefore cannot tell whether recovery failed because of exact-search no-match, another missing-price payload, candidate construction, identity proof, or source unavailability.
 
-Current head before validation: `fa836ac40f9f396c8cc41ed6471ee7afe7f8dccb` plus this task-record commit.
+That means repeated `api_price_missing` logs are ambiguous even on a post-#257 build. Adding another fallback before exposing the secondary result would be blind patching.
 
-Implementation is intentionally centralized in the authoritative shared manual-result helper instead of adding per-button retries or duplicate send paths:
-- detailed result cards remain unchanged when the combined payload is legal;
-- if combined embed characters exceed Discord's 6000 hard limit, all result cards are compacted under a reserved **5800-character** aggregate budget;
-- no result is dropped;
-- compact cards preserve movie identity, numbered result/button mapping, direct URL, poster/thumbnail, actual promo code when present, classification, a verification warning, and source identity;
-- list identity remains stable for existing callers;
-- a development-time invariant fails closed if future compact-card changes could still exceed the reserved aggregate budget.
+## Changes in PR #270
+### Recovery diagnostics only
+`sniperplug/services/walmart_exact_fetch_pacing.py`
+- successful exact-ID recovery behavior is unchanged;
+- when `api_price_missing` recovery fails, preserve the original retry status/error semantics and append only `recovery_kind=<secondary outcome>`;
+- if the secondary path has no retry-kind token, report its status as `status_<status>`.
 
-## Regression coverage
-`tests/test_movie_result_actions_264.py` now creates eight oversized Gofobo-style cards that start above Discord's 6000-character limit and verifies:
-- all eight results remain present;
-- final aggregate size is <= 5800 and < 6000;
-- numbered card/action mapping remains intact;
-- movie titles remain visible;
-- poster imagery survives compaction.
+`sniperplug/services/walmart_exact_queue_bulk_runtime.py`
+- parse the secondary `recovery_kind` token without changing queue policy;
+- report failed batches as, for example, `api_price_missing->api_exact_search_no_match` instead of collapsing everything to `api_price_missing`;
+- add `price_recovery=exact_id_search_v257` to the existing write-telemetry line so a production batch itself proves the relevant recovery-capable runtime is deployed.
 
-Existing result-action, permanent-panel, slash-latest, source URL, and feedback-control regressions remain in place.
+`tests/test_walmart_exact_price_recovery_257.py`
+- preserve all original #257 success/reference tests;
+- add a regression proving an exact-search no-match keeps the primary retry semantics while exposing the secondary failure;
+- cover the combined retry label and deployed capability marker.
+
+### Explicitly unchanged
+- no current/reference price proof is weakened;
+- no item, seller, offer, variant, marketplace, condition, fulfillment, or shipping guard is changed;
+- no retry status or retry delay is changed;
+- no page circuit, HTML pacing, queue cadence, threshold, category, dedupe, fanout, or DM rule is changed;
+- no second verifier or guessed/catalog fallback price is added.
 
 ## Validation / results
-### #271
-Exact head `8d5153d8730c96302f0d91aef6da07654fc0e3c6`:
-- targeted movie/Gofobo regressions passed;
-- live Gofobo parser acceptance passed;
-- `pip check`, `compileall`, import smoke, native libsql process tests passed;
-- full pytest **1,377 passed, 1 existing audioop deprecation warning**;
-- diff check, exact changed-file scope, conflict scan, clean worktree, exact-head verification passed.
+### Previously validated foundation
+#257 exact head `edff57a27fb2e7d342970d0bf2deed782dbbffca`:
+- compileall passed;
+- import smoke 37 modules / 22 symbols;
+- native libsql process tests 10 passed;
+- full suite 1,286 passed;
+- only unrelated `audioop` deprecation warning.
 
-### #272
-**Not yet exact-head validated.** GitHub-hosted Actions quota remains unavailable, so validation must run in the known-good Termux/Ubuntu Python 3.12 environment with native libsql.
+Latest merged main `fe0558ea7795d773e0f17e52f8284153711a3b36` contains:
+- PR #271 Gofobo live-card extraction fix, validated with full pytest **1,377 passed** before merge;
+- PR #272 movie result embed-budget fix, exact head `279b70316a69f5eb0eb4b64ab110001ee85b8a30`, validated in Termux/Ubuntu Python 3.12 with targeted movie tests, current seven-result payload probe, pip check, compileall, import smoke, native libsql tests, full pytest **1,378 passed**, and diff/scope/conflict/clean-worktree checks before merge.
 
-Required validation:
-- targeted movie result-action / permanent-panel / location / Gofobo regressions;
-- production-shape seven/eight-card embed-budget probe;
+### PR #270 repository checks performed
+- branch was merged with latest main using merge commit `7e2d991af157457665e09e92dcaf5227d8404cae`;
+- the merge tree starts from PR #272 main and overlays only the four active Walmart/task files, preserving the merged movie changes without adding them to PR #270's diff;
+- PR diff remains exactly 4 scoped files relative to current main: task record, two Walmart recovery/runtime files, one focused Walmart regression file;
+- inline review threads: none;
+- submitted reviews: none;
+- PR comments: none;
+- an isolated diagnostic-helper harness passed 4/4 cases for primary/recovery reason composition;
+- GitHub-hosted workflows have repeatedly terminated before execution with `steps=null`; those red statuses are not executed test failures.
+
+### Local validation delivery issue
+The first attempt to create `/tmp/validate-pr270.sh` in the Ubuntu/PRoot environment did not persist: the subsequent diagnostic showed the file did not exist and both syntax/run checks exited 127. No validation result was produced by that attempt. The next validation must use a persistent `/root` path or direct commands and must print its exact SHA/result before it is trusted.
+
+### Still required before completion
+Exact-head executable validation has **not** yet run for the post-PR-#272 PR #270 head. Required:
+- targeted `tests/test_walmart_exact_price_recovery_257.py` plus relevant Walmart exact/bulk/page-pacing regressions;
 - `pip check`;
-- `compileall`;
+- compileall;
 - import smoke;
-- native libsql process tests;
-- full pytest;
-- `git diff --check`;
-- exact changed-file scope;
-- conflict-marker scan;
-- clean worktree;
-- exact-head lock.
+- native libsql process suite when available;
+- full pytest including latest merged-main tests;
+- diff check / conflict scan / clean worktree / final SHA recheck.
+
+Do not call PR #270 ready or the Walmart task fixed until those checks and production acceptance pass.
+
+## Production acceptance gate after PR #270 validation + merge
+Deploy the merged canonical `main`. The first claimed Walmart batch must contain:
+- `price_recovery=exact_id_search_v257` in write telemetry, proving the recovery-capable runtime is actually deployed.
+
+Then inspect the paired exact summary:
+- success should produce real verified/fresh/reference counts when Walmart supplies usable proof;
+- failed price recovery should now expose a combined reason such as `api_price_missing->api_exact_search_no_match`, `api_price_missing->api_price_missing`, `api_price_missing->candidate_build`, or a status-derived recovery reason;
+- actionable pressure should drain normally rather than spin indefinitely;
+- any genuine markdown must still pass the canonical exact proof and fanout path.
+
+Only after that evidence identifies a remaining failing stage may implementation change again. Fix that stage, not a guessed neighboring layer.
 
 ## Cleanup / conflicts
-- No retry loop, Discord special-case fallback send, monkey patch, duplicate renderer, or second movie implementation was added.
-- The existing registered multi-source cog remains authoritative.
-- #272 changes only the shared manual result renderer, its regression tests, and this active-task record.
-- Unrelated Walmart API failures visible in production logs remain backlogged and are not being investigated while this task is active.
+- Current main through PR #272 is integrated without overwriting unrelated movie changes.
+- No competing Walmart implementation exists in this branch.
+- No proof/scheduling/fanout behavior changed.
+- No temporary bypass, page workaround, retry stack, or duplicate verifier was added.
+- PR #200 and watcher work remain unrelated and untouched.
 
-## Risks / boundaries
-- Discord's aggregate embed character limit applies across all embeds in one message; individual per-embed field limits still apply independently.
-- Compaction intentionally reduces repeated explanatory boilerplate only when necessary to make the payload legal. It must never manufacture availability, location, or promo-code claims.
-- Production acceptance still requires the same July 31 panel to complete Check Now successfully with the current seven-result dataset.
+## Blockers / risks
+- ChatGPT has repository access but no Discloud runtime/deployment connector, so hosted deployment and live logs remain an external acceptance boundary.
+- GitHub-hosted Actions are currently failing before runner execution, so exact-head executable validation must use the known-good external Linux/PRoot environment unless runner availability returns.
+- Walmart Affiliate payload shape can change independently; the new telemetry is specifically intended to identify that layer before code changes.
+
+## Suspended task — SP-MOVIE-TICKETS-RECOVERY
+Suspended by the user's explicit FORCE SWITCH.
+
+Preserved state:
+- #265, #266, #267 merged and validated;
+- #268 exact validated head `9a52996ad5dae0c5ccd74e7238dc0fa8cd4f3e80`;
+- #268 targeted/pip/compile/import/native-libsql/full validation passed, full pytest **1,375 passed**;
+- #268 merge `e970b2dcb5854da06c25c9a9e9b42476975584fa`;
+- PR #271 later merged Gofobo truthfulness at `60cc3f8b55d2543cfa396105f189ec2427462ca7`;
+- PR #272 later merged movie result embed-budget protection at `fe0558ea7795d773e0f17e52f8284153711a3b36`;
+- those movie changes are preserved in main but remain suspended from the active Walmart implementation task;
+- remaining movie step is production acceptance on the existing July 31 panel;
+- movie work must resume from that acceptance state, not from reimplementation.
 
 ## Backlog — not active
-- SP-WM-DEAL-DELIVERY-STALL / current Walmart API exact-price failures
 - SP-GATEWAY-EVENT-LOOP-LAG
 - SP-SETUP-DELIVERY-UX
 - SP-DM-DELIVERY-STARVATION
@@ -102,4 +158,4 @@ Required validation:
 - SniperPlug-Site work
 
 ## Next step
-Freeze the exact #272 head after this task-record update, run the full Termux/Ubuntu Python 3.12 validation set, then only if green mark #272 ready, merge that exact head, deploy the merge to the existing SniperPlug Discloud app, and re-run Check Now / Show All / Status on the original July 31 panel. Do not call the movie-ticket task restored until that production interaction succeeds and the displayed counts still match the production database.
+Run exact-head PR #270 validation on the current branch head after this record refresh, using a persistent `/root` validation script or direct shell commands. If green, update the PR body with the exact validated SHA/results, mark ready, merge only that SHA, deploy merged main, then judge the first Walmart exact batches using the new `price_recovery` marker and combined recovery reason telemetry.

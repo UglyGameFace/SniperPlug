@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
 import re
 import xml.etree.ElementTree as ET
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 
@@ -20,9 +21,11 @@ from sniperplug.services.movie_ticket_drops import (
 
 BING_SEARCH_URL = "https://www.bing.com/search"
 BING_ALLOWED_HOSTS = frozenset({"bing.com", "www.bing.com"})
+BING_RESULT_WRAPPER_PATH = "/ck/a"
 ATOM_INDEXED_FALLBACK_PREFIX = "indexed-fallback:"
 ATOM_DIRECT_BLOCK_MARKER = ";direct-blocked:"
 ATOM_INDEX_MAX_RESPONSE_BYTES = 512_000
+BING_RESULT_MAX_ENCODED_DESTINATION = 8192
 # Bing's documented `site:` operator searches a directory tree, unlike `url:`
 # which checks one exact URL. Production proved the exact-URL query can omit the
 # hub while legitimate official Atom /promotions/<slug> pages remain indexed.
@@ -32,6 +35,7 @@ ATOM_DIRECT_REPROBE_SECONDS = 6 * 60 * 60
 _ATOM_PROMOTION_PATH_RE = re.compile(
     r"^/promotions(?:/([A-Za-z0-9][A-Za-z0-9-]{0,199}))?/?$"
 )
+_BING_RESULT_DESTINATION_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _INDEX_IDENTITY_TERMS = frozenset({"promotion", "promo", "offer", "ticket"})
 
 
@@ -160,6 +164,52 @@ def normalize_atom_indexed_promotion_url(value: str | None) -> str:
     return f"{ATOM_PROMOTIONS_URL}/{slug}"
 
 
+def normalize_bing_atom_result_url(value: str | None) -> str:
+    """Resolve a direct Atom result or Bing's current ``/ck/a`` result wrapper.
+
+    Bing commonly emits click-tracking result links whose ``u=`` value is a
+    URL-safe-base64 destination prefixed by ``a1``. We decode that value locally
+    instead of following the Bing tracker, then run the decoded destination
+    through the same strict Atom promotions allowlist. Nothing else is trusted.
+    """
+
+    direct = normalize_atom_indexed_promotion_url(value)
+    if direct:
+        return direct
+
+    text = clean_text(value)
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme != "https":
+        return ""
+    if (parsed.hostname or "").lower() not in BING_ALLOWED_HOSTS:
+        return ""
+    if (parsed.path or "").rstrip("/") != BING_RESULT_WRAPPER_PATH:
+        return ""
+
+    destination_values = parse_qs(parsed.query, keep_blank_values=False).get("u", [])
+    if len(destination_values) != 1:
+        return ""
+    encoded = clean_text(destination_values[0])
+    if not encoded.startswith("a1"):
+        return ""
+    payload = encoded[2:]
+    if (
+        not payload
+        or len(payload) > BING_RESULT_MAX_ENCODED_DESTINATION
+        or _BING_RESULT_DESTINATION_RE.fullmatch(payload) is None
+    ):
+        return ""
+
+    padded = payload + ("=" * (-len(payload) % 4))
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    return normalize_atom_indexed_promotion_url(decoded)
+
+
 def parse_bing_atom_confirmation_rss(
     xml_text: str,
     *,
@@ -168,8 +218,10 @@ def parse_bing_atom_confirmation_rss(
     """Confirm an official Atom promotions URL from Bing RSS.
 
     Prefer the canonical hub when Bing returns it. If Bing omits the hub, accept
-    a strictly allowlisted one-level `/promotions/<slug>` page. Search snippets
-    are identity hints only and can never supply a reusable promo code.
+    a strictly allowlisted one-level `/promotions/<slug>` page. Bing may expose
+    either the destination directly or a ``bing.com/ck/a`` wrapper; wrappers are
+    decoded locally and the destination is re-validated through the Atom
+    allowlist. Search snippets can never supply a reusable promo code.
     """
 
     try:
@@ -181,7 +233,7 @@ def parse_bing_atom_confirmation_rss(
     detail_candidate: AtomIndexedConfirmation | None = None
     for item in root.findall(".//item"):
         title = clean_text(item.findtext("title"))
-        link = normalize_atom_indexed_promotion_url(item.findtext("link"))
+        link = normalize_bing_atom_result_url(item.findtext("link"))
         description = clean_text(item.findtext("description"))
         if not link or not _indexed_identity_is_atom_promotion(title, description):
             continue

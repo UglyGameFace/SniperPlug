@@ -11,7 +11,7 @@ Target outcome: the existing July 31 permanent movie panel remains useful across
 Do not switch to unrelated Walmart, watcher, gateway, setup, DM, site, Minecraft, or other work without an explicit FORCE SWITCH.
 
 ## Status
-**#265, #266, and #267 are merged and exact-head validated. The active task is now production acceptance of the movie-ticket recovery stack.**
+**#265, #266, and #267 are merged and exact-head validated. #268 is in progress to fix the remaining Atom indexed-fallback production failure caused by Bing result-wrapper URLs.**
 
 Movie milestones:
 - #260 merge: `14d15a72277a2c6e6d8f05a27fc6ae12c366efd0`
@@ -25,9 +25,10 @@ Movie milestones:
 - #266 merge: `28554dd415e382c7f703d2c623e921d13b14cb5a`
 - #267 validated head: `a7de3231f7089b0e956f99cb7e2f2d97dcf6db37`
 - #267 merge: `6feaa14ac6bf327a57000adf9e20f76542d9cbd6`
+- #268 branch: `fix/atom-bing-result-wrapper-268`
 
 ## Root cause / findings
-Production direct Atom still receives HTTP 403. #263's indexed recovery also failed because it asked Bing to confirm one exact URL using `url:www.atomtickets.com/promotions` and rejected legitimate official detail pages such as `/promotions/<slug>`.
+Production direct Atom still receives HTTP 403. #263's indexed recovery initially failed because it asked Bing to confirm one exact URL using `url:www.atomtickets.com/promotions` and rejected legitimate official detail pages such as `/promotions/<slug>`.
 
 Research confirmed:
 - Microsoft's `url:` operator checks one exact URL/domain index identity.
@@ -37,7 +38,11 @@ Research confirmed:
 
 #266 therefore moved indexed confirmation to directory-level search while preserving a strict Atom-only URL allowlist and zero-code fail-closed behavior.
 
-Production acceptance after #266 then exposed a separate permanent-panel interaction defect: pressing **Check Now** returned Discord's `This interaction failed`. The delegated `send_latest_from_panel()` method already deferred immediately, but the persistent `MovieGuidePanelView.latest_button` itself did not acknowledge before delegation. `Alerts Here` already used the safer boundary-ack pattern. Startup inspection confirmed `MovieCommandGuideCog` is loaded in `setup_hook()` and its `cog_load()` registers the persistent view before command sync, with no duplicate Check Now custom-ID registration found.
+Production acceptance after #266 showed that Atom still failed with `Bing did not return an allowlisted official Atom promotions URL` even though current public search results exposed the canonical hub and official detail pages. Research then identified a second retrieval-layer issue: current Bing results can expose click-tracking links as `https://www.bing.com/ck/a?...&u=a1<url-safe-base64>...` instead of placing the destination URL directly in the result link. SniperPlug's RSS parser validated the raw `<link>` hostname before decoding that wrapper, so a legitimate Atom result wrapped by Bing was rejected as non-Atom.
+
+The safe fix is not to follow arbitrary redirects. #268 locally decodes only Bing's exact HTTPS `/ck/a` wrapper shape, extracts only one `u=` destination with the known `a1` URL-safe-base64 prefix, then passes that decoded destination back through the existing strict Atom promotions host/path allowlist. Off-domain, malformed, wrong-path, nested, HTTP, unsupported-host, or non-Bing wrapper inputs still fail closed.
+
+Production acceptance after #266 also exposed a separate permanent-panel interaction defect: pressing **Check Now** returned Discord's `This interaction failed`. #267 fixed that dispatch-boundary acknowledgement issue and is already merged/validated.
 
 ## #265 implementation
 - Optional per-user ZIP, stored as exact TEXT Discord user ID.
@@ -73,6 +78,18 @@ Production acceptance after #266 then exposed a separate permanent-panel interac
 - Source refresh, cached fallback, result rendering, ZIP/local controls, and old-panel self-refresh behavior remain unchanged.
 - New regression coverage verifies ACK-before-delegate ordering, no double ACK, and inner-handler safety after a boundary ACK.
 
+## #268 implementation
+- Added `normalize_bing_atom_result_url()` as the single result-link normalization boundary for indexed Atom confirmation.
+- Direct allowlisted Atom promotion URLs still pass through unchanged.
+- Only HTTPS `bing.com` / `www.bing.com` result wrappers at exact path `/ck/a` are eligible for decoding.
+- Exactly one non-empty `u=` value is required.
+- The `u=` value must use Bing's current `a1` prefix followed by bounded URL-safe-base64 data.
+- The destination is decoded locally; the Bing tracker is not followed.
+- The decoded destination is then re-run through the existing strict Atom hub/one-level-detail allowlist.
+- Wrapped off-domain URLs, HTTP Atom URLs, wrong Atom paths, nested promotion paths, malformed base64, non-Bing hosts, and wrong Bing paths all fail closed.
+- RSS confirmation now supports both direct destination links and current Bing `ck/a` wrappers without changing title/snippet identity checks, zero-code behavior, backoff, or direct-Atom authority.
+- New production-shaped regression coverage uses XML-escaped `bing.com/ck/a?...&u=a1...` result links and verifies canonical preference plus fail-closed rejection cases.
+
 ## Validation / results
 ### #265
 Exact head `69ab983b82032e826a90f9dcb741477bf907685f` on Ubuntu/PRoot Python 3.12 + native libsql:
@@ -106,10 +123,13 @@ Exact head `a7de3231f7089b0e956f99cb7e2f2d97dcf6db37` on Ubuntu/PRoot Python 3.1
 - diff check and worktree clean
 - final HEAD matched the exact validated SHA
 
-The lone warning is the existing discord.py `audioop` deprecation warning. GitHub-hosted Actions have repeatedly terminated before checkout with no executable steps; such red checks are not treated as executed test failures.
+### #268
+Pending exact-head Ubuntu/PRoot Python 3.12 + native-libsql validation. Do not merge until the new wrapper regression set, affected Atom/movie tests, compile/import smoke, native libsql, full pytest, and diff check are green on one frozen SHA.
+
+The lone warning in prior exact-head runs is the existing discord.py `audioop` deprecation warning. GitHub-hosted Actions have repeatedly terminated before checkout with no executable steps; such red checks are not treated as executed test failures.
 
 ## Production acceptance
-After deploying latest `main`:
+After merging and deploying #268 on latest `main`:
 1. Pressing **Check Now** on the existing July 31 permanent panel must receive an immediate Discord acknowledgement instead of `This interaction failed`.
 2. Check Now must then return private movie results or a visible safe error.
 3. Optional ZIP controls are visible and usable without forcing setup.
@@ -118,17 +138,18 @@ After deploying latest `main`:
 6. Show All restores broader discovery without erasing the saved preference.
 7. Clear ZIP removes only that user's preference.
 8. Another user's browsing and guild alert destination remain unchanged.
-9. Direct Atom may still report HTTP-blocked, but indexed fallback must succeed when Bing returns an allowlisted official Atom promotions URL.
-10. Status should read `Indexed fallback current` and `official Atom promotions URL confirmed via public index`, not `Stale/unavailable` solely because Bing omitted the canonical hub URL.
+9. Direct Atom may still report HTTP-blocked, but indexed fallback must accept a current official Atom promotions result whether Bing supplies the destination directly or through its allowlisted `/ck/a` wrapper.
+10. Status should read `Indexed fallback current` and `official Atom promotions URL confirmed via public index`, not `Stale/unavailable` when Bing has a valid wrapped Atom result.
 11. No stale public Atom codes may reappear from index snippets.
 12. A successful future direct Atom reprobe must immediately restore direct authority and normal direct health.
 13. Fandango, Gofobo, SeeItEarly, posters, title-labeled result buttons, alert delivery, freshness, dedupe, and feedback must remain intact.
 
-Do not call the movie-ticket task restored until #267 live Check Now acceptance, #265 live locality acceptance, and #266 Atom recovery all pass production checks.
+Do not call the movie-ticket task restored until #268 live Atom recovery, #267 live Check Now acceptance, and #265 live locality acceptance all pass production checks.
 
 ## Risks / boundaries
 - Local mode is intentionally conservative and not exhaustive at wide radii because the nearby postal source is bounded.
 - Indexed fallback proves only that Bing currently exposes an allowlisted official Atom promotions URL; it does not prove a reusable code or remaining promotion inventory.
+- Bing wrapper decoding is deliberately limited to the exact current `/ck/a` + single `u=a1...` format and never follows the tracker URL.
 - #267 hardens the component-dispatch ACK boundary; if production still shows `This interaction failed`, collect the exact timestamp/startup/error logs because that would indicate the callback is not being dispatched at all or the event loop is blocked before component dispatch.
 - No CAPTCHA evasion, proxy rotation, browser impersonation, account/login scraping, gated-code guessing, or private invitation scraping.
 
@@ -144,4 +165,4 @@ Do not call the movie-ticket task restored until #267 live Check Now acceptance,
 - SniperPlug-Site work
 
 ## Next step
-Deploy latest `main`, then perform live production acceptance on the existing July 31 panel: press **Check Now**, exercise Set ZIP / Use Local / Show All / Clear ZIP, and inspect Atom source health after the next refresh. Do not switch tasks until that production acceptance is resolved.
+Freeze #268 at one exact head and run targeted Atom wrapper + affected movie tests, pip check, compileall, import smoke, native libsql, full pytest, and diff check in the known-good Ubuntu/PRoot Python 3.12 environment. If green, merge that exact SHA, deploy latest `main`, then re-open Status on the existing July 31 panel and confirm Atom indexed recovery succeeds through a direct or Bing-wrapped official result.

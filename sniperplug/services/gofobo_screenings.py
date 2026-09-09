@@ -123,27 +123,40 @@ class _GofoboUpcomingParser(HTMLParser):
         self.upcoming_section_found = False
         self.in_upcoming_section = False
         self.blocks: list[_RawGofoboScreening] = []
+        self._seen_title_specific_links: set[str] = set()
+        self._resolved_title_specific_links: set[str] = set()
         self._active_link = ""
         self._active_link_parts: list[str] = []
         self._active_link_image = ""
         self._capture_heading = ""
         self._heading_parts: list[str] = []
+        self._capture_paragraph = False
+        self._paragraph_parts: list[str] = []
         self._last_safe_link = ""
         self._last_safe_image = ""
         self._pending_heading_title = ""
         self._pending_heading_image = ""
+        self._pending_card_link = ""
+        self._pending_card_image = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized_tag = tag.lower()
         data = {str(key).lower(): str(value or "") for key, value in attrs}
 
         if normalized_tag == "a":
+            # A title-specific image card must resolve before another link starts.
+            # Keep the earlier URL in the seen set so parse validation fails closed
+            # instead of accidentally pairing it with unrelated later text.
+            self._pending_card_link = ""
+            self._pending_card_image = ""
             href = safe_gofobo_url(data.get("href", ""))
             self._active_link = href
             self._active_link_parts = []
             self._active_link_image = ""
             if href:
                 self._last_safe_link = href
+                if self.in_upcoming_section and gofobo_offer_is_title_specific(href):
+                    self._seen_title_specific_links.add(href)
             return
 
         if normalized_tag == "img":
@@ -163,14 +176,23 @@ class _GofoboUpcomingParser(HTMLParser):
             return
 
         if not self._capture_heading and normalized_tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._pending_card_link = ""
+            self._pending_card_image = ""
             self._capture_heading = normalized_tag
             self._heading_parts = []
+            return
+
+        if self.in_upcoming_section and self._pending_card_link and normalized_tag == "p":
+            self._capture_paragraph = True
+            self._paragraph_parts = []
 
     def handle_data(self, data: str) -> None:
         if self._active_link:
             self._active_link_parts.append(data)
         if self._capture_heading:
             self._heading_parts.append(data)
+        if self._capture_paragraph:
+            self._paragraph_parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
         normalized_tag = tag.lower()
@@ -203,9 +225,31 @@ class _GofoboUpcomingParser(HTMLParser):
                     )
                     self._pending_heading_title = ""
                     self._pending_heading_image = ""
+                elif gofobo_offer_is_title_specific(self._active_link):
+                    # Current production Gofobo uses an image-only detail anchor
+                    # followed by a sibling <p> containing the title. Keep this
+                    # one exact link pending until that immediate text boundary.
+                    self._pending_card_link = self._active_link
+                    self._pending_card_image = self._active_link_image or self._last_safe_image
             self._active_link = ""
             self._active_link_parts = []
             self._active_link_image = ""
+            return
+
+        if self._capture_paragraph and normalized_tag == "p":
+            raw_title = clean_text(" ".join(self._paragraph_parts))
+            self._capture_paragraph = False
+            self._paragraph_parts = []
+            if self.in_upcoming_section and self._pending_card_link:
+                title = clean_gofobo_candidate_title(raw_title)
+                if title:
+                    self._add_candidate(
+                        title=title,
+                        href=self._pending_card_link,
+                        image_url=self._pending_card_image or self._last_safe_image,
+                    )
+                self._pending_card_link = ""
+                self._pending_card_image = ""
             return
 
         if self._capture_heading and normalized_tag == self._capture_heading:
@@ -219,11 +263,15 @@ class _GofoboUpcomingParser(HTMLParser):
                 self.upcoming_section_found = True
                 self._pending_heading_title = ""
                 self._pending_heading_image = ""
+                self._pending_card_link = ""
+                self._pending_card_image = ""
                 return
             if self.in_upcoming_section and normalized.startswith("browse our newly added"):
                 self.in_upcoming_section = False
                 self._pending_heading_title = ""
                 self._pending_heading_image = ""
+                self._pending_card_link = ""
+                self._pending_card_image = ""
                 return
             if self.in_upcoming_section and title:
                 # Keep a safe title-only fallback even if the card-specific URL
@@ -255,6 +303,8 @@ class _GofoboUpcomingParser(HTMLParser):
         )
         if candidate not in self.blocks:
             self.blocks.append(candidate)
+        if gofobo_offer_is_title_specific(candidate_href):
+            self._resolved_title_specific_links.add(candidate_href)
 
 
 def clean_gofobo_candidate_title(value: str) -> str:
@@ -303,11 +353,15 @@ def parse_gofobo_home_html(html_text: str) -> GofoboParseResult:
         return GofoboParseResult((), False, parser.upcoming_section_found, len(parser.blocks))
 
     page_text = normalize_text(html_text)
-    document_valid = (
+    shell_valid = (
         parser.upcoming_section_found
         and "gofobo" in page_text
         and "sweepstakes" in page_text
     )
+    extraction_consistent = parser._seen_title_specific_links.issubset(
+        parser._resolved_title_specific_links
+    )
+    document_valid = shell_valid and extraction_consistent
     if not document_valid:
         return GofoboParseResult((), False, parser.upcoming_section_found, len(parser.blocks))
 

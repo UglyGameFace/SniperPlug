@@ -59,14 +59,14 @@ EXACT_WORKER_PRESSURE_CAP = 64
 # The HTML challenge circuit must stop Walmart product-page requests, not stop
 # official API recovery entirely. Keep the already-bounded page lane alive at the
 # same two-row cap while the circuit is open; the paced shared fetcher then forces
-# those claims through official detail/exact-search only and never calls the
+# those claims through official detail/Product Lookup only and never calls the
 # challenged page loader. When the circuit is closed, HTML remains a last-resort
 # single-probe fallback while fresh/API proof keeps normal worker throughput.
 API_ONLY_PAGE_RECOVERY_CLAIM_CAP = min(2, PAGE_RECOVERY_CLAIM_CAP)
 
 
 def _recovery_kind_from_error(error: str) -> str:
-    """Read the secondary exact-search recovery outcome without changing retry policy."""
+    """Read the secondary exact-lookup recovery outcome without changing retry policy."""
 
     for token in str(error or "").split():
         if not token.startswith("recovery_kind="):
@@ -115,12 +115,12 @@ async def process_actionable_walmart_exact_queue_batch(
     pressure snapshot rather than rereading the scheduled-recheck backlog.
 
     Walmart HTML is isolated from normal exact throughput. Fresh catalog proof
-    and official item-detail/exact-search run first for every claim. Only one
+    and official item-detail/Product Lookup run first for every claim. Only one
     claim per pacing window may attempt the product-page fallback, and the first
     challenge-class response opens the existing provider circuit immediately.
     While that circuit is open, a tiny two-row page-recovery lane remains
-    claimable because those rows still get official API/exact-search recovery
-    without touching HTML.
+    claimable because those rows still get official API exact recovery without
+    touching HTML.
 
     A page-retry row is already known to require recovery. While the single HTML
     probe slot is merely paced (rather than challenge-blocked), do not lease old
@@ -308,7 +308,8 @@ async def process_actionable_walmart_exact_queue_batch(
     log.info(
         "Walmart exact Turso write telemetry lease_rows=%s outcome_rows=%s "
         "offer_memory_rows=%s persistence_statements=%s "
-        "page_circuit_reschedule_rows=0 price_recovery=exact_id_search_v257",
+        "page_circuit_reschedule_rows=0 price_recovery=exact_id_search_v257 "
+        "exact_lookup=affiliate_items_ids_v274",
         len(claims),
         persisted.queue_rows,
         persisted.offer_rows,

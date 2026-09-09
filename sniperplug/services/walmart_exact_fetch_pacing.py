@@ -4,6 +4,9 @@ import time
 from typing import Any
 
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.providers.walmart_exact_lookup import (
+    fetch_exact_affiliate_product_lookup_payload,
+)
 from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
 from sniperplug.services.walmart_exact_queue_runtime import (
     PAGE_CHALLENGE_CIRCUIT_COOLDOWN_SECONDS,
@@ -20,7 +23,7 @@ from sniperplug.services.walmart_exact_verification_queue import PAGE_RETRY_STAT
 
 
 # Product-page HTML is a last-resort identity fallback, not the primary deal
-# scanner. Fresh catalog proof and official API/exact-search keep using the
+# scanner. Fresh catalog proof and official API exact lookup keep using the
 # canonical exact verifier. Only one claim per provider/process may advance from
 # API-only proof to an HTML-capable pass each minute. A first challenge-class
 # result opens the existing 15-minute circuit immediately.
@@ -61,17 +64,42 @@ class _ApiOnlyProviderView:
 
 
 class _ExactSearchOnlyInnerView(_ApiOnlyInnerView):
-    """Make official exact search the canonical verifier's detail source."""
+    """Make exact Affiliate Product Lookup the canonical verifier's detail source.
+
+    The class name is retained for compatibility with the already-tested #257
+    wrapper shape. Production no longer treats a numeric item ID as free-text
+    Search API input.
+    """
 
     async def _official_detail_payload(self, item_id: str) -> dict:
-        search_fetcher = getattr(self._inner, "_official_exact_search_payload", None)
-        if not callable(search_fetcher):
-            raise RuntimeError("official Walmart exact search unavailable")
-        return await search_fetcher(item_id)
+        try:
+            return await fetch_exact_affiliate_product_lookup_payload(
+                self._inner,
+                item_id,
+            )
+        except Exception as lookup_error:  # noqa: BLE001 - compatibility path only.
+            lookup_kind = str(
+                getattr(lookup_error, "retry_kind", "") or ""
+            ).strip().lower()
+            if lookup_kind != "api_exact_lookup_unavailable":
+                raise
+
+            # Test/plugin providers created before #274 may expose only the old
+            # exact-search hook. Keep those adapters functional, but production's
+            # Walmart provider has detail_url/_request_json and never takes this
+            # branch.
+            search_fetcher = getattr(
+                self._inner,
+                "_official_exact_search_payload",
+                None,
+            )
+            if not callable(search_fetcher):
+                raise lookup_error
+            return await search_fetcher(item_id)
 
 
 class _ExactSearchOnlyProviderView:
-    """Run one exact-search recovery pass with page HTML impossible."""
+    """Run one exact-lookup recovery pass with page HTML impossible."""
 
     def __init__(self, provider: Any, *, hold_seconds: float) -> None:
         self._provider = provider
@@ -107,26 +135,23 @@ async def fetch_exact_candidate_with_page_pacing(
 
     The existing exact verifier remains the only proof implementation. Each claim
     first runs with HTML suppressed. Valid fresh catalog proof or a complete
-    official item-detail/exact-search result returns without page traffic.
+    official item-detail result returns without page traffic.
 
     Production can receive an exact-detail row with valid seller/offer identity
-    but no numeric current price even though the Affiliate exact-search endpoint
-    has the same exact item with price data. Likewise, a strict fresh catalog
-    snapshot can prove current selected-offer price while lacking a trusted
-    Walmart was/regular/original reference. In those two cases, one official
-    exact-search-only recovery pass is allowed through the same canonical
-    verifier. The recovery pass cannot see the discovery snapshot and cannot use
-    page HTML, so it cannot promote search relevance neighbors or stale catalog
-    price as exact proof.
+    but no numeric current price. #270 proved that the old recovery then sent the
+    Walmart item ID to the relevance Search API and overwhelmingly got
+    ``api_exact_search_no_match``. Recovery now uses Affiliate Product Lookup's
+    exact ``ids`` parameter, verifies the returned item ID, and sends that payload
+    through the same canonical verifier. No search neighbor can donate proof.
 
-    Reference enrichment is intentionally limited to strict fresh-snapshot
-    candidates, which is the production failure mode this recovery targets. That
-    avoids adding a second exact-search call to every generic verified no-reference
-    row and keeps official API volume bounded.
+    A strict fresh catalog snapshot can also prove current selected-offer price
+    while lacking a trusted Walmart was/regular/original reference. The same
+    Product Lookup recovery may enrich that candidate, but failure never
+    downgrades the already-valid fresh proof or sends it to HTML.
 
-    When the real HTML circuit is already open, this same price/reference recovery
-    remains active; the circuit suppresses HTML, not healthy official exact-search
-    work. When the real circuit is closed, only a claim whose API-only result says
+    When the real HTML circuit is already open, price/reference recovery remains
+    active; the circuit suppresses HTML, not official Product Lookup. When the
+    real circuit is closed, only a claim whose API-only result says
     ``page_circuit_open`` solely because the synthetic view suppressed HTML may
     advance to a real page-capable pass.
 
@@ -162,7 +187,7 @@ async def fetch_exact_candidate_with_page_pacing(
     retry_kind = _retry_kind_from_error(error)
 
     # A real open circuit is an API-only mode. Never reserve or call HTML from it,
-    # even if identity remains incomplete after official detail/exact-search.
+    # even if identity remains incomplete after official API recovery.
     if real_circuit_open:
         return candidate, status, error
 
@@ -215,8 +240,8 @@ async def _recover_api_price_or_reference(
     retry_kind = _retry_kind_from_error(error)
 
     # A detail payload with exact identity but no price is not grounds for HTML.
-    # Give the healthy Affiliate exact-search endpoint one exact-ID-only chance to
-    # supply the missing current price through the canonical verifier.
+    # Give Affiliate Product Lookup one exact-ID-only chance to supply the missing
+    # current price through the canonical verifier.
     if candidate is None and retry_kind == "api_price_missing":
         recovered = await _try_official_exact_search_recovery(
             provider,
@@ -231,7 +256,7 @@ async def _recover_api_price_or_reference(
         return candidate, status, f"{error}; recovery_kind={recovery_kind}"
 
     # A strict fresh snapshot is already valid current-price proof. If it lacks a
-    # trusted Walmart reference, exact search may enrich it with a same-item
+    # trusted Walmart reference, Product Lookup may enrich it with a same-item
     # was/regular/original price. Failure to find one must never downgrade the
     # already-valid candidate or send the request to HTML.
     if (
@@ -256,14 +281,21 @@ async def _try_official_exact_search_recovery(
     *,
     timeout_seconds: float,
 ) -> tuple[SourceCandidate | None, str, str]:
-    """Best-effort exact-ID Affiliate search through the canonical verifier."""
+    """Run one fail-closed exact-ID Affiliate Product Lookup recovery pass."""
 
     inner = getattr(provider, "inner", provider)
-    if not callable(getattr(inner, "_official_exact_search_payload", None)):
+    lookup_available = bool(
+        str(getattr(inner, "detail_url", "") or "").strip()
+        and callable(getattr(inner, "_request_json", None))
+    )
+    compatibility_search_available = callable(
+        getattr(inner, "_official_exact_search_payload", None)
+    )
+    if not lookup_available and not compatibility_search_available:
         return (
             None,
             "provider_unavailable",
-            "retry_kind=api_exact_search_unavailable official Walmart exact search unavailable",
+            "retry_kind=api_exact_lookup_unavailable official Walmart exact Product Lookup unavailable",
         )
 
     recovery_provider = _ExactSearchOnlyProviderView(

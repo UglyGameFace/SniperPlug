@@ -11,11 +11,11 @@ Target outcome: production must prove which Walmart exact-recovery build is runn
 Do not switch to movie tickets, gateway lag, setup UX, DM redesign, watchers, site, Minecraft, or unrelated work without another explicit FORCE SWITCH.
 
 ## Status
-**Fresh production restart boundary is now proven, but the supplied startup alone cannot distinguish #256 from #257 and contains no post-restart Walmart exact batch. PR #270 now adds bounded recovery diagnostics so the next deployed batch is decisive instead of another guessing exercise.**
+**Fresh production restart boundary is proven. PR #270 now carries bounded recovery diagnostics and has been integrated with current main so the next exact-head validation covers both this Walmart change and the latest merged repository state. Production acceptance still requires the new runtime marker plus post-deploy Walmart batches.**
 
 Active branch: `fix/walmart-production-acceptance-270`
-Base main: `e970b2dcb5854da06c25c9a9e9b42476975584fa`
-Current PR head before final validation: `78bb472a72636af7bda1da3dd51f731e7b37d252`
+Current main integrated into branch: `60cc3f8b55d2543cfa396105f189ec2427462ca7`
+Main-integration merge commit before this task-record refresh: `33ea4cb0636fea295fd2b9756ee4afc4525c1967`
 #257 merge: `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`
 #257 validated head: `edff57a27fb2e7d342970d0bf2deed782dbbffca`
 
@@ -31,12 +31,7 @@ The user supplied a later startup beginning at application timestamp `2026-09-08
 The previously supplied failing Walmart batches at approximately `23:14-23:15` occurred **before** this startup. They cannot be used to judge the restarted process.
 
 ### 2. Startup text still does not prove #257 is present
-The startup includes `maintenance_after_all_fanout=true`, but that architecture string already existed on the validated #256 head. PR #257 changed only:
-- `ACTIVE_TASK.md`;
-- `sniperplug/services/walmart_exact_fetch_pacing.py`;
-- `tests/test_walmart_exact_price_recovery_257.py`.
-
-#257 did not add a unique startup line. Therefore a restart timestamp after #257's merge is not sufficient proof that Discloud actually deployed that source rather than restarting an older artifact.
+The startup includes `maintenance_after_all_fanout=true`, but that architecture string already existed on the validated #256 head. PR #257 did not add a unique startup line. Therefore a restart timestamp after #257's merge is not sufficient proof that Discloud actually deployed that source rather than restarting an older artifact.
 
 ### 3. Existing #257 failure reporting hides the secondary recovery result
 The authoritative production path is:
@@ -85,21 +80,28 @@ That means repeated `api_price_missing` logs are ambiguous even on a post-#257 b
 - full suite 1,286 passed;
 - only unrelated `audioop` deprecation warning.
 
+Latest merged main `60cc3f8b55d2543cfa396105f189ec2427462ca7` also contains PR #271, whose exact head was validated in Termux/Ubuntu Python 3.12 with targeted movie regressions, live Gofobo acceptance, pip check, compileall, import smoke, native libsql tests, and full pytest **1,377 passed** before merge.
+
 ### PR #270 repository checks performed
-- base `e970b2d...` → head `78bb472...`: 4 commits ahead, 0 behind;
-- exactly 4 changed files: task record, two Walmart recovery/runtime files, one focused test file;
-- runtime diff is bounded observability only: 4 additions/1 deletion in pacing and 23 additions/2 deletions in bulk runtime;
-- GitHub-hosted workflows again terminated without execution; sampled Python Check job has `steps=null`, so those red statuses are not test results.
+- branch was merged with current main using merge commit `33ea4cb0636fea295fd2b9756ee4afc4525c1967`;
+- PR is mergeable after integration;
+- PR diff remains exactly 4 scoped files relative to current main: task record, two Walmart recovery/runtime files, one focused Walmart regression file;
+- no Gofobo/movie implementation is introduced into the PR diff because those changes now come from the merged base;
+- inline review threads: none;
+- submitted reviews: none;
+- PR comments: none;
+- an isolated diagnostic-helper harness passed 4/4 cases for primary/recovery reason composition;
+- GitHub-hosted workflows on the integrated head again terminated before execution; sampled Python-tests job had `steps=null`, so those red statuses are not test results.
 
 ### Still required before completion
-Exact-head executable validation has **not** yet run for PR #270. Required:
+Exact-head executable validation has **not** yet run for the post-integration PR #270 head. Required:
 - targeted `tests/test_walmart_exact_price_recovery_257.py` plus relevant Walmart exact/bulk/page-pacing regressions;
 - `pip check`;
 - compileall;
 - import smoke;
 - native libsql process suite when available;
-- full pytest;
-- diff check / conflict scan / clean worktree.
+- full pytest including the latest merged-main tests;
+- diff check / conflict scan / clean worktree / final SHA recheck.
 
 Do not call PR #270 ready or the Walmart task fixed until those checks and production acceptance pass.
 
@@ -116,6 +118,7 @@ Then inspect the paired exact summary:
 Only after that evidence identifies a remaining failing stage may implementation change again. Fix that stage, not a guessed neighboring layer.
 
 ## Cleanup / conflicts
+- Current main was integrated without overwriting unrelated PR #271 Gofobo changes.
 - No competing Walmart implementation exists in this branch.
 - No proof/scheduling/fanout behavior changed.
 - No temporary bypass, page workaround, retry stack, or duplicate verifier was added.
@@ -134,6 +137,7 @@ Preserved state:
 - #268 exact validated head `9a52996ad5dae0c5ccd74e7238dc0fa8cd4f3e80`;
 - #268 targeted/pip/compile/import/native-libsql/full validation passed, full pytest **1,375 passed**;
 - #268 merge `e970b2dcb5854da06c25c9a9e9b42476975584fa`;
+- PR #271 later merged a separate Gofobo truthfulness fix into main at `60cc3f8b55d2543cfa396105f189ec2427462ca7`; it remains suspended movie-task state and is not part of the active Walmart implementation;
 - remaining movie step is production acceptance on the existing July 31 panel, especially Atom indexed fallback health;
 - movie work must resume from that acceptance state, not from reimplementation.
 
@@ -148,4 +152,4 @@ Preserved state:
 - SniperPlug-Site work
 
 ## Next step
-Run exact-head PR #270 validation. If green, update this record and PR body with the exact validated SHA/results, mark ready, merge only that SHA, deploy merged main, then judge the first Walmart exact batches using the new `price_recovery` marker and combined recovery reason telemetry.
+Run exact-head PR #270 validation on the current branch head after this record refresh. If green, update the PR body with the exact validated SHA/results, mark ready, merge only that SHA, deploy merged main, then judge the first Walmart exact batches using the new `price_recovery` marker and combined recovery reason telemetry.

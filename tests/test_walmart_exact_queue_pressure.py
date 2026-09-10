@@ -25,6 +25,7 @@ class PressureCursor:
     async def fetchone(self):
         return {
             "initial_due_now": 11,
+            "confirmed_no_price_due_now": 0,
             "recovery_due_now": 23,
             "recheck_due_now": 319,
             "verifying": 2,
@@ -58,21 +59,25 @@ def test_bounded_pressure_returns_only_scheduling_counts() -> None:
     )
 
     assert health.initial_due_now == 11
+    assert health.confirmed_no_price_due_now == 0
     assert health.recovery_due_now == 23
     assert health.recheck_due_now == 319
     assert health.due_now == 353
     assert health.verifying == 2
     assert health.total == 355
-    assert conn.sql.count("LIMIT ?") == 4
+    assert conn.sql.count("LIMIT ?") == 5
     assert conn.params[3] == 64
-    assert conn.params[7] == 64
-    assert conn.params[23] == 600
-    assert conn.params[25] == 64
-    assert conn.params[16] < conn.params[12] < conn.params[8] < conn.params[0]
+    assert conn.params[7] == 600
+    assert conn.params[11] == 64
+    assert conn.params[27] == 600
+    assert conn.params[29] == 64
+    assert conn.params[20] < conn.params[16] < conn.params[12] < conn.params[0]
     assert "status IN ('verified_markdown')" in conn.sql
     assert "'verified_under_threshold', 'verified_reference'" in conn.sql
     assert "'verified_no_reference', 'not_buyable'" in conn.sql
     assert "verified_at IS NULL" in conn.sql
+    assert "confirmed_no_price_due" in conn.sql
+    assert "recovery_kind=api_price_missing" in conn.sql
     assert "INDEXED BY idx_walmart_exact_detail_queue_status_due" in conn.sql
     assert "INDEXED BY idx_walmart_exact_detail_queue_status_verified_due" in conn.sql
     assert "SELECT *" not in conn.sql.upper()
@@ -86,9 +91,10 @@ def test_exact_worker_can_request_a_tighter_all_lane_cap() -> None:
 
     assert conn.params[3] == 64
     assert conn.params[7] == 64
-    assert conn.params[23] == 64
-    assert conn.params[25] == 64
-    assert conn.params[16] < conn.params[12] < conn.params[8] < conn.params[0]
+    assert conn.params[11] == 64
+    assert conn.params[27] == 64
+    assert conn.params[29] == 64
+    assert conn.params[20] < conn.params[16] < conn.params[12] < conn.params[0]
 
 
 def test_bounded_pressure_summary_does_not_claim_unmeasured_totals() -> None:
@@ -99,6 +105,7 @@ def test_bounded_pressure_summary_does_not_claim_unmeasured_totals() -> None:
 
     assert "actionable due **353**" in summary
     assert "new/retry **11**" in summary
+    assert "confirmed no-price retry **0**" in summary
     assert "page recovery **23**" in summary
     assert "scheduled rechecks **319**" in summary
     assert "actively verifying **2**" in summary
@@ -119,9 +126,10 @@ def test_background_workers_never_call_complete_queue_health() -> None:
 
 
 def test_pressure_query_is_capped_and_index_seekable() -> None:
-    assert PRESSURE.count("LIMIT ?") == 4
+    assert PRESSURE.count("LIMIT ?") == 5
     assert "DEFAULT_PRESSURE_CAP = 600" in PRESSURE
     assert "FRESH_PRESSURE_CAP = 64" in PRESSURE
+    assert "CONFIRMED_NO_PRICE_PRESSURE_CAP = DEFAULT_PRESSURE_CAP" in PRESSURE
     assert "RECOVERY_PRESSURE_CAP = 64" in PRESSURE
     assert "VERIFYING_PRESSURE_CAP = 64" in PRESSURE
     assert "status IN ('pending', 'retry', 'failed', 'verifying')" in PRESSURE

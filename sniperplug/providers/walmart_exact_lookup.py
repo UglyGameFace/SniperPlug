@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 import urllib.parse
 from typing import Any
@@ -54,6 +55,7 @@ _PRICE_DIAGNOSTIC_INTERVAL_SECONDS = 60.0
 _HTTP_400_DIAGNOSTIC_INTERVAL_SECONDS = 300.0
 _PRICE_DIAGNOSTIC_NEXT_ATTR = "_sniperplug_exact_lookup_price_diag_next_at"
 _HTTP_400_DIAGNOSTIC_NEXT_ATTR = "_sniperplug_exact_lookup_http400_diag_next_at"
+_DIAGNOSTIC_RESERVATION_LOCK = threading.Lock()
 
 log = logging.getLogger("sniperplug.autoscan.walmart_exact_lookup")
 
@@ -125,7 +127,7 @@ def _fetch_exact_affiliate_product_lookup_payload_sync(
     exact["sniperplugOfficialExactRoute"] = AFFILIATE_PRODUCT_LOOKUP_ROUTE
 
     current_price, _current_signal = _trusted_current_price(exact)
-    if current_price is None:
+    if current_price is None or current_price <= 0:
         _maybe_log_missing_price_shape(provider, clean_id, exact)
     return exact
 
@@ -270,10 +272,11 @@ def _reserve_diagnostic_slot(
     now_monotonic: float | None = None,
 ) -> bool:
     now_value = time.monotonic() if now_monotonic is None else float(now_monotonic)
-    next_at = float(getattr(provider, attr_name, 0.0) or 0.0)
-    if next_at > now_value:
-        return False
-    setattr(provider, attr_name, now_value + max(1.0, float(interval_seconds)))
+    with _DIAGNOSTIC_RESERVATION_LOCK:
+        next_at = float(getattr(provider, attr_name, 0.0) or 0.0)
+        if next_at > now_value:
+            return False
+        setattr(provider, attr_name, now_value + max(1.0, float(interval_seconds)))
     return True
 
 

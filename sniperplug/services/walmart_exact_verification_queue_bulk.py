@@ -24,6 +24,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     VerificationQueueEnqueueResult,
     _compact_text,
+    _is_confirmed_api_price_missing,
     _price_to_cents,
     _row_get,
 )
@@ -67,6 +68,7 @@ class _ExistingQueueRow:
     last_seen_at: str
     status: str
     next_attempt_at: str
+    last_error: str
     discovery_snapshot_json: str
     discovery_snapshot_at: str
 
@@ -126,6 +128,13 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
     price/reference/selected-offer proof change therefore wakes the existing row
     to ``pending`` immediately. Cosmetic title/URL/source changes may still
     refresh stored discovery metadata but do not wake a verified row by themselves.
+
+    A retry whose primary exact detail and exact Product Lookup both proved that
+    no canonical current price was available keeps its cooldown across ordinary
+    weak rediscovery. A complete fresh catalog snapshot or a material apparent
+    current/reference price change still wakes that row immediately. This keeps
+    Walmart's no-price population from pinning fresh-work backpressure while
+    preserving fast recovery when new proof actually arrives.
 
     A page-retry row that receives a complete safe snapshot is explicitly
     rearmed to ``pending`` so fresh catalog proof can bypass an HTML challenge.
@@ -327,6 +336,19 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
                     THEN 'pending'
                     ELSE status END,
                 next_attempt_at = CASE
+                    WHEN status = 'retry'
+                         AND instr(lower(last_error), 'retry_kind=api_price_missing') > 0
+                         AND instr(lower(last_error), 'recovery_kind=api_price_missing') > 0
+                         AND excluded.discovery_snapshot_json = ''
+                         AND (
+                             excluded.apparent_current_cents IS NULL
+                             OR excluded.apparent_current_cents IS apparent_current_cents
+                         )
+                         AND (
+                             excluded.apparent_reference_cents IS NULL
+                             OR excluded.apparent_reference_cents IS apparent_reference_cents
+                         )
+                    THEN next_attempt_at
                     WHEN status IN ('pending', 'retry', 'failed')
                     THEN MIN(next_attempt_at, excluded.next_attempt_at)
                     WHEN status IN (
@@ -397,7 +419,7 @@ async def _load_existing_queue_rows(
                 item_id, priority_score, apparent_current_cents,
                 apparent_reference_cents, apparent_discount_bps,
                 title, product_url, image_url, route_hint, source_label,
-                last_seen_at, status, next_attempt_at,
+                last_seen_at, status, next_attempt_at, last_error,
                 discovery_snapshot_json, discovery_snapshot_at
             FROM {QUEUE_TABLE}
             WHERE item_id IN ({placeholders})
@@ -431,11 +453,12 @@ async def _load_existing_queue_rows(
                 next_attempt_at=str(
                     _row_get(row, "next_attempt_at", index=12) or ""
                 ),
+                last_error=str(_row_get(row, "last_error", index=13) or ""),
                 discovery_snapshot_json=str(
-                    _row_get(row, "discovery_snapshot_json", index=13) or ""
+                    _row_get(row, "discovery_snapshot_json", index=14) or ""
                 ),
                 discovery_snapshot_at=str(
-                    _row_get(row, "discovery_snapshot_at", index=14) or ""
+                    _row_get(row, "discovery_snapshot_at", index=15) or ""
                 ),
             )
     return existing
@@ -509,6 +532,30 @@ def _queue_row_needs_write(
             or existing.next_attempt_at > str(row[15] or "")
         )
     ):
+        if _confirmed_no_price_retry(existing) and not _catalog_retry_proof_changed(
+            row,
+            existing,
+        ):
+            return False
+        return True
+    return False
+
+
+def _confirmed_no_price_retry(existing: _ExistingQueueRow) -> bool:
+    return existing.status == "retry" and _is_confirmed_api_price_missing(
+        existing.last_error
+    )
+
+
+def _catalog_retry_proof_changed(
+    row: tuple[Any, ...],
+    existing: _ExistingQueueRow,
+) -> bool:
+    if str(row[16] or ""):
+        return True
+    if row[2] is not None and int(row[2]) != existing.apparent_current_cents:
+        return True
+    if row[3] is not None and int(row[3]) != existing.apparent_reference_cents:
         return True
     return False
 

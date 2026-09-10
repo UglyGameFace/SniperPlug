@@ -1,58 +1,59 @@
 # Active Task
 
 ## Status
-**SP-WM-DEAL-DELIVERY-STALL — COMPLETE in production.**
+**SP-GATEWAY-EVENT-LOOP-LAG — IN PROGRESS.**
 
-The Walmart recovery task has passed code validation and live production acceptance. Canonical `main` includes PR #282 merge `9dcdf197f225e76dcf8adad546d49ea6fe3412e6`.
+Walmart delivery stall work is complete in production. The user explicitly switched the Single Active Task Lock to the repeated Discord gateway/event-loop lag investigation on 2026-09-10.
 
-## Production acceptance
-A fresh post-#282 deployment proved the intended behavior:
+Base main at task start: `51fdd1782bf9137b7e5d48fa79c010c30205e750` (PR #283 merge, Walmart delivery task closed).
 
-- mature confirmed dual-no-price retries remain visible at the bounded diagnostic cap (`>=600`) and page recovery remains bounded (`>=64`);
-- those mature no-price rows no longer trigger the split-aware 600-row catalog emergency stop by themselves;
-- catalog discovery resumed and advanced continuously from routes `143-144` through `163-164` during the acceptance window;
-- genuine fresh/ordinary pressure still pauses discovery at the existing 12-row safety threshold, with observed pauses at `33/12`, `27/12`, `26/12`, and `21/12`;
-- drain mode correctly switched to `24/4` under fresh pressure and returned to normal `8/2` behavior as pressure drained;
-- catalog batches continued producing safe fresh proof;
-- exact verification continued producing verified rows, official was prices, markdown outcomes, no-reference outcomes, and unavailable outcomes without weakening proof gates;
-- at 19:37 production produced `verified=3`, `fresh catalog proof=1/3`, `official was prices=2`, and `markdowns=2`; durable fanout then processed the exact event with one public post and one matched/sent DM while another guild was safely skipped by the existing `quality:review_or_watchlist` gate;
-- the old `664/600 exact-detail emergency backpressure` freeze did not recur when genuine fresh/ordinary pressure was below 12;
-- page circuit remained closed and no page-concurrency regression was observed.
+## Production symptom
+Production repeatedly emitted discord.py 2.7.1 warnings such as:
 
-## Validated ancestry
-- PR #282 validated head: `0206b9ea26291ec5bdd18427e03f432759d6b6f9`
-- PR #282 exact-head validation: full suite **1,425 passed**, 1 warning; targeted Walmart regressions, native libsql, compile/import/pip/diff/scope/conflict/clean-head checks passed
-- PR #282 merge / production-accepted main: `9dcdf197f225e76dcf8adad546d49ea6fe3412e6`
-- PR #281 merge: `efa9c667e7e96ceaa3553e3e909611b4a6cb024c`
-- PR #280 merge: `ab0b8b8cc1c66724420843cebcca4e414137a856`
-- PR #279 merge: `54f1a84b42b6c0f0cec7f8182483994efb918efd`
-- PR #278 merge: `15919739996093a1cb55361ee5539e96a7aebb3f`
-- PR #277 merge: `a449bd43ea319f73c63c4604e16a4220225b7ec5`
-- PR #276 merge: `62889044fb1fc72dd026d98917bbf9b9680fd9d3`
+- `Can't keep up, shard ID None websocket is 41.3s behind.`
+- `Can't keep up, shard ID None websocket is 41.5s behind.`
 
-## Remaining observations, not blockers for this completed task
-- Walmart still frequently returns no usable current price on both official exact paths (`api_price_missing->api_price_missing`). That is external-data / future price-recovery quality work, not recurrence of the delivery stall.
-- Occasional Product Lookup HTTP 400 diagnostics remain isolated per item and fail closed.
-- The `discord.gateway Can't keep up` warnings remain backlog task `SP-GATEWAY-EVENT-LOOP-LAG`; do not mix that work into Walmart without an explicit task switch.
+The warnings were seen near high-throughput Walmart exact drain windows, but timing alone is not proof that Walmart blocked the Discord asyncio loop.
 
-## Safety invariants preserved
-- exact Walmart item identity remains mandatory;
-- relevance-search neighbors cannot donate price, seller, reference, or offer proof;
-- installment-payment values are not current-price proof;
-- seller, selected offer, variant, marketplace, condition, fulfillment, shipping/delivered-price checks remain fail-closed;
-- no catalog price is promoted merely because detail/Product Lookup omitted a price;
-- reference-price trust policy and guild discount thresholds are unchanged;
-- #277 six-hour confirmed-no-price retry behavior is unchanged;
-- #280 pressure-lane classification is unchanged;
-- #281 exact claim ranking is unchanged;
-- #282 excludes only mature confirmed no-price rows from split-aware emergency pressure;
-- page challenge/pacing behavior, scheduled recheck floors, lease safety, durable fanout, public thresholds, DM filtering, categories, and dedupe remain unchanged.
+## Root-cause findings before code changes
+- SniperPlug already runs a 5-second local event-loop watchdog with a 2-second warning threshold. The supplied production windows contain discord.py `Can't keep up` warnings but no matching SniperPlug `Event loop lag detected` line.
+- discord.py 2.7.1's `KeepAliveHandler.ack()` logs `Can't keep up` when heartbeat-to-ACK protocol latency exceeds 10 seconds. A different message, `heartbeat blocked for more than ... seconds`, is used when the event loop cannot execute the heartbeat send coroutine for 10 seconds. The production symptom is the ACK-latency warning, not the heartbeat-send-blocked warning.
+- Walmart catalog HTTP/candidate parsing is already moved to worker event loops/threads; exact candidate parsing/preparation is offloaded; native Turso/libSQL is isolated in a child process. Existing #202/#210 hardening must be preserved rather than undone by guessing at another concurrency reduction.
+- One definite local blocking class remains: runtime logging installs synchronous console plus rotating-file handlers on the main process. `ProcessIsolatedSniperPlugBot.run()` then calls `discord.py` without `log_handler=None`, so discord.py also installs its default handler. Production confirms the duplicate Discord records. Async workers therefore perform unnecessary synchronous console/file logging work on the Discord loop, and Discord records are emitted twice.
+
+## Implementation scope
+1. Move SniperPlug's console/file sink I/O behind a standard-library `QueueHandler`/`QueueListener` so event-loop logging calls only enqueue records.
+2. Disable discord.py's duplicate default handler with `bot.run(..., log_handler=None)` and shut the logging listener down cleanly after the bot exits.
+3. Correlate Discord heartbeat ACK latency with a rolling local-loop-lag window. Log distinct classifications for:
+   - healthy gateway + healthy loop;
+   - high gateway ACK latency while the local loop remained healthy;
+   - high gateway latency accompanied by real local loop lag.
+4. Emit a bounded watchdog health line so production can prove the watchdog itself stayed alive through a gateway-latency event.
+5. Do not throttle Walmart, alter proof/retry rules, force Discord reconnects, or weaken delivery behavior without evidence that local workload is the cause.
+
+## Safety invariants
+- Walmart #277-#282 retry, pressure-lane, ranking, and delivery behavior stays unchanged.
+- Turso/libSQL remains process-isolated and transaction-safe.
+- Discord reconnect/RESUME behavior remains owned by discord.py; no forced reconnect loop is introduced.
+- Console and rotating-file log content/severity are preserved; only sink execution moves off the event-loop thread and duplicate discord.py handler installation is removed.
+- Existing 2-second local loop warning sensitivity remains unchanged.
+
+## Validation required
+- Targeted gateway/logging regression tests.
+- Existing autoscan production-hardening tests.
+- Native libsql process tests.
+- Compile/import/pip checks.
+- Full pytest suite.
+- Diff/scope/conflict-marker/clean-worktree checks on one exact head.
+- Production acceptance must show the new logging/watchdog marker, no duplicate Discord log lines, and a truthful gateway-vs-loop classification during any subsequent high-latency event.
+
+## Completed prerequisite — Walmart delivery stall
+Production-accepted Walmart main remains `9dcdf197f225e76dcf8adad546d49ea6fe3412e6`; PR #283 later closed the task bookkeeping on main `51fdd1782bf9137b7e5d48fa79c010c30205e750`.
 
 ## Suspended task — SP-MOVIE-TICKETS-RECOVERY
-Suspended by the user's explicit FORCE SWITCH. Preserve the merged movie-ticket work and production-acceptance state; do not resume it without another explicit FORCE SWITCH.
+Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged movie-ticket work unchanged.
 
 ## Backlog — not active
-- SP-GATEWAY-EVENT-LOOP-LAG
 - SP-SETUP-DELIVERY-UX
 - SP-DM-DELIVERY-STARVATION
 - SP-DM-NEW-LOW-ALERT
@@ -62,4 +63,4 @@ Suspended by the user's explicit FORCE SWITCH. Preserve the merged movie-ticket 
 - SniperPlug-Site work
 
 ## Next step
-No Walmart implementation task is active. Do not start another backlog item until the user explicitly switches tasks under the Single Active Task Lock.
+Implement and validate the narrow gateway/logging fix on the dedicated branch. Do not switch to another backlog item until this task is production-accepted or the user explicitly FORCE SWITCHes again.

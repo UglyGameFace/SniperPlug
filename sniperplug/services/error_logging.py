@@ -4,11 +4,13 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import sys
+import threading
 import traceback
 import uuid
 import warnings
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +25,20 @@ MAX_CONTEXT_CHARS = 6000
 
 
 error_log = logging.getLogger(ERROR_LOGGER_NAME)
+_RUNTIME_LOG_LOCK = threading.Lock()
+_RUNTIME_LOG_QUEUE: queue.SimpleQueue[logging.LogRecord] | None = None
+_RUNTIME_QUEUE_HANDLER: QueueHandler | None = None
+_RUNTIME_LOG_LISTENER: QueueListener | None = None
+_RUNTIME_LOG_SINKS: tuple[logging.Handler, ...] = ()
 
 
 def configure_runtime_logging() -> None:
-    """Install console + rotating file logging once.
+    """Install non-blocking console + rotating file logging once.
+
+    Async application code must not write to stdout or rotate a file while it is
+    also responsible for Discord gateway heartbeats. The root logger therefore
+    owns only a ``QueueHandler``. A dedicated ``QueueListener`` thread performs
+    the actual console/file I/O in FIFO order.
 
     Env knobs:
     - SNIPERPLUG_LOG_LEVEL=INFO|DEBUG|WARNING|ERROR
@@ -34,34 +46,132 @@ def configure_runtime_logging() -> None:
     - SNIPERPLUG_LOG_MAX_BYTES=5242880
     - SNIPERPLUG_LOG_BACKUPS=5
     """
+
+    global _RUNTIME_LOG_QUEUE
+    global _RUNTIME_QUEUE_HANDLER
+    global _RUNTIME_LOG_LISTENER
+    global _RUNTIME_LOG_SINKS
+
     level_name = os.getenv("SNIPERPLUG_LOG_LEVEL", "INFO").strip().upper() or "INFO"
     level = getattr(logging, level_name, logging.INFO)
-    log_file = Path(os.getenv("SNIPERPLUG_LOG_FILE", "./data/logs/sniperplug.log").strip() or "./data/logs/sniperplug.log")
+    log_file = Path(
+        os.getenv("SNIPERPLUG_LOG_FILE", "./data/logs/sniperplug.log").strip()
+        or "./data/logs/sniperplug.log"
+    )
     max_bytes = _env_int("SNIPERPLUG_LOG_MAX_BYTES", 5 * 1024 * 1024)
     backups = _env_int("SNIPERPLUG_LOG_BACKUPS", 5)
 
     root = logging.getLogger()
     root.setLevel(level)
 
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-    if not any(isinstance(handler, logging.StreamHandler) and not isinstance(handler, RotatingFileHandler) for handler in root.handlers):
+    file_error: Exception | None = None
+    with _RUNTIME_LOG_LOCK:
+        if _RUNTIME_LOG_LISTENER is not None and _RUNTIME_QUEUE_HANDLER is not None:
+            _RUNTIME_QUEUE_HANDLER.setLevel(level)
+            for sink in _RUNTIME_LOG_SINKS:
+                sink.setLevel(level)
+            logging.captureWarnings(True)
+            warnings.simplefilter("default")
+            return
+
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+        )
         console = logging.StreamHandler()
         console.setFormatter(formatter)
         console.setLevel(level)
-        root.addHandler(console)
+        sinks: list[logging.Handler] = [console]
 
-    try:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        if not any(isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", "") == str(log_file.resolve()) for handler in root.handlers):
-            file_handler = RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backups, encoding="utf-8")
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                log_file,
+                maxBytes=max_bytes,
+                backupCount=backups,
+                encoding="utf-8",
+            )
             file_handler.setFormatter(formatter)
             file_handler.setLevel(level)
-            root.addHandler(file_handler)
-    except Exception as exc:
-        logging.getLogger(ERROR_LOGGER_NAME).warning("Could not enable rotating file logs: %s", exc)
+            sinks.append(file_handler)
+        except Exception as exc:
+            file_error = exc
+
+        log_queue: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+        queue_handler = QueueHandler(log_queue)
+        queue_handler.setLevel(level)
+        setattr(queue_handler, "_sniperplug_runtime_queue_handler", True)
+
+        listener = QueueListener(
+            log_queue,
+            *sinks,
+            respect_handler_level=True,
+        )
+        try:
+            listener.start()
+        except BaseException:
+            for sink in sinks:
+                try:
+                    sink.close()
+                except Exception:
+                    pass
+            raise
+
+        root.addHandler(queue_handler)
+        _RUNTIME_LOG_QUEUE = log_queue
+        _RUNTIME_QUEUE_HANDLER = queue_handler
+        _RUNTIME_LOG_LISTENER = listener
+        _RUNTIME_LOG_SINKS = tuple(sinks)
 
     logging.captureWarnings(True)
     warnings.simplefilter("default")
+    logging.getLogger("sniperplug").info(
+        "Runtime logging queue active marker=async_log_sink_v284 "
+        "console=true rotating_file=%s event_loop_sink_io=false",
+        file_error is None,
+    )
+    if file_error is not None:
+        error_log.warning("Could not enable rotating file logs: %s", file_error)
+
+
+def shutdown_runtime_logging() -> None:
+    """Drain and stop SniperPlug's queue listener without touching foreign handlers."""
+
+    global _RUNTIME_LOG_QUEUE
+    global _RUNTIME_QUEUE_HANDLER
+    global _RUNTIME_LOG_LISTENER
+    global _RUNTIME_LOG_SINKS
+
+    with _RUNTIME_LOG_LOCK:
+        listener = _RUNTIME_LOG_LISTENER
+        queue_handler = _RUNTIME_QUEUE_HANDLER
+        sinks = _RUNTIME_LOG_SINKS
+
+        _RUNTIME_LOG_QUEUE = None
+        _RUNTIME_QUEUE_HANDLER = None
+        _RUNTIME_LOG_LISTENER = None
+        _RUNTIME_LOG_SINKS = ()
+
+        if queue_handler is not None:
+            root = logging.getLogger()
+            try:
+                root.removeHandler(queue_handler)
+            except Exception:
+                pass
+
+    if listener is not None:
+        try:
+            listener.stop()
+        except Exception:
+            pass
+    for sink in sinks:
+        try:
+            sink.flush()
+        except Exception:
+            pass
+        try:
+            sink.close()
+        except Exception:
+            pass
 
 
 def install_global_exception_hooks() -> None:

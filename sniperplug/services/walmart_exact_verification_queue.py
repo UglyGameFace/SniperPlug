@@ -35,6 +35,7 @@ QUEUE_LEASE_SECONDS = 240
 QUEUE_CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
 QUEUE_RETRY_BASE_SECONDS = 5 * 60
 QUEUE_RETRY_MAX_SECONDS = 6 * 60 * 60
+CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS = QUEUE_RETRY_MAX_SECONDS
 PAGE_RETRY_STATUS = "page_retry"
 PAGE_RETRY_BASE_SECONDS = 30 * 60
 PAGE_RETRY_RATE_LIMIT_SECONDS = 60 * 60
@@ -676,6 +677,16 @@ async def _store_exact_candidate(
     )
 
 
+def _is_confirmed_api_price_missing(error: str) -> bool:
+    """Return whether both official exact price paths proved no usable current price."""
+
+    lowered = str(error or "").lower()
+    return (
+        "retry_kind=api_price_missing" in lowered
+        and "recovery_kind=api_price_missing" in lowered
+    )
+
+
 def _failure_storage_policy(
     *,
     status: str,
@@ -698,6 +709,13 @@ def _failure_storage_policy(
         ):
             return PAGE_RETRY_STATUS, PAGE_RETRY_RATE_LIMIT_SECONDS
         return PAGE_RETRY_STATUS, PAGE_RETRY_BASE_SECONDS
+    if status == "retry" and _is_confirmed_api_price_missing(error):
+        # The primary detail route and exact Product Lookup both returned the
+        # exact item without a canonical current price. Repeating that same
+        # network work every few minutes cannot manufacture proof, so cool the
+        # row at the existing retry ceiling. Catalog proof changes can still
+        # wake it immediately through the bulk enqueue path.
+        return "retry", CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS
     if status == "provider_unavailable":
         return "retry", 30 * 60
     delay_seconds = min(

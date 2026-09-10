@@ -11,8 +11,10 @@ Target outcome: recover exact current/reference prices when Walmart supplies val
 Do not switch to movie tickets, gateway lag, setup UX, DM redesign, watchers, site, Minecraft, or unrelated work without another explicit FORCE SWITCH.
 
 ## Status
-**PR #274 is merged and its production deployment is proven. The newly isolated blocker is Product Lookup exact items that still expose no parser-recognized current price. PR #275 is active and diagnostic-only.**
+**PR #275 is validated and merged. The active Walmart task is now at production acceptance for bounded Product Lookup diagnostics.**
 
+PR #275 validated head: `8ce958d7bcf0ef8f9125bf1c12762aaf444e3245`
+PR #275 merge: `4a4f6462bb3f3689243362abfdc23531c2aeff43`
 PR #274 validated head: `30a82f7c6e83e520d199d3008729907bb5ddd3f1`
 PR #274 merge: `d7c466851d956cffa336224d218e6f3339c2008e`
 PR #270 validated head: `5e48002743fdae819d147fa7b79b21fc288d5ba1`
@@ -160,10 +162,20 @@ PR #274 passed in the known-good Termux/Ubuntu Python 3.12.14 environment:
 - validation worktree clean;
 - final exact HEAD recheck matched the validated SHA.
 
-PR #275 validation is pending on its exact head. Do not mark it complete or merge it until targeted tests, compile/import checks, full regression coverage, diff/scope checks, and exact-head validation pass.
+PR #275 passed on exact head `8ce958d7bcf0ef8f9125bf1c12762aaf444e3245` in the same known-good Termux/Ubuntu Python 3.12.14 environment:
+- full pytest: **1,390 passed, 1 existing `audioop` deprecation warning**;
+- `pip check`: **No broken requirements found**;
+- compileall: **exit 0**;
+- import smoke: **37 modules, 22 symbols**, exit 0;
+- changed-file scope exactly the three intended files;
+- conflict-marker scan: none;
+- validation worktree clean;
+- final exact HEAD recheck matched the validated SHA.
+
+GitHub Actions on #275 failed before exposing executable steps (`steps=null`) and are recorded as runner-side non-evidence, not as a code/test failure. PR #275 was marked ready only after local exact-head validation and merged with GitHub's expected-head guard.
 
 ## Production acceptance after #275
-After a validated #275 deployment, look for:
+After the validated #275 deployment, look for:
 
 `marker=lookup_shape_v275`
 
@@ -201,4 +213,4 @@ Preserved state:
 - SniperPlug-Site work
 
 ## Next step
-Validate PR #275 on its exact head. If green, deploy it to the existing Discloud SniperPlug app and use the first `lookup_shape_v275` missing-price/HTTP-400 diagnostics to prove the exact downstream field shape before making any behavioral change.
+Deploy current canonical `main` to the existing Discloud SniperPlug app, then capture the first `marker=lookup_shape_v275` missing-price and any HTTP-400 diagnostic lines. Use only those observed field shapes to choose the next behavioral fix.

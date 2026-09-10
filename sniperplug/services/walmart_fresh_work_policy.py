@@ -44,7 +44,7 @@ def should_use_drain_mode(
 
     ``emergency_total_threshold`` remains in the signature for compatibility;
     split-aware health intentionally ignores it for drain mode. Catalog intake
-    still has a total emergency stop through ``catalog_backpressure_reason``.
+    still has a separate emergency stop through ``catalog_backpressure_reason``.
     """
 
     due_now = max(0, int(getattr(health, "due_now", 0) or 0))
@@ -64,19 +64,25 @@ def catalog_backpressure_reason(
     emergency_total_limit: int = TOTAL_DISCOVERY_EMERGENCY_THRESHOLD,
     legacy_limit: int = LEGACY_ACTIONABLE_THRESHOLD,
 ) -> str | None:
-    """Pause catalog intake for real fresh pressure, not cooled no-price waves.
+    """Pause catalog intake for pressure that catalog intake can actually worsen.
 
     A small amount of genuinely fresh/pending/ordinary retry work is normal.
     Once twelve such rows are due, discovery yields until the exact worker catches
     up. Confirmed dual-no-price retries are excluded from that fresh lane because
     both official exact price paths already proved no usable current price and
-    #277 deliberately put them on a six-hour retry cadence. They remain fully
-    actionable and remain part of total emergency pressure; they simply cannot
-    impersonate newly discovered work every time their retry timer matures.
+    #277 deliberately put them on a six-hour retry cadence.
 
-    Actively verifying rows are not added to fresh pressure because health cannot
-    tell which lane supplied those leases. Total pressure still includes active
-    leases for the emergency intake stop.
+    Mature confirmed no-price rows are also excluded from the split-aware 600-row
+    emergency stop. Production after #281 proved why: a six-hour wave can remain
+    at the bounded 600-row diagnostic cap while page recovery is intentionally
+    paced, permanently freezing catalog discovery even when new/ordinary work is
+    zero. Pausing discovery cannot make that mature low-signal lane drain faster.
+    The lane remains fully visible, fully retryable, and eligible to fill unused
+    exact-worker capacity; it simply cannot veto new catalog intake by itself.
+
+    Page recovery, scheduled rechecks, and active leases still count toward the
+    split-aware emergency stop. Legacy unsplit health preserves the historical
+    total-backlog behavior because it cannot safely identify the no-price lane.
     """
 
     due_now = max(0, int(getattr(health, "due_now", 0) or 0))
@@ -110,6 +116,7 @@ def catalog_backpressure_reason(
         fresh_limit_value,
         int(emergency_total_limit),
     )
+    emergency_pressure = fresh_due + recovery_due + recheck_due + verifying
 
     if fresh_due >= fresh_limit_value:
         return (
@@ -122,10 +129,11 @@ def catalog_backpressure_reason(
             f"**{identity_blocked}**"
         )
 
-    if total_pressure >= emergency_limit_value:
+    if emergency_pressure >= emergency_limit_value:
         return (
             "exact-detail emergency backpressure active: "
-            f"actionable backlog **{total_pressure}/{emergency_limit_value}** • "
+            f"controllable backlog **{emergency_pressure}/{emergency_limit_value}** • "
+            f"actionable backlog **{total_pressure}** • "
             f"new/ordinary-retry due **{fresh_due}** • "
             f"confirmed no-price retries **{no_price_due}** • "
             f"page recovery **{recovery_due}** • scheduled rechecks **{recheck_due}** • "

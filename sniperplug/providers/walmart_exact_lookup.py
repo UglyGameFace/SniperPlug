@@ -185,11 +185,11 @@ def summarize_product_lookup_price_shape(payload: Any, item_id: str) -> str:
     item_keys = [_diagnostic_token(key) for key in list(item.keys())[:16]]
     price_fields: list[str] = []
     offer_shapes: list[str] = []
-    stack: list[tuple[Any, str, int]] = [(item, "", 0)]
+    stack: list[tuple[Any, str, int, bool]] = [(item, "", 0, False)]
     visited = 0
 
     while stack and visited < _PRICE_DIAGNOSTIC_MAX_NODES:
-        node, path, depth = stack.pop()
+        node, path, depth, parent_price_context = stack.pop()
         visited += 1
         if depth > _PRICE_DIAGNOSTIC_MAX_DEPTH:
             continue
@@ -200,14 +200,19 @@ def summarize_product_lookup_price_shape(payload: Any, item_id: str) -> str:
                 clean_key = _diagnostic_token(key)
                 child_path = f"{path}.{clean_key}" if path else clean_key
                 lowered = key.strip().lower()
+                key_is_price_like = any(
+                    fragment in lowered for fragment in _PRICE_DIAGNOSTIC_KEY_FRAGMENTS
+                )
 
-                if (
-                    len(price_fields) < _PRICE_DIAGNOSTIC_MAX_FIELDS
-                    and any(fragment in lowered for fragment in _PRICE_DIAGNOSTIC_KEY_FRAGMENTS)
-                ):
-                    price_fields.append(
-                        f"{child_path}:{_diagnostic_value(child)}"
-                    )
+                if len(price_fields) < _PRICE_DIAGNOSTIC_MAX_FIELDS:
+                    if key_is_price_like:
+                        price_fields.append(
+                            f"{child_path}:{_diagnostic_value(child)}"
+                        )
+                    elif parent_price_context and _diagnostic_scalar_candidate(child):
+                        price_fields.append(
+                            f"{child_path}:{_diagnostic_value(child)}"
+                        )
 
                 if (
                     len(offer_shapes) < _PRICE_DIAGNOSTIC_MAX_OFFER_SHAPES
@@ -218,7 +223,14 @@ def summarize_product_lookup_price_shape(payload: Any, item_id: str) -> str:
                     )
 
                 if isinstance(child, (dict, list)):
-                    stack.append((child, child_path, depth + 1))
+                    stack.append(
+                        (
+                            child,
+                            child_path,
+                            depth + 1,
+                            parent_price_context or key_is_price_like,
+                        )
+                    )
             continue
 
         if isinstance(node, list):
@@ -226,7 +238,9 @@ def summarize_product_lookup_price_shape(payload: Any, item_id: str) -> str:
                 child = node[index]
                 if isinstance(child, (dict, list)):
                     child_path = f"{path}[{index}]" if path else f"[{index}]"
-                    stack.append((child, child_path, depth + 1))
+                    stack.append(
+                        (child, child_path, depth + 1, parent_price_context)
+                    )
 
     prices = _bounded_diagnostic_join(
         price_fields,
@@ -308,6 +322,17 @@ def _bounded_diagnostic_join(
     if not values:
         return empty
     return delimiter.join(values)[:max(1, int(max_chars))].rstrip(delimiter)
+
+
+def _diagnostic_scalar_candidate(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        compact = "".join(value.split())
+        return bool(compact and len(compact) <= 36 and any(char.isdigit() for char in compact))
+    return False
 
 
 def _diagnostic_container_shape(value: Any) -> str:

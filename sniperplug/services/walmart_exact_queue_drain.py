@@ -11,6 +11,7 @@ from sniperplug.services.walmart_exact_price_enrichment import (
     _trusted_reference,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
+    CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS,
     QUEUE_LEASE_SECONDS,
     QUEUE_RETENTION_DAYS,
     QUEUE_TABLE,
@@ -51,6 +52,19 @@ VERIFIED_RECHECK_STATUSES = (
 # exact batch. Fresh catalog snapshots are exempt because they are attempted
 # without page I/O first and remain subject to the normal strict promotion gate.
 PAGE_RECOVERY_CLAIM_CAP = 2
+# Mature confirmed dual-no-price retries stay fully retryable, but they are the
+# lowest-signal nonterminal lane. Within the bounded retry candidate slice, put
+# them after ordinary retries so they only fill capacity not needed by fresh or
+# ordinary retry work. There is deliberately no hard claim cap: when higher-
+# signal work is absent, the whole batch can still drain mature no-price rows.
+CONFIRMED_NO_PRICE_RETRY_STATUS_RANK = 10
+CONFIRMED_NO_PRICE_RETRY_FLOOR_SQL = (
+    "instr(lower(last_error), 'retry_kind=api_price_missing') > 0 "
+    "AND instr(lower(last_error), 'recovery_kind=api_price_missing') > 0 "
+    "AND last_attempt_at IS NOT NULL "
+    f"AND julianday(next_attempt_at) >= "
+    f"julianday(last_attempt_at, '+{CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS} seconds')"
+)
 _DISCOVERY_SNAPSHOT_COLUMNS = (
     "discovery_snapshot_json, discovery_snapshot_at"
 )
@@ -115,6 +129,14 @@ async def claim_due_rows_batched(
     then the original global freshness/status/priority order chooses the final
     slice. This keeps the same durable lease, status priority, page cap, and
     verified-age semantics without a broad queue scan.
+
+    The retry lane additionally preserves the #280 pressure split at claim time.
+    A dual-no-price row whose schedule still reflects the full #277 six-hour
+    cooldown sorts after ordinary retries inside the same bounded retry seek.
+    That means fresh/material wakes and ordinary transient retries clear first,
+    while mature no-price work fills only otherwise-unused batch capacity. There
+    is no permanent suppression: if no higher-signal work is due, mature no-price
+    rows can consume the complete batch and remain fully retryable.
 
     A shared lease token still protects all final writes. If another process
     races between the SELECT and UPDATE, the UPDATE guards and returned IDs
@@ -339,12 +361,21 @@ def _indexed_due_rows_select_sql() -> str:
     """.strip()
 
     def ordinary_cte(name: str, status: str, rank: int) -> str:
+        if status == "retry":
+            status_rank_sql = (
+                f"CASE WHEN {CONFIRMED_NO_PRICE_RETRY_FLOOR_SQL} "
+                f"THEN {CONFIRMED_NO_PRICE_RETRY_STATUS_RANK} ELSE {rank} END"
+            )
+            order_sql = "status_rank, priority_score DESC, last_seen_at DESC"
+        else:
+            status_rank_sql = str(rank)
+            order_sql = "priority_score DESC, last_seen_at DESC"
         return f"""
         {name} AS (
             SELECT
                 {projection},
                 1 AS freshness_rank,
-                {rank} AS status_rank,
+                {status_rank_sql} AS status_rank,
                 priority_score,
                 last_seen_at
             FROM {QUEUE_TABLE} INDEXED BY {STATUS_DUE_INDEX}
@@ -353,7 +384,7 @@ def _indexed_due_rows_select_sql() -> str:
               AND last_seen_at >= ?
               AND (lease_until IS NULL OR lease_until < ?)
               AND {nonfresh}
-            ORDER BY priority_score DESC, last_seen_at DESC
+            ORDER BY {order_sql}
             LIMIT ?
         )
         """

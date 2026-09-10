@@ -11,10 +11,10 @@ Target outcome: recover exact current/reference prices when Walmart supplies val
 Do not switch to movie tickets, gateway lag, setup UX, DM redesign, watchers, site, Minecraft, or unrelated work without another explicit FORCE SWITCH.
 
 ## Status
-**PR #270 production acceptance proved the deployed recovery build and exposed the remaining failing stage. PR #274 is now the active implementation branch.**
+**PR #274 is validated and merged. The active Walmart task is now at production acceptance.**
 
-Active branch: `fix/walmart-exact-product-lookup-274`
-Branch base/main: `7efb68c60b9cbe1c703e6bb2734b107f2f24626e`
+PR #274 validated head: `30a82f7c6e83e520d199d3008729907bb5ddd3f1`
+PR #274 merge: `d7c466851d956cffa336224d218e6f3339c2008e`
 PR #270 validated head: `5e48002743fdae819d147fa7b79b21fc288d5ba1`
 PR #270 merge: `33e82775cd06aef46f023e91da0f5a6177e2cbad`
 #257 merge: `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`
@@ -41,37 +41,35 @@ Fresh official catalog proof itself is still healthy. Examples from the same pro
 Those fresh candidates still mostly lacked a trusted Walmart reference price, so they produced no public markdown cards, but they prove Walmart authentication, catalog discovery, selected-offer parsing, exact fresh proof, and persistence are not globally broken.
 
 ## Proven root cause
-The failing #257 recovery uses the Affiliate **Search** endpoint with the Walmart item ID placed in the free-text `query` parameter. It then correctly requires one search result to have the exact requested `itemId`/`usItemId`. Production now proves that this relevance-search operation overwhelmingly returns no exact-ID row, which becomes `api_exact_search_no_match`.
+The failing #257 recovery used the Affiliate **Search** endpoint with the Walmart item ID placed in the free-text `query` parameter. It then correctly required one search result to have the exact requested `itemId`/`usItemId`. Production proved that this relevance-search operation overwhelmingly returned no exact-ID row, which became `api_exact_search_no_match`.
 
-The provider already exposes the Affiliate Product Lookup `/items` service and its base detail code includes an `ids=<item_id>` form. However, the ordinary detail path returns the first successful identity payload even when that payload has no numeric current price, so the later #257 recovery still falls through to free-text Search instead of performing a dedicated exact Product Lookup.
-
-That is the stage to fix. Adding more page fallbacks, relaxing identity checks, or treating a relevance neighbor as proof would be the wrong layer.
+The provider already exposed the Affiliate Product Lookup `/items` service and its base detail code included an `ids=<item_id>` form. However, the ordinary detail path could return the first successful identity payload even when that payload had no numeric current price, so the later #257 recovery still fell through to free-text Search instead of performing a dedicated exact Product Lookup.
 
 ## PR #274 implementation
 ### `sniperplug/providers/walmart_exact_lookup.py`
-- add one bounded Affiliate Product Lookup request using `ids=<exact Walmart item id>` and `responseGroup=full`;
-- use the provider's existing signed `_request_json` transport and publisher ID when configured;
-- accept only a returned `itemId`/`usItemId` that exactly equals the requested ID;
-- search only known Product Lookup wrapper shapes with bounded depth/node count;
-- tag accepted payloads as `affiliate_product_lookup_exact_item` / `items_ids_v274`;
-- fail closed with concrete `api_exact_lookup_*` retry kinds.
+- adds one bounded Affiliate Product Lookup request using `ids=<exact Walmart item id>` and `responseGroup=full`;
+- uses the provider's existing signed `_request_json` transport and publisher ID when configured;
+- accepts only a returned `itemId`/`usItemId` that exactly equals the requested ID;
+- searches only known Product Lookup wrapper shapes with bounded depth/node count;
+- tags accepted payloads as `affiliate_product_lookup_exact_item` / `items_ids_v274`;
+- fails closed with concrete `api_exact_lookup_*` retry kinds.
 
 ### `sniperplug/services/walmart_exact_fetch_pacing.py`
-- keep the canonical exact verifier as the only promotion path;
-- on `api_price_missing`, use exact Product Lookup instead of numeric free-text Search when the production provider supports the real lookup transport;
-- use the same lookup for best-effort trusted-reference enrichment of already-valid fresh proof;
-- preserve the old exact-search hook only as a compatibility adapter for tests/plugins that do not expose the production Product Lookup transport;
-- do not add HTML calls or relax any proof gate.
+- keeps the canonical exact verifier as the only promotion path;
+- on `api_price_missing`, uses exact Product Lookup instead of numeric free-text Search when the production provider supports the real lookup transport;
+- uses the same lookup for best-effort trusted-reference enrichment of already-valid fresh proof;
+- preserves the old exact-search hook only as a compatibility adapter for tests/plugins that do not expose the production Product Lookup transport;
+- does not add HTML calls or relax any proof gate.
 
 ### `sniperplug/services/walmart_exact_queue_bulk_runtime.py`
-- preserve the #270 deployment marker;
-- add `exact_lookup=affiliate_items_ids_v274` to write telemetry so production can prove #274 is running.
+- preserves the #270 deployment marker;
+- adds `exact_lookup=affiliate_items_ids_v274` to write telemetry so production can prove #274 is running.
 
 ### `tests/test_walmart_exact_product_lookup_274.py`
-- verify exact Product Lookup uses `ids`, not `query`;
-- verify a nonmatching returned item is rejected;
-- verify bounded known-wrapper exact-ID extraction;
-- verify an identity-only primary detail can recover price/reference through Product Lookup without free-text Search or HTML.
+- verifies exact Product Lookup uses `ids`, not `query`;
+- verifies a nonmatching returned item is rejected;
+- verifies bounded known-wrapper exact-ID extraction;
+- verifies an identity-only primary detail can recover price/reference through Product Lookup without free-text Search or HTML.
 
 ## Safety invariants
 Unchanged:
@@ -83,32 +81,23 @@ Unchanged:
 - queue cadence, retry delays, page challenge circuit, HTML pacing, dedupe, categories, fanout, and DM behavior are unchanged;
 - no second verifier and no guessed price source are introduced.
 
-## Validation
-### Completed foundation
-PR #270 exact head `5e48002743fdae819d147fa7b79b21fc288d5ba1` passed:
-- targeted Walmart regressions;
-- pip check;
-- compileall;
-- import smoke;
-- native libsql process tests;
-- full pytest **1,380 passed, 1 existing warning**;
-- diff/scope/conflict/clean-worktree/final-SHA checks.
+## Validation / results
+Exact validated PR #274 head: `30a82f7c6e83e520d199d3008729907bb5ddd3f1`.
 
-### Required for PR #274
-Do not mark ready or merge until the exact PR #274 head passes:
-- new Product Lookup regression file;
-- existing #257 recovery tests;
-- Walmart page-identity, exact/bulk, fresh-proof, queue/drain, and price-proof regressions;
-- `pip check`;
-- compileall;
-- import smoke;
-- native libsql process tests;
-- full pytest;
-- diff check;
-- changed-file scope check;
-- conflict-marker scan;
-- clean validation worktree;
-- final exact-SHA recheck.
+Passed in the known-good Termux/Ubuntu Python 3.12.14 environment:
+- targeted Walmart Product Lookup / #257 recovery / page identity / queue / bulk / fresh-proof regressions: **62 passed, 1 existing `audioop` deprecation warning**;
+- `pip check`: **No broken requirements found**;
+- compileall: **exit 0**;
+- import smoke: **37 modules, 22 symbols**;
+- native libsql process tests: **10 passed**;
+- full pytest: **1,385 passed, 1 existing warning**;
+- `git diff origin/main...HEAD --check`: clean;
+- changed-file scope exactly the five intended files;
+- conflict-marker scan: none;
+- validation worktree clean;
+- final exact HEAD recheck matched the validated SHA.
+
+PR #274 was marked ready only after that evidence and merged with GitHub's expected-head guard against the exact validated SHA.
 
 ## Production acceptance after #274
 Deploy the merged canonical `main`. A claimed Walmart exact batch must contain:
@@ -128,7 +117,7 @@ Only a newly proven downstream blocker may justify another implementation change
 ## Blockers / risks
 - ChatGPT has repository access but no Discloud deployment/runtime connector, so live deployment and production-log acceptance remain external.
 - Walmart Affiliate response shapes are external and may vary; #274 intentionally keeps exact wrapper traversal bounded and exact-ID matched.
-- Two production `discord.gateway Can't keep up` warnings were also observed while the Walmart queue was hot. That remains the separate backlog task `SP-GATEWAY-EVENT-LOOP-LAG` and is not being mixed into this PR.
+- Two production `discord.gateway Can't keep up` warnings were also observed while the Walmart queue was hot. That remains the separate backlog task `SP-GATEWAY-EVENT-LOOP-LAG` and is not being mixed into this task.
 
 ## Suspended task — SP-MOVIE-TICKETS-RECOVERY
 Suspended by the user's explicit FORCE SWITCH.
@@ -153,4 +142,4 @@ Preserved state:
 - SniperPlug-Site work
 
 ## Next step
-Open draft PR #274 from `fix/walmart-exact-product-lookup-274`, inspect its exact diff, run exact-head validation in the known-good Termux/Ubuntu Python 3.12 environment, and merge only after that gate is green.
+Deploy current canonical `main` to the existing Discloud SniperPlug app, confirm the first claimed Walmart exact batch contains `exact_lookup=affiliate_items_ids_v274`, then judge the Product Lookup outcomes and queue pressure from the live logs before changing implementation again.

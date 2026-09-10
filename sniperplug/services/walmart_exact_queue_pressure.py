@@ -11,22 +11,32 @@ from sniperplug.services.walmart_exact_queue_drain import (
 )
 from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHealth
 from sniperplug.services.walmart_exact_verification_queue import (
+    CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS,
     QUEUE_RETENTION_DAYS,
     QUEUE_TABLE,
 )
 
 
-# Catalog emergency backpressure only needs to know whether total actionable
-# pressure has reached 600. The fresh-work policy trips much earlier (12/48),
-# and a single exact worker cannot legitimately hold hundreds of active leases.
-# Capping each lane at the amount its policy can actually use prevents a 20s
-# worker from scanning thousands of queue rows simply to produce diagnostics.
+# Catalog emergency backpressure only needs bounded scheduling pressure. Fresh
+# work trips much earlier (12/48), and a single exact worker cannot legitimately
+# hold hundreds of active leases. Confirmed dual-no-price retries that are still
+# on their full #277 cooldown schedule are counted in their own bounded lane: they
+# remain actionable and visible, but no longer masquerade as newly discovered/
+# ordinary retry pressure whenever their six-hour timers mature. The catalog-
+# facing default can still count that lane up to the 600-row emergency threshold;
+# the exact worker's tighter cap=64 automatically limits the same query when it
+# only needs drain-mode information.
 DEFAULT_PRESSURE_CAP = 600
 FRESH_PRESSURE_CAP = 64
+CONFIRMED_NO_PRICE_PRESSURE_CAP = DEFAULT_PRESSURE_CAP
 RECOVERY_PRESSURE_CAP = 64
 VERIFYING_PRESSURE_CAP = 64
 STATUS_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_due"
 STATUS_VERIFIED_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_verified_due"
+CONFIRMED_NO_PRICE_FLOOR_SQL = (
+    f"julianday(next_attempt_at) >= "
+    f"julianday(last_attempt_at, '+{CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS} seconds')"
+)
 
 
 def _sql_statuses(statuses: tuple[str, ...]) -> str:
@@ -46,23 +56,32 @@ async def load_walmart_exact_queue_pressure(
     contain rows whose old ``next_attempt_at`` is already due while their newer
     ``verified_at`` correctly keeps them below the 24h/72h/7d safety cadence.
 
-    Fresh/retry, page recovery, and active-lease lanes seek the existing
-    status/due index. Scheduled rechecks are split by their verified-age cutoff
-    and forced through the status/verified/due index, so recent verified rows are
-    skipped by an index range instead of scanned and post-filtered every 20s.
-    Missing ``verified_at`` rows remain recoverable through a narrow NULL seek.
+    Fresh/pending/ordinary retry, confirmed dual-no-price retry, page recovery,
+    and active-lease lanes seek the existing status/due index. Scheduled rechecks
+    are split by verified-age cutoff and forced through the status/verified/due
+    index, so recent verified rows are skipped by an index range instead of
+    scanned and post-filtered every 20 seconds. Missing ``verified_at`` rows remain
+    recoverable through a narrow NULL seek.
 
-    ``cap`` controls the scheduled-recheck lane because total emergency
-    backpressure can depend on it. Fresh/retry and active-lease lanes are capped
-    more tightly at the maximum information current scheduling policy can use.
-    Counts at a cap are lower bounds; callers use this snapshot for scheduling
-    and bounded logging, never owner-facing exact totals.
+    The confirmed no-price split is scheduling-only. A dual-no-price retry enters
+    that low-signal lane only while its ``next_attempt_at`` still reflects at
+    least the full #277 cooldown from ``last_attempt_at``. #277 intentionally
+    preserves that schedule across weak/cosmetic rediscovery, but shortens it when
+    a complete fresh snapshot or material apparent current/reference change wakes
+    the row. A shortened schedule therefore remains in ``initial_due_now`` and is
+    treated as genuine fresh pressure without guessing from catalog timestamps.
+
+    ``cap`` remains meaningful for total emergency pressure. With the default
+    600-row catalog snapshot, the confirmed-no-price lane can contribute all the
+    way to that emergency stop. Callers such as the exact worker may pass a lower
+    cap (currently 64), which bounds every lane to the amount that caller needs.
     """
 
     if db is None:
         return WalmartExactQueueHealth()
     bounded_cap = max(1, int(cap))
     fresh_cap = min(bounded_cap, FRESH_PRESSURE_CAP)
+    no_price_cap = min(bounded_cap, CONFIRMED_NO_PRICE_PRESSURE_CAP)
     recovery_cap = min(bounded_cap, RECOVERY_PRESSURE_CAP)
     recheck_cap = bounded_cap
     verifying_cap = min(bounded_cap, VERIFYING_PRESSURE_CAP)
@@ -93,6 +112,26 @@ async def load_walmart_exact_queue_pressure(
             SELECT item_id
             FROM {QUEUE_TABLE} INDEXED BY {STATUS_DUE_INDEX}
             WHERE status IN ('pending', 'retry', 'failed', 'verifying')
+              AND NOT (
+                  status = 'retry'
+                  AND instr(lower(last_error), 'retry_kind=api_price_missing') > 0
+                  AND instr(lower(last_error), 'recovery_kind=api_price_missing') > 0
+                  AND last_attempt_at IS NOT NULL
+                  AND {CONFIRMED_NO_PRICE_FLOOR_SQL}
+              )
+              AND next_attempt_at <= ?
+              AND last_seen_at >= ?
+              AND (lease_until IS NULL OR lease_until < ?)
+            LIMIT ?
+        ),
+        confirmed_no_price_due AS (
+            SELECT item_id
+            FROM {QUEUE_TABLE} INDEXED BY {STATUS_DUE_INDEX}
+            WHERE status = 'retry'
+              AND instr(lower(last_error), 'retry_kind=api_price_missing') > 0
+              AND instr(lower(last_error), 'recovery_kind=api_price_missing') > 0
+              AND last_attempt_at IS NOT NULL
+              AND {CONFIRMED_NO_PRICE_FLOOR_SQL}
               AND next_attempt_at <= ?
               AND last_seen_at >= ?
               AND (lease_until IS NULL OR lease_until < ?)
@@ -154,6 +193,7 @@ async def load_walmart_exact_queue_pressure(
         )
         SELECT
             (SELECT COUNT(*) FROM fresh_due) AS initial_due_now,
+            (SELECT COUNT(*) FROM confirmed_no_price_due) AS confirmed_no_price_due_now,
             (SELECT COUNT(*) FROM recovery_due) AS recovery_due_now,
             (SELECT COUNT(*) FROM recheck_due) AS recheck_due_now,
             (SELECT COUNT(*) FROM active_verifying) AS verifying
@@ -163,6 +203,10 @@ async def load_walmart_exact_queue_pressure(
             discovery_cutoff,
             now_iso,
             fresh_cap,
+            now_iso,
+            discovery_cutoff,
+            now_iso,
+            no_price_cap,
             now_iso,
             discovery_cutoff,
             now_iso,
@@ -189,14 +233,16 @@ async def load_walmart_exact_queue_pressure(
     )
     row = await cursor.fetchone()
     fresh = _as_int(_row_get(row, "initial_due_now", 0))
-    recovery = _as_int(_row_get(row, "recovery_due_now", 1))
-    rechecks = _as_int(_row_get(row, "recheck_due_now", 2))
-    verifying = _as_int(_row_get(row, "verifying", 3))
-    due = fresh + recovery + rechecks
+    no_price = _as_int(_row_get(row, "confirmed_no_price_due_now", 1))
+    recovery = _as_int(_row_get(row, "recovery_due_now", 2))
+    rechecks = _as_int(_row_get(row, "recheck_due_now", 3))
+    verifying = _as_int(_row_get(row, "verifying", 4))
+    due = fresh + no_price + recovery + rechecks
     return WalmartExactQueueHealth(
         total=due + verifying,
         due_now=due,
         initial_due_now=fresh,
+        confirmed_no_price_due_now=no_price,
         recovery_due_now=recovery,
         recheck_due_now=rechecks,
         verifying=verifying,
@@ -212,11 +258,13 @@ def bounded_pressure_summary(
 
     bounded_cap = max(1, int(cap))
     fresh_cap = min(bounded_cap, FRESH_PRESSURE_CAP)
+    no_price_cap = min(bounded_cap, CONFIRMED_NO_PRICE_PRESSURE_CAP)
     recovery_cap = min(bounded_cap, RECOVERY_PRESSURE_CAP)
     recheck_cap = bounded_cap
     verifying_cap = min(bounded_cap, VERIFYING_PRESSURE_CAP)
 
     fresh = max(0, int(health.initial_due_now or 0))
+    no_price = max(0, int(health.confirmed_no_price_due_now or 0))
     recovery = max(0, int(health.recovery_due_now or 0))
     rechecks = max(0, int(health.recheck_due_now or 0))
     verifying = max(0, int(health.verifying or 0))
@@ -224,6 +272,7 @@ def bounded_pressure_summary(
 
     due_is_lower_bound = (
         fresh >= fresh_cap
+        or no_price >= no_price_cap
         or recovery >= recovery_cap
         or rechecks >= recheck_cap
     )
@@ -231,6 +280,7 @@ def bounded_pressure_summary(
         "bounded queue pressure: "
         f"actionable due **{_bounded_value(due, lower_bound=due_is_lower_bound)}** "
         f"(new/retry **{_bounded_value(fresh, lower_bound=fresh >= fresh_cap)}** • "
+        f"confirmed no-price retry **{_bounded_value(no_price, lower_bound=no_price >= no_price_cap)}** • "
         f"page recovery **{_bounded_value(recovery, lower_bound=recovery >= recovery_cap)}** • "
         f"scheduled rechecks **{_bounded_value(rechecks, lower_bound=rechecks >= recheck_cap)}**) • "
         f"actively verifying **{_bounded_value(verifying, lower_bound=verifying >= verifying_cap)}**"

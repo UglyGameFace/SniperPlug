@@ -192,6 +192,7 @@ class _QueueHealthCursor:
             "pending": 2,
             "unavailable": 1,
             "stale": 0,
+            "confirmed_no_price_due_now": 0,
         }
 
 
@@ -220,6 +221,7 @@ def test_health_counts_only_actively_leased_verifying_rows() -> None:
     health = asyncio.run(load_walmart_exact_queue_health(_QueueHealthDatabase(conn)))
 
     assert health.initial_due_now == 1
+    assert health.confirmed_no_price_due_now == 0
     assert health.recovery_due_now == 0
     assert health.recheck_due_now == 2
     assert health.verifying == 1
@@ -227,11 +229,12 @@ def test_health_counts_only_actively_leased_verifying_rows() -> None:
     assert "AND lease_until IS NOT NULL" in conn.sql
     assert "AND lease_until >= ?" in conn.sql
     assert "verified_at <= ?" in conn.sql
+    assert "confirmed_no_price_due_now" in conn.sql
     assert "scheduled rechecks" in health.summary_line()
-    assert len(conn.params) == 14
+    assert len(conn.params) == 16
     assert conn.params[3] == conn.params[10]
     assert conn.params[3] < conn.params[1]
-    for index in (1, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13):
+    for index in (1, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15):
         assert conn.params[index] == conn.params[1]
 
 

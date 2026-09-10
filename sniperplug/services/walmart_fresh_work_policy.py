@@ -16,10 +16,11 @@ LEGACY_ACTIONABLE_THRESHOLD = 450
 
 
 def queue_split_is_known(health: WalmartExactQueueHealth) -> bool:
-    """Return whether health exposes first-time/retry versus recheck counts."""
+    """Return whether health exposes the scheduler's actionable lane split."""
 
     return bool(
         int(getattr(health, "initial_due_now", 0) or 0)
+        or int(getattr(health, "confirmed_no_price_due_now", 0) or 0)
         or int(getattr(health, "recovery_due_now", 0) or 0)
         or int(getattr(health, "recheck_due_now", 0) or 0)
         or int(getattr(health, "due_now", 0) or 0) == 0
@@ -33,17 +34,17 @@ def should_use_drain_mode(
     emergency_total_threshold: int = TOTAL_DRAIN_EMERGENCY_THRESHOLD,
     legacy_threshold: int = LEGACY_ACTIONABLE_THRESHOLD,
 ) -> bool:
-    """Use 24/4 only for substantial unclaimed first-time/retry pressure.
+    """Use 24/4 only for substantial genuinely fresh/ordinary retry pressure.
 
-    Scheduled rechecks must never force aggressive concurrency. Production logs
-    proved that a large recheck-only backlog made the native Turso claim spend
-    48-66 seconds leasing 24 rows, starving Discord's heartbeat. The dedicated
-    worker is single-instance and non-overlapping, so actively leased rows also
-    do not represent additional fresh pressure for the next batch decision.
+    Scheduled rechecks and confirmed dual-no-price retries must never force
+    aggressive concurrency. The latter have already completed both official
+    exact price paths and are intentionally kept retryable on the #277 six-hour
+    cadence. Treating a mature wave of those known low-signal retries as fresh
+    intake recreates the very backlog #277 was designed to cool.
 
     ``emergency_total_threshold`` remains in the signature for compatibility;
-    split-aware health intentionally ignores it. Catalog intake still pauses on
-    total pressure through ``catalog_backpressure_reason``.
+    split-aware health intentionally ignores it for drain mode. Catalog intake
+    still has a total emergency stop through ``catalog_backpressure_reason``.
     """
 
     due_now = max(0, int(getattr(health, "due_now", 0) or 0))
@@ -63,13 +64,19 @@ def catalog_backpressure_reason(
     emergency_total_limit: int = TOTAL_DISCOVERY_EMERGENCY_THRESHOLD,
     legacy_limit: int = LEGACY_ACTIONABLE_THRESHOLD,
 ) -> str | None:
-    """Pause catalog intake before it can outrun the exact worker.
+    """Pause catalog intake for real fresh pressure, not cooled no-price waves.
 
-    A small amount of fresh/retry work is normal. Once twelve unclaimed fresh
-    rows are due, discovery yields until the exact worker catches up. Actively
-    verifying rows are not added to fresh pressure because health cannot tell
-    whether those leases came from fresh work or scheduled rechecks. Total
-    pressure still includes active leases for the emergency intake stop.
+    A small amount of genuinely fresh/pending/ordinary retry work is normal.
+    Once twelve such rows are due, discovery yields until the exact worker catches
+    up. Confirmed dual-no-price retries are excluded from that fresh lane because
+    both official exact price paths already proved no usable current price and
+    #277 deliberately put them on a six-hour retry cadence. They remain fully
+    actionable and remain part of total emergency pressure; they simply cannot
+    impersonate newly discovered work every time their retry timer matures.
+
+    Actively verifying rows are not added to fresh pressure because health cannot
+    tell which lane supplied those leases. Total pressure still includes active
+    leases for the emergency intake stop.
     """
 
     due_now = max(0, int(getattr(health, "due_now", 0) or 0))
@@ -92,6 +99,10 @@ def catalog_backpressure_reason(
         )
 
     fresh_due = max(0, int(getattr(health, "initial_due_now", 0) or 0))
+    no_price_due = max(
+        0,
+        int(getattr(health, "confirmed_no_price_due_now", 0) or 0),
+    )
     recovery_due = max(0, int(getattr(health, "recovery_due_now", 0) or 0))
     recheck_due = max(0, int(getattr(health, "recheck_due_now", 0) or 0))
     fresh_limit_value = max(1, int(fresh_limit))
@@ -104,8 +115,9 @@ def catalog_backpressure_reason(
         return (
             "fresh exact-detail backpressure active: "
             f"fresh/retry pressure **{fresh_due}/{fresh_limit_value}** • "
-            f"new/retry due **{fresh_due}** • page recovery **{recovery_due}** • "
-            f"scheduled rechecks **{recheck_due}** • "
+            f"new/ordinary-retry due **{fresh_due}** • "
+            f"confirmed no-price retries **{no_price_due}** • "
+            f"page recovery **{recovery_due}** • scheduled rechecks **{recheck_due}** • "
             f"verifying **{verifying}** • terminal identity blocks excluded "
             f"**{identity_blocked}**"
         )
@@ -114,8 +126,9 @@ def catalog_backpressure_reason(
         return (
             "exact-detail emergency backpressure active: "
             f"actionable backlog **{total_pressure}/{emergency_limit_value}** • "
-            f"new/retry due **{fresh_due}** • page recovery **{recovery_due}** • "
-            f"scheduled rechecks **{recheck_due}** • "
+            f"new/ordinary-retry due **{fresh_due}** • "
+            f"confirmed no-price retries **{no_price_due}** • "
+            f"page recovery **{recovery_due}** • scheduled rechecks **{recheck_due}** • "
             f"verifying **{verifying}** • terminal identity blocks excluded "
             f"**{identity_blocked}**"
         )
@@ -128,7 +141,8 @@ def fresh_work_policy_summary(health: Any) -> str:
 
     return (
         "fresh-work policy: "
-        f"new/retry={max(0, int(getattr(health, 'initial_due_now', 0) or 0))} "
+        f"new/ordinary_retry={max(0, int(getattr(health, 'initial_due_now', 0) or 0))} "
+        f"confirmed_no_price={max(0, int(getattr(health, 'confirmed_no_price_due_now', 0) or 0))} "
         f"page_recovery={max(0, int(getattr(health, 'recovery_due_now', 0) or 0))} "
         f"rechecks={max(0, int(getattr(health, 'recheck_due_now', 0) or 0))} "
         f"verifying={max(0, int(getattr(health, 'verifying', 0) or 0))}"

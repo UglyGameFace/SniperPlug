@@ -11,7 +11,10 @@ from sniperplug.services.walmart_exact_queue_drain import (
     VERIFIED_REFERENCE_RECHECK_STATUSES,
     verified_recheck_cutoffs,
 )
-from sniperplug.services.walmart_exact_verification_queue import QUEUE_RETENTION_DAYS
+from sniperplug.services.walmart_exact_verification_queue import (
+    CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS,
+    QUEUE_RETENTION_DAYS,
+)
 
 
 QUEUE_TABLE = "walmart_exact_detail_queue"
@@ -24,6 +27,10 @@ RECHECK_STATUSES = (
     "verified_no_reference",
     "verified_reference",
     "not_buyable",
+)
+CONFIRMED_NO_PRICE_FLOOR_SQL = (
+    f"julianday(next_attempt_at) >= "
+    f"julianday(last_attempt_at, '+{CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS} seconds')"
 )
 
 
@@ -40,6 +47,7 @@ class WalmartExactQueueHealth:
     total: int = 0
     due_now: int = 0
     initial_due_now: int = 0
+    confirmed_no_price_due_now: int = 0
     recovery_due_now: int = 0
     recheck_due_now: int = 0
     delayed_retries: int = 0
@@ -76,7 +84,9 @@ class WalmartExactQueueHealth:
         return (
             "queue health: "
             f"total **{self.total}** • due backlog now **{self.due_now}** "
-            f"(new/retry **{self.initial_due_now}** • page recovery **{self.recovery_due_now}** • "
+            f"(new/retry **{self.initial_due_now}** • "
+            f"confirmed no-price retry **{self.confirmed_no_price_due_now}** • "
+            f"page recovery **{self.recovery_due_now}** • "
             f"scheduled rechecks **{self.recheck_due_now}**) • "
             f"page recovery worker **{recovery_mode}** • "
             f"claimable this batch **{self.page_recovery_claimable_this_batch}**/"
@@ -94,11 +104,16 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
     """Return full owner-facing queue state plus current recovery availability.
 
     ``due_now`` is a backlog count, not a promise that every row can be leased in
-    one worker cycle. Page recovery is intentionally capped to a tiny lane. When
-    Walmart's product-page challenge circuit is open, those bounded claims use
-    official API/exact-search recovery only; HTML remains suppressed. Reporting
-    the current recovery mode and per-batch cap prevents a thousand due page rows
-    from being misread as a thousand simultaneous checks.
+    one worker cycle. A confirmed dual-no-price retry is reported in its own lane
+    only while ``next_attempt_at`` still represents at least the full #277
+    cooldown from ``last_attempt_at``. #277 preserves that schedule across weak or
+    cosmetic rediscovery but shortens it when fresh proof or a material apparent
+    price/reference change wakes the row, so a shortened schedule remains genuine
+    fresh pressure without relying on ambiguous catalog timestamps.
+
+    Page recovery is intentionally capped to a tiny lane. When Walmart's product-
+    page challenge circuit is open, those bounded claims use official API/exact-
+    search recovery only; HTML remains suppressed.
 
     Legacy early verified timestamps are ignored until each status reaches its
     shared fallback age: one day for verified markdowns, three days for
@@ -132,6 +147,13 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
             OR (status IN ({low_signal_statuses}) AND verified_at <= {low_signal_cutoff_sql})
         )
     """
+    confirmed_no_price_sql = f"""
+        status = 'retry'
+        AND instr(lower(last_error), 'retry_kind=api_price_missing') > 0
+        AND instr(lower(last_error), 'recovery_kind=api_price_missing') > 0
+        AND last_attempt_at IS NOT NULL
+        AND {CONFIRMED_NO_PRICE_FLOOR_SQL}
+    """
     try:
         cursor = await conn.execute(
             f"""
@@ -161,6 +183,7 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 SUM(CASE
                     WHEN is_recent = 1
                      AND status IN ('pending', 'retry', 'failed', 'verifying')
+                     AND NOT ({confirmed_no_price_sql})
                      AND next_attempt_at <= ?
                      AND (lease_until IS NULL OR lease_until < ?)
                     THEN 1 ELSE 0 END) AS initial_due_now,
@@ -213,7 +236,13 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 SUM(CASE
                     WHEN is_recent = 1 AND status = 'not_buyable'
                     THEN 1 ELSE 0 END) AS unavailable,
-                SUM(CASE WHEN is_recent = 0 THEN 1 ELSE 0 END) AS stale
+                SUM(CASE WHEN is_recent = 0 THEN 1 ELSE 0 END) AS stale,
+                SUM(CASE
+                    WHEN is_recent = 1
+                     AND ({confirmed_no_price_sql})
+                     AND next_attempt_at <= ?
+                     AND (lease_until IS NULL OR lease_until < ?)
+                    THEN 1 ELSE 0 END) AS confirmed_no_price_due_now
             FROM queue_state
             """,
             (
@@ -228,6 +257,8 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
                 now_iso,
                 now_iso,
                 markdown_recheck_cutoff,
+                now_iso,
+                now_iso,
                 now_iso,
                 now_iso,
                 now_iso,
@@ -252,6 +283,9 @@ async def load_walmart_exact_queue_health(db: Any) -> WalmartExactQueueHealth:
         pending=_as_int(_row_get(row, "pending", 10)),
         unavailable=_as_int(_row_get(row, "unavailable", 11)),
         stale=_as_int(_row_get(row, "stale", 12)),
+        confirmed_no_price_due_now=_as_int(
+            _row_get(row, "confirmed_no_price_due_now", 13)
+        ),
         page_recovery_mode=recovery_mode,
         page_recovery_batch_cap=recovery_cap,
         page_circuit_remaining_seconds=circuit_remaining,

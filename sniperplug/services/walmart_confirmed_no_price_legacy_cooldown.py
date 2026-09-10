@@ -131,7 +131,7 @@ async def normalize_legacy_confirmed_no_price_cooldowns(
           AND instr(lower(target.last_error), 'recovery_kind=api_price_missing') > 0
           AND julianday(target.last_seen_at) <= julianday(target.last_attempt_at)
           AND (target.lease_until IS NULL OR target.lease_until < ?)
-        RETURNING target.item_id
+        RETURNING item_id
         """,
         (*params, now_iso),
     )

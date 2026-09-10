@@ -52,6 +52,26 @@ def test_price_shape_summary_exposes_unknown_price_paths_without_dumping_title()
     assert len(summary) <= 320
 
 
+def test_price_shape_summary_keeps_scalar_value_under_price_like_container() -> None:
+    payload = {
+        "itemId": 910210,
+        "sellerName": "Walmart",
+        "selectedOffer": {
+            "offerId": "offer-910210",
+            "checkoutPrice": {
+                "value": 27.49,
+                "currency": "USD",
+            },
+        },
+    }
+
+    summary = summarize_product_lookup_price_shape(payload, "910210")
+
+    assert "selectedOffer.checkoutPrice:dict[value,currency]" in summary
+    assert "selectedOffer.checkoutPrice.value:float:27.49" in summary
+    assert "selectedOffer.checkoutPrice.currency" not in summary
+
+
 def test_missing_known_current_price_logs_one_bounded_shape_sample(caplog) -> None:
     fixture = DiagnosticLookupFixture(
         {

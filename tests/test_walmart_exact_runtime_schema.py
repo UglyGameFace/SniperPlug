@@ -44,13 +44,18 @@ class FakeDatabase:
 
 def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> None:
     async def run() -> None:
-        calls = {"queue": 0, "offer": 0}
+        calls = {"queue": 0, "offer": 0, "legacy_cooldown": 0}
 
         async def ensure_queue(_db) -> None:
             calls["queue"] += 1
 
         async def ensure_offer(_db) -> None:
             calls["offer"] += 1
+
+        async def normalize_legacy(_db, *, limit) -> int:
+            assert limit == runtime_schema.LEGACY_COOLDOWN_BATCH_LIMIT
+            calls["legacy_cooldown"] += 1
+            return 0
 
         monkeypatch.setattr(
             runtime_schema,
@@ -62,6 +67,11 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
             "ensure_global_offer_memory_table",
             ensure_offer,
         )
+        monkeypatch.setattr(
+            runtime_schema,
+            "normalize_legacy_confirmed_no_price_cooldowns",
+            normalize_legacy,
+        )
 
         first_conn = FakeConnection()
         second_conn = FakeConnection()
@@ -71,7 +81,7 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
         await runtime_schema.ensure_exact_runtime_schema_once(first)
         await runtime_schema.ensure_exact_runtime_schema_once(second)
 
-        assert calls == {"queue": 2, "offer": 2}
+        assert calls == {"queue": 2, "offer": 2, "legacy_cooldown": 2}
         assert first_conn.execute_count == 6
         assert first_conn.commit_count == 1
         assert second_conn.execute_count == 6
@@ -113,13 +123,18 @@ def test_exact_runtime_schema_initializes_once_per_connection(monkeypatch) -> No
 
 def test_terminal_identity_maintenance_is_bounded(monkeypatch) -> None:
     async def run() -> None:
-        calls = {"queue": 0, "offer": 0, "maintenance": 0}
+        calls = {"queue": 0, "offer": 0, "legacy_cooldown": 0, "maintenance": 0}
 
         async def ensure_queue(_db) -> None:
             calls["queue"] += 1
 
         async def ensure_offer(_db) -> None:
             calls["offer"] += 1
+
+        async def normalize_legacy(_db, *, limit) -> int:
+            assert limit == runtime_schema.LEGACY_COOLDOWN_BATCH_LIMIT
+            calls["legacy_cooldown"] += 1
+            return 0
 
         async def maintain(_db, *, now=None) -> TerminalIdentityMaintenance:
             calls["maintenance"] += 1
@@ -137,6 +152,11 @@ def test_terminal_identity_maintenance_is_bounded(monkeypatch) -> None:
         )
         monkeypatch.setattr(
             runtime_schema,
+            "normalize_legacy_confirmed_no_price_cooldowns",
+            normalize_legacy,
+        )
+        monkeypatch.setattr(
+            runtime_schema,
             "maintain_terminal_identity_rows",
             maintain,
         )
@@ -147,7 +167,12 @@ def test_terminal_identity_maintenance_is_bounded(monkeypatch) -> None:
 
         assert first == TerminalIdentityMaintenance(quarantined=2, rearmed=1)
         assert second == TerminalIdentityMaintenance()
-        assert calls == {"queue": 1, "offer": 1, "maintenance": 1}
+        assert calls == {
+            "queue": 1,
+            "offer": 1,
+            "legacy_cooldown": 1,
+            "maintenance": 1,
+        }
 
     asyncio.run(run())
 

@@ -114,7 +114,7 @@ def test_real_queue_splits_confirmed_no_price_from_genuine_fresh_pressure() -> N
     asyncio.run(run())
 
 
-def test_catalog_pressure_loader_keeps_no_price_emergency_headroom() -> None:
+def test_catalog_pressure_loader_keeps_no_price_visible_without_emergency_veto() -> None:
     async def run() -> None:
         conn = await aiosqlite.connect(":memory:")
         db = FakeDatabase(conn)
@@ -138,8 +138,7 @@ def test_catalog_pressure_loader_keeps_no_price_emergency_headroom() -> None:
                 pressure,
                 emergency_total_limit=65,
             )
-            assert reason is not None
-            assert "emergency" in reason
+            assert reason is None
             assert should_use_drain_mode(pressure) is False
         finally:
             await conn.close()
@@ -225,7 +224,7 @@ def test_real_fresh_pressure_still_pauses_with_no_price_retries_present() -> Non
     assert f"confirmed no-price retries **68**" in reason
 
 
-def test_no_price_lane_remains_part_of_total_emergency_pressure() -> None:
+def test_mature_no_price_lane_does_not_trigger_split_aware_emergency_stop() -> None:
     health = WalmartExactQueueHealth(
         due_now=600,
         initial_due_now=0,
@@ -235,9 +234,7 @@ def test_no_price_lane_remains_part_of_total_emergency_pressure() -> None:
         verifying=0,
     )
 
-    reason = catalog_backpressure_reason(health)
-    assert reason is not None
-    assert "emergency" in reason
+    assert catalog_backpressure_reason(health) is None
     assert should_use_drain_mode(health) is False
 
 

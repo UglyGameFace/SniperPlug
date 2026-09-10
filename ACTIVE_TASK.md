@@ -11,55 +11,63 @@ Target outcome: recover exact current/reference prices when Walmart supplies val
 Do not switch to movie tickets, gateway lag, setup UX, DM redesign, watchers, site, Minecraft, or unrelated work without another explicit FORCE SWITCH.
 
 ## Status
-**PR #280 validated, merged, and production-proven for its intended pressure split. The supplied post-#280 window also isolates the next scheduler bug: mature confirmed dual-no-price retries are now reported separately, but the exact claim selector still mixes them into the same `retry_candidates` slice as ordinary retries. Because that slice orders by priority/last-seen, the low-signal no-price population can consume entire 8/24-item batches while `new/ordinary-retry` remains above the catalog pause threshold. PR #281 is active to preserve the #280 split at claim time.**
+**PR #281 is validated, merged, freshly restarted in production, and its intended ordinary-retry claim priority is no longer the active blocker. Production now isolates the next policy bug: the split-aware 600-row catalog emergency stop still counts mature confirmed dual-no-price retries, so a bounded `confirmed no-price=600` wave plus the separately paced page-recovery lane permanently vetoes catalog discovery even when genuine `new/ordinary-retry` pressure is zero. PR #282 is active to remove only that mature no-price lane from split-aware catalog emergency pressure.**
 
 Relevant ancestry:
-- PR #280 validated head: `bbd2c5f4679d4fc5ea00b74c215f61117c9efad3`
-- PR #280 validation: targeted **48 passed**, native libsql **10 passed**, full suite **1,418 passed**, compile/import/pip/diff/scope/conflict/clean-head checks passed
+- PR #281 validated head: `b35ca77dc2a8c8bc8c44dbe3ebdfadfadbd26d2c`
+- PR #281 validation: full suite **1,421 passed**, 1 warning; targeted Walmart regressions, native libsql, compile/import/pip/diff/scope/conflict/clean-head checks passed
+- PR #281 merge / current base: `efa9c667e7e96ceaa3553e3e909611b4a6cb024c`
 - PR #280 merge: `ab0b8b8cc1c66724420843cebcca4e414137a856`
 - PR #279 merge: `54f1a84b42b6c0f0cec7f8182483994efb918efd`
 - PR #278 merge: `15919739996093a1cb55361ee5539e96a7aebb3f`
 - PR #277 merge: `a449bd43ea319f73c63c4604e16a4220225b7ec5`
 - PR #276 merge: `62889044fb1fc72dd026d98917bbf9b9680fd9d3`
 
-## Production evidence after #280
-The Sep 10 post-restart window proves #280 is live and materially improved the system:
-- bounded pressure now explicitly reports `new/retry`, `confirmed no-price retry`, `page recovery`, and scheduled rechecks separately;
-- startup compatibility normalization completed cleanly: `legacy_no_price_floor_v278 catchup=legacy_no_price_multibatch_v279 cooled=0 ... complete=true`;
-- with `new/retry=8` and `confirmed no-price retry=60`, catalog discovery was allowed to run instead of being falsely paused by the mature no-price wave;
-- subsequent catalog batches returned **43** and **98** usable item IDs, including **1** and **17** safe fresh proofs;
-- one 24-item exact batch verified **17** rows, observed **9** official was-prices and **9** markdowns, and persisted **17** offer-memory rows;
-- durable fanout produced **5** exact cards and processed all five events through both configured public guild destinations; the examples were correctly not posted because their discounts were below the configured 40%/50% guild thresholds, proving the fanout/threshold path is functioning rather than silently dead.
+## Production evidence after #281 restart
+The Sep 10 18:15 restart is a real new process (`pid=1`, fresh Discord login/session, fresh Turso startup readiness), so the following window is valid production evidence against canonical post-#281 code.
 
-The same window then exposes the remaining claim-order problem:
-- `confirmed no-price retry` rises through **60 → 113 → 177 → 253 → 322 → 385 → 439** as six-hour retry waves mature;
-- `new/ordinary-retry due` remains repeatedly above the 12-row catalog pause threshold, including **64, 27, 32, 33**;
-- while that genuine fresh/ordinary pressure remains, worker batches repeatedly contain **8/8** or **24/24** `api_price_missing->api_price_missing` outcomes;
-- catalog therefore resumes correctly when fresh pressure is low, but can pause again while the worker spends capacity on the mature low-signal lane instead of clearing the ordinary retry rows that actually drive the pause.
+Observed repeatedly after restart:
+- bounded pressure: `new/retry 0-3`, `confirmed no-price retry >=600`, `page recovery >=64`, scheduled rechecks `0`;
+- catalog pause: `exact-detail emergency backpressure active` with totals around `664-673/600` even when `new/ordinary-retry due=0`;
+- exact batches remain normal `8/2`, with mature no-price rows filling spare capacity as #281 intended when ordinary work is absent;
+- ordinary/fresh work is no longer the persistent cause of the pause: it is usually `0` and briefly `1-3`;
+- page recovery advances only intermittently because runtime intentionally sets its claim cap to zero while the one-per-minute HTML probe slot is paced, then allows the bounded page lane when the slot is available;
+- verified rows still occasionally emerge (`verified=1`, including unavailable/no-reference/markdown outcomes), so exact verification itself is alive;
+- Product Lookup HTTP 400 diagnostics remain isolated per item and do not alter proof gates.
 
-## Root cause isolated for #281
-`claim_due_rows_batched()` uses the indexed candidate-pool selector. Fresh snapshots are correctly first, then nonfresh statuses are split into bounded CTEs. However all nonfresh `status='retry'` rows share one `retry_candidates` CTE and one status rank. Inside that CTE the bounded slice is ordered only by `priority_score DESC, last_seen_at DESC`.
+This means #281 did not fail. Its claim-order change addressed ordinary retry starvation. The remaining freeze is now in catalog admission policy.
 
-#280 changed pressure classification, not this claim ordering. A mature confirmed dual-no-price row can therefore be excluded from `initial_due_now` for policy purposes yet still outrank an ordinary retry inside `retry_candidates`. Weak/cosmetic rediscovery is allowed to refresh discovery metadata without shortening the #277 cooldown, so mature no-price rows can also have competitive recent metadata while remaining low-signal. The production result is exactly what the logs show: ordinary retry pressure pauses catalog intake while mature no-price rows consume most exact-worker claims.
+## Root cause isolated for #282
+`catalog_backpressure_reason()` correctly checks genuine fresh/ordinary pressure first at the 12-row threshold. But in split-aware mode its emergency calculation still uses:
 
-This is a claim-priority bug, not evidence that #280 failed and not a reason to weaken proof or discard no-price retries.
+`total_pressure = due_now + verifying`
 
-## Draft PR #281 — preserve no-price pressure split at claim time
-Branch: `fix/walmart-no-price-claim-priority-281`
-Base: `ab0b8b8cc1c66724420843cebcca4e414137a856`
+`due_now` includes the mature confirmed dual-no-price lane. The catalog-facing pressure loader intentionally exposes that lane up to 600 rows. Therefore a mature wave at the diagnostic cap can satisfy the **entire 600-row emergency threshold by itself**, even though:
+- #277 deliberately put those rows on a six-hour low-signal retry cadence;
+- #280 separated them from genuine fresh pressure;
+- #281 moved them behind ordinary retries at claim time;
+- pausing catalog discovery cannot make the mature no-price lane drain faster.
+
+Production proves the pathological steady state directly: `confirmed no-price=600` + `page recovery=64` + `new=0` still produces `664/600` emergency backpressure indefinitely.
+
+The page-recovery lane should remain part of emergency pressure. Its bounded/paced behavior is legitimate recovery work. The incorrect component is specifically the mature confirmed dual-no-price population that has already completed both official exact price paths and is intentionally being retried as low signal.
+
+## Draft PR #282 — exclude mature no-price rows from split-aware catalog emergency pressure
+Branch: `fix/walmart-no-price-emergency-backpressure-282`
+Base: `efa9c667e7e96ceaa3553e3e909611b4a6cb024c`
 
 ### Intended behavior
-- keep fresh discovery snapshots first exactly as today;
-- keep `pending`, ordinary `retry`, `failed`, page recovery, and scheduled verified rechecks ahead of mature confirmed dual-no-price retries;
-- within the existing bounded indexed `retry_candidates` seek, assign the mature dual-no-price/full-#277-cooldown shape a low-signal rank instead of the ordinary retry rank;
-- order the retry CTE by that rank before priority/last-seen, so ordinary retries fill the bounded retry slice first;
-- do **not** add a hard no-price claim cap: if higher-signal work does not fill the batch, mature no-price rows fill the unused capacity and remain fully retryable;
-- keep a dual-no-price row whose schedule was shortened by #277 fresh/material wake logic in the ordinary retry rank;
-- preserve the same lane count, SQL parameter count, runtime indexes, lease transaction, page cap, verified-age floors, and bounded read-amplification shape.
+- preserve the existing 12-row fresh/ordinary catalog pause exactly;
+- keep mature confirmed no-price rows visible in all pressure diagnostics and fully claimable/retryable;
+- exclude only mature confirmed no-price rows from the split-aware 600-row emergency veto;
+- keep page recovery, scheduled verified rechecks, and active leases in split-aware emergency pressure;
+- keep legacy unsplit health on the historical total-backlog emergency behavior because it cannot safely identify the no-price lane;
+- do not change exact claim ranking, no-price cooldowns, page pacing/circuit behavior, queue retention, verification proof, or fanout.
 
 ### Files
-- `sniperplug/services/walmart_exact_queue_drain.py`
-- `tests/test_walmart_no_price_claim_priority_281.py`
+- `sniperplug/services/walmart_fresh_work_policy.py`
+- `tests/test_walmart_confirmed_no_price_pressure_lane_280.py` (updates the one production-disproven emergency assumption while preserving the rest of #280 coverage)
+- `tests/test_walmart_no_price_emergency_backpressure_282.py`
 - `ACTIVE_TASK.md`
 
 ## Safety invariants
@@ -70,22 +78,27 @@ Unchanged:
 - seller, selected offer, variant, marketplace, condition, fulfillment, shipping/delivered-price checks remain fail-closed;
 - no catalog price is promoted merely because detail/Product Lookup omitted a price;
 - reference-price trust policy and guild discount thresholds are unchanged;
-- #277 six-hour confirmed-no-price retry behavior remains unchanged;
-- #280 pressure classification and emergency backpressure remain unchanged;
+- #277 six-hour confirmed-no-price retry behavior is unchanged;
+- #280 pressure-lane classification is unchanged;
+- #281 exact claim ranking is unchanged;
 - confirmed no-price rows are not deleted, quarantined, marked terminal, or made unclaimable;
-- a #277 fresh/material wake stays high-priority ordinary work;
-- page challenge/pacing behavior, scheduled recheck floors, lease safety, durable fanout, public thresholds, DM filtering, categories, and dedupe remain unchanged.
+- fresh/materially changed no-price rows still classify as genuine ordinary pressure and can pause discovery;
+- page challenge/pacing behavior, page recovery emergency pressure, scheduled recheck floors, lease safety, durable fanout, public thresholds, DM filtering, categories, and dedupe remain unchanged.
 
-## New #281 regression coverage
-`tests/test_walmart_no_price_claim_priority_281.py` proves:
-- ordinary retries beat mature confirmed dual-no-price retries even when the no-price rows have much higher priority scores and newer last-seen metadata;
-- mature no-price retries fill otherwise-unused batch slots, so the lane is deprioritized rather than starved;
-- a dual-no-price row with a shortened schedule remains in the ordinary retry lane and beats a mature full-cooldown row.
+## New #282 regression coverage
+`tests/test_walmart_no_price_emergency_backpressure_282.py` proves:
+- the exact production shape `600 mature no-price + 64 page recovery + 0 fresh` does not pause catalog discovery;
+- a real 12-row fresh lane still pauses even beside 600 mature no-price rows;
+- 600 rows of non-no-price controllable backlog still trigger the emergency stop;
+- legacy unsplit health retains its historical total-backlog safety stop.
+
+The existing #280 regression file is revised only where production disproved the old assumption that mature no-price rows should contribute to split-aware emergency pressure. Its queue split, fresh wake, fresh-pressure pause, no-drain, and visibility assertions remain intact.
 
 ## Validation / Definition of Done
-Do not merge until one exact #281 head passes:
-- new #281 claim-priority regressions;
-- #280 pressure-lane regressions;
+Do not merge until one exact #282 head passes:
+- new #282 backpressure regressions;
+- revised #280 pressure-lane regressions;
+- #281 claim-priority regressions;
 - existing queue drain/index/read-amplification/fresh-work-policy regressions;
 - #277/#278/#279 cooldown/catch-up regressions;
 - #276/#274/#257 Product Lookup/recovery regressions;
@@ -100,16 +113,17 @@ Do not merge until one exact #281 head passes:
 - clean worktree;
 - final exact-head SHA recheck.
 
-## Production acceptance after #281
+## Production acceptance after #282
 Require a fresh deployment from canonical `main` and verify:
-- when `new/ordinary-retry due` is nonzero, exact batches stop being monopolized by mature `api_price_missing->api_price_missing` rows;
-- genuine fresh/ordinary pressure drains below the 12-row catalog pause threshold so discovery resumes without waiting for the mature no-price population to disappear;
-- when higher-signal work is absent, mature no-price retries still continue to be claimed and rescheduled normally;
-- fresh/materially changed rows still outrank mature no-price work;
-- qualifying exact/fresh proof continues through durable fanout and configured guild thresholds;
-- no increase in page failures, proof rejects caused by loosened guards, or Turso read amplification.
+- with `confirmed no-price >=600`, `page recovery >=64`, and `new/ordinary-retry <12`, catalog discovery runs instead of logging the old `664/600` emergency pause;
+- if genuine fresh/ordinary pressure reaches 12, catalog still pauses normally;
+- mature no-price rows continue being claimed in otherwise-unused capacity and keep their six-hour retry behavior;
+- page recovery continues its existing bounded/paced progression;
+- new catalog batches can again produce safe fresh proof and exact verification/fanout events;
+- qualifying deals still obey configured guild thresholds and every proof gate;
+- no increase in Turso read amplification or page-request concurrency.
 
-Do not call the Walmart task complete from tests alone. Production must prove claim priority now matches the pressure policy.
+Do not call the Walmart task complete from tests alone. Production must prove catalog intake is no longer vetoed solely by the mature no-price wave.
 
 ## Blockers / risks
 - ChatGPT has repository access but no Discloud deployment/runtime connector, so live deploy and production acceptance remain external.
@@ -130,4 +144,4 @@ Suspended by the user's explicit FORCE SWITCH. Preserve the merged movie-ticket 
 - SniperPlug-Site work
 
 ## Next step
-Open PR #281 on the current branch, run exact-head validation, merge only that validated SHA, deploy canonical `main`, then judge production by whether ordinary retry pressure drains before mature confirmed-no-price fill work.
+Open PR #282 from the current branch, squash to one exact commit, run exact-head validation, merge only that validated SHA, deploy canonical `main`, then judge production by whether catalog discovery resumes under the mature no-price wave without weakening genuine fresh/emergency safety.

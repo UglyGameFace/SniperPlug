@@ -22,6 +22,32 @@ _WRAPPER_KEYS = (
 _MAX_EXACT_LOOKUP_NODES = 2_000
 _MAX_EXACT_LOOKUP_DEPTH = 8
 
+_PRICE_DIAGNOSTIC_KEY_FRAGMENTS = (
+    "price",
+    "amount",
+    "sale",
+    "was",
+    "regular",
+    "original",
+    "cost",
+)
+_PRICE_DIAGNOSTIC_OFFER_KEYS = frozenset(
+    {
+        "selectedoffer",
+        "selected_offer",
+        "selectedoffers",
+        "offers",
+        "offer",
+        "buybox",
+        "buy_box",
+    }
+)
+_PRICE_DIAGNOSTIC_MAX_NODES = 400
+_PRICE_DIAGNOSTIC_MAX_DEPTH = 6
+_PRICE_DIAGNOSTIC_MAX_FIELDS = 12
+_PRICE_DIAGNOSTIC_MAX_OFFER_SHAPES = 4
+_PRICE_DIAGNOSTIC_MAX_CHARS = 320
+
 
 async def fetch_exact_affiliate_product_lookup_payload(
     provider: Any,
@@ -118,9 +144,115 @@ def exact_item_from_product_lookup_payload(payload: Any, item_id: str) -> dict |
     return None
 
 
+def summarize_product_lookup_price_shape(payload: Any, item_id: str) -> str:
+    """Return a bounded field-shape diagnostic for one exact Product Lookup item.
+
+    This is intentionally observability-only. It never chooses a price, changes a
+    candidate, or broadens trusted proof. The summary contains field paths,
+    compact scalar values/types for price-like keys, and selected-offer container
+    key shapes so production can distinguish an unrecognized valid price path
+    from an exact item that simply has no usable current price.
+    """
+
+    item = exact_item_from_product_lookup_payload(payload, item_id)
+    if item is None:
+        return "item=missing"
+
+    item_keys = [_diagnostic_token(key) for key in list(item.keys())[:16]]
+    price_fields: list[str] = []
+    offer_shapes: list[str] = []
+    stack: list[tuple[Any, str, int]] = [(item, "", 0)]
+    visited = 0
+
+    while stack and visited < _PRICE_DIAGNOSTIC_MAX_NODES:
+        node, path, depth = stack.pop()
+        visited += 1
+        if depth > _PRICE_DIAGNOSTIC_MAX_DEPTH:
+            continue
+
+        if isinstance(node, dict):
+            for raw_key, child in reversed(list(node.items())):
+                key = str(raw_key or "")
+                clean_key = _diagnostic_token(key)
+                child_path = f"{path}.{clean_key}" if path else clean_key
+                lowered = key.strip().lower()
+
+                if (
+                    len(price_fields) < _PRICE_DIAGNOSTIC_MAX_FIELDS
+                    and any(fragment in lowered for fragment in _PRICE_DIAGNOSTIC_KEY_FRAGMENTS)
+                ):
+                    price_fields.append(
+                        f"{child_path}:{_diagnostic_value(child)}"
+                    )
+
+                if (
+                    len(offer_shapes) < _PRICE_DIAGNOSTIC_MAX_OFFER_SHAPES
+                    and lowered.replace("-", "_") in _PRICE_DIAGNOSTIC_OFFER_KEYS
+                ):
+                    offer_shapes.append(
+                        f"{child_path}:{_diagnostic_container_shape(child)}"
+                    )
+
+                if isinstance(child, (dict, list)):
+                    stack.append((child, child_path, depth + 1))
+            continue
+
+        if isinstance(node, list):
+            for index in range(len(node) - 1, -1, -1):
+                child = node[index]
+                if isinstance(child, (dict, list)):
+                    child_path = f"{path}[{index}]" if path else f"[{index}]"
+                    stack.append((child, child_path, depth + 1))
+
+    parts = ["keys=" + ",".join(value for value in item_keys if value)]
+    parts.append("prices=" + ("|".join(price_fields) if price_fields else "none"))
+    parts.append("offers=" + ("|".join(offer_shapes) if offer_shapes else "none"))
+    summary = ";".join(parts)
+    return summary[:_PRICE_DIAGNOSTIC_MAX_CHARS].rstrip(";|,")
+
+
+def _diagnostic_container_shape(value: Any) -> str:
+    if isinstance(value, dict):
+        keys = [_diagnostic_token(key) for key in list(value.keys())[:10]]
+        return "dict[" + ",".join(key for key in keys if key) + "]"
+    if isinstance(value, list):
+        if value and isinstance(value[0], dict):
+            keys = [_diagnostic_token(key) for key in list(value[0].keys())[:8]]
+            return f"list{len(value)}[" + ",".join(key for key in keys if key) + "]"
+        return f"list{len(value)}"
+    return type(value).__name__
+
+
+def _diagnostic_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool:true" if value else "bool:false"
+    if isinstance(value, (int, float)):
+        return f"{type(value).__name__}:{value}"
+    if isinstance(value, str):
+        compact = _diagnostic_token(value, max_chars=36)
+        return f"str:{compact or 'empty'}"
+    return _diagnostic_container_shape(value)
+
+
+def _diagnostic_token(value: Any, *, max_chars: int = 48) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+    safe = []
+    for char in text:
+        if char.isalnum() or char in "._-/:[]":
+            safe.append(char)
+        else:
+            safe.append("_")
+    return "".join(safe)[:max_chars]
+
+
 __all__ = [
     "AFFILIATE_PRODUCT_LOOKUP_EXACT_SOURCE",
     "AFFILIATE_PRODUCT_LOOKUP_ROUTE",
     "exact_item_from_product_lookup_payload",
     "fetch_exact_affiliate_product_lookup_payload",
+    "summarize_product_lookup_price_shape",
 ]

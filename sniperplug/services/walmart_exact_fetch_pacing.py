@@ -71,6 +71,12 @@ class _ExactSearchOnlyInnerView(_ApiOnlyInnerView):
     Search API input.
     """
 
+    # The canonical verifier has a historical secondary exact-search identity
+    # fallback. Do not inherit that hook through ``__getattr__`` during Product
+    # Lookup recovery: it can replace a price-bearing exact lookup candidate with
+    # a price-less relevance Search candidate before the final price check.
+    _official_exact_search_payload = None
+
     async def _official_detail_payload(self, item_id: str) -> dict:
         try:
             return await fetch_exact_affiliate_product_lookup_payload(
@@ -142,7 +148,10 @@ async def fetch_exact_candidate_with_page_pacing(
     Walmart item ID to the relevance Search API and overwhelmingly got
     ``api_exact_search_no_match``. Recovery now uses Affiliate Product Lookup's
     exact ``ids`` parameter, verifies the returned item ID, and sends that payload
-    through the same canonical verifier. No search neighbor can donate proof.
+    through the same canonical verifier. The Product Lookup recovery view masks
+    the verifier's historical secondary relevance-Search identity fallback, so a
+    price-bearing Product Lookup candidate cannot be replaced by a price-less
+    Search candidate. No search neighbor can donate proof.
 
     A strict fresh catalog snapshot can also prove current selected-offer price
     while lacking a trusted Walmart was/regular/original reference. The same
@@ -302,11 +311,24 @@ async def _try_official_exact_search_recovery(
         provider,
         hold_seconds=max(60.0, float(timeout_seconds) * 2.0),
     )
-    return await _fetch_exact_candidate_off_loop(
+    recovered = await _fetch_exact_candidate_off_loop(
         recovery_provider,
         _NetworkRecoveryClaimView(claim),
         timeout_seconds=timeout_seconds,
     )
+    if (
+        lookup_available
+        and recovered[0] is None
+        and _retry_kind_from_error(recovered[2]) == "page_circuit_open"
+    ):
+        return (
+            None,
+            "retry",
+            "retry_kind=api_exact_lookup_identity_incomplete exact Walmart Product Lookup "
+            "did not provide complete canonical seller/offer identity; free-text Search "
+            "and HTML handoff are prohibited for exact price recovery",
+        )
+    return recovered
 
 
 def reserve_page_html_probe(

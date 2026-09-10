@@ -309,7 +309,7 @@ async def process_actionable_walmart_exact_queue_batch(
         "Walmart exact Turso write telemetry lease_rows=%s outcome_rows=%s "
         "offer_memory_rows=%s persistence_statements=%s "
         "page_circuit_reschedule_rows=0 price_recovery=exact_id_search_v257 "
-        "exact_lookup=affiliate_items_ids_v274",
+        "exact_lookup=affiliate_items_ids_v276",
         len(claims),
         persisted.queue_rows,
         persisted.offer_rows,

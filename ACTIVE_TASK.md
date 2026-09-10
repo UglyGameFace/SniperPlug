@@ -11,7 +11,7 @@ Target outcome: recover exact current/reference prices when Walmart supplies val
 Do not switch to movie tickets, gateway lag, setup UX, DM redesign, watchers, site, Minecraft, or unrelated work without another explicit FORCE SWITCH.
 
 ## Status
-**PR #277 is validated, merged, deployed, and its capability marker is proven live. Production then exposed one compatibility gap: rows that already had a confirmed dual-no-price failure before #277 can retain their old short future retry timestamps until each one becomes due. PR #278 is active to normalize only that legacy schedule population at startup without delaying any post-attempt catalog evidence.**
+**PR #277 is validated, merged, deployed, and its capability marker is proven live. Production then exposed one compatibility gap: rows that already had a confirmed dual-no-price failure before #277 can retain their old short future retry timestamps until each one becomes due. Draft PR #278 is active to normalize only that legacy schedule population at startup without delaying any post-attempt catalog evidence.**
 
 Relevant ancestry:
 - PR #277 validated head: `e29b417b62b8f2636d6094f917f732016e71f8fc`
@@ -24,52 +24,34 @@ Relevant ancestry:
 - #257 merge: `4d7646dd0b4d120c4c994d60b3d78b6c08760c53`
 
 ## What #277 fixed
-The dominant production failure after #276 was:
-
-`api_price_missing->api_price_missing`
-
-Both the primary exact detail route and exact-ID Product Lookup had returned no canonical current purchase price. The queue still treated that proven no-price population as ordinary transient work, and catalog rediscovery could repeatedly shorten its backoff.
+The dominant production failure after #276 was `api_price_missing->api_price_missing`: both primary exact detail and exact-ID Product Lookup returned no canonical current purchase price.
 
 PR #277:
-- recognizes only the dual signature containing `retry_kind=api_price_missing` and `recovery_kind=api_price_missing`;
+- recognizes only `retry_kind=api_price_missing` plus `recovery_kind=api_price_missing`;
 - stores new occurrences at the existing six-hour queue retry ceiling;
 - preserves that cooldown across ordinary weak/cosmetic rediscovery;
 - still wakes the row immediately for a complete fresh catalog proof snapshot or material apparent current/reference price change;
-- leaves ordinary transient retry behavior and all proof gates unchanged;
+- leaves ordinary transient retry behavior and every proof gate unchanged;
 - added `confirmed_no_price_cooldown=api_price_missing_v277` to live write telemetry.
 
-## #277 validation and production acceptance so far
-Exact-head validation passed on `e29b417b62b8f2636d6094f917f732016e71f8fc` in the known-good Termux/Ubuntu environment:
-- full pytest: **1,399 passed**;
-- targeted Walmart regressions passed;
-- Product Lookup / #276 handoff regressions passed;
-- queue, retry, pacing, #256/#257 and page-identity regressions passed;
-- native libsql process tests passed;
-- compileall passed;
-- import smoke passed;
-- `pip check` passed;
-- diff/scope, conflict-marker, clean-worktree, and exact-head checks passed.
+Exact-head validation passed on `e29b417b62b8f2636d6094f917f732016e71f8fc` in the known-good Termux/Ubuntu environment, including **1,399 passed** full pytest, targeted Walmart regressions, native libsql process tests, compileall, import smoke, `pip check`, diff/scope, conflict-marker, clean-worktree, and final exact-head checks.
 
-PR #277 merged at `a449bd43ea319f73c63c4604e16a4220225b7ec5` and production emitted:
+PR #277 merged at `a449bd43ea319f73c63c4604e16a4220225b7ec5`, and production emitted `confirmed_no_price_cooldown=api_price_missing_v277`, so the validated code is definitely deployed.
 
-`confirmed_no_price_cooldown=api_price_missing_v277`
-
-so the validated code is definitely deployed.
-
-The post-deploy process still showed fresh/retry waves above the catalog pause threshold. Examples from the supplied live window included fresh/retry pressure `39/12`, `36/12`, and `32/12`, with repeated 24/4 drain batches dominated by `api_price_missing->api_price_missing`. The queue therefore remained hot enough to pause catalog discovery.
+The post-deploy process still showed fresh/retry waves above the catalog pause threshold. Supplied live examples included `39/12`, `36/12`, and `32/12`, with repeated 24/4 drain batches dominated by `api_price_missing->api_price_missing`. Catalog discovery therefore remained paused.
 
 ## Compatibility gap isolated for #278
-The #277 policy is applied when a failure outcome is persisted. It does not rewrite a row that already had the same confirmed dual-no-price `last_error` before deployment but still carries a pre-#277 `next_attempt_at` calculated from the old 5/10/20-minute exponential schedule.
+The #277 six-hour policy is applied when a failure outcome is persisted. It does not rewrite a row that already had the same confirmed dual-no-price `last_error` before deployment but still carries a pre-#277 `next_attempt_at` calculated from the old short exponential schedule.
 
-Those future timestamps survive a restart. They can therefore mature in waves after #277 is live. Each row gets the correct six-hour delay only after it becomes due and is processed once more. That explains why fresh/retry pressure can refill even while the catalog is paused and no new discovery is feeding the lane.
+Those future timestamps survive restart and can mature in waves after #277 is live. Each row gets the correct six-hour delay only after it becomes due and is processed again. This structurally explains fresh/retry pressure refilling even while catalog intake is paused.
 
-The compatibility fix must not turn into a broad queue rewrite and must not delay genuinely new catalog evidence.
+The compatibility fix must stay bounded and must not delay genuinely new catalog evidence.
 
-## PR #278 implementation — bounded legacy confirmed-no-price floor
+## Draft PR #278 — bounded legacy confirmed-no-price floor
 Branch: `fix/walmart-confirmed-no-price-legacy-cooldown-278`
 
 ### `sniperplug/services/walmart_confirmed_no_price_legacy_cooldown.py`
-Adds one bounded compatibility normalizer that selects at most 250 rows and only when all of these are true:
+Adds one bounded compatibility normalizer selecting at most **200** rows, keeping the four-values-per-row update plus guard parameters below SQLite's conservative historical variable ceiling. A row qualifies only when:
 - status is `retry`;
 - persisted `last_error` contains both confirmed `api_price_missing` markers;
 - `last_attempt_at` exists;
@@ -78,27 +60,21 @@ Adds one bounded compatibility normalizer that selects at most 250 rows and only
 - `last_seen_at <= last_attempt_at`, so no catalog rediscovery newer than the confirming exact attempt can be delayed;
 - no active lease exists.
 
-For accepted rows, the target is exactly `last_attempt_at + 6 hours`, not deployment time plus six hours. The migration therefore does not restart the clock. It uses one bounded bulk `UPDATE ... RETURNING` and does not alter status, errors, proof, identity, prices, snapshots, or attempt counts.
+For accepted rows, the target is exactly `last_attempt_at + 6 hours`, not deployment time plus six hours. The migration does not restart the clock. It uses one bounded bulk `UPDATE ... RETURNING` and does not alter status, error, proof, identity, prices, snapshots, or attempt counts.
 
 ### `sniperplug/services/walmart_exact_runtime_schema.py`
 The normalizer runs inside the existing once-per-connection exact-runtime schema gate after the queue/indexes exist and before the initialization commit. It is not a recurring worker task.
 
-Production emits:
+Startup telemetry emits:
 
-`marker=legacy_no_price_floor_v278 cooled=<count> limit=250`
+`marker=legacy_no_price_floor_v278 cooled=<count> limit=200`
 
 so deployment and migration effect are directly observable.
 
 ### Regression coverage
-`tests/test_walmart_confirmed_no_price_legacy_cooldown_278.py` covers:
-- a pre-#277 short schedule is lifted to exactly the original attempt's six-hour floor;
-- post-attempt rediscovery is not delayed;
-- an active lease is not changed;
-- an already elapsed six-hour floor is not restarted from deployment time;
-- an existing six-hour-or-later schedule is not shortened or rewritten;
-- an unrelated transient retry is untouched.
-
-`tests/test_walmart_confirmed_no_price_legacy_cooldown_278_marker.py` verifies the startup migration wiring and deployment marker remain present.
+- `tests/test_walmart_confirmed_no_price_legacy_cooldown_278.py`: exact six-hour floor, post-attempt rediscovery safety, active-lease safety, elapsed-floor safety, already-correct schedule safety, and unrelated transient retry safety.
+- `tests/test_walmart_confirmed_no_price_legacy_cooldown_278_runtime.py`: the real exact-runtime once gate applies the migration and does not restart it on a second call.
+- `tests/test_walmart_confirmed_no_price_legacy_cooldown_278_marker.py`: startup migration wiring and deployment marker are guarded.
 
 ## Safety invariants
 Unchanged:
@@ -115,7 +91,7 @@ Unchanged:
 
 ## Validation / results
 PR #278 validation is pending on its exact head. Do not merge until all of the following pass:
-- new #278 behavioral and marker regressions;
+- new #278 behavioral/runtime/marker regressions;
 - #277 confirmed-no-price regressions;
 - #276/#274/#257 Product Lookup and recovery regressions;
 - existing Walmart queue, drain, pressure, pacing, fresh-proof, delivery-stall, and page-identity regressions;
@@ -133,19 +109,19 @@ PR #278 validation is pending on its exact head. Do not merge until all of the f
 After validation/merge/deploy, require:
 - startup telemetry contains `marker=legacy_no_price_floor_v278` with a concrete cooled count;
 - #277 marker remains present in exact write telemetry;
-- the old confirmed no-price population no longer refills fresh/retry pressure simply because pre-#277 timers mature;
+- the old confirmed no-price population no longer refills fresh/retry pressure merely because pre-#277 timers mature;
 - fresh/retry pressure falls below the `12` catalog pause threshold when no genuinely new work is arriving;
 - catalog discovery resumes normally;
 - complete fresh snapshots and material current/reference changes still wake affected rows promptly;
 - ordinary transient retries remain unchanged;
 - qualifying exact/fresh proof continues through unchanged verification, durable fanout, public/DM delivery, and guild thresholds.
 
-Do not call the Walmart task complete from unit tests alone. Production acceptance still has to show that the hot queue stops starving discovery without suppressing newly actionable proof.
+Do not call the Walmart task complete from unit tests alone. Production still has to prove the hot queue stops starving discovery without suppressing newly actionable proof.
 
 ## Blockers / risks
 - ChatGPT has repository access but no Discloud deployment/runtime connector, so live deploy and production acceptance remain external.
 - Walmart Affiliate response shapes are external and may vary; every proof gate remains fail-closed.
-- Rows with catalog rediscovery newer than their last exact attempt are intentionally excluded from #278 because the migration cannot prove whether that rediscovery was cosmetic or material. Those rows remain governed by normal #277 processing rather than being delayed speculatively.
+- Rows with catalog rediscovery newer than their last exact attempt are intentionally excluded from #278 because the migration cannot prove whether that rediscovery was cosmetic or material. Those rows remain governed by normal #277 processing.
 - Separate `discord.gateway Can't keep up` warnings remain backlog task `SP-GATEWAY-EVENT-LOOP-LAG` and are not being mixed into this PR.
 
 ## Suspended task — SP-MOVIE-TICKETS-RECOVERY

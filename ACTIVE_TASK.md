@@ -11,7 +11,7 @@ Target outcome: recover exact current/reference prices when Walmart supplies val
 Do not switch to movie tickets, gateway lag, setup UX, DM redesign, watchers, site, Minecraft, or unrelated work without another explicit FORCE SWITCH.
 
 ## Status
-**PR #274 is validated and merged. The active Walmart task is now at production acceptance.**
+**PR #274 is merged and its production deployment is proven. The newly isolated blocker is Product Lookup exact items that still expose no parser-recognized current price. PR #275 is active and diagnostic-only.**
 
 PR #274 validated head: `30a82f7c6e83e520d199d3008729907bb5ddd3f1`
 PR #274 merge: `d7c466851d956cffa336224d218e6f3339c2008e`
@@ -40,7 +40,7 @@ Fresh official catalog proof itself is still healthy. Examples from the same pro
 
 Those fresh candidates still mostly lacked a trusted Walmart reference price, so they produced no public markdown cards, but they prove Walmart authentication, catalog discovery, selected-offer parsing, exact fresh proof, and persistence are not globally broken.
 
-## Proven root cause
+## Proven root cause fixed by #274
 The failing #257 recovery used the Affiliate **Search** endpoint with the Walmart item ID placed in the free-text `query` parameter. It then correctly required one search result to have the exact requested `itemId`/`usItemId`. Production proved that this relevance-search operation overwhelmingly returned no exact-ID row, which became `api_exact_search_no_match`.
 
 The provider already exposed the Affiliate Product Lookup `/items` service and its base detail code included an `ids=<item_id>` form. However, the ordinary detail path could return the first successful identity payload even when that payload had no numeric current price, so the later #257 recovery still fell through to free-text Search instead of performing a dedicated exact Product Lookup.
@@ -71,6 +71,71 @@ The provider already exposed the Affiliate Product Lookup `/items` service and i
 - verifies bounded known-wrapper exact-ID extraction;
 - verifies an identity-only primary detail can recover price/reference through Product Lookup without free-text Search or HTML.
 
+## Production acceptance after #274
+The Sep 9 deployment emitted both:
+
+`price_recovery=exact_id_search_v257`
+
+and:
+
+`exact_lookup=affiliate_items_ids_v274`
+
+so the merged #274 path is definitely live.
+
+The old dominant failure changed from:
+
+`api_price_missing->api_exact_search_no_match`
+
+to:
+
+`api_price_missing->api_price_missing`
+
+for most stale/no-snapshot claims. That proves #274 successfully removed relevance Search as the production exact-price recovery bottleneck.
+
+One live exact batch also recovered a full trusted markdown:
+- claimed 24;
+- verified 1;
+- official was prices 1;
+- markdowns 1;
+- JLab Go Air Sport at `$24.99`, 21.88% off.
+
+The normal fanout path then checked both eligible guilds and correctly suppressed the deal because 21.88% was below their configured 50% and 40% thresholds. That proves exact Product Lookup can recover current/reference proof and that canonical verification, durable event creation, fanout, and threshold filtering remain functional.
+
+The remaining production pattern is still poor:
+- most 8/2 and 24/4 batches verify 0 rows;
+- the dominant outcome is now `api_price_missing->api_price_missing`;
+- occasional `api_http_400` responses occur but are a minority;
+- actionable queue pressure repeatedly returns to approximately 128;
+- catalog discovery is repeatedly paused by fresh exact-detail backpressure.
+
+## Newly isolated blocker after #274
+The remaining unknown is now narrow and must be proven before another behavioral fix:
+
+1. Walmart Product Lookup may be returning the exact requested item with a valid current price in a response path the canonical parser does not recognize; or
+2. the exact requested item may genuinely contain no usable numeric current price in the Affiliate Product Lookup response.
+
+The existing parser already recognizes the established Walmart current-price forms including `salePrice`, `sale_price`, `currentPrice`, `current_price`, `price`, `priceInfo.currentPrice`, and price-map variants. Therefore adding more guessed price aliases is not justified without live payload-shape evidence.
+
+## PR #275 implementation — bounded diagnostics only
+Branch: `fix/walmart-exact-price-diagnostics-275`
+
+### `sniperplug/providers/walmart_exact_lookup.py`
+- keeps exact Product Lookup and exact-ID matching unchanged;
+- adds bounded `lookup_shape_v275` diagnostics only when a successfully matched exact Product Lookup item has no current price recognized by the existing canonical Walmart price parser;
+- records item field names, price-like field paths with compact scalar value/type information, and selected-offer container key shapes;
+- never dumps the product title or full payload;
+- caps traversal depth, nodes, fields, offer shapes, and final diagnostic length;
+- rate-limits missing-price diagnostics to one sample per minute per provider process;
+- adds a separately rate-limited truncated diagnostic for the minority `api_http_400` exact-lookup failures;
+- does not choose a price, modify a candidate, change retry policy, add another fetch, or weaken any proof gate.
+
+### `tests/test_walmart_exact_price_diagnostics_275.py`
+- proves an unrecognized nested price path appears in the bounded shape summary;
+- proves product titles are not emitted into the diagnostic;
+- proves repeated price-missing lookups are rate-limited to one log sample;
+- proves an already-recognized `salePrice` does not emit a missing-price diagnostic;
+- proves HTTP 400 diagnostics are rate-limited while the original exception is still re-raised.
+
 ## Safety invariants
 Unchanged:
 - exact Walmart item identity is mandatory;
@@ -82,9 +147,7 @@ Unchanged:
 - no second verifier and no guessed price source are introduced.
 
 ## Validation / results
-Exact validated PR #274 head: `30a82f7c6e83e520d199d3008729907bb5ddd3f1`.
-
-Passed in the known-good Termux/Ubuntu Python 3.12.14 environment:
+PR #274 passed in the known-good Termux/Ubuntu Python 3.12.14 environment:
 - targeted Walmart Product Lookup / #257 recovery / page identity / queue / bulk / fresh-proof regressions: **62 passed, 1 existing `audioop` deprecation warning**;
 - `pip check`: **No broken requirements found**;
 - compileall: **exit 0**;
@@ -97,26 +160,22 @@ Passed in the known-good Termux/Ubuntu Python 3.12.14 environment:
 - validation worktree clean;
 - final exact HEAD recheck matched the validated SHA.
 
-PR #274 was marked ready only after that evidence and merged with GitHub's expected-head guard against the exact validated SHA.
+PR #275 validation is pending on its exact head. Do not mark it complete or merge it until targeted tests, compile/import checks, full regression coverage, diff/scope checks, and exact-head validation pass.
 
-## Production acceptance after #274
-Deploy the merged canonical `main`. A claimed Walmart exact batch must contain:
+## Production acceptance after #275
+After a validated #275 deployment, look for:
 
-`exact_lookup=affiliate_items_ids_v274`
+`marker=lookup_shape_v275`
 
-Then inspect outcomes:
-- the old dominant `api_price_missing->api_exact_search_no_match` should disappear from the production provider path;
-- a successful Product Lookup recovery should increase stale/no-snapshot verified counts and may recover trusted references when Walmart returns them;
-- an exact Product Lookup response with no requested item must fail as `api_exact_lookup_no_match`;
-- an exact item that still has no usable current price must remain fail-closed as a price-missing retry;
-- queue pressure should begin draining rather than pinning near its cap;
-- any public markdown still has to pass the existing canonical proof/fanout path.
+A missing-price line must show a bounded `shape=` summary for the exact matched item. Use that evidence to decide the next change:
+- if a plausible current price is present at a previously unsupported field path, add only that proven path to canonical normalization with regression coverage;
+- if the exact item contains no usable current price, do not add another parser alias or search fallback. Instead change only the retry/scheduling treatment for this proven no-price population so it cannot keep the hot queue pinned and starve discovery.
 
-Only a newly proven downstream blocker may justify another implementation change.
+The minority HTTP 400 diagnostic should reveal the truncated upstream reason before any 400-specific behavior is changed.
 
 ## Blockers / risks
 - ChatGPT has repository access but no Discloud deployment/runtime connector, so live deployment and production-log acceptance remain external.
-- Walmart Affiliate response shapes are external and may vary; #274 intentionally keeps exact wrapper traversal bounded and exact-ID matched.
+- Walmart Affiliate response shapes are external and may vary; all #275 diagnostics are intentionally bounded and observational.
 - Two production `discord.gateway Can't keep up` warnings were also observed while the Walmart queue was hot. That remains the separate backlog task `SP-GATEWAY-EVENT-LOOP-LAG` and is not being mixed into this task.
 
 ## Suspended task — SP-MOVIE-TICKETS-RECOVERY
@@ -142,4 +201,4 @@ Preserved state:
 - SniperPlug-Site work
 
 ## Next step
-Deploy current canonical `main` to the existing Discloud SniperPlug app, confirm the first claimed Walmart exact batch contains `exact_lookup=affiliate_items_ids_v274`, then judge the Product Lookup outcomes and queue pressure from the live logs before changing implementation again.
+Validate PR #275 on its exact head. If green, deploy it to the existing Discloud SniperPlug app and use the first `lookup_shape_v275` missing-price/HTTP-400 diagnostics to prove the exact downstream field shape before making any behavioral change.

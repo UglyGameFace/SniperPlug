@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 import urllib.parse
 from typing import Any
 
-from sniperplug.providers.walmart import WalmartProviderError
+from sniperplug.providers.walmart import WalmartProviderError, _trusted_current_price
 
 
 AFFILIATE_PRODUCT_LOOKUP_EXACT_SOURCE = "affiliate_product_lookup_exact_item"
 AFFILIATE_PRODUCT_LOOKUP_ROUTE = "items_ids_v274"
+EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER = "lookup_shape_v275"
 
 _WRAPPER_KEYS = (
     "item",
@@ -47,6 +50,12 @@ _PRICE_DIAGNOSTIC_MAX_DEPTH = 6
 _PRICE_DIAGNOSTIC_MAX_FIELDS = 12
 _PRICE_DIAGNOSTIC_MAX_OFFER_SHAPES = 4
 _PRICE_DIAGNOSTIC_MAX_CHARS = 320
+_PRICE_DIAGNOSTIC_INTERVAL_SECONDS = 60.0
+_HTTP_400_DIAGNOSTIC_INTERVAL_SECONDS = 300.0
+_PRICE_DIAGNOSTIC_NEXT_ATTR = "_sniperplug_exact_lookup_price_diag_next_at"
+_HTTP_400_DIAGNOSTIC_NEXT_ATTR = "_sniperplug_exact_lookup_http400_diag_next_at"
+
+log = logging.getLogger("sniperplug.autoscan.walmart_exact_lookup")
 
 
 async def fetch_exact_affiliate_product_lookup_payload(
@@ -97,7 +106,13 @@ def _fetch_exact_affiliate_product_lookup_payload_sync(
         params["publisherId"] = publisher_id
 
     url = f"{detail_url}?{urllib.parse.urlencode(params)}"
-    payload = request_json(url)
+    try:
+        payload = request_json(url)
+    except WalmartProviderError as error:
+        if str(getattr(error, "retry_kind", "") or "").strip().lower() == "api_http_400":
+            _maybe_log_http_400(provider, clean_id, error)
+        raise
+
     item = exact_item_from_product_lookup_payload(payload, clean_id)
     if item is None:
         raise WalmartProviderError(
@@ -108,6 +123,10 @@ def _fetch_exact_affiliate_product_lookup_payload_sync(
     exact = dict(item)
     exact["sniperplugOfficialExactSource"] = AFFILIATE_PRODUCT_LOOKUP_EXACT_SOURCE
     exact["sniperplugOfficialExactRoute"] = AFFILIATE_PRODUCT_LOOKUP_ROUTE
+
+    current_price, _current_signal = _trusted_current_price(exact)
+    if current_price is None:
+        _maybe_log_missing_price_shape(provider, clean_id, exact)
     return exact
 
 
@@ -211,6 +230,53 @@ def summarize_product_lookup_price_shape(payload: Any, item_id: str) -> str:
     return summary[:_PRICE_DIAGNOSTIC_MAX_CHARS].rstrip(";|,")
 
 
+def _maybe_log_missing_price_shape(provider: Any, item_id: str, payload: Any) -> None:
+    if not _reserve_diagnostic_slot(
+        provider,
+        attr_name=_PRICE_DIAGNOSTIC_NEXT_ATTR,
+        interval_seconds=_PRICE_DIAGNOSTIC_INTERVAL_SECONDS,
+    ):
+        return
+    log.info(
+        "Walmart exact Product Lookup missing-current-price diagnostic "
+        "marker=%s item_id=%s route=%s shape=%s",
+        EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER,
+        item_id,
+        AFFILIATE_PRODUCT_LOOKUP_ROUTE,
+        summarize_product_lookup_price_shape(payload, item_id),
+    )
+
+
+def _maybe_log_http_400(provider: Any, item_id: str, error: Exception) -> None:
+    if not _reserve_diagnostic_slot(
+        provider,
+        attr_name=_HTTP_400_DIAGNOSTIC_NEXT_ATTR,
+        interval_seconds=_HTTP_400_DIAGNOSTIC_INTERVAL_SECONDS,
+    ):
+        return
+    log.info(
+        "Walmart exact Product Lookup HTTP 400 diagnostic marker=%s item_id=%s detail=%s",
+        EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER,
+        item_id,
+        _diagnostic_token(error, max_chars=220),
+    )
+
+
+def _reserve_diagnostic_slot(
+    provider: Any,
+    *,
+    attr_name: str,
+    interval_seconds: float,
+    now_monotonic: float | None = None,
+) -> bool:
+    now_value = time.monotonic() if now_monotonic is None else float(now_monotonic)
+    next_at = float(getattr(provider, attr_name, 0.0) or 0.0)
+    if next_at > now_value:
+        return False
+    setattr(provider, attr_name, now_value + max(1.0, float(interval_seconds)))
+    return True
+
+
 def _diagnostic_container_shape(value: Any) -> str:
     if isinstance(value, dict):
         keys = [_diagnostic_token(key) for key in list(value.keys())[:10]]
@@ -252,6 +318,7 @@ def _diagnostic_token(value: Any, *, max_chars: int = 48) -> str:
 __all__ = [
     "AFFILIATE_PRODUCT_LOOKUP_EXACT_SOURCE",
     "AFFILIATE_PRODUCT_LOOKUP_ROUTE",
+    "EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER",
     "exact_item_from_product_lookup_payload",
     "fetch_exact_affiliate_product_lookup_payload",
     "summarize_product_lookup_price_shape",

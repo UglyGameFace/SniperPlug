@@ -9,7 +9,9 @@ from sniperplug.services.walmart_exact_verification_queue import (
 )
 
 
-LEGACY_COOLDOWN_BATCH_LIMIT = 250
+# Four values per selected row plus one lease-time guard stay comfortably below
+# SQLite's conservative historical 999-variable ceiling.
+LEGACY_COOLDOWN_BATCH_LIMIT = 200
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -50,8 +52,8 @@ async def normalize_legacy_confirmed_no_price_cooldowns(
     fresh proof arrival, is never delayed. Active leases are also excluded.
 
     The target is exactly ``last_attempt_at + 6h`` rather than ``now + 6h`` so
-    deployment never restarts the cooldown clock. At most ``limit`` rows are
-    changed in one bulk statement.
+    deployment never restarts the cooldown clock. At most the fixed bounded row
+    cap is changed in one bulk statement even if a larger caller limit is passed.
     """
 
     if db is None or limit <= 0:
@@ -60,7 +62,10 @@ async def normalize_legacy_confirmed_no_price_cooldowns(
     conn = db.require_conn()
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     now_iso = current.isoformat()
-    bounded_limit = max(1, int(limit))
+    bounded_limit = min(
+        LEGACY_COOLDOWN_BATCH_LIMIT,
+        max(1, int(limit)),
+    )
     cursor = await conn.execute(
         f"""
         SELECT item_id, last_attempt_at, next_attempt_at

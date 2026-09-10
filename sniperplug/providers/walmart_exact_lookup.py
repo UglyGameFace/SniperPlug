@@ -50,6 +50,9 @@ _PRICE_DIAGNOSTIC_MAX_NODES = 400
 _PRICE_DIAGNOSTIC_MAX_DEPTH = 6
 _PRICE_DIAGNOSTIC_MAX_FIELDS = 12
 _PRICE_DIAGNOSTIC_MAX_OFFER_SHAPES = 4
+_PRICE_DIAGNOSTIC_PRICE_CHARS = 150
+_PRICE_DIAGNOSTIC_OFFER_CHARS = 80
+_PRICE_DIAGNOSTIC_KEY_CHARS = 60
 _PRICE_DIAGNOSTIC_MAX_CHARS = 320
 _PRICE_DIAGNOSTIC_INTERVAL_SECONDS = 60.0
 _HTTP_400_DIAGNOSTIC_INTERVAL_SECONDS = 300.0
@@ -225,10 +228,25 @@ def summarize_product_lookup_price_shape(payload: Any, item_id: str) -> str:
                     child_path = f"{path}[{index}]" if path else f"[{index}]"
                     stack.append((child, child_path, depth + 1))
 
-    parts = ["keys=" + ",".join(value for value in item_keys if value)]
-    parts.append("prices=" + ("|".join(price_fields) if price_fields else "none"))
-    parts.append("offers=" + ("|".join(offer_shapes) if offer_shapes else "none"))
-    summary = ";".join(parts)
+    prices = _bounded_diagnostic_join(
+        price_fields,
+        delimiter="|",
+        max_chars=_PRICE_DIAGNOSTIC_PRICE_CHARS,
+        empty="none",
+    )
+    offers = _bounded_diagnostic_join(
+        offer_shapes,
+        delimiter="|",
+        max_chars=_PRICE_DIAGNOSTIC_OFFER_CHARS,
+        empty="none",
+    )
+    keys = _bounded_diagnostic_join(
+        [value for value in item_keys if value],
+        delimiter=",",
+        max_chars=_PRICE_DIAGNOSTIC_KEY_CHARS,
+        empty="none",
+    )
+    summary = f"prices={prices};offers={offers};keys={keys}"
     return summary[:_PRICE_DIAGNOSTIC_MAX_CHARS].rstrip(";|,")
 
 
@@ -278,6 +296,18 @@ def _reserve_diagnostic_slot(
             return False
         setattr(provider, attr_name, now_value + max(1.0, float(interval_seconds)))
     return True
+
+
+def _bounded_diagnostic_join(
+    values: list[str],
+    *,
+    delimiter: str,
+    max_chars: int,
+    empty: str,
+) -> str:
+    if not values:
+        return empty
+    return delimiter.join(values)[:max(1, int(max_chars))].rstrip(delimiter)
 
 
 def _diagnostic_container_shape(value: Any) -> str:

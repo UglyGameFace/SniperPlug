@@ -213,4 +213,4 @@ def test_bulk_runtime_marks_product_lookup_recovery_capability() -> None:
     runtime = (root / "sniperplug/services/walmart_exact_queue_bulk_runtime.py").read_text(
         encoding="utf-8"
     )
-    assert "exact_lookup=affiliate_items_ids_v274" in runtime
+    assert "exact_lookup=affiliate_items_ids_v276" in runtime

@@ -339,9 +339,13 @@ async def _log_page_recovery_reason_sample(
         )
         return
 
+    displayed = list(sample.reasons[:8])
+    displayed_count = sum(count for _reason, count in displayed)
+    if displayed_count < sample.sampled:
+        displayed.append(("other", sample.sampled - displayed_count))
     reasons = ",".join(
         f"{reason}={count}"
-        for reason, count in sample.reasons
+        for reason, count in displayed
     ) or "none"
     log.info(
         "Walmart page recovery due-reason sample marker=%s sampled=%s cap=%s "

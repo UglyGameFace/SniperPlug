@@ -1,54 +1,99 @@
 # Active Task
 
 ## Status
-**SP-GATEWAY-EVENT-LOOP-LAG — IN PROGRESS.**
+**SP-WM-EXACT-RECOVERY-DEBT — IN PROGRESS.**
 
-Walmart delivery stall work is complete in production. The user explicitly switched the Single Active Task Lock to the repeated Discord gateway/event-loop lag investigation on 2026-09-10.
+The user authorized moving here once `SP-GATEWAY-EVENT-LOOP-LAG` was solved. PR #284 is now production-accepted and the active lock moves to the remaining Walmart exact-recovery debt.
 
-Base main at task start: `51fdd1782bf9137b7e5d48fa79c010c30205e750` (PR #283 merge, Walmart delivery task closed).
+Base main at task start: `adc83678b4d1f8c6d7c0fdb615a82bf128889327` (PR #284 merge).
 
-## Production symptom
-Production repeatedly emitted discord.py 2.7.1 warnings such as:
+## Completed prerequisite — SP-GATEWAY-EVENT-LOOP-LAG
+PR #284 is production-accepted.
 
-- `Can't keep up, shard ID None websocket is 41.3s behind.`
-- `Can't keep up, shard ID None websocket is 41.5s behind.`
+A real recurrence supplied the decisive evidence:
 
-The warnings were seen near high-throughput Walmart exact drain windows, but timing alone is not proof that Walmart blocked the Discord asyncio loop.
+- discord.py emitted `Can't keep up, shard ID None websocket is 41.5s behind`;
+- the v284 correlation monitor simultaneously reported `classification=gateway_ack_latency_loop_healthy`, `gateway_latency_s=41.55`, and only `recent_loop_lag_max_s=0.29` while Walmart catalog/exact workers were active;
+- the monitor later reported heartbeat latency recovered to `0.01s` with local loop lag still `0.29s`;
+- the watchdog remained alive and subsequent health samples stayed around `0.28-0.32s` local lag;
+- the Discord warning was no longer duplicated by two log handlers.
 
-## Root-cause findings before code changes
-- SniperPlug already runs a 5-second local event-loop watchdog with a 2-second warning threshold. The supplied production windows contain discord.py `Can't keep up` warnings but no matching SniperPlug `Event loop lag detected` line.
-- discord.py 2.7.1's `KeepAliveHandler.ack()` logs `Can't keep up` when heartbeat-to-ACK protocol latency exceeds 10 seconds. A different message, `heartbeat blocked for more than ... seconds`, is used when the event loop cannot execute the heartbeat send coroutine for 10 seconds. The production symptom is the ACK-latency warning, not the heartbeat-send-blocked warning.
-- Walmart catalog HTTP/candidate parsing is already moved to worker event loops/threads; exact candidate parsing/preparation is offloaded; native Turso/libSQL is isolated in a child process. Existing #202/#210 hardening must be preserved rather than undone by guessing at another concurrency reduction.
-- One definite local blocking class remains: runtime logging installs synchronous console plus rotating-file handlers on the main process. `ProcessIsolatedSniperPlugBot.run()` then calls `discord.py` without `log_handler=None`, so discord.py also installs its default handler. Production confirms the duplicate Discord records. Async workers therefore perform unnecessary synchronous console/file logging work on the Discord loop, and Discord records are emitted twice.
+That proves the residual 41-second event is Discord heartbeat ACK/network-path latency, not SniperPlug event-loop starvation. The app-side synchronous logging defect was removed and the remaining event is now truthfully classified. Do not throttle Walmart or reopen the gateway task based solely on another `Can't keep up` ACK-latency warning when the local loop remains healthy.
 
-## Implementation scope
-1. Move SniperPlug's console/file sink I/O behind a standard-library `QueueHandler`/`QueueListener` so event-loop logging calls only enqueue records.
-2. Disable discord.py's duplicate default handler with `bot.run(..., log_handler=None)` and shut the logging listener down cleanly after the bot exits.
-3. Correlate Discord heartbeat ACK latency with a rolling local-loop-lag window. Log distinct classifications for:
-   - healthy gateway + healthy loop;
-   - high gateway ACK latency while the local loop remained healthy;
-   - high gateway latency accompanied by real local loop lag.
-4. Emit a bounded watchdog health line so production can prove the watchdog itself stayed alive through a gateway-latency event.
-5. Do not throttle Walmart, alter proof/retry rules, force Discord reconnects, or weaken delivery behavior without evidence that local workload is the cause.
+## Current production symptom
+Walmart delivery/fanout is healthy, but the exact queue still spends substantial work on low-value recovery debt:
 
-## Safety invariants
-- Walmart #277-#282 retry, pressure-lane, ranking, and delivery behavior stays unchanged.
-- Turso/libSQL remains process-isolated and transaction-safe.
-- Discord reconnect/RESUME behavior remains owned by discord.py; no forced reconnect loop is introduced.
-- Console and rotating-file log content/severity are preserved; only sink execution moves off the event-loop thread and duplicate discord.py handler installation is removed.
-- Existing 2-second local loop warning sensitivity remains unchanged.
+- repeated `api_price_missing->api_price_missing` batches;
+- bounded pressure repeatedly shows `confirmed no-price retries >=600`;
+- occasional `api_price_missing->api_http_400` Product Lookup failures;
+- rare product-page `page_timeout` failures;
+- fresh catalog proof can simultaneously verify 8/8 or 24/24 rows and fan out valid deals, so this is not another delivery-pipeline failure.
+
+## Root-cause finding for first fix
+A confirmed dual no-price row means the primary official exact-detail path and the exact-ID Affiliate Product Lookup path both returned the requested item without a canonical current purchase price. PR #277 reduced those rows to a six-hour retry, but after six hours the queue deliberately makes the same two official requests again forever. Production has now accumulated at least 600 such due rows.
+
+The queue already has a safe wake mechanism: ordinary weak/cosmetic rediscovery preserves a confirmed-no-price schedule, while a complete fresh selected-offer snapshot or a material apparent current/reference-price change shortens `next_attempt_at` to now. Therefore unchanged dual-no-price rows do not need another exact network request every six hours merely to prove the same absence again.
+
+The first remediation parks only rows whose persisted `next_attempt_at` still exactly represents the untouched six-hour #277 schedule. A row whose schedule was shortened by fresh/material discovery evidence remains immediately actionable, even when that wake occurs more than six hours after the prior exact attempt.
+
+## Implementation scope — PR #285
+1. Add a bounded pre-claim dormancy pass for mature confirmed dual-no-price retries.
+2. Match only the exact untouched six-hour #277 schedule, not every timestamp later than the six-hour floor.
+3. Move matched due rows to a 30-day safety reprobe instead of performing the same exact requests again every six hours.
+4. Keep status/error history intact so existing catalog rediscovery logic can still wake the row immediately on complete fresh proof or a material current/reference change.
+5. Exclude active leases and cap each pass at 200 rows so the existing >=600 population drains from actionable pressure in bounded chunks.
+6. Emit `marker=confirmed_no_price_dormancy_v285` with parked-row count for production acceptance.
+7. Do not change current-price trust, reference trust, seller/offer/variant/marketplace/shipping proof, thresholds, fanout, page-circuit behavior, or ordinary transient retry cadence.
+
+## Validation correction
+The first full-suite run on PR #285 reached **1439 passed / 2 failed / 1 warning**. Both failures were stale isolated unit-test mocks, not production queue behavior:
+
+- `test_open_page_circuit_keeps_tiny_api_only_recovery_claim_lane`
+- `test_paced_probe_does_not_reclaim_known_page_retry_lane`
+
+Those tests deliberately construct `FakeDatabase(object())` and mock every database-touching exact-runtime dependency needed for their page-circuit scenarios. PR #285 added one new pre-claim database maintenance dependency, `park_mature_confirmed_no_price_retries`, but the two tests had not mocked it. The unmocked helper therefore attempted `conn.execute(...)` on the deliberately fake `object()` before the intended assertions could run.
+
+The correction is test isolation only. Both tests now replace the new dormancy helper with an async zero-row no-op, matching the way they already isolate schema, terminal maintenance, pressure, and claim access. No production dormancy code, proof gate, queue policy, retry behavior, or page behavior was weakened.
+
+The first run otherwise passed:
+
+- PR #285 targeted + #277-#282 regressions: **26 passed**;
+- exact queue / bulk regressions: **17 passed**;
+- gateway #284 regression: **10 passed**;
+- native libsql/process runtime: **10 passed**;
+- compile: exit 0;
+- import smoke: **37 modules / 22 symbols**;
+- pip check: no broken requirements;
+- full suite outcome: **1439 passed / 2 stale-mock failures**, 1 `audioop` deprecation warning.
+
+A fresh exact-head rerun is required after the mock correction.
+
+## Current PR #285 scope
+Net changed-file scope is exactly six files:
+
+- `ACTIVE_TASK.md`
+- `sniperplug/services/walmart_confirmed_no_price_dormancy.py`
+- `sniperplug/services/walmart_exact_queue_bulk_runtime.py`
+- `tests/test_autoscan_coverage_stall_253.py`
+- `tests/test_walmart_confirmed_no_price_dormancy_285.py`
+- `tests/test_walmart_deal_delivery_stall_256.py`
+
+## Follow-up inside this active task
+After the no-price population is no longer wasting exact capacity, use production evidence to resolve the smaller failure classes rather than mixing guesses into this patch:
+
+- make Product Lookup HTTP 400 diagnostics readable enough to identify the actual Walmart validation/error response before changing request semantics;
+- inspect the remaining `page_timeout` / page-recovery population separately. A rare timeout alone is not evidence for weakening the existing one-probe pacing or page challenge circuit.
 
 ## Validation required
-- Targeted gateway/logging regression tests.
-- Existing autoscan production-hardening tests.
-- Native libsql process tests.
-- Compile/import/pip checks.
-- Full pytest suite.
-- Diff/scope/conflict-marker/clean-worktree checks on one exact head.
-- Production acceptance must show the new logging/watchdog marker, no duplicate Discord log lines, and a truthful gateway-vs-loop classification during any subsequent high-latency event.
-
-## Completed prerequisite — Walmart delivery stall
-Production-accepted Walmart main remains `9dcdf197f225e76dcf8adad546d49ea6fe3412e6`; PR #283 later closed the task bookkeeping on main `51fdd1782bf9137b7e5d48fa79c010c30205e750`.
+- targeted PR #285 no-price dormancy regressions;
+- the two corrected isolated page-circuit regressions;
+- prior #277-#282 Walmart pressure/claim/wake regressions;
+- bulk persistence/runtime regressions;
+- native libsql process tests;
+- compile/import/pip checks;
+- full pytest suite;
+- diff/scope/conflict-marker/clean-worktree checks on one exact head;
+- production acceptance showing the v285 marker, confirmed-no-price actionable pressure falling sharply from the current >=600 wave, ordinary/fresh work remaining claimable, and a material/fresh discovery wake still bypassing dormancy.
 
 ## Suspended task — SP-MOVIE-TICKETS-RECOVERY
 Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged movie-ticket work unchanged.
@@ -63,4 +108,4 @@ Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged mo
 - SniperPlug-Site work
 
 ## Next step
-Implement and validate the narrow gateway/logging fix on the dedicated branch. Do not switch to another backlog item until this task is production-accepted or the user explicitly FORCE SWITCHes again.
+Rerun exact-head validation on the latest corrected PR #285 head. Merge only after the full suite, six-file scope, diff/conflict checks, and final SHA recheck all pass.

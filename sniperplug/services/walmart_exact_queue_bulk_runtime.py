@@ -6,6 +6,9 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from sniperplug.services.walmart_confirmed_no_price_dormancy import (
+    park_mature_confirmed_no_price_retries,
+)
 from sniperplug.services.walmart_exact_fetch_pacing import (
     fetch_exact_candidate_with_page_pacing,
     page_html_probe_remaining_seconds,
@@ -114,6 +117,14 @@ async def process_actionable_walmart_exact_queue_batch(
     ordinary claims immediately. Scheduling decisions use a tightly bounded
     pressure snapshot rather than rereading the scheduled-recheck backlog.
 
+    Confirmed dual-no-price retries are parked before pressure measurement and
+    claiming once their untouched #277 six-hour schedule matures. The row keeps
+    its retry/error identity and receives a 30-day safety reprobe, while complete
+    fresh catalog proof or a material apparent price/reference change can still
+    shorten its schedule immediately through the existing enqueue path. This
+    removes repeated no-information API work without converting catalog hints
+    into exact proof.
+
     Walmart HTML is isolated from normal exact throughput. Fresh catalog proof
     and official item-detail/Product Lookup run first for every claim. Only one
     claim per pacing window may attempt the product-page fallback, and the first
@@ -142,6 +153,12 @@ async def process_actionable_walmart_exact_queue_batch(
     maintenance = await maintain_terminal_identity_rows_bounded(db)
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
+
+    # #277 proved this signature means both official exact price paths returned
+    # the exact item without a canonical current purchase price. Park only the
+    # untouched six-hour schedule before pressure/claim work. A fresh/material
+    # wake changes next_attempt_at and therefore bypasses this dormancy guard.
+    await park_mature_confirmed_no_price_retries(conn, now=now)
 
     page_circuit_remaining = _page_challenge_circuit_remaining_seconds(provider)
     page_probe_remaining = page_html_probe_remaining_seconds(provider)
@@ -310,7 +327,8 @@ async def process_actionable_walmart_exact_queue_batch(
         "offer_memory_rows=%s persistence_statements=%s "
         "page_circuit_reschedule_rows=0 price_recovery=exact_id_search_v257 "
         "exact_lookup=affiliate_items_ids_v276 "
-        "confirmed_no_price_cooldown=api_price_missing_v277",
+        "confirmed_no_price_cooldown=api_price_missing_v277 "
+        "confirmed_no_price_dormancy=confirmed_no_price_dormancy_v285",
         len(claims),
         persisted.queue_rows,
         persisted.offer_rows,

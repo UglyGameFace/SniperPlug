@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -17,6 +20,8 @@ from sniperplug.services.walmart_exact_verification_queue import (
 )
 
 
+log = logging.getLogger("sniperplug.autoscan")
+
 # Catalog emergency backpressure only needs bounded scheduling pressure. Fresh
 # work trips much earlier (12/48), and a single exact worker cannot legitimately
 # hold hundreds of active leases. Confirmed dual-no-price retries that are still
@@ -31,12 +36,21 @@ FRESH_PRESSURE_CAP = 64
 CONFIRMED_NO_PRICE_PRESSURE_CAP = DEFAULT_PRESSURE_CAP
 RECOVERY_PRESSURE_CAP = 64
 VERIFYING_PRESSURE_CAP = 64
+PAGE_RECOVERY_REASON_DIAGNOSTIC_MARKER = "page_recovery_reason_sample_v288"
+PAGE_RECOVERY_REASON_DIAGNOSTIC_INTERVAL_SECONDS = 5 * 60
 STATUS_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_due"
 STATUS_VERIFIED_DUE_INDEX = f"idx_{QUEUE_TABLE}_status_verified_due"
 CONFIRMED_NO_PRICE_FLOOR_SQL = (
     f"julianday(next_attempt_at) >= "
     f"julianday(last_attempt_at, '+{CONFIRMED_API_PRICE_MISSING_RETRY_SECONDS} seconds')"
 )
+_page_recovery_reason_next_at = 0.0
+
+
+@dataclass(frozen=True)
+class WalmartPageRecoveryReasonSample:
+    sampled: int = 0
+    reasons: tuple[tuple[str, int], ...] = ()
 
 
 def _sql_statuses(statuses: tuple[str, ...]) -> str:
@@ -238,7 +252,7 @@ async def load_walmart_exact_queue_pressure(
     rechecks = _as_int(_row_get(row, "recheck_due_now", 3))
     verifying = _as_int(_row_get(row, "verifying", 4))
     due = fresh + no_price + recovery + rechecks
-    return WalmartExactQueueHealth(
+    health = WalmartExactQueueHealth(
         total=due + verifying,
         due_now=due,
         initial_due_now=fresh,
@@ -247,6 +261,122 @@ async def load_walmart_exact_queue_pressure(
         recheck_due_now=rechecks,
         verifying=verifying,
     )
+    if (
+        bounded_cap >= RECOVERY_PRESSURE_CAP
+        and recovery >= RECOVERY_PRESSURE_CAP
+        and _reserve_page_recovery_reason_diagnostic()
+    ):
+        await _log_page_recovery_reason_sample(
+            conn,
+            now_iso=now_iso,
+            discovery_cutoff=discovery_cutoff,
+            cap=RECOVERY_PRESSURE_CAP,
+        )
+    return health
+
+
+async def load_due_walmart_page_recovery_reason_sample(
+    conn: Any,
+    *,
+    now_iso: str,
+    discovery_cutoff: str,
+    cap: int = RECOVERY_PRESSURE_CAP,
+) -> WalmartPageRecoveryReasonSample:
+    """Sample stored retry reasons from the currently due page-recovery lane."""
+
+    bounded_cap = min(RECOVERY_PRESSURE_CAP, max(1, int(cap)))
+    cursor = await conn.execute(
+        f"""
+        SELECT last_error
+        FROM {QUEUE_TABLE} INDEXED BY {STATUS_DUE_INDEX}
+        WHERE status = 'page_retry'
+          AND next_attempt_at <= ?
+          AND last_seen_at >= ?
+          AND (lease_until IS NULL OR lease_until < ?)
+        ORDER BY next_attempt_at ASC
+        LIMIT ?
+        """,
+        (now_iso, discovery_cutoff, now_iso, bounded_cap),
+    )
+    rows = list(await cursor.fetchall())
+    counts: dict[str, int] = {}
+    for row in rows:
+        reason = _page_recovery_retry_kind(
+            str(_row_get(row, "last_error", 0) or "")
+        )
+        counts[reason] = counts.get(reason, 0) + 1
+    reasons = tuple(
+        sorted(
+            counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    )
+    return WalmartPageRecoveryReasonSample(
+        sampled=len(rows),
+        reasons=reasons,
+    )
+
+
+async def _log_page_recovery_reason_sample(
+    conn: Any,
+    *,
+    now_iso: str,
+    discovery_cutoff: str,
+    cap: int,
+) -> None:
+    try:
+        sample = await load_due_walmart_page_recovery_reason_sample(
+            conn,
+            now_iso=now_iso,
+            discovery_cutoff=discovery_cutoff,
+            cap=cap,
+        )
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never stop queue work.
+        log.warning(
+            "Walmart page recovery due-reason sample failed marker=%s error=%s",
+            PAGE_RECOVERY_REASON_DIAGNOSTIC_MARKER,
+            type(exc).__name__,
+        )
+        return
+
+    reasons = ",".join(
+        f"{reason}={count}"
+        for reason, count in sample.reasons
+    ) or "none"
+    log.info(
+        "Walmart page recovery due-reason sample marker=%s sampled=%s cap=%s "
+        "sample_saturated=%s reasons=%s",
+        PAGE_RECOVERY_REASON_DIAGNOSTIC_MARKER,
+        sample.sampled,
+        max(1, int(cap)),
+        str(sample.sampled >= max(1, int(cap))).lower(),
+        reasons,
+    )
+
+
+def _reserve_page_recovery_reason_diagnostic(
+    *,
+    now_monotonic: float | None = None,
+) -> bool:
+    global _page_recovery_reason_next_at
+
+    now_value = time.monotonic() if now_monotonic is None else float(now_monotonic)
+    if _page_recovery_reason_next_at > now_value:
+        return False
+    _page_recovery_reason_next_at = (
+        now_value + PAGE_RECOVERY_REASON_DIAGNOSTIC_INTERVAL_SECONDS
+    )
+    return True
+
+
+def _page_recovery_retry_kind(error: str) -> str:
+    for token in str(error or "").split():
+        if not token.startswith("retry_kind="):
+            continue
+        value = token.split("=", 1)[1].strip().strip(",;:()[]{}")
+        if value:
+            return value[:80]
+    return "unclassified"
 
 
 def bounded_pressure_summary(

@@ -618,7 +618,7 @@ def _walk_dict_nodes(value: Any, *, prefix: str):
             yield current, path
             for key, child in reversed(list(current.items())):
                 if isinstance(child, (dict, list)):
-                    stack.append((child, f"{path}.{key}", depth + 1))
+                    stack.append((child, f"{path}.{key}"))
         elif isinstance(current, list):
             for index in range(len(current) - 1, -1, -1):
                 child = current[index]

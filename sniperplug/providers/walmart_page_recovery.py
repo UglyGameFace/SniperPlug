@@ -500,17 +500,27 @@ def _request_product_page_scripts(item_id: str, timeout: float) -> list[str]:
                 parser.feed(text)
             parser.close()
     except urllib.error.HTTPError as exc:
-        if exc.code in _TRANSIENT_HTTP_CODES:
+        code = int(exc.code)
+        try:
+            if code in _TRANSIENT_HTTP_CODES:
+                raise WalmartPageRecoveryTransientError(
+                    f"HTTP {code}",
+                    reason_code=f"page_http_{code}",
+                ) from exc
+            # 404 and 410 both mean this HTML fallback has no product resource.
+            # The official API result remains authoritative; returning no scripts
+            # lets the canonical verifier fail closed instead of creating a
+            # permanent page-retry treadmill for a gone page.
+            if code in {404, 410}:
+                return []
             raise WalmartPageRecoveryTransientError(
-                f"HTTP {exc.code}",
-                reason_code=f"page_http_{int(exc.code)}",
+                f"HTTP {code}",
+                reason_code=f"page_http_{code}",
             ) from exc
-        if exc.code == 404:
-            return []
-        raise WalmartPageRecoveryTransientError(
-            f"HTTP {exc.code}",
-            reason_code=f"page_http_{int(exc.code)}",
-        ) from exc
+        finally:
+            # HTTPError owns the response body/socket. Close it on every branch,
+            # including not-found/gone returns and raised transient failures.
+            exc.close()
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", None)
         retry_kind = "page_timeout" if isinstance(reason, TimeoutError) else "page_network"

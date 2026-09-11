@@ -8,6 +8,7 @@ The active lock remains Walmart exact-recovery debt until the remaining queue/re
 Base main for the current follow-up: `98f49ef86374ed359bb3d3c899ba44789c632371` (PR #288 merge).
 
 Current focused branch: `fix/walmart-lookup-6001-normalization-289`.
+Current focused PR: #289, draft.
 
 ## Completed prerequisite — SP-GATEWAY-EVENT-LOOP-LAG
 PR #284 remains production-accepted.
@@ -74,6 +75,23 @@ Do not extend #285 dormancy to 6001 in this patch.
 
 The #285 dormancy signature is stronger and different: both official exact price paths returned the exact item but no canonical current price. A 6001 result means the secondary Product Lookup returned no item result. Keep the existing generic retry/backoff and catalog wake behavior until the normalized class is visible in fresh production telemetry. The expected batch reason will become `api_price_missing->api_exact_lookup_no_match`, which can then be measured separately from malformed/validation HTTP 400s.
 
+## PR #289 current changes
+The intended net scope remains exactly three files:
+- `ACTIVE_TASK.md`;
+- `sniperplug/providers/walmart_exact_lookup.py`;
+- `tests/test_walmart_exact_lookup_results_not_found_289.py`.
+
+The provider patch performs strict structured normalization only. It does not alter the Product Lookup request, exact proof path, page path, persistence policy, or fanout.
+
+The new regression covers the live gzip-compressed code-6001 body, response closure/readability, the v289 marker, strict mixed/other-error rejection, and preservation of generic code-4008 behavior.
+
+## PR #289 validation status
+**PENDING. Do not mark ready or merge.**
+
+GitHub-hosted `Python tests`, `Python Check`, and `Import smoke check` were created for the first #289 head but failed before executing any steps. Their jobs report `steps=[]`, `runner_id=0`, and no assigned runner. Treat those conclusions as runner-side non-evidence, not code-test failures and not successful validation.
+
+No exact-head full-suite completion claim is authorized until executable validation is available.
+
 ## Validation required for PR #289
 - targeted regression for gzip-compressed HTTP 400 code 6001 / `Results not found`;
 - regression proving response closure and readable detail are preserved;
@@ -118,4 +136,4 @@ Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged mo
 - SniperPlug-Site work
 
 ## Next step
-Open PR #289 as draft and validate one exact head. Do not mark ready or merge until the required targeted, compatibility, process/libsql, compile/import/pip, full-suite, scope/diff/conflict/worktree, and final SHA checks pass. Independently, wait for fresh merged-deployment `page_recovery_reason_sample_v288` telemetry before authorizing a page-lane behavior change.
+Obtain executable exact-head validation for draft PR #289. Keep it draft and unmerged until targeted/compatibility tests, native process/libsql tests, compile/import/pip checks, the full suite, diff/scope/conflict/worktree checks, and final SHA recheck all pass. Separately, do not authorize a page-lane behavior change until fresh merged-deployment `page_recovery_reason_sample_v288` telemetry identifies the dominant stored page-retry reason.

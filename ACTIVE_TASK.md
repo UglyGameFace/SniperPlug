@@ -3,65 +3,76 @@
 ## Status
 **SP-WM-EXACT-RECOVERY-DEBT — IN PROGRESS.**
 
-The user authorized moving here once `SP-GATEWAY-EVENT-LOOP-LAG` was solved. PR #284 is production-accepted. PR #285 is merged and its dormancy mechanism is now live in production. The active lock remains Walmart exact-recovery debt while the smaller recovery failure classes are resolved from production evidence.
+The user authorized moving here once `SP-GATEWAY-EVENT-LOOP-LAG` was solved. PR #284 remains production-accepted. The active lock remains Walmart exact-recovery debt until the remaining queue/recovery failure classes are resolved from production evidence.
 
-Base main for the current follow-up: `1b9f0ecdc6768ac866e72672cb79655617c77340` (PR #285 merge).
+Base main for the current follow-up: `7a25db0500c563992306ebec8a90db877233be46` (PR #286 merge).
 
 ## Completed prerequisite — SP-GATEWAY-EVENT-LOOP-LAG
 PR #284 is production-accepted.
 
-A real 41.5-second Discord heartbeat warning was correlated with only ~0.29s local event-loop lag and then recovered normally. The residual event is Discord heartbeat ACK/network-path latency, not SniperPlug event-loop starvation. Do not throttle Walmart or reopen that task based solely on another `Can't keep up` warning while local loop-lag telemetry remains healthy.
+A real ~41-second Discord heartbeat warning can still occur while local loop lag remains under one second and the watchdog classifies it `gateway_ack_latency_loop_healthy`. Do not reopen or throttle Walmart based solely on those ACK/network-path events while local event-loop telemetry remains healthy.
 
-## PR #285 production evidence
-The deployed runtime proves the confirmed-no-price dormancy pass is active:
+## PR #285 production acceptance — confirmed no-price debt
+PR #285 is live and its dormancy policy is working as intended.
 
-- `marker=confirmed_no_price_dormancy_v285` is present;
-- each pass is parking exactly the configured bounded batch of 200 rows;
-- write telemetry carries `confirmed_no_price_dormancy=confirmed_no_price_dormancy_v285`;
-- fresh exact work continues to verify normally, including a 24/24 batch with 20 official price results and later fresh-proof batches;
-- the queue still reports `confirmed no-price retries >=600`, but that field is deliberately capped at 600 and therefore only proves that more than 600 due rows remain. It does not show that the same parked rows are being reclaimed.
+Production moved the mature dual `api_price_missing -> api_price_missing` population out of the immediate retry lane in bounded passes. The bounded pressure view progressed from `confirmed no-price retry >=600`, to single digits, and then to `confirmed no-price retry 0`. Later `parked=6/7/8` lines are newly maturing rows being moved to the 30-day safety reprobe, not the old saturated backlog returning.
 
-The supplied post-deploy window contains more than twenty successful 200-row parking passes, so thousands of mature low-signal rows are being moved out of the immediate six-hour retry lane. Continue to treat the `>=600` display as a saturated lower bound until the underlying population falls below the cap.
+This is the intentional workaround for Walmart exact responses that contain no canonical purchase price: preserve fail-closed proof, stop repeatedly hammering unchanged no-price rows, and allow complete fresh/material catalog evidence to wake them immediately.
 
-## Current production symptom
-With #285 live, the next concrete issue is now visible instead of being buried under the no-price wave:
+## PR #286 production acceptance — readable Product Lookup errors
+PR #286 is live and accepted for its intended transport fix.
 
-- Product Lookup still occasionally returns HTTP 400;
-- the current diagnostic text is binary-looking garbage rather than Walmart's validation response;
-- immediately after one such HTTP 400, Python emitted `ResourceWarning: unclosed <ssl.SSLSocket ...>`;
-- the ordinary exact verifier remains healthy around those incidents, so this is transport/error-body handling, not a broad API outage;
-- a rare `page_http_410` also remains and will be handled separately after the Product Lookup failure is made readable.
+Production now emits `decode=lookup_http_error_decode_v286`, and the formerly compressed HTTP 400 body is readable. Walmart's actual response is code `6001` with message `Results not found` for the exact requested item ID.
 
-## Root-cause finding for PR #286
-`sniperplug/providers/walmart_exact_lookup.py` delegates the real Affiliate Product Lookup request to the provider's generic `_request_json` transport. Walmart's legacy Affiliate endpoint can return a compressed HTTP error entity. The current HTTP-error path reads those bytes and decodes them directly as UTF-8, which explains the production diagnostic garbage. The HTTPError response object is also not deterministically closed after its body is read, matching the observed unclosed SSL socket warning.
+That evidence does **not** show a malformed `ids` request shape. It shows a per-item no-result response from the Affiliate Product Lookup endpoint. Do not switch endpoint or request semantics based on this response. A later narrow normalization may map this specific 6001 no-result case to the existing exact-lookup no-match category, while unrelated 400 validation errors remain `api_http_400`.
 
-The next patch must not guess at a new Walmart request shape yet. First make the existing exact Product Lookup transport surface the actual upstream validation response and close the HTTP error response reliably.
+## Current production bottleneck
+After the no-price lane reached zero, bounded queue pressure still bottoms out at:
 
-## Implementation scope — PR #286
-1. Keep the exact Product Lookup endpoint, `ids` parameter, signature headers, timeout, exact-item verification, and canonical price proof unchanged.
-2. Give the real Product Lookup path a narrow transport wrapper that still uses the provider's signed headers.
-3. Decode HTTP error bodies according to `Content-Encoding`, including gzip/deflate, before constructing `WalmartProviderError`.
-4. Always close the HTTPError response after reading it so compressed 400s cannot leak SSL socket wrappers.
-5. Preserve the existing generic `_request_json` fallback for lightweight test doubles that do not expose signed headers.
-6. Add `lookup_http_error_decode_v286` to the Product Lookup HTTP 400 diagnostic so production can prove the new path is live.
-7. Do not alter retry policy, price/reference trust, seller/offer/variant/marketplace/shipping proof, fanout, page recovery, or the #285 dormancy logic.
+- new/ordinary retry: `0` in the cleanest sample;
+- confirmed no-price retry: `0`;
+- page recovery: `>=64`;
+- scheduled rechecks: `0`.
 
-## Validation required for PR #286
-- new gzip HTTP 400 decode/close regression;
-- exact `ids` request and exact-item handoff regression;
-- prior #274-#276 Product Lookup/diagnostic/handoff regressions;
-- #277-#285 Walmart recovery/queue regressions;
+That isolates page recovery as the current dominant due backlog.
+
+The same production window also produced `retry_kind=page_http_410` followed seconds later by `ResourceWarning: unclosed <ssl.SSLSocket ...>`. Inspection of `_request_product_page_scripts` confirms both behaviors are real code issues:
+
+1. `urllib.error.HTTPError` is not deterministically closed on the page-recovery path.
+2. HTTP 410 Gone is treated as a transient `page_retry`, even though HTTP 404 already means the HTML fallback has no product resource.
+
+A 410 from the optional HTML identity fallback cannot create exact proof by being retried every 30 minutes. The official API remains authoritative. Treating 410 as page absence preserves fail-closed behavior while allowing strict fresh catalog proof to rearm the item later if valid evidence returns.
+
+## Implementation scope — PR #287
+1. Preserve the official API-first exact flow, page challenge circuit, one-probe pacing, and page claim cap.
+2. Close every page-recovery `HTTPError` response in a `finally` path so 404/410 returns and transient raises cannot leak the response socket.
+3. Treat HTTP 410 Gone the same as the existing HTTP 404 absence case: return no structured scripts rather than creating another transient `page_retry`.
+4. Preserve transient retry behavior for 403/408/425/429/5xx and other non-absence HTTP failures.
+5. Preserve exact item, seller, selected-offer, variant, marketplace, shipping, price, and reference proof rules unchanged.
+6. Preserve strict fresh-snapshot rescue of incomplete/page-recovery rows. No guessed seller/offer data and no weaker promotion path.
+7. Do not raise page concurrency or page claim caps merely to force-drain the backlog.
+
+## Validation required for PR #287
+- regression proving HTTP 410 returns page absence and closes its response body;
+- regression proving existing HTTP 404 absence also closes its response body;
+- regression proving a true transient HTTP error such as 503 still raises `page_http_503` and closes its response body;
+- regression proving an absent page produces no fabricated identity proof;
+- existing Walmart page identity/recovery tests;
+- exact queue/pacing/circuit regressions;
+- #285 dormancy and #286 exact-lookup diagnostics regressions;
 - native libsql/process runtime tests;
 - gateway #284 regression;
 - compile/import/pip checks;
 - full pytest suite;
-- diff/scope/conflict-marker/clean-worktree checks on one exact head;
-- production acceptance showing `decode=lookup_http_error_decode_v286` and a readable Walmart HTTP 400 validation body instead of compressed garbage, with no matching unclosed-SSL ResourceWarning.
+- exact changed-file scope, diff, conflict-marker scan, clean worktree, and final SHA recheck.
 
-## Follow-up inside this active task
-Once the readable upstream 400 response identifies Walmart's actual validation complaint, change request semantics only if that evidence requires it. Existing public examples show both query-parameter and path-item forms have existed for the legacy Affiliate Product API, but that is not enough to blindly switch production behavior before seeing the live error body.
+## Production acceptance for PR #287
+After deployment:
 
-After the Product Lookup failure class is resolved, inspect the remaining `page_http_410` / page-recovery population separately. A rare page error alone is not evidence for weakening the existing one-probe pacing or page challenge circuit.
+- no new `page_http_410` retry should be created for a 410 Gone page;
+- the matching page HTTPError path must no longer emit an unclosed-SSL `ResourceWarning`;
+- the `page recovery >=64` lane should begin dropping as old due rows are naturally reclaimed and reclassified;
+- if page recovery remains saturated after 410 rows cycle out, inspect the bounded reason distribution before changing pacing or concurrency.
 
 ## Suspended task — SP-MOVIE-TICKETS-RECOVERY
 Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged movie-ticket work unchanged.
@@ -76,4 +87,4 @@ Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged mo
 - SniperPlug-Site work
 
 ## Next step
-Validate PR #286 on one exact head. Merge only after the targeted Product Lookup transport tests, Walmart regressions, full suite, exact scope, diff/conflict checks, and final SHA recheck all pass. Then deploy and capture the next live Product Lookup HTTP 400 so its actual upstream validation message can drive the semantic fix instead of another guess.
+Validate PR #287 on one exact head. Do not merge until the new page HTTP lifecycle regressions, existing Walmart recovery/queue suites, full suite, compile/import/pip checks, exact scope/diff/conflict checks, clean worktree, and final SHA recheck all pass.

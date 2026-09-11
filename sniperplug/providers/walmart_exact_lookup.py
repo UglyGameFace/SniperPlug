@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import json
 import logging
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
+import zlib
 from typing import Any
 
 from sniperplug.providers.walmart import WalmartProviderError, _trusted_current_price
@@ -13,6 +18,7 @@ from sniperplug.providers.walmart import WalmartProviderError, _trusted_current_
 AFFILIATE_PRODUCT_LOOKUP_EXACT_SOURCE = "affiliate_product_lookup_exact_item"
 AFFILIATE_PRODUCT_LOOKUP_ROUTE = "items_ids_v274"
 EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER = "lookup_shape_v275"
+EXACT_LOOKUP_HTTP_ERROR_DECODE_MARKER = "lookup_http_error_decode_v286"
 
 _WRAPPER_KEYS = (
     "item",
@@ -95,7 +101,8 @@ def _fetch_exact_affiliate_product_lookup_payload_sync(
 
     detail_url = str(getattr(provider, "detail_url", "") or "").strip()
     request_json = getattr(provider, "_request_json", None)
-    if not detail_url or not callable(request_json):
+    signed_headers = getattr(provider, "_signed_headers", None)
+    if not detail_url or (not callable(request_json) and not callable(signed_headers)):
         raise WalmartProviderError(
             "Walmart Affiliate Product Lookup is unavailable on this provider.",
             retry_kind="api_exact_lookup_unavailable",
@@ -112,7 +119,7 @@ def _fetch_exact_affiliate_product_lookup_payload_sync(
 
     url = f"{detail_url}?{urllib.parse.urlencode(params)}"
     try:
-        payload = request_json(url)
+        payload = _request_exact_lookup_json(provider, url)
     except WalmartProviderError as error:
         if str(getattr(error, "retry_kind", "") or "").strip().lower() == "api_http_400":
             _maybe_log_http_400(provider, clean_id, error)
@@ -133,6 +140,112 @@ def _fetch_exact_affiliate_product_lookup_payload_sync(
     if current_price is None or current_price <= 0:
         _maybe_log_missing_price_shape(provider, clean_id, exact)
     return exact
+
+
+def _request_exact_lookup_json(provider: Any, url: str) -> dict:
+    """Request exact Product Lookup with readable, closed HTTP-error bodies.
+
+    Walmart's legacy Affiliate Product Lookup can return a gzip-compressed error
+    entity on HTTP 400. The provider's historical generic error path decodes the
+    compressed bytes directly as UTF-8, which turns the only useful upstream
+    validation detail into binary-looking garbage and can leave the HTTPError's
+    socket wrapper open. Keep endpoint and signature semantics unchanged here,
+    but decode Content-Encoding before surfacing the bounded error text and close
+    the error response deterministically.
+
+    Lightweight test doubles that only expose ``_request_json`` keep using that
+    method; the real Walmart provider exposes ``_signed_headers`` and therefore
+    uses this exact-lookup transport path in production.
+    """
+
+    signed_headers = getattr(provider, "_signed_headers", None)
+    if not callable(signed_headers):
+        request_json = getattr(provider, "_request_json", None)
+        if not callable(request_json):
+            raise WalmartProviderError(
+                "Walmart Affiliate Product Lookup request transport is unavailable.",
+                retry_kind="api_exact_lookup_unavailable",
+            )
+        return request_json(url)
+
+    config = getattr(provider, "config", None)
+    timeout_seconds = max(1, int(getattr(config, "timeout_seconds", 12) or 12))
+    request = urllib.request.Request(
+        url,
+        headers=signed_headers(),
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        try:
+            encoded_body = exc.read()
+            content_encoding = str(
+                getattr(exc, "headers", {}).get("Content-Encoding", "") or ""
+            )
+        finally:
+            exc.close()
+        body = _decode_http_error_body(
+            encoded_body,
+            content_encoding=content_encoding,
+        )[:400]
+        raise WalmartProviderError(
+            f"Walmart API HTTP {exc.code}: {body}",
+            retry_kind=f"api_http_{int(exc.code)}",
+        ) from exc
+    except TimeoutError as exc:
+        raise WalmartProviderError(
+            "Walmart API request timed out.",
+            retry_kind="api_timeout",
+        ) from exc
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        retry_kind = "api_timeout" if isinstance(reason, TimeoutError) else "api_network"
+        raise WalmartProviderError(
+            f"Walmart API network error: {reason}",
+            retry_kind=retry_kind,
+        ) from exc
+
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise WalmartProviderError(
+            "Walmart API returned non-JSON response.",
+            retry_kind="api_non_json",
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise WalmartProviderError(
+            "Walmart API returned unexpected payload shape.",
+            retry_kind="api_payload_shape",
+        )
+    return decoded
+
+
+def _decode_http_error_body(raw: bytes, *, content_encoding: str) -> str:
+    data = bytes(raw or b"")
+    encodings = [
+        token.strip().lower()
+        for token in str(content_encoding or "").split(",")
+        if token.strip()
+    ]
+    try:
+        for encoding in reversed(encodings):
+            if encoding in {"", "identity"}:
+                continue
+            if encoding == "gzip":
+                data = gzip.decompress(data)
+                continue
+            if encoding == "deflate":
+                try:
+                    data = zlib.decompress(data)
+                except zlib.error:
+                    data = zlib.decompress(data, -zlib.MAX_WBITS)
+                continue
+            break
+    except (OSError, EOFError, zlib.error):
+        data = bytes(raw or b"")
+    return data.decode("utf-8", errors="replace")
 
 
 def exact_item_from_product_lookup_payload(payload: Any, item_id: str) -> dict | None:
@@ -289,8 +402,9 @@ def _maybe_log_http_400(provider: Any, item_id: str, error: Exception) -> None:
     ):
         return
     log.info(
-        "Walmart exact Product Lookup HTTP 400 diagnostic marker=%s item_id=%s detail=%s",
+        "Walmart exact Product Lookup HTTP 400 diagnostic marker=%s decode=%s item_id=%s detail=%s",
         EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER,
+        EXACT_LOOKUP_HTTP_ERROR_DECODE_MARKER,
         item_id,
         _diagnostic_token(error, max_chars=220),
     )
@@ -376,6 +490,7 @@ def _diagnostic_token(value: Any, *, max_chars: int = 48) -> str:
 __all__ = [
     "AFFILIATE_PRODUCT_LOOKUP_EXACT_SOURCE",
     "AFFILIATE_PRODUCT_LOOKUP_ROUTE",
+    "EXACT_LOOKUP_HTTP_ERROR_DECODE_MARKER",
     "EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER",
     "exact_item_from_product_lookup_payload",
     "fetch_exact_affiliate_product_lookup_payload",

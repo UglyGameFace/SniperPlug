@@ -3,76 +3,80 @@
 ## Status
 **SP-WM-EXACT-RECOVERY-DEBT — IN PROGRESS.**
 
-The user authorized moving here once `SP-GATEWAY-EVENT-LOOP-LAG` was solved. PR #284 remains production-accepted. The active lock remains Walmart exact-recovery debt until the remaining queue/recovery failure classes are resolved from production evidence.
+The active lock remains Walmart exact-recovery debt until the remaining queue/recovery failure classes are resolved from production evidence. Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
-Base main for the current follow-up: `7a25db0500c563992306ebec8a90db877233be46` (PR #286 merge).
+Base main for the current follow-up: `4da84f6baffe66154b2bcd6771fa0c92726fa3ae` (PR #287 merge).
 
 ## Completed prerequisite — SP-GATEWAY-EVENT-LOOP-LAG
-PR #284 is production-accepted.
+PR #284 remains production-accepted.
 
-A real ~41-second Discord heartbeat warning can still occur while local loop lag remains under one second and the watchdog classifies it `gateway_ack_latency_loop_healthy`. Do not reopen or throttle Walmart based solely on those ACK/network-path events while local event-loop telemetry remains healthy.
+The latest supplied window again contained ~41-second Discord heartbeat warnings, but local loop lag remained below one second (`recent_loop_lag_max_s` up to 0.59s), the watchdog classified them `gateway_ack_latency_loop_healthy`, and latency recovered normally. Do not reopen or throttle Walmart based solely on those ACK/network-path events while local event-loop telemetry remains healthy.
 
 ## PR #285 production acceptance — confirmed no-price debt
-PR #285 is live and its dormancy policy is working as intended.
+PR #285 remains live and working as intended.
 
-Production moved the mature dual `api_price_missing -> api_price_missing` population out of the immediate retry lane in bounded passes. The bounded pressure view progressed from `confirmed no-price retry >=600`, to single digits, and then to `confirmed no-price retry 0`. Later `parked=6/7/8` lines are newly maturing rows being moved to the 30-day safety reprobe, not the old saturated backlog returning.
-
-This is the intentional workaround for Walmart exact responses that contain no canonical purchase price: preserve fail-closed proof, stop repeatedly hammering unchanged no-price rows, and allow complete fresh/material catalog evidence to wake them immediately.
+Production is parking mature dual `api_price_missing -> api_price_missing` rows into the 30-day safety reprobe lane. The newest window still shows bounded `parked=` batches, including 28, 23, 16, 15, 14, 11, 8, 7, 6, 4, 3, and 2 rows. Those are newly maturing low-signal retries, not proof that the old saturated backlog returned. Complete fresh/material catalog evidence can still wake them immediately.
 
 ## PR #286 production acceptance — readable Product Lookup errors
-PR #286 is live and accepted for its intended transport fix.
+PR #286 remains production-accepted.
 
-Production now emits `decode=lookup_http_error_decode_v286`, and the formerly compressed HTTP 400 body is readable. Walmart's actual response is code `6001` with message `Results not found` for the exact requested item ID.
+The runtime repeatedly emits `decode=lookup_http_error_decode_v286` with readable Walmart code `6001` / `Results not found`. This does not prove the existing exact `ids` request is malformed. Do not switch endpoint or request semantics from this evidence alone. A later narrow normalization may map this specific no-result response to an existing exact-lookup no-match category without changing unrelated HTTP 400 handling.
 
-That evidence does **not** show a malformed `ids` request shape. It shows a per-item no-result response from the Affiliate Product Lookup endpoint. Do not switch endpoint or request semantics based on this response. A later narrow normalization may map this specific 6001 no-result case to the existing exact-lookup no-match category, while unrelated 400 validation errors remain `api_http_400`.
+## PR #287 production acceptance — HTTP 410 / response lifecycle
+PR #287 is now live.
 
-## Current production bottleneck
-After the no-price lane reached zero, bounded queue pressure still bottoms out at:
+In the supplied post-merge production window from roughly 12:52 through 13:10:
+- no new `page_http_410` outcome appears;
+- no matching `ResourceWarning: unclosed <ssl.SSLSocket ...>` appears;
+- Product Lookup and exact verification continue operating;
+- therefore the intended 410-as-page-absence and HTTPError-close behavior is production-accepted for this observed window.
 
-- new/ordinary retry: `0` in the cleanest sample;
-- confirmed no-price retry: `0`;
-- page recovery: `>=64`;
-- scheduled rechecks: `0`.
+The remaining acceptance criterion is not met: the page-recovery due lane stays saturated at `>=64` throughout the window. Examples include:
+- 12:53:04 — page recovery `>=64`;
+- 13:03:17 — page recovery `>=64`;
+- 13:08:31 — page recovery `>=64`.
 
-That isolates page recovery as the current dominant due backlog.
+Fresh/ordinary retry pressure rises and falls independently, and confirmed-no-price pressure often returns to single digits or zero after parking. The persistent floor is still page recovery.
 
-The same production window also produced `retry_kind=page_http_410` followed seconds later by `ResourceWarning: unclosed <ssl.SSLSocket ...>`. Inspection of `_request_product_page_scripts` confirms both behaviors are real code issues:
+## Current production finding
+Do **not** raise page concurrency, claim caps, or weaken proof yet.
 
-1. `urllib.error.HTTPError` is not deterministically closed on the page-recovery path.
-2. HTTP 410 Gone is treated as a transient `page_retry`, even though HTTP 404 already means the HTML fallback has no product resource.
+The current logs tell us that the page-recovery lane is large, but not why those rows are there. The batch result's `page **0**` counter only reports the current outcome of claimed work; it does not reveal the stored `last_error` distribution of the still-due `page_retry` population. A row can have entered the page lane earlier and later produce an API-only result, so that counter cannot be used as a backlog reason histogram.
 
-A 410 from the optional HTML identity fallback cannot create exact proof by being retried every 30 minutes. The official API remains authoritative. Treating 410 as page absence preserves fail-closed behavior while allowing strict fresh catalog proof to rearm the item later if valid evidence returns.
+The next structurally correct step is bounded observability of the due `page_retry` reasons.
 
-## Implementation scope — PR #287
-1. Preserve the official API-first exact flow, page challenge circuit, one-probe pacing, and page claim cap.
-2. Close every page-recovery `HTTPError` response in a `finally` path so 404/410 returns and transient raises cannot leak the response socket.
-3. Treat HTTP 410 Gone the same as the existing HTTP 404 absence case: return no structured scripts rather than creating another transient `page_retry`.
-4. Preserve transient retry behavior for 403/408/425/429/5xx and other non-absence HTTP failures.
-5. Preserve exact item, seller, selected-offer, variant, marketplace, shipping, price, and reference proof rules unchanged.
-6. Preserve strict fresh-snapshot rescue of incomplete/page-recovery rows. No guessed seller/offer data and no weaker promotion path.
-7. Do not raise page concurrency or page claim caps merely to force-drain the backlog.
+## Implementation scope — PR #288
+1. Preserve all current scheduling, claim priority, page pacing, challenge circuit, claim caps, dormancy, and exact proof behavior.
+2. When the existing bounded pressure read proves page recovery is saturated at the full 64-row cap, sample at most 64 currently due `page_retry` rows through the existing `status/due` index.
+3. Group only their stored `retry_kind=` values from `last_error`; do not read the full queue or change any row.
+4. Emit `marker=page_recovery_reason_sample_v288` with sampled count, cap, saturation flag, and bounded reason counts.
+5. Run the extra diagnostic read at most once every five minutes per process.
+6. If the diagnostic query fails, log the diagnostic failure and continue normal exact work. Observability must never block the queue.
+7. Do not normalize old reasons, reschedule rows, increase page traffic, or change Product Lookup semantics in this PR.
 
-## Validation required for PR #287
-- regression proving HTTP 410 returns page absence and closes its response body;
-- regression proving existing HTTP 404 absence also closes its response body;
-- regression proving a true transient HTTP error such as 503 still raises `page_http_503` and closes its response body;
-- regression proving an absent page produces no fabricated identity proof;
-- existing Walmart page identity/recovery tests;
-- exact queue/pacing/circuit regressions;
-- #285 dormancy and #286 exact-lookup diagnostics regressions;
+## Validation required for PR #288
+- regression proving the reason sample is capped at 64;
+- regression proving it uses `idx_walmart_exact_detail_queue_status_due`;
+- regression proving it filters only due, retained, unleased `page_retry` rows;
+- regression proving reason grouping and `unclassified` fallback;
+- regression proving the five-minute diagnostic cadence;
+- existing queue pressure, claim, pacing, challenge-circuit, #285 dormancy, #286 lookup diagnostics, and #287 page lifecycle tests;
 - native libsql/process runtime tests;
 - gateway #284 regression;
 - compile/import/pip checks;
 - full pytest suite;
 - exact changed-file scope, diff, conflict-marker scan, clean worktree, and final SHA recheck.
 
-## Production acceptance for PR #287
-After deployment:
+## Production acceptance for PR #288
+After deployment, capture one or more lines containing `marker=page_recovery_reason_sample_v288`.
 
-- no new `page_http_410` retry should be created for a 410 Gone page;
-- the matching page HTTPError path must no longer emit an unclosed-SSL `ResourceWarning`;
-- the `page recovery >=64` lane should begin dropping as old due rows are naturally reclaimed and reclassified;
-- if page recovery remains saturated after 410 rows cycle out, inspect the bounded reason distribution before changing pacing or concurrency.
+Use the actual bounded reason distribution to choose the next behavior fix. In particular:
+- a backlog dominated by `page_pacing_deferred` would point at scheduling/claim semantics rather than Walmart HTTP failures;
+- a backlog dominated by challenge/403/429 classes would point at page availability/circuit behavior;
+- a backlog dominated by legacy `page_http_410` would mean old rows still need to cycle or require a bounded compatibility cleanup;
+- another dominant reason should be fixed narrowly from its own evidence.
+
+No concurrency or trust-gate change is authorized until that distribution is visible.
 
 ## Suspended task — SP-MOVIE-TICKETS-RECOVERY
 Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged movie-ticket work unchanged.
@@ -87,4 +91,4 @@ Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged mo
 - SniperPlug-Site work
 
 ## Next step
-Validate PR #287 on one exact head. Do not merge until the new page HTTP lifecycle regressions, existing Walmart recovery/queue suites, full suite, compile/import/pip checks, exact scope/diff/conflict checks, clean worktree, and final SHA recheck all pass.
+Validate PR #288 on one exact head. Merge only after the bounded reason-sampling regressions, existing Walmart recovery/queue suites, full suite, compile/import/pip checks, exact scope/diff/conflict checks, clean worktree, and final SHA recheck all pass.

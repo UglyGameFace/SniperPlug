@@ -3,8 +3,13 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import sniperplug.services.walmart_exact_queue_pressure as pressure_module
 from sniperplug.services.walmart_exact_queue_pressure import (
+    PAGE_RECOVERY_REASON_DIAGNOSTIC_INTERVAL_SECONDS,
+    PAGE_RECOVERY_REASON_DIAGNOSTIC_MARKER,
+    _reserve_page_recovery_reason_diagnostic,
     bounded_pressure_summary,
+    load_due_walmart_page_recovery_reason_sample,
     load_walmart_exact_queue_pressure,
 )
 
@@ -49,6 +54,26 @@ class PressureDatabase:
 
     def require_conn(self):
         return self.conn
+
+
+class PageReasonCursor:
+    def __init__(self, rows) -> None:
+        self.rows = list(rows)
+
+    async def fetchall(self):
+        return list(self.rows)
+
+
+class PageReasonConnection:
+    def __init__(self, rows) -> None:
+        self.rows = list(rows)
+        self.sql = ""
+        self.params = ()
+
+    async def execute(self, sql, params=()):
+        self.sql = str(sql)
+        self.params = tuple(params)
+        return PageReasonCursor(self.rows)
 
 
 def test_bounded_pressure_returns_only_scheduling_counts() -> None:
@@ -113,6 +138,57 @@ def test_bounded_pressure_summary_does_not_claim_unmeasured_totals() -> None:
     assert "total" not in summary
 
 
+def test_page_recovery_reason_sample_is_bounded_and_index_seekable() -> None:
+    conn = PageReasonConnection(
+        [
+            {"last_error": "retry_kind=page_pacing_deferred first"},
+            {"last_error": "retry_kind=page_http_403 second"},
+            {"last_error": "retry_kind=page_pacing_deferred third"},
+            {"last_error": "retry_kind=page_http_410 legacy"},
+            {"last_error": "retry_kind=page_pacing_deferred fourth"},
+            {"last_error": "legacy row without token"},
+        ]
+    )
+
+    sample = asyncio.run(
+        load_due_walmart_page_recovery_reason_sample(
+            conn,
+            now_iso="2026-09-11T13:00:00+00:00",
+            discovery_cutoff="2026-08-28T13:00:00+00:00",
+            cap=999,
+        )
+    )
+
+    assert sample.sampled == 6
+    assert sample.reasons == (
+        ("page_pacing_deferred", 3),
+        ("page_http_403", 1),
+        ("page_http_410", 1),
+        ("unclassified", 1),
+    )
+    assert "status = 'page_retry'" in conn.sql
+    assert "INDEXED BY idx_walmart_exact_detail_queue_status_due" in conn.sql
+    assert "next_attempt_at <= ?" in conn.sql
+    assert "last_seen_at >= ?" in conn.sql
+    assert "lease_until IS NULL OR lease_until < ?" in conn.sql
+    assert "ORDER BY next_attempt_at ASC" in conn.sql
+    assert conn.params[-1] == 64
+
+
+def test_page_recovery_reason_diagnostic_has_a_five_minute_cadence() -> None:
+    previous = pressure_module._page_recovery_reason_next_at
+    try:
+        pressure_module._page_recovery_reason_next_at = 0.0
+        assert _reserve_page_recovery_reason_diagnostic(now_monotonic=100.0) is True
+        assert _reserve_page_recovery_reason_diagnostic(now_monotonic=399.0) is False
+        assert _reserve_page_recovery_reason_diagnostic(now_monotonic=400.0) is True
+    finally:
+        pressure_module._page_recovery_reason_next_at = previous
+
+    assert PAGE_RECOVERY_REASON_DIAGNOSTIC_INTERVAL_SECONDS == 5 * 60
+    assert PAGE_RECOVERY_REASON_DIAGNOSTIC_MARKER == "page_recovery_reason_sample_v288"
+
+
 def test_background_workers_never_call_complete_queue_health() -> None:
     assert "load_walmart_exact_queue_pressure" in RUNNER
     assert "load_walmart_exact_queue_health" not in RUNNER
@@ -126,7 +202,7 @@ def test_background_workers_never_call_complete_queue_health() -> None:
 
 
 def test_pressure_query_is_capped_and_index_seekable() -> None:
-    assert PRESSURE.count("LIMIT ?") == 5
+    assert PRESSURE.count("LIMIT ?") == 6
     assert "DEFAULT_PRESSURE_CAP = 600" in PRESSURE
     assert "FRESH_PRESSURE_CAP = 64" in PRESSURE
     assert "CONFIRMED_NO_PRICE_PRESSURE_CAP = DEFAULT_PRESSURE_CAP" in PRESSURE
@@ -142,3 +218,5 @@ def test_pressure_query_is_capped_and_index_seekable() -> None:
     assert "STATUS_VERIFIED_DUE_INDEX" in PRESSURE
     assert "INDEXED BY {STATUS_DUE_INDEX}" in PRESSURE
     assert "INDEXED BY {STATUS_VERIFIED_DUE_INDEX}" in PRESSURE
+    assert "PAGE_RECOVERY_REASON_DIAGNOSTIC_MARKER" in PRESSURE
+    assert "load_due_walmart_page_recovery_reason_sample" in PRESSURE

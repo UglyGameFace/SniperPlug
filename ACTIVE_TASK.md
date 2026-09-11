@@ -34,7 +34,7 @@ A confirmed dual no-price row means the primary official exact-detail path and t
 
 The queue already has a safe wake mechanism: ordinary weak/cosmetic rediscovery preserves a confirmed-no-price schedule, while a complete fresh selected-offer snapshot or a material apparent current/reference-price change shortens `next_attempt_at` to now. Therefore unchanged dual-no-price rows do not need another exact network request every six hours merely to prove the same absence again.
 
-The first remediation will park only rows whose persisted `next_attempt_at` still exactly represents the untouched six-hour #277 schedule. A row whose schedule was shortened by fresh/material discovery evidence must remain immediately actionable, even when that wake occurs more than six hours after the prior exact attempt.
+The first remediation parks only rows whose persisted `next_attempt_at` still exactly represents the untouched six-hour #277 schedule. A row whose schedule was shortened by fresh/material discovery evidence remains immediately actionable, even when that wake occurs more than six hours after the prior exact attempt.
 
 ## Implementation scope — PR #285
 1. Add a bounded pre-claim dormancy pass for mature confirmed dual-no-price retries.
@@ -45,6 +45,39 @@ The first remediation will park only rows whose persisted `next_attempt_at` stil
 6. Emit `marker=confirmed_no_price_dormancy_v285` with parked-row count for production acceptance.
 7. Do not change current-price trust, reference trust, seller/offer/variant/marketplace/shipping proof, thresholds, fanout, page-circuit behavior, or ordinary transient retry cadence.
 
+## Validation correction
+The first full-suite run on PR #285 reached **1439 passed / 2 failed / 1 warning**. Both failures were stale isolated unit-test mocks, not production queue behavior:
+
+- `test_open_page_circuit_keeps_tiny_api_only_recovery_claim_lane`
+- `test_paced_probe_does_not_reclaim_known_page_retry_lane`
+
+Those tests deliberately construct `FakeDatabase(object())` and mock every database-touching exact-runtime dependency needed for the page-circuit scenario. PR #285 added one new pre-claim database maintenance dependency, `park_mature_confirmed_no_price_retries`, but the two isolated tests had not mocked it. The unmocked helper therefore correctly attempted `conn.execute(...)` on the intentionally non-database `object()` and failed before the page-circuit assertions ran.
+
+The correction is test isolation only: both tests now mock the new dormancy dependency to a zero-row no-op, just as they already mock schema, terminal maintenance, pressure, and claim access. No production dormancy code, proof gate, queue policy, or page behavior was weakened to satisfy these tests.
+
+The first run otherwise passed:
+
+- PR #285 targeted + #277-#282 regressions: **26 passed**;
+- exact queue / bulk regressions: **17 passed**;
+- gateway #284 regression: **10 passed**;
+- native libsql/process runtime: **10 passed**;
+- compile: exit 0;
+- import smoke: **37 modules / 22 symbols**;
+- pip check: no broken requirements;
+- full suite excluding the two stale mocks by outcome: **1439 passed**, 1 `audioop` deprecation warning.
+
+A fresh exact-head rerun is required after the mock correction.
+
+## Current PR #285 scope
+Net changed-file scope is exactly six files:
+
+- `ACTIVE_TASK.md`
+- `sniperplug/services/walmart_confirmed_no_price_dormancy.py`
+- `sniperplug/services/walmart_exact_queue_bulk_runtime.py`
+- `tests/test_autoscan_coverage_stall_253.py`
+- `tests/test_walmart_confirmed_no_price_dormancy_285.py`
+- `tests/test_walmart_deal_delivery_stall_256.py`
+
 ## Follow-up inside this active task
 After the no-price population is no longer wasting exact capacity, use production evidence to resolve the smaller failure classes rather than mixing guesses into this patch:
 
@@ -53,6 +86,7 @@ After the no-price population is no longer wasting exact capacity, use productio
 
 ## Validation required
 - targeted PR #285 no-price dormancy regressions;
+- the two corrected isolated page-circuit regressions;
 - prior #277-#282 Walmart pressure/claim/wake regressions;
 - bulk persistence/runtime regressions;
 - native libsql process tests;
@@ -74,4 +108,4 @@ Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged mo
 - SniperPlug-Site work
 
 ## Next step
-Implement PR #285 on `fix/walmart-confirmed-no-price-dormancy-285`, validate one exact head, then production-check the >=600 no-price lane before changing the smaller HTTP-400/page-timeout paths.
+Rerun exact-head validation on the corrected PR #285 head. Merge only after the full suite, six-file scope, diff/conflict checks, and final SHA recheck all pass.

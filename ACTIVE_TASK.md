@@ -66,9 +66,6 @@ The first run otherwise passed:
 - pip check: no broken requirements;
 - full suite outcome: **1439 passed / 2 stale-mock failures**, 1 `audioop` deprecation warning.
 
-## Current validation head
-Corrected branch head to validate: `03719ad9e26fb48e046b0e692d9df47fbb6af3fb`.
-
 A fresh exact-head rerun is required after the mock correction.
 
 ## Current PR #285 scope
@@ -111,4 +108,4 @@ Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged mo
 - SniperPlug-Site work
 
 ## Next step
-Rerun exact-head validation on corrected head `03719ad9e26fb48e046b0e692d9df47fbb6af3fb`. Merge only after the full suite, six-file scope, diff/conflict checks, and final SHA recheck all pass.
+Rerun exact-head validation on the latest corrected PR #285 head. Merge only after the full suite, six-file scope, diff/conflict checks, and final SHA recheck all pass.

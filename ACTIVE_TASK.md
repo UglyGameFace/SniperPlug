@@ -51,9 +51,9 @@ The first full-suite run on PR #285 reached **1439 passed / 2 failed / 1 warning
 - `test_open_page_circuit_keeps_tiny_api_only_recovery_claim_lane`
 - `test_paced_probe_does_not_reclaim_known_page_retry_lane`
 
-Those tests deliberately construct `FakeDatabase(object())` and mock every database-touching exact-runtime dependency needed for the page-circuit scenario. PR #285 added one new pre-claim database maintenance dependency, `park_mature_confirmed_no_price_retries`, but the two isolated tests had not mocked it. The unmocked helper therefore correctly attempted `conn.execute(...)` on the intentionally non-database `object()` and failed before the page-circuit assertions ran.
+Those tests deliberately construct `FakeDatabase(object())` and mock every database-touching exact-runtime dependency needed for their page-circuit scenarios. PR #285 added one new pre-claim database maintenance dependency, `park_mature_confirmed_no_price_retries`, but the two tests had not mocked it. The unmocked helper therefore attempted `conn.execute(...)` on the deliberately fake `object()` before the intended assertions could run.
 
-The correction is test isolation only: both tests now mock the new dormancy dependency to a zero-row no-op, just as they already mock schema, terminal maintenance, pressure, and claim access. No production dormancy code, proof gate, queue policy, or page behavior was weakened to satisfy these tests.
+The correction is test isolation only. Both tests now replace the new dormancy helper with an async zero-row no-op, matching the way they already isolate schema, terminal maintenance, pressure, and claim access. No production dormancy code, proof gate, queue policy, retry behavior, or page behavior was weakened.
 
 The first run otherwise passed:
 

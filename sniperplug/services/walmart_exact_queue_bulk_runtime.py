@@ -50,6 +50,11 @@ from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
 from sniperplug.services.walmart_global_offer_memory import (
     maybe_prune_global_offer_memory,
 )
+from sniperplug.services.walmart_page_pacing_debt import (
+    PAGE_PACING_SLOT_MARKER,
+    normalize_legacy_page_pacing_debt,
+    serialize_page_pacing_deferred_outcomes,
+)
 
 
 log = logging.getLogger("sniperplug.autoscan.write_telemetry")
@@ -140,6 +145,12 @@ async def process_actionable_walmart_exact_queue_batch(
     and outcome writes without weakening proof or suppressing newly complete API
     identity.
 
+    Local ``page_pacing_deferred`` outcomes are scheduling waits, not upstream
+    page failures. Pre-v290 rows are normalized before pressure measurement and
+    newly deferred rows are serialized after canonical bulk persistence into
+    durable one-minute page slots without shortening the existing 30-minute
+    page-retry floor or increasing HTML probe concurrency.
+
     Queue retention cleanup is deliberately not performed here. This function
     returns as soon as verification state is durable so the caller can fan out
     verified deals before any maintenance DELETE is allowed to use the shared
@@ -153,6 +164,12 @@ async def process_actionable_walmart_exact_queue_batch(
     maintenance = await maintain_terminal_identity_rows_bounded(db)
     conn = db.require_conn()
     now = datetime.now(timezone.utc)
+
+    # #288 production telemetry proved the saturated page lane was local pacing
+    # debt rather than Walmart page failures. Serialize any retained pre-v290
+    # rows before pressure/claim decisions so a herd of identical local waits no
+    # longer appears as 64 simultaneously actionable page failures.
+    await normalize_legacy_page_pacing_debt(conn, now=now)
 
     # #277 proved this signature means both official exact price paths returned
     # the exact item without a canonical current purchase price. Park only the
@@ -316,23 +333,31 @@ async def process_actionable_walmart_exact_queue_batch(
             "Bulk Walmart queue persistence did not prepare every claimed row: "
             f"prepared={persisted.queue_rows} claimed={len(claims)}"
         )
+    pacing_schedule = await serialize_page_pacing_deferred_outcomes(
+        conn,
+        persistence_outcomes,
+    )
     await maybe_prune_global_offer_memory(
         conn,
         now=datetime.now(timezone.utc),
     )
     await conn.commit()
     store_seconds = max(0.0, time.monotonic() - store_started)
+    persistence_statements = persisted.sql_statements + pacing_schedule.sql_statements
     log.info(
         "Walmart exact Turso write telemetry lease_rows=%s outcome_rows=%s "
         "offer_memory_rows=%s persistence_statements=%s "
-        "page_circuit_reschedule_rows=0 price_recovery=exact_id_search_v257 "
+        "page_circuit_reschedule_rows=0 page_pacing_slots=%s page_pacing_schedule=%s "
+        "price_recovery=exact_id_search_v257 "
         "exact_lookup=affiliate_items_ids_v276 "
         "confirmed_no_price_cooldown=api_price_missing_v277 "
         "confirmed_no_price_dormancy=confirmed_no_price_dormancy_v285",
         len(claims),
         persisted.queue_rows,
         persisted.offer_rows,
-        persisted.sql_statements,
+        persistence_statements,
+        pacing_schedule.rows,
+        PAGE_PACING_SLOT_MARKER,
     )
     pressure_after = await load_walmart_exact_queue_pressure(
         db,

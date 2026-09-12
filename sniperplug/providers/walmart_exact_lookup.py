@@ -19,6 +19,7 @@ AFFILIATE_PRODUCT_LOOKUP_EXACT_SOURCE = "affiliate_product_lookup_exact_item"
 AFFILIATE_PRODUCT_LOOKUP_ROUTE = "items_ids_v274"
 EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER = "lookup_shape_v275"
 EXACT_LOOKUP_HTTP_ERROR_DECODE_MARKER = "lookup_http_error_decode_v286"
+EXACT_LOOKUP_RESULTS_NOT_FOUND_MARKER = "lookup_6001_no_match_v289"
 
 _WRAPPER_KEYS = (
     "item",
@@ -64,6 +65,9 @@ _PRICE_DIAGNOSTIC_INTERVAL_SECONDS = 60.0
 _HTTP_400_DIAGNOSTIC_INTERVAL_SECONDS = 300.0
 _PRICE_DIAGNOSTIC_NEXT_ATTR = "_sniperplug_exact_lookup_price_diag_next_at"
 _HTTP_400_DIAGNOSTIC_NEXT_ATTR = "_sniperplug_exact_lookup_http400_diag_next_at"
+_RESULTS_NOT_FOUND_DIAGNOSTIC_NEXT_ATTR = (
+    "_sniperplug_exact_lookup_results_not_found_diag_next_at"
+)
 _DIAGNOSTIC_RESERVATION_LOCK = threading.Lock()
 
 log = logging.getLogger("sniperplug.autoscan.walmart_exact_lookup")
@@ -121,8 +125,17 @@ def _fetch_exact_affiliate_product_lookup_payload_sync(
     try:
         payload = _request_exact_lookup_json(provider, url)
     except WalmartProviderError as error:
-        if str(getattr(error, "retry_kind", "") or "").strip().lower() == "api_http_400":
+        retry_kind = str(getattr(error, "retry_kind", "") or "").strip().lower()
+        if retry_kind == "api_http_400":
             _maybe_log_http_400(provider, clean_id, error)
+        elif (
+            retry_kind == "api_exact_lookup_no_match"
+            and str(
+                getattr(error, "exact_lookup_normalization_marker", "") or ""
+            ).strip()
+            == EXACT_LOOKUP_RESULTS_NOT_FOUND_MARKER
+        ):
+            _maybe_log_results_not_found(provider, clean_id, error)
         raise
 
     item = exact_item_from_product_lookup_payload(payload, clean_id)
@@ -152,6 +165,13 @@ def _request_exact_lookup_json(provider: Any, url: str) -> dict:
     socket wrapper open. Keep endpoint and signature semantics unchanged here,
     but decode Content-Encoding before surfacing the bounded error text and close
     the error response deterministically.
+
+    A structured HTTP 400 whose complete error set is Walmart code 6001 with the
+    message ``Results not found`` is an exact Product Lookup miss, not evidence
+    that the shared request shape is malformed. Normalize only that exact shape
+    to the same ``api_exact_lookup_no_match`` outcome already used when a
+    successful Product Lookup payload lacks the requested item. Other HTTP 400
+    responses retain ``api_http_400``.
 
     Lightweight test doubles that only expose ``_request_json`` keep using that
     method; the real Walmart provider exposes ``_signed_headers`` and therefore
@@ -186,14 +206,27 @@ def _request_exact_lookup_json(provider: Any, url: str) -> dict:
             )
         finally:
             exc.close()
-        body = _decode_http_error_body(
+        decoded_body = _decode_http_error_body(
             encoded_body,
             content_encoding=content_encoding,
-        )[:400]
-        raise WalmartProviderError(
+        )
+        body = decoded_body[:400]
+        retry_kind = f"api_http_{int(exc.code)}"
+        normalization_marker = ""
+        if int(exc.code) == 400 and _is_affiliate_results_not_found(decoded_body):
+            retry_kind = "api_exact_lookup_no_match"
+            normalization_marker = EXACT_LOOKUP_RESULTS_NOT_FOUND_MARKER
+        provider_error = WalmartProviderError(
             f"Walmart API HTTP {exc.code}: {body}",
-            retry_kind=f"api_http_{int(exc.code)}",
-        ) from exc
+            retry_kind=retry_kind,
+        )
+        if normalization_marker:
+            setattr(
+                provider_error,
+                "exact_lookup_normalization_marker",
+                normalization_marker,
+            )
+        raise provider_error from exc
     except TimeoutError as exc:
         raise WalmartProviderError(
             "Walmart API request timed out.",
@@ -246,6 +279,28 @@ def _decode_http_error_body(raw: bytes, *, content_encoding: str) -> str:
     except (OSError, EOFError, zlib.error):
         data = bytes(raw or b"")
     return data.decode("utf-8", errors="replace")
+
+
+def _is_affiliate_results_not_found(body: str) -> bool:
+    """Recognize only Walmart's structured code-6001 Product Lookup no-result body."""
+
+    try:
+        payload = json.loads(str(body or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    errors = payload.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return False
+    for error in errors:
+        if not isinstance(error, dict):
+            return False
+        code = str(error.get("code") or "").strip()
+        message = " ".join(str(error.get("message") or "").split()).strip().lower()
+        if code != "6001" or message != "results not found":
+            return False
+    return True
 
 
 def exact_item_from_product_lookup_payload(payload: Any, item_id: str) -> dict | None:
@@ -410,6 +465,23 @@ def _maybe_log_http_400(provider: Any, item_id: str, error: Exception) -> None:
     )
 
 
+def _maybe_log_results_not_found(provider: Any, item_id: str, error: Exception) -> None:
+    if not _reserve_diagnostic_slot(
+        provider,
+        attr_name=_RESULTS_NOT_FOUND_DIAGNOSTIC_NEXT_ATTR,
+        interval_seconds=_HTTP_400_DIAGNOSTIC_INTERVAL_SECONDS,
+    ):
+        return
+    log.info(
+        "Walmart exact Product Lookup no-match normalized marker=%s decode=%s "
+        "item_id=%s detail=%s",
+        EXACT_LOOKUP_RESULTS_NOT_FOUND_MARKER,
+        EXACT_LOOKUP_HTTP_ERROR_DECODE_MARKER,
+        item_id,
+        _diagnostic_token(error, max_chars=220),
+    )
+
+
 def _reserve_diagnostic_slot(
     provider: Any,
     *,
@@ -492,6 +564,7 @@ __all__ = [
     "AFFILIATE_PRODUCT_LOOKUP_ROUTE",
     "EXACT_LOOKUP_HTTP_ERROR_DECODE_MARKER",
     "EXACT_LOOKUP_PRICE_DIAGNOSTIC_MARKER",
+    "EXACT_LOOKUP_RESULTS_NOT_FOUND_MARKER",
     "exact_item_from_product_lookup_payload",
     "fetch_exact_affiliate_product_lookup_payload",
     "summarize_product_lookup_price_shape",

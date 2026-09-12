@@ -86,28 +86,32 @@ The provider patch performs strict structured normalization only. It does not al
 The new regression covers the live gzip-compressed code-6001 body, response closure/readability, the v289 marker, strict mixed/other-error rejection, and preservation of generic code-4008 behavior.
 
 ## PR #289 validation status
-**PENDING. Do not mark ready or merge.**
+**FINAL EXACT-HEAD RECHECK REQUIRED. Do not merge yet.**
 
-GitHub-hosted `Python tests`, `Python Check`, and `Import smoke check` were created for the first #289 head but failed before executing any steps. Their jobs report `steps=[]`, `runner_id=0`, and no assigned runner. Treat those conclusions as runner-side non-evidence, not code-test failures and not successful validation.
+Executable validation on prior exact head `1f259b8f2f290bf8522156ad452563befaf81fe2` produced strong evidence:
+- targeted Walmart/gateway regression batch: `486 passed`;
+- full suite with the known working libsql Python 3.12 environment: `1453 passed, 1 warning`;
+- final SHA remained exactly `1f259b8f2f290bf8522156ad452563befaf81fe2`;
+- worktree was clean;
+- conflict-marker scan passed.
 
-No exact-head full-suite completion claim is authorized until executable validation is available.
+The first attempted standalone native-libsql run used a new Python 3.14/aarch64 venv where `requirements.txt` intentionally omits `libsql`, so those six `ModuleNotFoundError: No module named 'libsql'` results were environment-only non-evidence. The later full suite ran under `/root/SniperPlug-pr262/.venv/bin/python` (Python 3.12 with libsql available) and passed all 1453 tests.
 
-## Validation required for PR #289
-- targeted regression for gzip-compressed HTTP 400 code 6001 / `Results not found`;
-- regression proving response closure and readable detail are preserved;
-- regression proving mixed/other HTTP 400 bodies are not normalized;
-- existing #286 code-4008 generic HTTP 400 regression;
-- #274 exact Product Lookup request/no-match regressions;
-- #275 diagnostics and #276 handoff regressions;
-- surrounding #277-#288 Walmart recovery, queue, dormancy, pressure, page-pacing, page-circuit, and page-lifecycle regressions;
-- native libsql/process tests;
-- gateway #284 regression where applicable;
+One local validation artifact was invalid: `git diff origin/main...HEAD --check` and the local changed-file listing could not execute because that checkout lacked an `origin/main` ref. The shell then printed `diff_check=PASS` despite the fatal Git error because `return` was used outside a function. Do not count that local diff result as a pass.
+
+Independent repository comparison confirms current main is still `98f49ef86374ed359bb3d3c899ba44789c632371`, PR #289 is ahead by four commits and behind by zero on the validated code head, and the net scope is exactly the intended three files. This task-file bookkeeping update moves the PR head again, so one final executable exact-head pass is required before merge.
+
+GitHub-hosted `Python tests`, `Python Check`, and `Import smoke check` remain runner-side non-evidence where jobs report `steps=[]`, `runner_id=0`, and no assigned runner.
+
+## Validation required for final PR #289 head
+- fetch/create the local `origin/main` ref before Git diff checks;
+- pip check;
+- native libsql/process tests using the known working Python 3.12/libsql environment;
 - compileall;
 - import smoke;
-- pip check;
 - full pytest suite;
-- `git diff --check`;
-- exact changed-file scope;
+- `git diff origin/main...HEAD --check` with a real zero exit status;
+- exact changed-file scope of the three intended files;
 - conflict-marker scan;
 - clean worktree;
 - final exact SHA recheck.
@@ -136,4 +140,4 @@ Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged mo
 - SniperPlug-Site work
 
 ## Next step
-Obtain executable exact-head validation for draft PR #289. Keep it draft and unmerged until targeted/compatibility tests, native process/libsql tests, compile/import/pip checks, the full suite, diff/scope/conflict/worktree checks, and final SHA recheck all pass. Separately, do not authorize a page-lane behavior change until fresh merged-deployment `page_recovery_reason_sample_v288` telemetry identifies the dominant stored page-retry reason.
+Run one final executable validation on the new exact PR #289 head after this task-file bookkeeping commit. Merge only if the full suite, native libsql/process tests, compile/import/pip checks, real `git diff --check`, exact three-file scope, conflict/worktree checks, and final SHA all pass. Separately, do not authorize a page-lane behavior change until fresh merged-deployment `page_recovery_reason_sample_v288` telemetry identifies the dominant stored page-retry reason.

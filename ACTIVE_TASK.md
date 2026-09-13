@@ -1,143 +1,160 @@
 # Active Task
 
+## Active task / outcome
+**SP-WM-EXACT-RECOVERY-DEBT — PR #290 `Serialize Walmart page pacing debt`.**
+
+Outcome: remove the artificial saturated `page_retry` pressure floor caused by local `page_pacing_deferred` waits maturing together, without weakening exact proof or increasing Walmart HTML cadence.
+
+Current canonical main: `9358605543eab5a9d45faedba0f1d09c946cf6b4` (PR #289 merge).
+Current branch: `fix/walmart-page-pacing-debt-290`.
+Current PR: #290, open draft and mergeable.
+
+Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
+
 ## Status
-**SP-WM-EXACT-RECOVERY-DEBT — IN PROGRESS.**
+**Implementation and focused cleanup are complete; exact-head validation exposed and repaired two test-integration regressions. A fresh complete exact-head rerun is required. Do not mark ready or merge yet.**
 
-The active lock remains Walmart exact-recovery debt until the remaining queue/recovery failure classes are resolved from production evidence. Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
+## Findings / root cause
+PR #288 production telemetry repeatedly showed:
 
-Base main for the current follow-up: `98f49ef86374ed359bb3d3c899ba44789c632371` (PR #288 merge).
+`marker=page_recovery_reason_sample_v288 sampled=64 cap=64 sample_saturated=true reasons=page_pacing_deferred=64`
 
-Current focused branch: `fix/walmart-lookup-6001-normalization-289`.
-Current focused PR: #289, draft.
+The exact path is:
+1. Fresh/official API proof runs before HTML.
+2. Only one HTML-capable fallback may reserve the 60-second process-local probe slot.
+3. Other claims that still need HTML return `status=page_retry` with `retry_kind=page_pacing_deferred`.
+4. The generic page failure policy gives those local scheduling waits the same 30-minute delay.
+5. They mature together and inflate due page pressure even though they are waiting on a local pacing resource rather than an upstream Walmart recovery condition.
+6. Existing claim logic refuses to lease old page retries while the probe is paced, but pressure is measured before that claim decision, so the herd is already counted.
 
-## Completed prerequisite — SP-GATEWAY-EVENT-LOOP-LAG
-PR #284 remains production-accepted.
+This is a scheduling/persistence mismatch. Raising concurrency/caps, weakening proof, changing Product Lookup semantics, or treating Discord gateway latency as the cause would be incorrect.
 
-A ~41-second Discord heartbeat warning with local loop lag below one second was classified `gateway_ack_latency_loop_healthy` and recovered normally. Do not reopen or throttle Walmart based solely on Discord ACK/network-path latency while local event-loop telemetry remains healthy.
+## Execution path inspected
+- `process_actionable_walmart_exact_queue_batch()` initializes runtime schema before v290 normalization, so the status/due index exists before the helper forces that access path.
+- `fetch_exact_candidate_with_page_pacing()` remains the canonical fetch path and retains the one-HTML-probe-per-60-seconds boundary.
+- `persist_exact_queue_outcomes_bulk()` remains the canonical outcome writer and applies the existing page failure policy before v290 adjusts only local pacing waits.
+- Canonical failure persistence writes `last_attempt_at = observed_at`; v290's post-persistence scheduler guards on that exact timestamp before changing the pacing slot.
+- `claim_due_rows_batched()` and existing page-recovery claim caps are unchanged.
+- Existing queue compatibility code already uses the same `UPDATE ... FROM ... RETURNING` SQLite/libSQL shape.
 
-## PR #285 production acceptance — confirmed no-price debt
-PR #285 remains live and working as intended.
+## Scope
+Exactly six net changed files:
+- `ACTIVE_TASK.md`
+- `sniperplug/services/walmart_exact_queue_bulk_runtime.py`
+- `sniperplug/services/walmart_page_pacing_debt.py`
+- `tests/test_walmart_page_pacing_debt_290.py`
+- `tests/test_autoscan_coverage_stall_253.py`
+- `tests/test_walmart_deal_delivery_stall_256.py`
 
-Mature dual `api_price_missing -> api_price_missing` rows are parked into the 30-day safety reprobe lane while complete fresh/material catalog evidence can wake them immediately. Production pressure for this lane has fallen from the former saturated population to single digits or zero in observed windows.
+The two existing regression files are included only because they exercise the same exact batch entry point with intentionally non-executable fake DB objects. They now stub the newly added v290 pre-pressure normalization step just as they already stub the other DB-touching collaborators. No production escape hatch was added for fake test connections.
 
-## PR #286 production acceptance — readable Product Lookup errors
-PR #286 remains production-accepted.
+No PR #273, PR #200, setup, DM, HP/Target, site, or other unrelated work is included.
 
-The deployed runtime repeatedly emits `decode=lookup_http_error_decode_v286` with readable Walmart Affiliate Product Lookup HTTP 400 bodies. The important live error is Walmart code `6001` with message `Results not found`.
+## Changes
+- Added durable markers `page_pacing_debt_v290` and `page_pacing_slot_v290`.
+- Normalize retained, unleased pre-v290 `page_pacing_deferred` rows before pressure measurement.
+- Hard-cap every legacy pass at 200 rows even if a caller supplies a larger limit.
+- Preserve each legacy row's existing not-before timestamp; malformed timestamps fail closed instead of being guessed earlier.
+- Guard legacy updates against changed `next_attempt_at`, active leases, changed status, and already-slotted rows; count actual returned updates.
+- After canonical bulk persistence, serialize only newly written pacing deferrals after the existing durable pacing tail.
+- Preserve the existing 30-minute floor for new deferrals and spread later rows one minute apart.
+- Keep real page HTTP/challenge/price-mismatch errors, Product Lookup behavior, proof gates, page concurrency, drain concurrency, and claim caps unchanged.
+- Add write telemetry: `page_pacing_slots=<n> page_pacing_schedule=page_pacing_slot_v290`.
+- Corrected the v290 runtime-wiring regression to assert the imported shared marker constant rather than demand a duplicated literal marker string.
+- Updated #253/#256 compatibility tests to stub the new normalization collaborator when they intentionally use `FakeDatabase(object())`.
 
-The current exact request remains `ids=<item_id>` with `responseGroup=full`. Successful exact Product Lookup requests continue in the same runtime, so code 6001 is not evidence that the shared request shape itself is malformed.
+## Regression coverage added
+`tests/test_walmart_page_pacing_debt_290.py` covers:
+- 30-minute floor for new pacing deferrals;
+- one-minute serialization of simultaneous deferrals;
+- new rows appended after an existing pacing tail;
+- legacy rows appended after an existing pacing tail;
+- real page errors left untouched;
+- future legacy not-before values never shortened;
+- active leases skipped;
+- fixed 200-row migration cap even with an oversized caller limit;
+- nonpositive limits perform no migration;
+- normalization before pressure measurement;
+- new serialization after canonical persistence and before commit.
 
-## PR #287 production acceptance — HTTP 410 / response lifecycle
-PR #287 remains production-accepted for the observed post-merge window.
+Existing #253 and #256 tests continue to verify page-circuit claim caps and paced-probe behavior while treating the v290 normalization DB read as an independently stubbed collaborator.
 
-The page HTTPError lifecycle is deterministic, HTTP 410 Gone is treated like page absence rather than a retryable product-page failure, no new `page_http_410` outcome appeared in the acceptance window, and no matching unclosed SSL ResourceWarning appeared.
+## Validation / results
+Repository comparison against canonical main previously confirmed the PR was based directly on current main, behind by zero, and mergeable. Recheck is required on the latest PR head after the compatibility-test and task-record updates.
 
-The page-recovery due lane nevertheless remained saturated at `>=64`, so 410 was not the whole backlog.
+Focused SQL-shape validation using local SQLite 3.46 passed for:
+- a 200-row bounded legacy `WITH ... UPDATE ... FROM ... RETURNING` migration;
+- three newly deferred rows serialized to the expected 30/31/32-minute schedule.
 
-## PR #288 merged — bounded page-recovery reason observability
-PR #288 is merged as current main `98f49ef86374ed359bb3d3c899ba44789c632371`.
+On prior exact head `338c75ffe70e65d9579969e761ff5c89f208a406`:
+- v290 targeted suite passed: `7 passed, 1 warning`;
+- native libsql/process tests, compileall, import smoke, and pip check completed before the full-suite failure, but they are prior-head evidence only after the new test-only commits;
+- full suite reached `1458 passed, 2 failed, 1 warning`;
+- both failures were existing compatibility tests whose fake DB object did not stub the newly added `normalize_legacy_page_pacing_debt()` call;
+- no production runtime defect was indicated by those failures;
+- both tests were updated narrowly to stub that collaborator, preserving their original assertions.
 
-It adds `marker=page_recovery_reason_sample_v288` without changing queue behavior:
-- only when page recovery is saturated at the 64-row pressure cap;
-- sample at most 64 due, retained, unleased `page_retry` rows;
-- force the read through `idx_walmart_exact_detail_queue_status_due`;
-- group stored `retry_kind=` values with `unclassified` fallback;
-- rate-limit the extra read to once every five minutes per process;
-- fail open if the diagnostic read fails.
+The sole warning remains the existing `discord.player` `audioop` deprecation warning for Python 3.13 removal.
 
-Exact-head PR #288 validation passed on `b757cc066654bf7e83f4243d3fa5ec87dd4a6ed6`: targeted tests, native libsql/process tests, compile, import smoke, pip check, full suite `1450 passed, 1 warning`, diff/scope/conflict/worktree checks, and final SHA recheck.
+### GitHub-hosted CI blocker
+On code-equivalent PR heads, all three hosted workflows are created and then fail before any repository step executes. Inspected jobs report `steps=null` and `logs_url=null`; a direct rerun reproduced the same no-steps/no-logs state.
 
-### PR #288 production acceptance still pending
-Fresh merged-deployment logs containing `marker=page_recovery_reason_sample_v288` are still required before changing page retry scheduling, pacing, circuit behavior, claim caps, or concurrency.
+Therefore the hosted red checks are runner-side non-execution, not evidence of test failures, but they also cannot be counted as passes.
 
-The batch result's current `page` counter is not a stored backlog histogram. Use the new bounded reason sample to identify the dominant durable `page_retry` cause first.
-
-## Current root cause — Affiliate Product Lookup 6001
-Current code already uses `api_exact_lookup_no_match` when a successful Product Lookup payload contains no exact requested item. The remaining inconsistency is transport-level HTTP 400 code 6001 / `Results not found`, which #286 currently exposes as generic `api_http_400`.
-
-Evidence supports a narrow semantic normalization rather than an endpoint change:
-- the same legacy Affiliate Product Lookup `ids` route can succeed for other item IDs in the same runtime;
-- the live upstream body explicitly says `Results not found`;
-- historical behavior of this legacy route shows code 6001 for item IDs that Product Lookup cannot return while the same request shape works for other IDs;
-- therefore this response is an exact lookup no-result condition, not proof of malformed shared request syntax.
-
-## Implementation scope — PR #289
-1. Preserve the Affiliate Product Lookup endpoint, `ids=<item_id>`, `responseGroup=full`, signing, timeout, exact item verification, and all canonical proof gates.
-2. After #286 decoding, parse the HTTP 400 body as JSON.
-3. Normalize only a nonempty `errors` list whose complete error set is exactly code `6001` with message `Results not found` to the existing retry kind `api_exact_lookup_no_match`.
-4. Preserve every other HTTP 400, including code `4008` / `Missing itemId`, as generic `api_http_400`.
-5. Keep deterministic HTTPError closing and gzip/deflate decoding unchanged.
-6. Emit `marker=lookup_6001_no_match_v289` for the normalized production path.
-7. Do not change retry delays, dormancy, queue claim priority, page recovery, Product Lookup request shape, current-price proof, reference proof, seller/offer/variant/marketplace/shipping validation, or fanout in this PR.
-
-## Scheduling decision for PR #289
-Do not extend #285 dormancy to 6001 in this patch.
-
-The #285 dormancy signature is stronger and different: both official exact price paths returned the exact item but no canonical current price. A 6001 result means the secondary Product Lookup returned no item result. Keep the existing generic retry/backoff and catalog wake behavior until the normalized class is visible in fresh production telemetry. The expected batch reason will become `api_price_missing->api_exact_lookup_no_match`, which can then be measured separately from malformed/validation HTTP 400s.
-
-## PR #289 current changes
-The intended net scope remains exactly three files:
-- `ACTIVE_TASK.md`;
-- `sniperplug/providers/walmart_exact_lookup.py`;
-- `tests/test_walmart_exact_lookup_results_not_found_289.py`.
-
-The provider patch performs strict structured normalization only. It does not alter the Product Lookup request, exact proof path, page path, persistence policy, or fanout.
-
-The new regression covers the live gzip-compressed code-6001 body, response closure/readability, the v289 marker, strict mixed/other-error rejection, and preservation of generic code-4008 behavior.
-
-## PR #289 validation status
-**FINAL EXACT-HEAD RECHECK REQUIRED. Do not merge yet.**
-
-Executable validation on prior exact head `1f259b8f2f290bf8522156ad452563befaf81fe2` produced strong evidence:
-- targeted Walmart/gateway regression batch: `486 passed`;
-- full suite with the known working libsql Python 3.12 environment: `1453 passed, 1 warning`;
-- final SHA remained exactly `1f259b8f2f290bf8522156ad452563befaf81fe2`;
-- worktree was clean;
-- conflict-marker scan passed.
-
-The first attempted standalone native-libsql run used a new Python 3.14/aarch64 venv where `requirements.txt` intentionally omits `libsql`, so those six `ModuleNotFoundError: No module named 'libsql'` results were environment-only non-evidence. The later full suite ran under `/root/SniperPlug-pr262/.venv/bin/python` (Python 3.12 with libsql available) and passed all 1453 tests.
-
-One local validation artifact was invalid: `git diff origin/main...HEAD --check` and the local changed-file listing could not execute because that checkout lacked an `origin/main` ref. The shell then printed `diff_check=PASS` despite the fatal Git error because `return` was used outside a function. Do not count that local diff result as a pass.
-
-Independent repository comparison confirms current main is still `98f49ef86374ed359bb3d3c899ba44789c632371`, PR #289 is ahead by four commits and behind by zero on the validated code head, and the net scope is exactly the intended three files. This task-file bookkeeping update moves the PR head again, so one final executable exact-head pass is required before merge.
-
-GitHub-hosted `Python tests`, `Python Check`, and `Import smoke check` remain runner-side non-evidence where jobs report `steps=[]`, `runner_id=0`, and no assigned runner.
-
-## Validation required for final PR #289 head
-- fetch/create the local `origin/main` ref before Git diff checks;
-- pip check;
-- native libsql/process tests using the known working Python 3.12/libsql environment;
+## Validation still required
+Before PR #290 can be called complete/ready, rerun on the latest live PR head after this task-record update:
+- v290 regressions;
+- #240/#241 page-lane tests;
+- #253 coverage-stall page-circuit regression;
+- #255 page request pacing;
+- #256 pacing/claim behavior;
+- #277-#289 Walmart recovery/dormancy/pressure/Product Lookup/page lifecycle regressions;
+- native libsql/process tests;
+- gateway #284 regression;
 - compileall;
 - import smoke;
+- pip check;
 - full pytest suite;
-- `git diff origin/main...HEAD --check` with a real zero exit status;
-- exact changed-file scope of the three intended files;
+- real diff check;
+- exact six-file changed scope;
 - conflict-marker scan;
 - clean worktree;
-- final exact SHA recheck.
+- exact final SHA recheck.
 
-## Production acceptance for PR #289
-After merge and deployment, use fresh logs only.
+## Cleanup / conflicts
+- No temporary bypass, retry shim, runtime fake-connection guard, monkey patch, or duplicate proof path was added.
+- The canonical exact fetch and bulk persistence paths remain authoritative.
+- The only extra files added to scope are the two directly affected existing regression tests.
+- Unrelated work is untouched.
 
-Acceptance requires:
-- `marker=lookup_6001_no_match_v289` on real code-6001 responses;
-- those outcomes surface as `api_exact_lookup_no_match` / `api_price_missing->api_exact_lookup_no_match` rather than generic `api_http_400`;
-- unrelated HTTP 400 validation failures remain generic;
-- successful exact verification and all proof gates remain intact.
+## Blockers / risks
+No code blocker is currently known after the two compatibility-test repairs. The remaining blocker is fresh executable exact-head validation. GitHub-hosted jobs still fail before runner steps, so local Python 3.12/native-libsql validation remains the authoritative executable gate.
 
-Page-recovery behavior remains gated separately on fresh `page_recovery_reason_sample_v288` logs.
+## Production acceptance after merge
+Use fresh deployment logs only. Acceptance requires:
+- `marker=page_pacing_debt_v290` when legacy migration occurs;
+- `page_pacing_slots=<n> page_pacing_schedule=page_pacing_slot_v290` for newly serialized waits when applicable;
+- the v288 sampler stops showing a persistent saturated `page_pacing_deferred=64` floor after migration takes effect;
+- HTML remains bounded to one probe per minute;
+- no increase in challenge/403/429 failures;
+- official exact verification and deal fanout continue normally.
 
-## Suspended task — SP-MOVIE-TICKETS-RECOVERY
-Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged movie-ticket work unchanged.
+## Preserved prior state
+- PR #284, #285, #286, #287, and #288 remain production-accepted for their established purposes.
+- PR #289 is merged but still requires a fresh post-deployment code-6001 event before production acceptance is claimed.
 
-## Backlog — not active
+## Suspended task
+**SP-MOVIE-TICKETS-RECOVERY** remains suspended. Preserve PR #273 unchanged.
+
+## Backlog
 - SP-SETUP-DELIVERY-UX
 - SP-DM-DELIVERY-STARVATION
 - SP-DM-NEW-LOW-ALERT
+- SP-WM-DM-PERSONALIZATION — category + product type + brand/set + include/exclude + product-aware emojis/deal-strength presentation
 - SP-WM-CASH-PDP-AMOUNT
 - eBay watcher PR #200
 - HP/Target standalone watcher deployment/acceptance
 - SniperPlug-Site work
 
 ## Next step
-Run one final executable validation on the new exact PR #289 head after this task-file bookkeeping commit. Merge only if the full suite, native libsql/process tests, compile/import/pip checks, real `git diff --check`, exact three-file scope, conflict/worktree checks, and final SHA all pass. Separately, do not authorize a page-lane behavior change until fresh merged-deployment `page_recovery_reason_sample_v288` telemetry identifies the dominant stored page-retry reason.
+Run one complete executable exact-head validation on the latest PR #290 head after this bookkeeping commit. If and only if the complete gate passes, record the validated SHA in the PR discussion without modifying the branch, mark PR #290 ready for review, and proceed to merge/production acceptance separately.

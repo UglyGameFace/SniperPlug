@@ -8,7 +8,6 @@ Outcome: remove the artificial saturated `page_retry` pressure floor caused by l
 Current canonical main: `9358605543eab5a9d45faedba0f1d09c946cf6b4` (PR #289 merge).
 Current branch: `fix/walmart-page-pacing-debt-290`.
 Current PR: #290, open draft and mergeable.
-Current exact head to validate: `4489209a4c99d2bfbcc9a792c67ce1e93fe05da9`.
 
 Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
@@ -81,13 +80,13 @@ No PR #273, PR #200, setup, DM, HP/Target, site, or other unrelated work is incl
 Existing #253 and #256 tests continue to verify page-circuit claim caps and paced-probe behavior while treating the v290 normalization DB read as an independently stubbed collaborator.
 
 ## Validation / results
-Repository comparison against canonical main previously confirmed the PR was based directly on current main, behind by zero, and mergeable. Recheck is required on exact head `4489209a4c99d2bfbcc9a792c67ce1e93fe05da9` after the compatibility-test updates.
+Repository comparison against canonical main previously confirmed the PR was based directly on current main, behind by zero, and mergeable. Recheck is required on the latest PR head after the compatibility-test and task-record updates.
 
 Focused SQL-shape validation using local SQLite 3.46 passed for:
 - a 200-row bounded legacy `WITH ... UPDATE ... FROM ... RETURNING` migration;
 - three newly deferred rows serialized to the expected 30/31/32-minute schedule.
 
-On exact head `338c75ffe70e65d9579969e761ff5c89f208a406`:
+On prior exact head `338c75ffe70e65d9579969e761ff5c89f208a406`:
 - v290 targeted suite passed: `7 passed, 1 warning`;
 - native libsql/process tests, compileall, import smoke, and pip check completed before the full-suite failure, but they are prior-head evidence only after the new test-only commits;
 - full suite reached `1458 passed, 2 failed, 1 warning`;
@@ -103,7 +102,7 @@ On code-equivalent PR heads, all three hosted workflows are created and then fai
 Therefore the hosted red checks are runner-side non-execution, not evidence of test failures, but they also cannot be counted as passes.
 
 ## Validation still required
-Before PR #290 can be called complete/ready, rerun on exact head `4489209a4c99d2bfbcc9a792c67ce1e93fe05da9`:
+Before PR #290 can be called complete/ready, rerun on the latest live PR head after this task-record update:
 - v290 regressions;
 - #240/#241 page-lane tests;
 - #253 coverage-stall page-circuit regression;
@@ -158,4 +157,4 @@ Use fresh deployment logs only. Acceptance requires:
 - SniperPlug-Site work
 
 ## Next step
-Run one complete executable exact-head validation on `4489209a4c99d2bfbcc9a792c67ce1e93fe05da9`. If and only if the complete gate passes, record the validated SHA, update PR #290 validation evidence, mark it ready for review, and proceed to merge/production acceptance separately.
+Run one complete executable exact-head validation on the latest PR #290 head after this bookkeeping commit. If and only if the complete gate passes, record the validated SHA in the PR discussion without modifying the branch, mark PR #290 ready for review, and proceed to merge/production acceptance separately.

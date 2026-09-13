@@ -22,6 +22,15 @@ from sniperplug.services.dm_personal_categories import (
     split_category_preferences,
     split_exclude_terms,
 )
+from sniperplug.services.dm_product_interests import (
+    brand_label,
+    normalize_brands,
+    parse_product_interest_input,
+    product_interest_catalog_lines,
+    product_interest_label,
+    split_product_preferences,
+    update_product_preferences,
+)
 
 
 TAB_FAVORITES = "favorites"
@@ -208,6 +217,9 @@ class DmDealPreferencesView(discord.ui.View):
         selected, favorites = split_category_preferences(
             self.preference.categories
         )
+        product_interests, product_brands = split_product_preferences(
+            self.preference.categories
+        )
         keyword_excludes, legacy_muted = split_exclude_terms(
             self.preference.exclude_keywords
         )
@@ -221,6 +233,8 @@ class DmDealPreferencesView(discord.ui.View):
         self.selected_categories = set(selected)
         self.favorite_categories = set(favorites)
         self.muted_categories = set((*legacy_muted, *stored_muted))
+        self.product_interests = set(product_interests)
+        self.product_brands = set(product_brands)
         self.exclude_keywords = tuple(keyword_excludes)
         self.flip_enabled = bool(flip_enabled)
         self.flip_min_profit_cents = int(flip_profit)
@@ -281,9 +295,9 @@ class DmDealPreferencesView(discord.ui.View):
 
         description = (
             "Use **DM Threshold** below for your normal personal alert rules. "
-            "In its form, fill **only what you want to change**; blank fields keep "
-            "their current values. Use the category editor for interests/mutes; "
-            "**Flip Profit** belongs only to Flip Override.\n\n"
+            "Use **Specific products** when a whole category is too broad; brands can narrow those "
+            "product interests further. In the threshold form, fill **only what you want to change**; "
+            "blank fields keep their current values. **Flip Profit** belongs only to Flip Override.\n\n"
             f"**Every live category is available:** {len(categories)} total. "
             "Pages are only Discord's 25-option display limit; SniperPlug does not "
             "trim the catalog.\n\n"
@@ -327,6 +341,15 @@ class DmDealPreferencesView(discord.ui.View):
             inline=True,
         )
         embed.add_field(
+            name="🎯 Specific product filters",
+            value=(
+                f"Products: **{self._product_interest_preview()}**\n"
+                f"Brands: **{self._brand_preview()}**\n"
+                "Products are OR; brands are OR. When both are set, a deal must match both groups."
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="💰 Flip Override — separate from normal DM rules",
             value=(
                 f"Status: **{'on' if self.flip_enabled else 'off'}**\n"
@@ -346,9 +369,9 @@ class DmDealPreferencesView(discord.ui.View):
             value=(
                 "Flip Override crosses category boundaries only. Exact item, seller, offer, "
                 "variant, availability, current/was-price proof, your DM Deal Threshold and "
-                "other explicit floors, excluded words, maximum price, dedupe, and your saved "
-                "daily-limit policy remain enforced. Broad Smart alerts with a finite limit "
-                "also reserve room for category variety; Unlimited has no hidden family cap. "
+                "other explicit floors, specific product/brand filters, excluded words, maximum price, "
+                "dedupe, and your saved daily-limit policy remain enforced. Broad Smart alerts with a finite "
+                "limit also reserve room for category variety; Unlimited has no hidden family cap. "
                 "Without sold comps, resale value is labeled **estimated**, never confirmed."
             ),
             inline=False,
@@ -398,6 +421,25 @@ class DmDealPreferencesView(discord.ui.View):
             else ""
         )
         return ", ".join(labels) + suffix
+
+    def _product_interest_preview(self) -> str:
+        if not self.product_interests:
+            return "off — category rules stay broad"
+        labels = [
+            product_interest_label(key)
+            for key in sorted(self.product_interests)
+        ]
+        return ", ".join(labels[:8]) + (
+            f" • +{len(labels) - 8} more" if len(labels) > 8 else ""
+        )
+
+    def _brand_preview(self) -> str:
+        if not self.product_brands:
+            return "all brands"
+        labels = [brand_label(slug) for slug in sorted(self.product_brands)]
+        return ", ".join(labels[:10]) + (
+            f" • +{len(labels) - 10} more" if len(labels) > 10 else ""
+        )
 
     def _rebuild_items(self) -> None:
         self.clear_items()
@@ -531,6 +573,28 @@ class DmDealPreferencesView(discord.ui.View):
         mode.callback = self._cycle_mode
         self.add_item(mode)
 
+        products = discord.ui.Button(
+            label=f"Specific products: {len(self.product_interests)}",
+            emoji="🎯",
+            style=(
+                discord.ButtonStyle.primary
+                if self.product_interests or self.product_brands
+                else discord.ButtonStyle.secondary
+            ),
+            row=4,
+        )
+        products.callback = self._open_product_filters
+        self.add_item(products)
+
+        catalog = discord.ui.Button(
+            label="Product catalog",
+            emoji="📋",
+            style=discord.ButtonStyle.secondary,
+            row=4,
+        )
+        catalog.callback = self._show_product_catalog
+        self.add_item(catalog)
+
     async def _refresh(
         self,
         interaction: discord.Interaction,
@@ -576,6 +640,45 @@ class DmDealPreferencesView(discord.ui.View):
         await interaction.response.send_modal(
             _DmDealRulesModal(self)
         )
+
+    async def _open_product_filters(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        await interaction.response.send_modal(
+            _ProductInterestModal(self)
+        )
+
+    async def _show_product_catalog(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        lines = product_interest_catalog_lines()
+        embed = discord.Embed(
+            title="🎯 Specific product catalog",
+            description=(
+                "These are narrower than categories. Use the **Specific products** button to select "
+                "profiles and optional brands. Products are OR, brands are OR, and when both groups "
+                "are set a deal must match one from each group."
+            ),
+            color=discord.Color.blurple(),
+        )
+        chunks: list[list[str]] = [[]]
+        size = 0
+        for line in lines:
+            if chunks[-1] and size + len(line) + 1 > 950:
+                chunks.append([])
+                size = 0
+            chunks[-1].append(line)
+            size += len(line) + 1
+        for index, chunk in enumerate(chunks, start=1):
+            if chunk:
+                embed.add_field(
+                    name=f"Profiles {index}",
+                    value="\n".join(chunk),
+                    inline=False,
+                )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def _cycle_mode(
         self,
@@ -658,6 +761,11 @@ class DmDealPreferencesView(discord.ui.View):
             muted=self.muted_categories,
             flip_enabled=self.flip_enabled,
             flip_min_profit_cents=self.flip_min_profit_cents,
+        )
+        categories = update_product_preferences(
+            categories,
+            replace_interests=self.product_interests,
+            replace_brands=self.product_brands,
         )
         # Saving through the menu migrates legacy category tokens out of the
         # capped free-form keyword field.
@@ -912,6 +1020,76 @@ class _CategorySearchModal(
                 f"🔎 Search applied: **{self.owner.search_query}**"
                 if self.owner.search_query
                 else "✅ Showing every category."
+            ),
+        )
+
+
+class _ProductInterestModal(
+    discord.ui.Modal,
+    title="Specific products and brands",
+):
+    interests = discord.ui.TextInput(
+        label="Specific product interests",
+        placeholder="portable chargers, NeeDoh, Pokemon TCG, designer cologne",
+        required=False,
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+    brands = discord.ui.TextInput(
+        label="Optional brands",
+        placeholder="Anker, Versace, Dior, YSL, Belkin",
+        required=False,
+        max_length=400,
+        style=discord.TextStyle.paragraph,
+    )
+
+    def __init__(
+        self,
+        owner: DmDealPreferencesView,
+    ) -> None:
+        super().__init__()
+        self.owner = owner
+        self.interests.default = ", ".join(
+            product_interest_label(key)
+            for key in sorted(owner.product_interests)
+        )
+        self.brands.default = ", ".join(
+            brand_label(slug)
+            for slug in sorted(owner.product_brands)
+        )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        interest_keys, unknown = parse_product_interest_input(
+            str(self.interests.value or "")
+        )
+        if unknown:
+            preview = ", ".join(f"`{value}`" for value in unknown[:6])
+            await interaction.response.send_message(
+                "⚠️ I did not change the draft because I could not identify "
+                f"these product interests: {preview}. Use the **Product catalog** button "
+                "for accepted names.",
+                ephemeral=True,
+            )
+            return
+        brand_slugs = normalize_brands(str(self.brands.value or ""))
+        new_interests = set(interest_keys)
+        new_brands = set(brand_slugs)
+        if (
+            new_interests != self.owner.product_interests
+            or new_brands != self.owner.product_brands
+        ):
+            self.owner.product_interests = new_interests
+            self.owner.product_brands = new_brands
+            self.owner.dirty = True
+        await self.owner._refresh(
+            interaction,
+            status=(
+                "🎯 Draft specific-product filters updated. Press **Save changes** when finished."
+                if self.owner.dirty
+                else "Those specific-product filters are already selected."
             ),
         )
 

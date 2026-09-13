@@ -1,160 +1,125 @@
 # Active Task
 
 ## Active task / outcome
-**SP-WM-EXACT-RECOVERY-DEBT — PR #290 `Serialize Walmart page pacing debt`.**
+**SP-WM-DM-PERSONALIZATION — PR #291 `Personalize Walmart DM product alerts`.**
 
-Outcome: remove the artificial saturated `page_retry` pressure floor caused by local `page_pacing_deferred` waits maturing together, without weakening exact proof or increasing Walmart HTML cadence.
+Outcome: keep existing broad personal deal categories compatible while allowing each subscriber to narrow **Walmart** DMs by specific product type and optional brand, with notification titles that visually distinguish both deal strength and product identity.
 
-Current canonical main: `9358605543eab5a9d45faedba0f1d09c946cf6b4` (PR #289 merge).
-Current branch: `fix/walmart-page-pacing-debt-290`.
-Current PR: #290, open draft and mergeable.
+Base main: `e8f4a271aa8f595d6d2e3f8eca3cf9d79f90e2df` (PR #290 merge).
+Branch: `feat/walmart-dm-personalization`.
+PR: #291, open draft and mergeable.
 
 Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
+## Previous task closure
+`SP-WM-EXACT-RECOVERY-DEBT` is production-accepted. Fresh post-merge logs proved v290 telemetry live, page recovery drained to zero, the page circuit stayed closed without an observed challenge/403/429 regression, exact verification/fanout remained healthy, and PR #289 code-6001 responses normalized to `api_exact_lookup_no_match`. Production acceptance evidence is recorded on PR #290.
+
 ## Status
-**Implementation and focused cleanup are complete; exact-head validation exposed and repaired two test-integration regressions. A fresh complete exact-head rerun is required. Do not mark ready or merge yet.**
+**Implementation and focused cleanup are complete enough for executable validation. Do not mark ready or merge until exact-head validation passes.**
 
-## Findings / root cause
-PR #288 production telemetry repeatedly showed:
+GitHub-hosted workflows remain runner-side non-evidence: current PR jobs fail in roughly two seconds with `steps=[]` and `runner_id=0`, before any repository command executes.
 
-`marker=page_recovery_reason_sample_v288 sampled=64 cap=64 sample_saturated=true reasons=page_pacing_deferred=64`
+## Requirement / root cause
+Existing personal DMs correctly support exact proof, thresholds, broad categories, favorites, mutes, required/excluded keywords, Flip Override, dedupe and daily limits. The missing layer is product intent inside a category.
 
-The exact path is:
-1. Fresh/official API proof runs before HTML.
-2. Only one HTML-capable fallback may reserve the 60-second process-local probe slot.
-3. Other claims that still need HTML return `status=page_retry` with `retry_kind=page_pacing_deferred`.
-4. The generic page failure policy gives those local scheduling waits the same 30-minute delay.
-5. They mature together and inflate due page pressure even though they are waiting on a local pacing resource rather than an upstream Walmart recovery condition.
-6. Existing claim logic refuses to lease old page retries while the probe is paced, but pressure is measured before that claim decision, so the herd is already counted.
+Examples:
+- portable chargers should not mean every mobile accessory;
+- cologne/perfume should exclude body spray/deodorant lookalikes;
+- Pokémon TCG should target sealed TCG products rather than generic Pokémon merchandise;
+- NeeDoh should not mean every toy.
 
-This is a scheduling/persistence mismatch. Raising concurrency/caps, weakening proof, changing Product Lookup semantics, or treating Discord gateway latency as the cause would be incorrect.
+Notification previews also reused the same heat emoji across unrelated products, so several good alerts visually blended together.
 
 ## Execution path inspected
-- `process_actionable_walmart_exact_queue_batch()` initializes runtime schema before v290 normalization, so the status/due index exists before the helper forces that access path.
-- `fetch_exact_candidate_with_page_pacing()` remains the canonical fetch path and retains the one-HTML-probe-per-60-seconds boundary.
-- `persist_exact_queue_outcomes_bulk()` remains the canonical outcome writer and applies the existing page failure policy before v290 adjusts only local pacing waits.
-- Canonical failure persistence writes `last_attempt_at = observed_at`; v290's post-persistence scheduler guards on that exact timestamp before changing the pacing slot.
-- `claim_due_rows_batched()` and existing page-recovery claim caps are unchanged.
-- Existing queue compatibility code already uses the same `UPDATE ... FROM ... RETURNING` SQLite/libSQL shape.
+- `/dm_deals` in `sniperplug/cogs/dm_deal_alerts.py` owns the personal-alert command and opens `DmDealPreferencesView`.
+- Existing `categories_json` safely stores arbitrary structured control tokens; `normalize_categories()` does not cap or drop `interest:` / `brand:` tokens, so no DB migration is required.
+- `sniperplug/services/dm_personal_categories.py` owns category/favorite/mute/flip token composition and now preserves product/brand tokens across those edits.
+- `sniperplug/services/dm_deal_matching.py` is the canonical live matcher.
+- Walmart bulk fanout, legacy Walmart fanout and verified-retailer fanout all import the canonical matcher from `dm_deal_matching.py`; a regression now locks those imports in place.
+- Walmart exact cards carry `card.retailer = Walmart...`; Target/HP cards carry their own retailer identity.
+- Product/brand filtering and new badges are therefore gated to Walmart cards only. Target/HP retain their existing matching and title behavior.
+- Walmart bulk fanout clones the card embed after the personal match decision, so an idempotent Walmart title decoration at the successful-match boundary reaches the DM without a duplicate renderer.
+
+## Matching design
+New structured tokens reuse `categories_json`:
+- `interest:<specific_product_profile>`
+- `brand:<normalized_brand>`
+
+Semantics:
+- multiple product interests are OR;
+- multiple brands are OR;
+- if both groups are configured, a Walmart deal must match one selected product profile **and** one selected brand;
+- explicit Walmart product/brand intent is hard and Flip Override cannot bypass it;
+- existing maximum price, Walmart Cash-only, required keywords, excluded keywords, exact proof, dedupe and daily limits remain hard;
+- broad category favorites/mutes/allowlists remain separate;
+- users with no product/brand tokens keep existing behavior.
+
+## Specific product profiles
+Initial deliberately narrow profiles include sealed Pokémon TCG products, NeeDoh, portable chargers/power banks, MagSafe battery packs, cologne/perfume/EDP/EDT, LEGO sets, premium Hot Wheels, Funko Pop, gaming controllers, headphones/earbuds, Bluetooth speakers, SSDs, microSD cards, robot vacuums, air fryers, countertop ice makers, coffee makers, power tools, tool batteries, diapers, strollers, car seats, energy drinks, sneakers, smartwatches, tablets, laptops and computer monitors.
+
+Profile exclusions prevent obvious adjacent junk such as Pokémon binders/sleeves/plush, fragrance body spray/deodorant, LEGO accessories, SSD enclosures, stroller accessories and similar lookalikes.
+
+Pokémon matching identifies sealed TCG product form only. It does not claim popularity/profit merely because an item is Pokémon; resale qualification remains the existing strict Flip assessment's responsibility.
+
+## Product-aware notification badges
+Walmart personal-DM titles use at most two leading badges:
+1. deal strength: `🚨`, `🔥`, `💸`, `💎`, `⚡`, `✅`, or `🔎`;
+2. product identity such as `🧴`, `🃏`, `🔋`, `🧸`, `🧱`, `🎮`, `🎧`, `🚗`, `👶`, `🛒`, etc.
+
+Decoration is idempotent so a shared card evaluated for multiple subscribers does not accumulate emojis. HP/Target titles are unchanged.
 
 ## Scope
-Exactly six net changed files:
+Exactly nine expected net files:
 - `ACTIVE_TASK.md`
-- `sniperplug/services/walmart_exact_queue_bulk_runtime.py`
-- `sniperplug/services/walmart_page_pacing_debt.py`
-- `tests/test_walmart_page_pacing_debt_290.py`
-- `tests/test_autoscan_coverage_stall_253.py`
-- `tests/test_walmart_deal_delivery_stall_256.py`
-
-The two existing regression files are included only because they exercise the same exact batch entry point with intentionally non-executable fake DB objects. They now stub the newly added v290 pre-pressure normalization step just as they already stub the other DB-touching collaborators. No production escape hatch was added for fake test connections.
-
-No PR #273, PR #200, setup, DM, HP/Target, site, or other unrelated work is included.
+- `sniperplug/cogs/dm_deal_alerts.py`
+- `sniperplug/cogs/dm_deal_preferences_view.py`
+- `sniperplug/services/dm_personal_categories.py`
+- `sniperplug/services/dm_product_interests.py`
+- `sniperplug/services/dm_deal_matching.py`
+- `sniperplug/services/dm_deal_badges.py`
+- `tests/test_dm_product_interests_personalization.py`
+- `tests/test_dm_product_interest_surface_static.py`
 
 ## Changes
-- Added durable markers `page_pacing_debt_v290` and `page_pacing_slot_v290`.
-- Normalize retained, unleased pre-v290 `page_pacing_deferred` rows before pressure measurement.
-- Hard-cap every legacy pass at 200 rows even if a caller supplies a larger limit.
-- Preserve each legacy row's existing not-before timestamp; malformed timestamps fail closed instead of being guessed earlier.
-- Guard legacy updates against changed `next_attempt_at`, active leases, changed status, and already-slotted rows; count actual returned updates.
-- After canonical bulk persistence, serialize only newly written pacing deferrals after the existing durable pacing tail.
-- Preserve the existing 30-minute floor for new deferrals and spread later rows one minute apart.
-- Keep real page HTTP/challenge/price-mismatch errors, Product Lookup behavior, proof gates, page concurrency, drain concurrency, and claim caps unchanged.
-- Add write telemetry: `page_pacing_slots=<n> page_pacing_schedule=page_pacing_slot_v290`.
-- Corrected the v290 runtime-wiring regression to assert the imported shared marker constant rather than demand a duplicated literal marker string.
-- Updated #253/#256 compatibility tests to stub the new normalization collaborator when they intentionally use `FakeDatabase(object())`.
+- Added structured specific-product and arbitrary-brand helpers with no schema migration.
+- Added `/dm_deals` typed add/remove controls and a product catalog.
+- Added Specific products and Product catalog controls to the existing private personalization menu.
+- Existing category/favorite/mute/flip editors preserve product/brand tokens.
+- Canonical matcher enforces the new constraints only for Walmart.
+- Added product-aware two-badge Walmart DM titles.
+- Added dynamic coverage for portable charger + brand conjunction, fragrance exclusions, sealed Pokémon specificity, NeeDoh specificity, token persistence, Walmart-only scope, existing no-filter compatibility and idempotent badges.
+- Added static coverage for command/menu wiring, structured-token preservation, Walmart-only gating and all live fanouts importing the canonical matcher.
 
-## Regression coverage added
-`tests/test_walmart_page_pacing_debt_290.py` covers:
-- 30-minute floor for new pacing deferrals;
-- one-minute serialization of simultaneous deferrals;
-- new rows appended after an existing pacing tail;
-- legacy rows appended after an existing pacing tail;
-- real page errors left untouched;
-- future legacy not-before values never shortened;
-- active leases skipped;
-- fixed 200-row migration cap even with an oversized caller limit;
-- nonpositive limits perform no migration;
-- normalization before pressure measurement;
-- new serialization after canonical persistence and before commit.
+## Cleanup / conflicts
+- No new persistence layer, migration, retry shim or parallel fanout path was added.
+- A pre-existing stale `match_dm_deal()` function remains inside `dm_deal_alerts.py`, but repository inspection found no live fanout or test importing it. All live fanouts use `dm_deal_matching.py`, and the new regression explicitly prevents them from drifting back to the stale function.
+- Rewriting the large shared persistence module solely to delete unreachable legacy code was judged higher-risk than leaving the dead compatibility symbol guarded and unreferenced in this focused feature PR.
+- Public Walmart posting behavior is not intentionally changed.
+- PR #273 and PR #200 remain untouched.
 
-Existing #253 and #256 tests continue to verify page-circuit claim caps and paced-probe behavior while treating the v290 normalization DB read as an independently stubbed collaborator.
-
-## Validation / results
-Repository comparison against canonical main previously confirmed the PR was based directly on current main, behind by zero, and mergeable. Recheck is required on the latest PR head after the compatibility-test and task-record updates.
-
-Focused SQL-shape validation using local SQLite 3.46 passed for:
-- a 200-row bounded legacy `WITH ... UPDATE ... FROM ... RETURNING` migration;
-- three newly deferred rows serialized to the expected 30/31/32-minute schedule.
-
-On prior exact head `338c75ffe70e65d9579969e761ff5c89f208a406`:
-- v290 targeted suite passed: `7 passed, 1 warning`;
-- native libsql/process tests, compileall, import smoke, and pip check completed before the full-suite failure, but they are prior-head evidence only after the new test-only commits;
-- full suite reached `1458 passed, 2 failed, 1 warning`;
-- both failures were existing compatibility tests whose fake DB object did not stub the newly added `normalize_legacy_page_pacing_debt()` call;
-- no production runtime defect was indicated by those failures;
-- both tests were updated narrowly to stub that collaborator, preserving their original assertions.
-
-The sole warning remains the existing `discord.player` `audioop` deprecation warning for Python 3.13 removal.
-
-### GitHub-hosted CI blocker
-On code-equivalent PR heads, all three hosted workflows are created and then fail before any repository step executes. Inspected jobs report `steps=null` and `logs_url=null`; a direct rerun reproduced the same no-steps/no-logs state.
-
-Therefore the hosted red checks are runner-side non-execution, not evidence of test failures, but they also cannot be counted as passes.
-
-## Validation still required
-Before PR #290 can be called complete/ready, rerun on the latest live PR head after this task-record update:
-- v290 regressions;
-- #240/#241 page-lane tests;
-- #253 coverage-stall page-circuit regression;
-- #255 page request pacing;
-- #256 pacing/claim behavior;
-- #277-#289 Walmart recovery/dormancy/pressure/Product Lookup/page lifecycle regressions;
-- native libsql/process tests;
-- gateway #284 regression;
+## Validation required
+Before PR #291 can be called complete/ready:
+- targeted new personalization tests;
+- existing DM alert/category/favorite/mute/Flip Override/delivery tests;
+- Walmart fanout and personalization static tests;
+- Target/HP verified-retailer compatibility tests where applicable;
 - compileall;
 - import smoke;
 - pip check;
 - full pytest suite;
-- real diff check;
-- exact six-file changed scope;
+- `git diff origin/main...HEAD --check`;
+- exact nine-file scope;
 - conflict-marker scan;
 - clean worktree;
-- exact final SHA recheck.
+- final exact SHA recheck.
 
-## Cleanup / conflicts
-- No temporary bypass, retry shim, runtime fake-connection guard, monkey patch, or duplicate proof path was added.
-- The canonical exact fetch and bulk persistence paths remain authoritative.
-- The only extra files added to scope are the two directly affected existing regression tests.
-- Unrelated work is untouched.
+## Blocker
+GitHub Actions currently fails before allocating a runner (`steps=[]`, `runner_id=0`). Use the known Python 3.12/native-libsql Termux Ubuntu environment for executable exact-head validation if hosted CI remains unavailable.
 
-## Blockers / risks
-No code blocker is currently known after the two compatibility-test repairs. The remaining blocker is fresh executable exact-head validation. GitHub-hosted jobs still fail before runner steps, so local Python 3.12/native-libsql validation remains the authoritative executable gate.
-
-## Production acceptance after merge
-Use fresh deployment logs only. Acceptance requires:
-- `marker=page_pacing_debt_v290` when legacy migration occurs;
-- `page_pacing_slots=<n> page_pacing_schedule=page_pacing_slot_v290` for newly serialized waits when applicable;
-- the v288 sampler stops showing a persistent saturated `page_pacing_deferred=64` floor after migration takes effect;
-- HTML remains bounded to one probe per minute;
-- no increase in challenge/403/429 failures;
-- official exact verification and deal fanout continue normally.
-
-## Preserved prior state
-- PR #284, #285, #286, #287, and #288 remain production-accepted for their established purposes.
-- PR #289 is merged but still requires a fresh post-deployment code-6001 event before production acceptance is claimed.
-
-## Suspended task
-**SP-MOVIE-TICKETS-RECOVERY** remains suspended. Preserve PR #273 unchanged.
-
-## Backlog
-- SP-SETUP-DELIVERY-UX
-- SP-DM-DELIVERY-STARVATION
-- SP-DM-NEW-LOW-ALERT
-- SP-WM-DM-PERSONALIZATION — category + product type + brand/set + include/exclude + product-aware emojis/deal-strength presentation
-- SP-WM-CASH-PDP-AMOUNT
-- eBay watcher PR #200
-- HP/Target standalone watcher deployment/acceptance
-- SniperPlug-Site work
+## Suspended / backlog
+- `SP-MOVIE-TICKETS-RECOVERY` / PR #273 remains suspended.
+- eBay watcher PR #200 remains unrelated.
+- Backlog: SP-SETUP-DELIVERY-UX, SP-DM-DELIVERY-STARVATION, SP-DM-NEW-LOW-ALERT, SP-WM-CASH-PDP-AMOUNT, HP/Target standalone watcher deployment/acceptance, SniperPlug-Site.
 
 ## Next step
-Run one complete executable exact-head validation on the latest PR #290 head after this bookkeeping commit. If and only if the complete gate passes, record the validated SHA in the PR discussion without modifying the branch, mark PR #290 ready for review, and proceed to merge/production acceptance separately.
+Run one complete exact-head validation on PR #291. Repair only regressions attributable to this task. Once the exact head is green, record validation in PR metadata without modifying the branch, then review/merge separately.

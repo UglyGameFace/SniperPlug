@@ -35,11 +35,20 @@ from sniperplug.services.dm_personal_categories import (
     update_flip_settings,
     update_muted_categories,
 )
+from sniperplug.services.dm_product_interests import (
+    brand_label,
+    parse_product_interest_input,
+    product_interest_catalog_lines,
+    product_interest_label,
+    split_product_preferences,
+    update_product_preferences,
+)
 
 
 ACTION_CHOICES = [
     app_commands.Choice(name="Open personalization menu", value="menu"),
     app_commands.Choice(name="Enable or update with typed options", value="enable"),
+    app_commands.Choice(name="Show specific product catalog", value="interests"),
     app_commands.Choice(name="Show my settings", value="status"),
     app_commands.Choice(name="Send a test DM", value="test"),
     app_commands.Choice(name="Pause alerts", value="disable"),
@@ -81,7 +90,11 @@ class DmDealAlertsCog(commands.Cog):
         categories="Optional hard allowlist. Leave empty to keep all categories eligible.",
         favorite_categories="Prioritize interests without excluding other great deals: tech, gaming, PC, smart home.",
         unfavorite_categories="Remove categories from your personal favorites.",
-        keywords="Comma list of words that must match normal-interest alerts.",
+        product_interests="Add specific products: portable chargers, NeeDoh, Pokemon TCG, cologne, LEGO, and more.",
+        remove_interests="Remove specific product interests from your personal DMs.",
+        brands="Add brand filters such as Anker, Versace, Dior, YSL, Belkin, or LEGO.",
+        remove_brands="Remove brands from your personal DM filter.",
+        keywords="Advanced comma list: at least one of these words must match.",
         exclude="Comma list of words that always block a product, including flips.",
         mute_categories="Hide categories from normal DMs, such as baby, toys, pets, or beauty.",
         unmute_categories="Restore personally muted categories, such as baby or toys.",
@@ -103,6 +116,10 @@ class DmDealAlertsCog(commands.Cog):
         categories: app_commands.Range[str, 1, 300] | None = None,
         favorite_categories: app_commands.Range[str, 1, 300] | None = None,
         unfavorite_categories: app_commands.Range[str, 1, 300] | None = None,
+        product_interests: app_commands.Range[str, 1, 400] | None = None,
+        remove_interests: app_commands.Range[str, 1, 400] | None = None,
+        brands: app_commands.Range[str, 1, 400] | None = None,
+        remove_brands: app_commands.Range[str, 1, 400] | None = None,
         keywords: app_commands.Range[str, 1, 300] | None = None,
         exclude: app_commands.Range[str, 1, 300] | None = None,
         mute_categories: app_commands.Range[str, 1, 300] | None = None,
@@ -137,6 +154,13 @@ class DmDealAlertsCog(commands.Cog):
             await interaction.followup.send(
                 embed=view.build_embed(),
                 view=view,
+                ephemeral=True,
+            )
+            return
+
+        if selected_action == "interests":
+            await interaction.followup.send(
+                embed=build_product_interest_catalog_embed(preference),
                 ephemeral=True,
             )
             return
@@ -205,6 +229,23 @@ class DmDealAlertsCog(commands.Cog):
             await interaction.followup.send(f"⚠️ {error}", ephemeral=True)
             return
 
+        add_interest_keys, unknown_add_interests = parse_product_interest_input(
+            product_interests
+        )
+        remove_interest_keys, unknown_remove_interests = parse_product_interest_input(
+            remove_interests
+        )
+        unknown_interests = (*unknown_add_interests, *unknown_remove_interests)
+        if unknown_interests:
+            preview = ", ".join(f"`{value}`" for value in unknown_interests[:6])
+            await interaction.followup.send(
+                "⚠️ I did not change your settings because I could not identify "
+                f"these specific product interests: {preview}. Run `/dm_deals "
+                "action:Show specific product catalog` to see accepted names.",
+                ephemeral=True,
+            )
+            return
+
         keyword_excludes, legacy_muted = split_exclude_terms(
             preference.exclude_keywords
         )
@@ -241,6 +282,13 @@ class DmDealAlertsCog(commands.Cog):
                 if flip_min_profit is not None
                 else None
             ),
+        )
+        updated_categories = update_product_preferences(
+            updated_categories,
+            add_interests=add_interest_keys,
+            remove_interests=remove_interest_keys,
+            add_brands=brands,
+            remove_brands=remove_brands,
         )
 
         updated = replace(
@@ -354,6 +402,9 @@ def build_dm_settings_embed(
     selected_categories, favorite_categories = split_category_preferences(
         normalized.categories
     )
+    product_interests, product_brands = split_product_preferences(
+        normalized.categories
+    )
     flip_enabled, flip_min_profit_cents = flip_settings(normalized.categories)
 
     muted_text = (
@@ -371,6 +422,16 @@ def build_dm_settings_embed(
         if selected_categories
         else "all categories"
     )
+    interest_text = (
+        ", ".join(product_interest_label(key) for key in product_interests)
+        if product_interests
+        else "none — category rules stay broad"
+    )
+    brand_text = (
+        ", ".join(brand_label(slug) for slug in product_brands)
+        if product_brands
+        else "all brands"
+    )
     keyword_text = ", ".join(keyword_excludes) if keyword_excludes else "none"
 
     summary: list[str] = []
@@ -378,6 +439,8 @@ def build_dm_settings_embed(
         if line.startswith("Categories:"):
             summary.append(f"Allowed categories: **{selected_text}**")
             summary.append(f"Favorite DM categories: **{favorite_text}**")
+            summary.append(f"Specific products: **{interest_text}**")
+            summary.append(f"Brand filter: **{brand_text}**")
             summary.append(
                 "Price-error / flip override: "
                 f"**{'enabled' if flip_enabled else 'disabled'}**"
@@ -398,10 +461,20 @@ def build_dm_settings_embed(
         color=discord.Color.green() if normalized.enabled else discord.Color.orange(),
     )
     embed.add_field(
+        name="🎯 Specific product filters",
+        value=(
+            "Specific products narrow your broad categories. Multiple product interests are **OR**; "
+            "multiple brands are **OR**. If you set both products and brands, a deal must match "
+            "**one selected product AND one selected brand**. These stay hard even for Flip Override.\n"
+            "Run `/dm_deals action:Show specific product catalog` for the supported product profiles."
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="Open the complete menu",
         value=(
             "Run `/dm_deals action:Open personalization menu` for the paginated, searchable "
-            "catalog. Every current category is included, and future categories appear automatically."
+            "category catalog and your saved personal controls."
         ),
         inline=False,
     )
@@ -429,9 +502,9 @@ def build_dm_settings_embed(
         name="Built-in safety",
         value=(
             "Only exact-item, exact-offer, buyable Walmart deals with trusted current and was prices enter this stream. "
-            "Flip Override crosses category boundaries only; explicit floors, maximum price, required/excluded words, "
-            "dedupe, and your saved daily-limit policy remain hard. Broad Smart alerts with a finite limit also reserve "
-            "room for category variety; Unlimited removes both the total cap and automatic family quota."
+            "Explicit product/brand filters, floors, maximum price, required/excluded words, dedupe, and your saved "
+            "daily-limit policy remain hard. Broad Smart alerts with a finite limit also reserve room for category "
+            "variety; Unlimited removes both the total cap and automatic family quota."
         ),
         inline=False,
     )
@@ -441,6 +514,62 @@ def build_dm_settings_embed(
             value=normalized.last_error[:1024],
             inline=False,
         )
+    return embed
+
+
+def build_product_interest_catalog_embed(
+    preference: DmDealAlertPreference,
+) -> discord.Embed:
+    interests, brands = split_product_preferences(preference.categories)
+    selected_products = (
+        ", ".join(product_interest_label(key) for key in interests)
+        if interests
+        else "none"
+    )
+    selected_brands = (
+        ", ".join(brand_label(slug) for slug in brands)
+        if brands
+        else "all brands"
+    )
+    lines = product_interest_catalog_lines()
+    embed = discord.Embed(
+        title="🎯 Specific personal DM products",
+        description=(
+            "These are intentionally narrower than categories. Add them with `/dm_deals "
+            "action:Enable or update with typed options product_interests:...` and optionally "
+            "add `brands:...`.\n\n"
+            f"**Selected products:** {selected_products}\n"
+            f"**Selected brands:** {selected_brands}\n\n"
+            "Examples: `portable chargers`, `NeeDoh`, `Pokemon TCG`, `designer cologne`, "
+            "`LEGO sets`, `gaming controllers`. Brands can be any real brand name."
+        ),
+        color=discord.Color.blurple(),
+    )
+    chunk: list[str] = []
+    chunk_size = 0
+    field_number = 1
+    for line in lines:
+        projected = chunk_size + len(line) + 1
+        if chunk and projected > 950:
+            embed.add_field(
+                name=f"Product profiles {field_number}",
+                value="\n".join(chunk),
+                inline=False,
+            )
+            field_number += 1
+            chunk = []
+            chunk_size = 0
+        chunk.append(line)
+        chunk_size += len(line) + 1
+    if chunk:
+        embed.add_field(
+            name=f"Product profiles {field_number}",
+            value="\n".join(chunk),
+            inline=False,
+        )
+    embed.set_footer(
+        text="Product filters are hard. Brand filters narrow them further; Flip Override does not bypass them."
+    )
     return embed
 
 

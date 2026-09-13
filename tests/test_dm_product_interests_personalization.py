@@ -16,6 +16,7 @@ from sniperplug.services.dm_personal_categories import (
 from sniperplug.services.dm_product_interests import (
     match_product_preferences,
     parse_product_interest_input,
+    product_interest_pages,
     split_product_preferences,
     update_product_preferences,
 )
@@ -94,6 +95,20 @@ def test_interest_aliases_and_tokens_round_trip_without_becoming_categories() ->
     assert favorites == ("mobile_accessories",)
 
 
+def test_obvious_human_product_names_resolve_without_secret_catalog_keys() -> None:
+    interests, unknown = parse_product_interest_input(
+        "iphones, airpods, tools"
+    )
+    assert unknown == ()
+    assert interests == ("iphones", "airpods", "power_tools")
+
+
+def test_product_pages_never_exceed_discord_select_limit() -> None:
+    pages = product_interest_pages()
+    assert len(pages) >= 2
+    assert all(1 <= len(page) <= 25 for page in pages)
+
+
 def test_existing_category_editors_preserve_product_and_brand_tokens() -> None:
     stored = update_product_preferences(
         ("toys_collectibles",),
@@ -140,8 +155,61 @@ def test_portable_charger_and_brand_groups_are_both_required() -> None:
     assert decision.matched is True
     assert "interest Portable chargers / power banks" in decision.reason
     assert "brand Anker" in decision.reason
+    assert "explicit product intent" in decision.reason
     assert match_dm_deal(pref, other_brand).reason == "none of your selected brands matched"
     assert match_dm_deal(pref, wrong_product).reason == "none of your specific product interests matched"
+
+
+def test_explicit_walmart_product_intent_is_not_blocked_by_old_category_state() -> None:
+    categories = update_product_preferences(
+        (
+            "toys_collectibles",
+            "muted:mobile_accessories",
+        ),
+        replace_interests=("iphones",),
+        replace_brands=("Apple",),
+    )
+    pref = _preference(categories=categories)
+    iphone = _card(
+        "Apple iPhone 16 128GB Unlocked Smartphone",
+        brand="Apple",
+        category="Cell Phones",
+    )
+
+    decision = match_dm_deal(pref, iphone)
+    assert decision.matched is True
+    assert "explicit product intent" in decision.reason
+
+
+def test_category_allowlist_still_applies_when_no_specific_products_exist() -> None:
+    pref = _preference(categories=("toys_collectibles",))
+    iphone = _card(
+        "Apple iPhone 16 128GB Unlocked Smartphone",
+        brand="Apple",
+        category="Cell Phones",
+    )
+    decision = match_dm_deal(pref, iphone)
+    assert decision.matched is False
+    assert decision.reason == "category is not selected"
+
+
+def test_iphone_and_airpods_profiles_exclude_accessory_lookalikes() -> None:
+    assert match_product_preferences(
+        "Apple iPhone 16 Pro 256GB Unlocked",
+        interests=("iphones",),
+    ).matched is True
+    assert match_product_preferences(
+        "Protective case for iPhone 16 Pro",
+        interests=("iphones",),
+    ).matched is False
+    assert match_product_preferences(
+        "Apple AirPods Pro 2nd Gen USB-C",
+        interests=("airpods",),
+    ).matched is True
+    assert match_product_preferences(
+        "Silicone AirPods case cover",
+        interests=("airpods",),
+    ).matched is False
 
 
 def test_designer_fragrance_profile_rejects_body_spray_lookalikes() -> None:

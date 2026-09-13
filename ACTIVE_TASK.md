@@ -9,6 +9,7 @@ Current canonical main: `9358605543eab5a9d45faedba0f1d09c946cf6b4` (PR #289 merg
 
 Current focused branch: `fix/walmart-page-pacing-debt-290`.
 Current focused PR: #290, open draft and mergeable.
+Current focused head after final status bookkeeping: `873b572b539b5a91d514868a80087bd66bab574e`.
 
 ## Outcome sought
 Remove the artificial saturated `page_retry` pressure floor caused by local `page_pacing_deferred` waits maturing together, without weakening Walmart exact proof or increasing HTML request cadence.
@@ -106,7 +107,7 @@ Implemented behavior:
 - new pacing serialization occurs after canonical bulk persistence and before commit.
 
 ## Validation/results so far
-Repository comparison against canonical main confirms the PR remains ahead of main, behind by zero, and its net changed-file scope remains exactly the intended four files.
+Repository comparison against canonical main confirms the PR is ahead by seven commits, behind by zero, and its net changed-file scope remains exactly the intended four files.
 
 Independent local SQLite 3.46 SQL-shape checks passed for the new CTE/update forms, including:
 - a 200-row legacy migration update using the bounded parameter set and `RETURNING item_id`;
@@ -115,12 +116,12 @@ Independent local SQLite 3.46 SQL-shape checks passed for the new CTE/update for
 The canonical base main itself remains previously validated at `1453 passed, 1 warning` before PR #289 merged. That is base evidence only, not exact-head PR #290 validation.
 
 ### Hosted CI is currently non-evidence
-On code-bearing head `5df60f5cf491469adea16ccb15784f24d85906b5`, all three GitHub-hosted workflows were created but failed before executing repository steps:
-- `Python tests` run 574;
-- `Import smoke check` run 1084;
-- `Python Check` run 1084.
+On final head `873b572b539b5a91d514868a80087bd66bab574e`, all three GitHub-hosted workflows were created but failed before executing repository steps:
+- `Python tests` run 575;
+- `Import smoke check` run 1085;
+- `Python Check` run 1085.
 
-The inspected jobs report no executable steps/logs (`steps=null`, `logs_url=null`). This is the same runner-side condition seen on the earlier head, so these red checks do **not** prove a code/test failure, but they also cannot be counted as passes.
+The inspected `Python Check` job reported no executable steps/logs (`steps=null`, `logs_url=null`). A direct rerun succeeded as an API request but immediately produced a replacement job with the same `steps=null`, `logs_url=null` failure. This confirms the red check is runner-side non-execution rather than a repository test result, but it still cannot be counted as a pass.
 
 ## Validation still required before completion/merge
 The PR must remain draft until an executable exact-head environment produces the full gate:
@@ -175,4 +176,4 @@ Suspended by the user's earlier FORCE SWITCH. Preserve PR #273 and all merged mo
 - SniperPlug-Site work
 
 ## Next step
-Obtain executable exact-head validation for PR #290. If the repository checks execute and the complete gate passes, refresh this record with the exact validated SHA, mark the PR ready for review, and only then consider merge. Separately, wait for fresh post-#289 code-6001 production evidence before calling PR #289 production-accepted.
+Obtain executable exact-head validation for PR #290. If the complete gate passes, refresh this record with the exact validated SHA, mark the PR ready for review, and only then consider merge. Separately, wait for fresh post-#289 code-6001 production evidence before calling PR #289 production-accepted.

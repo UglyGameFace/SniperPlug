@@ -22,6 +22,8 @@ log = logging.getLogger("sniperplug.autoscan")
 PAGE_PACING_DEFERRED_TOKEN = "retry_kind=page_pacing_deferred"
 PAGE_PACING_DEBT_MARKER = "page_pacing_debt_v290"
 PAGE_PACING_SLOT_MARKER = "page_pacing_slot_v290"
+# Four CTE values per selected row plus the fixed update guards remain below
+# SQLite's conservative historical 999-variable ceiling.
 PAGE_PACING_DEBT_BATCH_LIMIT = 200
 _LEGACY_COMPLETE_ATTR = "_sniperplug_page_pacing_debt_v290_complete"
 
@@ -159,7 +161,7 @@ async def serialize_page_pacing_deferred_outcomes(
 
     placeholders = ",".join("(?, ?, ?, ?)" for _ in updates)
     params = tuple(value for row in updates for value in row)
-    await conn.execute(
+    update_cursor = await conn.execute(
         f"""
         WITH pacing_updates (
             item_id, expected_last_attempt_at, next_attempt_at, last_error
@@ -174,15 +176,17 @@ async def serialize_page_pacing_deferred_outcomes(
           AND target.status = 'page_retry'
           AND target.last_attempt_at = pacing_updates.expected_last_attempt_at
           AND instr(lower(target.last_error), ?) > 0
+        RETURNING item_id
         """,
         (*params, PAGE_PACING_DEFERRED_TOKEN),
     )
+    changed = len(await update_cursor.fetchall())
     statements += 1
     return PagePacingScheduleResult(
-        rows=len(updates),
+        rows=changed,
         sql_statements=statements,
-        first_slot=first_slot,
-        last_slot=last_slot,
+        first_slot=first_slot if changed else None,
+        last_slot=last_slot if changed else None,
     )
 
 
@@ -196,18 +200,26 @@ async def normalize_legacy_page_pacing_debt(
 
     PR #288 production telemetry proved the saturated page lane was entirely
     ``page_pacing_deferred``. Those rows were written before durable slotting and
-    can therefore all mature at once. Migrate at most ``limit`` retained,
-    unleased legacy rows per worker cycle. Existing not-before timestamps are
-    never shortened, page-request cadence remains one per minute, and unrelated
-    page failures are untouched.
+    can therefore all mature at once. Migrate at most the fixed bounded row cap
+    per worker cycle even if a larger caller limit is supplied. Existing
+    not-before timestamps are never shortened, malformed timestamps fail closed,
+    page-request cadence remains one per minute, and unrelated page failures are
+    untouched.
     """
 
     if bool(getattr(conn, _LEGACY_COMPLETE_ATTR, False)):
         return 0
 
+    requested_limit = int(limit)
+    if requested_limit <= 0:
+        return 0
+
     now_utc = _as_utc(now)
     cutoff = (now_utc - timedelta(days=QUEUE_RETENTION_DAYS)).isoformat()
-    bounded_limit = max(1, int(limit))
+    bounded_limit = min(
+        PAGE_PACING_DEBT_BATCH_LIMIT,
+        requested_limit,
+    )
     cursor = await conn.execute(
         f"""
         SELECT item_id, next_attempt_at, last_error
@@ -235,12 +247,17 @@ async def normalize_legacy_page_pacing_debt(
     last_slot: datetime | None = None
     if rows:
         tail, _ = await _load_pacing_tail(conn, now=now_utc)
-        updates: list[tuple[str, str, str]] = []
+        updates: list[tuple[str, str, str, str]] = []
         for row in rows:
             item_id = str(_row_value(row, "item_id", 0) or "").strip()
-            if not item_id:
+            expected_next_attempt_at = str(
+                _row_value(row, "next_attempt_at", 1) or ""
+            ).strip()
+            not_before = _parse_datetime(expected_next_attempt_at)
+            if not item_id or not_before is None:
+                # Never replace an unparseable legacy not-before value with a
+                # guessed earlier time. Leave it untouched for explicit review.
                 continue
-            not_before = _parse_datetime(_row_value(row, "next_attempt_at", 1)) or now_utc
             slot = _next_slot(tail, not_before=max(now_utc, not_before))
             tail = slot
             first_slot = first_slot or slot
@@ -248,17 +265,20 @@ async def normalize_legacy_page_pacing_debt(
             updates.append(
                 (
                     item_id,
+                    expected_next_attempt_at,
                     slot.isoformat(),
                     _mark_scheduled_error(str(_row_value(row, "last_error", 2) or "")),
                 )
             )
 
         if updates:
-            placeholders = ",".join("(?, ?, ?)" for _ in updates)
+            placeholders = ",".join("(?, ?, ?, ?)" for _ in updates)
             params = tuple(value for row in updates for value in row)
-            await conn.execute(
+            update_cursor = await conn.execute(
                 f"""
-                WITH pacing_updates (item_id, next_attempt_at, last_error) AS (
+                WITH pacing_updates (
+                    item_id, expected_next_attempt_at, next_attempt_at, last_error
+                ) AS (
                     VALUES {placeholders}
                 )
                 UPDATE {QUEUE_TABLE} AS target
@@ -267,9 +287,11 @@ async def normalize_legacy_page_pacing_debt(
                 FROM pacing_updates
                 WHERE target.item_id = pacing_updates.item_id
                   AND target.status = 'page_retry'
+                  AND target.next_attempt_at = pacing_updates.expected_next_attempt_at
                   AND (target.lease_until IS NULL OR target.lease_until < ?)
                   AND instr(lower(target.last_error), ?) > 0
                   AND instr(lower(target.last_error), ?) = 0
+                RETURNING item_id
                 """,
                 (
                     *params,
@@ -278,18 +300,19 @@ async def normalize_legacy_page_pacing_debt(
                     PAGE_PACING_SLOT_MARKER,
                 ),
             )
-            changed = len(updates)
-            await conn.commit()
-            log.info(
-                "Walmart page pacing debt serialized marker=%s legacy_rows=%s limit=%s "
-                "slot_seconds=%s first_slot=%s last_slot=%s",
-                PAGE_PACING_DEBT_MARKER,
-                changed,
-                bounded_limit,
-                int(PAGE_HTML_PROBE_INTERVAL_SECONDS),
-                first_slot.isoformat() if first_slot else "none",
-                last_slot.isoformat() if last_slot else "none",
-            )
+            changed = len(await update_cursor.fetchall())
+            if changed:
+                await conn.commit()
+                log.info(
+                    "Walmart page pacing debt serialized marker=%s legacy_rows=%s limit=%s "
+                    "slot_seconds=%s first_slot=%s last_slot=%s",
+                    PAGE_PACING_DEBT_MARKER,
+                    changed,
+                    bounded_limit,
+                    int(PAGE_HTML_PROBE_INTERVAL_SECONDS),
+                    first_slot.isoformat() if first_slot else "none",
+                    last_slot.isoformat() if last_slot else "none",
+                )
 
     remaining_cursor = await conn.execute(
         f"""

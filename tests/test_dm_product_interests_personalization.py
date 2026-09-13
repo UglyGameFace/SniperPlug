@@ -24,6 +24,7 @@ from sniperplug.services.dm_product_interests import (
 def _card(
     title: str,
     *,
+    retailer: str = "Walmart",
     brand: str = "",
     category: str = "",
     current: float = 20.0,
@@ -41,6 +42,7 @@ def _card(
     }
     return SimpleNamespace(
         label=title,
+        retailer=retailer,
         url="https://www.walmart.com/ip/123",
         embed=discord.Embed(title=f"💎 {discount:.0f}% OFF • {title}"),
         variant_attributes=attrs,
@@ -221,7 +223,29 @@ def test_product_aware_badges_make_sample_categories_visually_distinct() -> None
     assert personalize_dm_card_title(baby).startswith("🔥 👶")
 
 
-def test_no_specific_product_settings_preserve_existing_matching_behavior() -> None:
+def test_non_walmart_dm_keeps_existing_matching_and_title_behavior() -> None:
+    categories = update_product_preferences(
+        (),
+        replace_interests=("portable_chargers",),
+        replace_brands=("Anker",),
+    )
+    pref = _preference(categories=categories)
+    target = _card(
+        "Target exact verified kitchen deal",
+        retailer="Target",
+        category="Home Kitchen",
+    )
+    before = target.embed.title
+
+    decision = match_dm_deal(pref, target)
+
+    assert decision.matched is True
+    assert target.embed.title == before
+    assert "interest " not in decision.reason
+    assert "brand " not in decision.reason
+
+
+def test_no_specific_product_settings_preserve_existing_walmart_matching_behavior() -> None:
     pref = _preference(categories=())
     card = _card("Ordinary exact Walmart deal", category="Home")
     assert match_dm_deal(pref, card).matched is True

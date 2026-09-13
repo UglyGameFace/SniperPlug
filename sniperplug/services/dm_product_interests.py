@@ -9,8 +9,8 @@ from sniperplug.services.opportunity_watchlist import category_for_title
 
 PRODUCT_INTEREST_PREFIX = "interest:"
 BRAND_PREFIX = "brand:"
-MAX_PRODUCT_INTERESTS = 20
-MAX_BRANDS = 20
+MAX_PRODUCT_INTERESTS = 50
+MAX_BRANDS = 50
 PRODUCT_PAGE_SIZE = 25
 
 

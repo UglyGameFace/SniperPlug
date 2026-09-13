@@ -396,7 +396,7 @@ def test_runtime_normalizes_before_pressure_and_serializes_after_canonical_persi
 
     assert normalize_call in BULK_RUNTIME
     assert serialize_call in BULK_RUNTIME
-    assert PAGE_PACING_SLOT_MARKER in BULK_RUNTIME
+    assert "PAGE_PACING_SLOT_MARKER" in BULK_RUNTIME
     assert PAGE_PACING_DEBT_MARKER not in BULK_RUNTIME  # emitted by the debt helper itself
     assert BULK_RUNTIME.index(normalize_call) < BULK_RUNTIME.index(pressure_call)
     assert BULK_RUNTIME.index(persist_call) < BULK_RUNTIME.index(serialize_call)

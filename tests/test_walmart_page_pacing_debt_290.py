@@ -13,6 +13,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
     ensure_walmart_exact_verification_queue,
 )
 from sniperplug.services.walmart_page_pacing_debt import (
+    PAGE_PACING_DEBT_BATCH_LIMIT,
     PAGE_PACING_DEBT_MARKER,
     PAGE_PACING_DEFERRED_TOKEN,
     PAGE_PACING_SLOT_MARKER,
@@ -64,6 +65,7 @@ async def _insert_page_row(
     next_attempt_at: datetime,
     last_error: str,
     last_attempt_at: datetime | None = None,
+    lease_until: datetime | None = None,
 ) -> None:
     await conn.execute(
         f"""
@@ -76,8 +78,10 @@ async def _insert_page_row(
             attempt_count,
             last_attempt_at,
             next_attempt_at,
-            last_error
-        ) VALUES (?, 100, ?, ?, 'page_retry', 1, ?, ?, ?)
+            last_error,
+            lease_token,
+            lease_until
+        ) VALUES (?, 100, ?, ?, 'page_retry', 1, ?, ?, ?, ?, ?)
         """,
         (
             item_id,
@@ -86,8 +90,21 @@ async def _insert_page_row(
             last_attempt_at.isoformat() if last_attempt_at else None,
             next_attempt_at.isoformat(),
             last_error,
+            "leased" if lease_until is not None else "",
+            lease_until.isoformat() if lease_until is not None else None,
         ),
     )
+
+
+async def _load_rows(conn):
+    cursor = await conn.execute(
+        f"""
+        SELECT item_id, next_attempt_at, last_error, lease_until
+        FROM {QUEUE_TABLE}
+        ORDER BY item_id
+        """
+    )
+    return {row["item_id"]: row for row in await cursor.fetchall()}
 
 
 def test_new_pacing_deferrals_keep_30_minute_floor_and_serialize_one_minute_slots() -> None:
@@ -127,22 +144,70 @@ def test_new_pacing_deferrals_keep_30_minute_floor_and_serialize_one_minute_slot
         assert result.first_slot == observed + timedelta(minutes=30)
         assert result.last_slot == observed + timedelta(minutes=32)
 
-        cursor = await conn.execute(
-            f"""
-            SELECT item_id, next_attempt_at, last_error
-            FROM {QUEUE_TABLE}
-            ORDER BY item_id
-            """
-        )
-        rows = list(await cursor.fetchall())
-        slots = [datetime.fromisoformat(row["next_attempt_at"]) for row in rows]
+        rows = await _load_rows(conn)
+        slots = [
+            datetime.fromisoformat(rows[f"paced-{index}"]["next_attempt_at"])
+            for index in range(3)
+        ]
         assert slots == [
             observed + timedelta(minutes=30),
             observed + timedelta(minutes=31),
             observed + timedelta(minutes=32),
         ]
-        assert all(PAGE_PACING_SLOT_MARKER in row["last_error"] for row in rows)
-        assert all(PAGE_PACING_DEFERRED_TOKEN in row["last_error"] for row in rows)
+        assert all(
+            PAGE_PACING_SLOT_MARKER in rows[f"paced-{index}"]["last_error"]
+            for index in range(3)
+        )
+        assert all(
+            PAGE_PACING_DEFERRED_TOKEN in rows[f"paced-{index}"]["last_error"]
+            for index in range(3)
+        )
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_new_pacing_deferral_appends_after_existing_serialized_tail() -> None:
+    async def run() -> None:
+        conn = await _setup_queue()
+        observed = datetime(2026, 9, 11, 21, 0, tzinfo=timezone.utc)
+        error = "retry_kind=page_pacing_deferred Walmart product-page recovery deferred"
+        await _insert_page_row(
+            conn,
+            item_id="existing-tail",
+            now=observed,
+            next_attempt_at=observed + timedelta(minutes=35),
+            last_error=f"{error} marker={PAGE_PACING_SLOT_MARKER}",
+        )
+        await _insert_page_row(
+            conn,
+            item_id="new-paced",
+            now=observed,
+            next_attempt_at=observed + timedelta(minutes=30),
+            last_error=error,
+            last_attempt_at=observed,
+        )
+        await conn.commit()
+
+        result = await serialize_page_pacing_deferred_outcomes(
+            conn,
+            [
+                SimpleNamespace(
+                    claim=SimpleNamespace(item_id="new-paced"),
+                    candidate=None,
+                    error=error,
+                    observed_at=observed,
+                )
+            ],
+        )
+        await conn.commit()
+
+        assert result.rows == 1
+        assert result.first_slot == observed + timedelta(minutes=36)
+        rows = await _load_rows(conn)
+        assert datetime.fromisoformat(rows["new-paced"]["next_attempt_at"]) == (
+            observed + timedelta(minutes=36)
+        )
         await conn.close()
 
     asyncio.run(run())
@@ -188,14 +253,7 @@ def test_legacy_pacing_herd_is_appended_after_existing_slot_tail_without_touchin
         changed = await normalize_legacy_page_pacing_debt(conn, now=now)
         assert changed == 2
 
-        cursor = await conn.execute(
-            f"""
-            SELECT item_id, next_attempt_at, last_error
-            FROM {QUEUE_TABLE}
-            ORDER BY item_id
-            """
-        )
-        rows = {row["item_id"]: row for row in await cursor.fetchall()}
+        rows = await _load_rows(conn)
         assert datetime.fromisoformat(rows["already-slotted"]["next_attempt_at"]) == (
             now + timedelta(minutes=10)
         )
@@ -215,6 +273,115 @@ def test_legacy_pacing_herd_is_appended_after_existing_slot_tail_without_touchin
         )
 
         assert await normalize_legacy_page_pacing_debt(conn, now=now) == 0
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_legacy_normalization_preserves_future_not_before_and_skips_active_lease() -> None:
+    async def run() -> None:
+        conn = await _setup_queue()
+        now = datetime(2026, 9, 11, 21, 0, tzinfo=timezone.utc)
+        error = "retry_kind=page_pacing_deferred Walmart product-page recovery deferred"
+        future_not_before = now + timedelta(minutes=20)
+        await _insert_page_row(
+            conn,
+            item_id="future-floor",
+            now=now,
+            next_attempt_at=future_not_before,
+            last_error=error,
+        )
+        await _insert_page_row(
+            conn,
+            item_id="actively-leased",
+            now=now,
+            next_attempt_at=now - timedelta(minutes=5),
+            last_error=error,
+            lease_until=now + timedelta(minutes=5),
+        )
+        await conn.commit()
+
+        changed = await normalize_legacy_page_pacing_debt(conn, now=now)
+        assert changed == 1
+
+        rows = await _load_rows(conn)
+        assert datetime.fromisoformat(rows["future-floor"]["next_attempt_at"]) == (
+            future_not_before
+        )
+        assert PAGE_PACING_SLOT_MARKER in rows["future-floor"]["last_error"]
+        assert datetime.fromisoformat(rows["actively-leased"]["next_attempt_at"]) == (
+            now - timedelta(minutes=5)
+        )
+        assert PAGE_PACING_SLOT_MARKER not in rows["actively-leased"]["last_error"]
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_legacy_normalization_hard_caps_each_batch_even_with_larger_caller_limit() -> None:
+    async def run() -> None:
+        conn = await _setup_queue()
+        now = datetime(2026, 9, 11, 21, 0, tzinfo=timezone.utc)
+        error = "retry_kind=page_pacing_deferred Walmart product-page recovery deferred"
+        total_rows = PAGE_PACING_DEBT_BATCH_LIMIT + 5
+        for index in range(total_rows):
+            await _insert_page_row(
+                conn,
+                item_id=f"legacy-{index:03d}",
+                now=now,
+                next_attempt_at=now - timedelta(minutes=5),
+                last_error=error,
+            )
+        await conn.commit()
+
+        changed = await normalize_legacy_page_pacing_debt(
+            conn,
+            now=now,
+            limit=PAGE_PACING_DEBT_BATCH_LIMIT + 999,
+        )
+        assert changed == PAGE_PACING_DEBT_BATCH_LIMIT
+
+        cursor = await conn.execute(
+            f"""
+            SELECT
+                SUM(CASE WHEN instr(lower(last_error), ?) > 0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN instr(lower(last_error), ?) = 0 THEN 1 ELSE 0 END)
+            FROM {QUEUE_TABLE}
+            WHERE instr(lower(last_error), ?) > 0
+            """,
+            (
+                PAGE_PACING_SLOT_MARKER,
+                PAGE_PACING_SLOT_MARKER,
+                PAGE_PACING_DEFERRED_TOKEN,
+            ),
+        )
+        slotted, unslotted = await cursor.fetchone()
+        assert slotted == PAGE_PACING_DEBT_BATCH_LIMIT
+        assert unslotted == 5
+
+        assert await normalize_legacy_page_pacing_debt(conn, now=now) == 5
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_nonpositive_legacy_limit_performs_no_migration() -> None:
+    async def run() -> None:
+        conn = await _setup_queue()
+        now = datetime(2026, 9, 11, 21, 0, tzinfo=timezone.utc)
+        error = "retry_kind=page_pacing_deferred Walmart product-page recovery deferred"
+        await _insert_page_row(
+            conn,
+            item_id="legacy-zero-limit",
+            now=now,
+            next_attempt_at=now - timedelta(minutes=5),
+            last_error=error,
+        )
+        await conn.commit()
+
+        assert await normalize_legacy_page_pacing_debt(conn, now=now, limit=0) == 0
+        rows = await _load_rows(conn)
+        assert PAGE_PACING_SLOT_MARKER not in rows["legacy-zero-limit"]["last_error"]
         await conn.close()
 
     asyncio.run(run())

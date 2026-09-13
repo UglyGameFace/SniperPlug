@@ -7,6 +7,9 @@ MATCHER = Path("sniperplug/services/dm_deal_matching.py").read_text(encoding="ut
 PERSONAL = Path("sniperplug/services/dm_personal_categories.py").read_text(encoding="utf-8")
 PRODUCTS = Path("sniperplug/services/dm_product_interests.py").read_text(encoding="utf-8")
 BADGES = Path("sniperplug/services/dm_deal_badges.py").read_text(encoding="utf-8")
+WALMART_BULK = Path("sniperplug/services/walmart_global_deal_fanout_bulk.py").read_text(encoding="utf-8")
+WALMART_LEGACY = Path("sniperplug/services/walmart_global_deal_fanout.py").read_text(encoding="utf-8")
+VERIFIED_RETAILER = Path("sniperplug/services/verified_retailer_event_fanout.py").read_text(encoding="utf-8")
 
 
 def test_dm_deals_exposes_specific_product_and_brand_controls() -> None:
@@ -32,6 +35,13 @@ def test_product_control_tokens_are_not_misread_as_category_allowlist_entries() 
     assert "value.startswith(PRODUCT_INTEREST_PREFIX)" in PERSONAL
     assert "value.startswith(BRAND_PREFIX)" in PERSONAL
     assert "product_tokens=existing_categories" in PERSONAL
+
+
+def test_all_live_fanouts_import_the_canonical_dm_matcher() -> None:
+    canonical_import = "from sniperplug.services.dm_deal_matching import match_dm_deal"
+    for source in (WALMART_BULK, WALMART_LEGACY, VERIFIED_RETAILER):
+        assert canonical_import in source
+        assert "from sniperplug.services.dm_deal_alerts import match_dm_deal" not in source
 
 
 def test_authoritative_matcher_keeps_specific_intent_hard_even_for_flip() -> None:

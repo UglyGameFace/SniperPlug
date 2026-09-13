@@ -39,7 +39,6 @@ def test_dm_rule_parser_accepts_explicit_unlimited_daily_limit() -> None:
             max_price_text="",
             daily_cap_text=value,
         )
-
         assert rules.daily_cap == UNLIMITED_MAX_ALERTS_PER_DAY
         assert rules.has_updates is True
 
@@ -52,7 +51,6 @@ def test_dm_rule_parser_blank_fields_mean_keep_everything() -> None:
         max_price_text="",
         daily_cap_text="",
     )
-
     assert rules.min_discount is None
     assert rules.min_savings_cents is None
     assert rules.min_score is None
@@ -70,7 +68,6 @@ def test_dm_rule_parser_can_change_only_threshold() -> None:
         max_price_text="",
         daily_cap_text="",
     )
-
     assert rules.min_discount == 50
     assert rules.min_savings_cents is None
     assert rules.min_score is None
@@ -87,7 +84,6 @@ def test_dm_rule_parser_uses_explicit_off_to_remove_max_price() -> None:
         max_price_text="off",
         daily_cap_text="",
     )
-
     assert rules.max_price_cents is None
     assert rules.clear_max_price is True
     assert rules.has_updates is True
@@ -116,14 +112,12 @@ def test_dm_rule_parser_rejects_out_of_range_values(
         "daily_cap_text": "",
     }
     kwargs[field] = value
-
     with pytest.raises(ValueError, match=message):
         parse_dm_rule_values(**kwargs)
 
 
 def test_dm_rules_modal_does_not_force_every_field() -> None:
     source = inspect.getsource(_DmDealRulesModal)
-
     assert source.count("required=False") == 5
     assert ".default =" not in source
     assert "blank keeps" in source.lower()
@@ -131,21 +125,19 @@ def test_dm_rules_modal_does_not_force_every_field() -> None:
     assert "unlimited" in source.lower()
 
 
-def test_personal_menu_labels_public_and_flip_thresholds_separately() -> None:
+def test_personal_menu_keeps_rules_and_flip_separate_without_wall_of_help_text() -> None:
     source = inspect.getsource(DmDealPreferencesView)
-
-    assert "DM Threshold:" in source
-    assert "DM Deal Threshold:" in source
-    assert "server's public deal channel only" in source
-    assert "fill **only what you want to change**" in source
+    assert "Deal rules:" in source
+    assert "DM Deal Threshold" not in source
+    assert "Flip Override:" in source
     assert "Flip Profit:" in source
-    assert "profit minimum applies **only to Flip Override**" in source
-    assert "Unlimited has no hidden family cap" in source
+    assert "Products & brands" in source
+    assert "Categories" in source
+    assert "Safety boundary" not in source
 
 
 def test_personal_menu_save_persists_normal_dm_rules() -> None:
     source = inspect.getsource(DmDealPreferencesView._save)
-
     assert "mode=self.dm_mode" in source
     assert "min_discount=self.dm_min_discount" in source
     assert "min_savings_cents=self.dm_min_savings_cents" in source

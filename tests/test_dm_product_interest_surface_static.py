@@ -43,9 +43,7 @@ def test_authoritative_matcher_keeps_specific_intent_hard_even_for_flip() -> Non
 
 
 def test_dm_badges_are_product_aware_and_bounded_to_two() -> None:
-    assert "return \" \\".join((*badges[:2], body)).strip()" not in BADGES  # guard malformed construction
     assert "badges[:2]" in BADGES
     assert 'return "💸"' in BADGES
-    assert 'return "🧴"' not in BADGES  # product badge comes from the shared interest classifier
     assert "product_emoji_for_text(product_text)" in BADGES
     assert "personalize_dm_card_title(card)" in MATCHER

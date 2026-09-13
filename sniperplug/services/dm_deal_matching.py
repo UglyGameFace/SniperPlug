@@ -20,6 +20,10 @@ from sniperplug.services.dm_personal_categories import (
     split_category_preferences,
     split_exclude_terms,
 )
+from sniperplug.services.dm_product_interests import (
+    match_product_preferences,
+    split_product_preferences,
+)
 
 
 def match_dm_deal(
@@ -33,11 +37,17 @@ def match_dm_deal(
     or dollar-savings floor. Strict API-proven Walmart Cash or a personally
     favorite category may soften only Smart's additional adaptive requirement.
 
+    Product-interest and brand filters are narrower, explicit user intent. They
+    are hard constraints even for Flip Override: interests are OR within the
+    selected interest set, brands are OR within the selected brand set, and
+    when both sets are configured the deal must satisfy both groups.
+
     Personal category mutes and favorites are delivery-only. A separately
     enabled flip lane may cross category boundaries only for a strict,
     significant price-error/resale assessment. That lane still respects exact
-    proof, explicit floors, maximum price, keywords, excluded words,
-    Walmart-Cash-only mode, dedupe, and the saved daily-limit policy.
+    proof, explicit floors, maximum price, product/brand filters, keywords,
+    excluded words, Walmart-Cash-only mode, dedupe, and the saved daily-limit
+    policy.
     """
 
     pref = preference.normalized()
@@ -52,6 +62,7 @@ def match_dm_deal(
     selected_categories, favorite_categories = split_category_preferences(
         pref.categories
     )
+    product_interests, product_brands = split_product_preferences(pref.categories)
     stored_muted = muted_category_preferences(pref.categories)
     muted_categories = frozenset((*legacy_muted, *stored_muted))
     flip_enabled, flip_min_profit_cents = flip_settings(pref.categories)
@@ -105,6 +116,18 @@ def match_dm_deal(
         return DmDealMatchDecision(
             False,
             "an excluded keyword matched",
+            category_key,
+        )
+
+    product_match = match_product_preferences(
+        search_text,
+        interests=product_interests,
+        brands=product_brands,
+    )
+    if not product_match.matched:
+        return DmDealMatchDecision(
+            False,
+            product_match.reason,
             category_key,
         )
 
@@ -201,6 +224,9 @@ def match_dm_deal(
             reason += " • favorite-category priority"
         if cash_cents > 0:
             reason += f" • ${cash_cents / 100:,.2f} Walmart Cash"
+
+    if product_match.reason:
+        reason += f" • {product_match.reason}"
 
     return DmDealMatchDecision(
         True,

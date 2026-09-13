@@ -1,120 +1,94 @@
 # Active Task
 
 ## Active task / outcome
-**SP-WM-DM-PERSONALIZATION — PR #291 `Personalize Walmart DM product alerts`.**
+**SP-WM-DM-PERSONALIZATION — production UX repair after merged PR #291.**
 
-Outcome: keep existing broad personal deal categories compatible while allowing each subscriber to narrow **Walmart** DMs by specific product type and optional brand, with notification titles that visually distinguish both deal strength and product identity.
+Outcome: keep the specific Walmart product/brand matching added by PR #291, but replace the confusing wall-of-text configuration flow with a guided, compact Discord UI where products and categories are clearly separated, obvious product choices require no secret aliases, and stale broad category state cannot silently block an explicitly selected Walmart product.
 
-Base main: `e8f4a271aa8f595d6d2e3f8eca3cf9d79f90e2df` (PR #290 merge).
-Branch: `feat/walmart-dm-personalization`.
-PR: #291, open draft and mergeable.
+Base main: `bfb9ccf54bf68f2d5c440d50fa13cd0c7df3e715` (PR #291 merge).
+Branch: `fix/walmart-dm-ux-292`.
+Intended PR: #292, draft until exact-head executable validation passes.
 
 Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
-## Previous task closure
-`SP-WM-EXACT-RECOVERY-DEBT` is production-accepted. Fresh post-merge logs proved v290 telemetry live, page recovery drained to zero, the page circuit stayed closed without an observed challenge/403/429 regression, exact verification/fanout remained healthy, and PR #289 code-6001 responses normalized to `api_exact_lookup_no_match`. Production acceptance evidence is recorded on PR #290.
+## Why PR #291 is not production-accepted
+PR #291 passed executable validation and merged, but screenshot-based production acceptance exposed a real UX failure:
+- the personal DM menu became a very large instructional embed with category controls, product controls, rules, Flip Override and safety documentation all competing on one screen;
+- the Product catalog exposed internal storage keys such as `pokemon_tcg_sealed` and `portable_chargers`;
+- Specific products used a free-text modal that rejected ordinary user input such as `iphones`, `airpods`, and `tools` when it did not exactly map to a predeclared alias;
+- broad category mutes/allowlists were still evaluated after specific Walmart product intent, so old category state could unexpectedly veto an item the subscriber had deliberately selected.
 
-## Status
-**Implementation and focused cleanup are complete enough for executable validation. Do not mark ready or merge until exact-head validation passes.**
+The active task therefore remains SP-WM-DM-PERSONALIZATION until this repair is validated and production-accepted.
 
-GitHub-hosted workflows remain runner-side non-evidence: current PR jobs fail in roughly two seconds with `steps=[]` and `runner_id=0`, before any repository command executes.
+## Root cause / execution path
+- `/dm_deals` in `sniperplug/cogs/dm_deal_alerts.py` opens `DmDealPreferencesView` and remains the command owner.
+- `sniperplug/cogs/dm_deal_preferences_view.py` had become a monolithic dashboard/category editor/rules editor/product editor/help page.
+- `sniperplug/services/dm_product_interests.py` maps human product intent to structured `interest:*` tokens and previously lacked obvious iPhone/AirPods/tool aliases.
+- `sniperplug/services/dm_deal_matching.py` is the canonical live matcher used by Walmart bulk, Walmart legacy and verified-retailer fanout.
+- The canonical matcher previously applied specific Walmart product/brand matching and then separately applied category mute/allowlist checks, allowing old broad category state to cross into the newer explicit product layer.
+- A pre-existing stale `match_dm_deal()` symbol still exists in `sniperplug/services/dm_deal_alerts.py`, but no live fanout imports it; static coverage locks all live fanouts to `dm_deal_matching.py`.
 
-## Requirement / root cause
-Existing personal DMs correctly support exact proof, thresholds, broad categories, favorites, mutes, required/excluded keywords, Flip Override, dedupe and daily limits. The missing layer is product intent inside a category.
+## Repair design
+### Guided UI
+The private editor now has three screens instead of one giant embed:
+1. **Dashboard** — short summary plus Products & brands, Categories, Deal rules, Mode, Flip Override, Save and Close.
+2. **Products & brands** — real Discord multi-select product profiles with pagination, optional arbitrary brand entry, clear controls and return to Dashboard.
+3. **Categories** — broad Favorites, Muted and Only-these category modes with category multi-select, pagination/search and return to Dashboard.
 
-Examples:
-- portable chargers should not mean every mobile accessory;
-- cologne/perfume should exclude body spray/deodorant lookalikes;
-- Pokémon TCG should target sealed TCG products rather than generic Pokémon merchandise;
-- NeeDoh should not mean every toy.
+The old Product catalog button and free-text `_ProductInterestModal` are removed from the primary menu. Typed `/dm_deals` product/category options remain only as a compatibility/backup surface.
 
-Notification previews also reused the same heat emoji across unrelated products, so several good alerts visually blended together.
+### Product usability
+- Added dedicated `iphones` and `airpods` profiles with accessory exclusions.
+- `tools` / `tool` now resolve naturally to the existing Power tools profile.
+- Existing product profiles and strict lookalike exclusions remain intact.
+- Product profiles are paged at Discord's 25-option Select limit.
+- Product/brand storage capacity is raised above the current catalog size so selecting across multiple pages is not silently truncated.
 
-## Execution path inspected
-- `/dm_deals` in `sniperplug/cogs/dm_deal_alerts.py` owns the personal-alert command and opens `DmDealPreferencesView`.
-- Existing `categories_json` safely stores arbitrary structured control tokens; `normalize_categories()` does not cap or drop `interest:` / `brand:` tokens, so no DB migration is required.
-- `sniperplug/services/dm_personal_categories.py` owns category/favorite/mute/flip token composition and now preserves product/brand tokens across those edits.
-- `sniperplug/services/dm_deal_matching.py` is the canonical live matcher.
-- Walmart bulk fanout, legacy Walmart fanout and verified-retailer fanout all import the canonical matcher from `dm_deal_matching.py`; a regression now locks those imports in place.
-- Walmart exact cards carry `card.retailer = Walmart...`; Target/HP cards carry their own retailer identity.
-- Product/brand filtering and new badges are therefore gated to Walmart cards only. Target/HP retain their existing matching and title behavior.
-- Walmart bulk fanout clones the card embed after the personal match decision, so an idempotent Walmart title decoration at the successful-match boundary reaches the DM without a duplicate renderer.
+### Category/product precedence
+For Walmart only:
+- when no specific product/brand filters exist, category mutes and allowlists keep their existing behavior;
+- when specific Walmart product and/or brand filters exist, those explicit choices become the inclusion layer and broad category mutes/allowlists do not veto a matching chosen product;
+- exact proof, maximum price, Walmart Cash-only, required/excluded keywords, minimum markdown/score/savings, dedupe and daily limits remain hard;
+- specific product/brand matching remains hard and Flip Override cannot bypass it;
+- favorites remain a Smart-mode priority hint;
+- HP/Target keep their existing behavior.
 
-## Matching design
-New structured tokens reuse `categories_json`:
-- `interest:<specific_product_profile>`
-- `brand:<normalized_brand>`
-
-Semantics:
-- multiple product interests are OR;
-- multiple brands are OR;
-- if both groups are configured, a Walmart deal must match one selected product profile **and** one selected brand;
-- explicit Walmart product/brand intent is hard and Flip Override cannot bypass it;
-- existing maximum price, Walmart Cash-only, required keywords, excluded keywords, exact proof, dedupe and daily limits remain hard;
-- broad category favorites/mutes/allowlists remain separate;
-- users with no product/brand tokens keep existing behavior.
-
-## Specific product profiles
-Initial deliberately narrow profiles include sealed Pokémon TCG products, NeeDoh, portable chargers/power banks, MagSafe battery packs, cologne/perfume/EDP/EDT, LEGO sets, premium Hot Wheels, Funko Pop, gaming controllers, headphones/earbuds, Bluetooth speakers, SSDs, microSD cards, robot vacuums, air fryers, countertop ice makers, coffee makers, power tools, tool batteries, diapers, strollers, car seats, energy drinks, sneakers, smartwatches, tablets, laptops and computer monitors.
-
-Profile exclusions prevent obvious adjacent junk such as Pokémon binders/sleeves/plush, fragrance body spray/deodorant, LEGO accessories, SSD enclosures, stroller accessories and similar lookalikes.
-
-Pokémon matching identifies sealed TCG product form only. It does not claim popularity/profit merely because an item is Pokémon; resale qualification remains the existing strict Flip assessment's responsibility.
-
-## Product-aware notification badges
-Walmart personal-DM titles use at most two leading badges:
-1. deal strength: `🚨`, `🔥`, `💸`, `💎`, `⚡`, `✅`, or `🔎`;
-2. product identity such as `🧴`, `🃏`, `🔋`, `🧸`, `🧱`, `🎮`, `🎧`, `🚗`, `👶`, `🛒`, etc.
-
-Decoration is idempotent so a shared card evaluated for multiple subscribers does not accumulate emojis. HP/Target titles are unchanged.
-
-## Scope
-Exactly nine expected net files:
+## Current branch scope
+Expected repair files:
 - `ACTIVE_TASK.md`
-- `sniperplug/cogs/dm_deal_alerts.py`
 - `sniperplug/cogs/dm_deal_preferences_view.py`
-- `sniperplug/services/dm_personal_categories.py`
 - `sniperplug/services/dm_product_interests.py`
 - `sniperplug/services/dm_deal_matching.py`
-- `sniperplug/services/dm_deal_badges.py`
 - `tests/test_dm_product_interests_personalization.py`
 - `tests/test_dm_product_interest_surface_static.py`
+- `tests/test_dm_deal_rules_menu.py`
+- `tests/test_dm_personalization_command_static.py`
+- `tests/test_dm_personal_category_mutes.py`
 
-## Changes
-- Added structured specific-product and arbitrary-brand helpers with no schema migration.
-- Added `/dm_deals` typed add/remove controls and a product catalog.
-- Added Specific products and Product catalog controls to the existing private personalization menu.
-- Existing category/favorite/mute/flip editors preserve product/brand tokens.
-- Canonical matcher enforces the new constraints only for Walmart.
-- Added product-aware two-badge Walmart DM titles.
-- Added dynamic coverage for portable charger + brand conjunction, fragrance exclusions, sealed Pokémon specificity, NeeDoh specificity, token persistence, Walmart-only scope, existing no-filter compatibility and idempotent badges.
-- Added static coverage for command/menu wiring, structured-token preservation, Walmart-only gating and all live fanouts importing the canonical matcher.
+No database migration, new fanout, retry shim or public Walmart posting change is intended.
 
-## Cleanup / conflicts
-- No new persistence layer, migration, retry shim or parallel fanout path was added.
-- A pre-existing stale `match_dm_deal()` function remains inside `dm_deal_alerts.py`, but repository inspection found no live fanout or test importing it. All live fanouts use `dm_deal_matching.py`, and the new regression explicitly prevents them from drifting back to the stale function.
-- Rewriting the large shared persistence module solely to delete unreachable legacy code was judged higher-risk than leaving the dead compatibility symbol guarded and unreferenced in this focused feature PR.
-- Public Walmart posting behavior is not intentionally changed.
-- PR #273 and PR #200 remain untouched.
-
-## Validation required
-Before PR #291 can be called complete/ready:
-- targeted new personalization tests;
-- existing DM alert/category/favorite/mute/Flip Override/delivery tests;
-- Walmart fanout and personalization static tests;
-- Target/HP verified-retailer compatibility tests where applicable;
+## Validation required before ready/merge
+- new product alias/profile tests, including iPhones/AirPods/tools and accessory exclusions;
+- product pagination/select limits;
+- explicit product intent vs stale category allowlist/mute regression;
+- no-specific-product category fallback regression;
+- menu save/close UX tests;
+- existing category/favorite/mute/Flip tests;
+- existing DM rule tests;
+- canonical fanout/matcher static checks;
+- Walmart/Target/HP compatibility tests where applicable;
 - compileall;
 - import smoke;
-- pip check;
-- full pytest suite;
+- dependency check;
+- full pytest suite using the known Termux Ubuntu Python 3.12 workflow, with native libsql tests run separately when the clean aarch64 venv intentionally lacks `libsql`;
 - `git diff origin/main...HEAD --check`;
-- exact nine-file scope;
+- exact changed-file scope;
 - conflict-marker scan;
 - clean worktree;
 - final exact SHA recheck.
 
-## Blocker
-GitHub Actions currently fails before allocating a runner (`steps=[]`, `runner_id=0`). Use the known Python 3.12/native-libsql Termux Ubuntu environment for executable exact-head validation if hosted CI remains unavailable.
+## Hosted CI blocker
+GitHub-hosted workflow jobs have recently failed before allocating a runner (`steps=[]`, `runner_id=0`). Those jobs are not code evidence. Use exact-head Termux validation if that condition persists.
 
 ## Suspended / backlog
 - `SP-MOVIE-TICKETS-RECOVERY` / PR #273 remains suspended.
@@ -122,4 +96,4 @@ GitHub Actions currently fails before allocating a runner (`steps=[]`, `runner_i
 - Backlog: SP-SETUP-DELIVERY-UX, SP-DM-DELIVERY-STARVATION, SP-DM-NEW-LOW-ALERT, SP-WM-CASH-PDP-AMOUNT, HP/Target standalone watcher deployment/acceptance, SniperPlug-Site.
 
 ## Next step
-Run one complete exact-head validation on PR #291. Repair only regressions attributable to this task. Once the exact head is green, record validation in PR metadata without modifying the branch, then review/merge separately.
+Open draft PR #292 from this repair branch, inspect exact scope, then run the targeted and full exact-head executable validation before marking it ready or merging.

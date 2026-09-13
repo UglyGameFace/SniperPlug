@@ -12,23 +12,36 @@ WALMART_LEGACY = Path("sniperplug/services/walmart_global_deal_fanout.py").read_
 VERIFIED_RETAILER = Path("sniperplug/services/verified_retailer_event_fanout.py").read_text(encoding="utf-8")
 
 
-def test_dm_deals_exposes_specific_product_and_brand_controls() -> None:
+def test_dm_deals_keeps_typed_product_and_brand_controls_as_backup() -> None:
     assert 'Choice(name="Show specific product catalog", value="interests")' in COG
     assert 'product_interests="Add specific products:' in COG
     assert 'remove_interests="Remove specific product interests' in COG
     assert 'brands="Add brand filters' in COG
     assert 'remove_brands="Remove brands' in COG
     assert "update_product_preferences(" in COG
-    assert "build_product_interest_catalog_embed(" in COG
 
 
-def test_personalization_menu_exposes_products_without_overloading_category_tabs() -> None:
-    assert 'label=f"Specific products: {len(self.product_interests)}"' in MENU
-    assert 'label="Product catalog"' in MENU
-    assert "class _ProductInterestModal(" in MENU
+def test_personalization_menu_uses_guided_product_select_instead_of_product_text_guessing() -> None:
+    assert 'SCREEN_HOME = "home"' in MENU
+    assert 'SCREEN_PRODUCTS = "products"' in MENU
+    assert 'SCREEN_CATEGORIES = "categories"' in MENU
+    assert "class _ProductPageSelect(" in MENU
+    assert 'placeholder="Select the specific products you want"' in MENU
+    assert 'label="Dashboard"' in MENU
+    assert 'label="Product catalog"' not in MENU
+    assert "class _ProductInterestModal(" not in MENU
     assert "replace_interests=self.product_interests" in MENU
     assert "replace_brands=self.product_brands" in MENU
-    assert "Products are OR; brands are OR" in MENU
+
+
+def test_product_catalog_supports_obvious_human_aliases_and_safe_pages() -> None:
+    assert '"iphones"' in PRODUCTS
+    assert '"airpods"' in PRODUCTS
+    assert '"tools"' in PRODUCTS
+    assert "PRODUCT_PAGE_SIZE = 25" in PRODUCTS
+    assert "def product_interest_pages(" in PRODUCTS
+    assert "MAX_PRODUCT_INTERESTS = 50" in PRODUCTS
+    assert "MAX_BRANDS = 50" in PRODUCTS
 
 
 def test_product_control_tokens_are_not_misread_as_category_allowlist_entries() -> None:
@@ -44,10 +57,13 @@ def test_all_live_fanouts_import_the_canonical_dm_matcher() -> None:
         assert "from sniperplug.services.dm_deal_alerts import match_dm_deal" not in source
 
 
-def test_authoritative_matcher_keeps_specific_intent_hard_even_for_flip() -> None:
+def test_authoritative_matcher_keeps_specific_intent_hard_and_separate_from_categories() -> None:
     product_position = MATCHER.index("product_match = match_product_preferences(")
     flip_position = MATCHER.index("if flip_enabled:")
     assert product_position < flip_position
+    assert "has_specific_walmart_intent" in MATCHER
+    assert "not has_specific_walmart_intent" in MATCHER
+    assert "explicit product intent" in MATCHER
     assert "none of your specific product interests matched" in PRODUCTS
     assert "none of your selected brands matched" in PRODUCTS
 

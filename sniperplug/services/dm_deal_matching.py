@@ -34,23 +34,19 @@ def match_dm_deal(
 ) -> DmDealMatchDecision:
     """Apply exact-proof personal filters without weakening hard user limits.
 
-    Smart mode may add stricter adaptive requirements based on the item's
-    current price. It never lowers a user's explicit minimum markdown, score,
-    or dollar-savings floor. Strict API-proven Walmart Cash or a personally
-    favorite category may soften only Smart's additional adaptive requirement.
+    Specific Walmart product/brand choices are the most explicit user intent.
+    When at least one is configured, they become the inclusion layer for Walmart
+    and broad category allowlists/mutes do not silently veto the exact product the
+    user chose. Without specific product intent, existing category behavior stays
+    unchanged. Favorites may still affect Smart-mode priority.
 
-    Product-interest and brand filters are the Walmart-specific narrower layer.
-    They are hard constraints even for Flip Override: interests are OR within
-    the selected interest set, brands are OR within the selected brand set, and
-    when both sets are configured a Walmart deal must satisfy both groups.
+    Product interests are OR within their group, brands are OR within their group,
+    and when both groups are configured a Walmart deal must satisfy both groups.
     HP/Target delivery retains its existing behavior.
 
-    Personal category mutes and favorites are delivery-only. A separately
-    enabled flip lane may cross category boundaries only for a strict,
-    significant price-error/resale assessment. That lane still respects exact
-    proof, explicit floors, maximum price, applicable product/brand filters,
-    keywords, excluded words, Walmart-Cash-only mode, dedupe, and the saved
-    daily-limit policy.
+    Maximum price, Walmart-Cash-only, required/excluded keywords, exact proof,
+    minimum markdown/score/savings, dedupe and daily limits remain hard regardless
+    of category, product intent or Flip Override.
     """
 
     pref = preference.normalized()
@@ -68,6 +64,9 @@ def match_dm_deal(
         pref.categories
     )
     product_interests, product_brands = split_product_preferences(pref.categories)
+    has_specific_walmart_intent = bool(
+        is_walmart and (product_interests or product_brands)
+    )
     stored_muted = muted_category_preferences(pref.categories)
     muted_categories = frozenset((*legacy_muted, *stored_muted))
     flip_enabled, flip_min_profit_cents = flip_settings(pref.categories)
@@ -102,7 +101,7 @@ def match_dm_deal(
             category_key,
         )
 
-    # Hard personal constraints remain hard even for a flip override.
+    # These remain hard even for product intent and Flip Override.
     if pref.max_price_cents is not None and current_cents > pref.max_price_cents:
         return DmDealMatchDecision(False, "price is above your maximum", category_key)
     if pref.walmart_cash_only and cash_cents <= 0:
@@ -151,15 +150,25 @@ def match_dm_deal(
             minimum_profit_cents=flip_min_profit_cents,
         )
 
-    # Flip Override crosses category boundaries only. It does not erase other
-    # explicit personal filters or exact-deal requirements.
-    if category_key in muted_categories and not flip.qualified:
+    # Broad categories are a fallback inclusion layer. Once a Walmart subscriber
+    # explicitly chooses products/brands, those exact choices win over a stale or
+    # overly broad category allowlist/mute. This prevents old category state from
+    # crossing into and silently blocking the newer specific-product UX.
+    if (
+        not has_specific_walmart_intent
+        and category_key in muted_categories
+        and not flip.qualified
+    ):
         return DmDealMatchDecision(
             False,
             "category is muted in your personal DMs",
             category_key,
         )
-    if selected_categories and category_key not in selected_categories:
+    if (
+        not has_specific_walmart_intent
+        and selected_categories
+        and category_key not in selected_categories
+    ):
         cash_exception = cash_cents > 0 and "walmart_cash" in selected_categories
         if not cash_exception and not flip.qualified:
             return DmDealMatchDecision(
@@ -177,8 +186,6 @@ def match_dm_deal(
         adaptive_discount = max(20, smart_discount)
         adaptive_savings = smart_savings
 
-        # Favorites affect only Smart's extra strictness. They never go below
-        # the subscriber's explicit floors or the real 20% markdown safety floor.
         if is_favorite:
             adaptive_discount = max(20, adaptive_discount - 5)
             adaptive_savings = max(0, int(round(adaptive_savings * 0.80)))
@@ -234,10 +241,9 @@ def match_dm_deal(
 
     if is_walmart and product_match.reason:
         reason += f" • {product_match.reason}"
+    if has_specific_walmart_intent:
+        reason += " • explicit product intent"
 
-    # Walmart bulk fanout clones the card embed after this decision. Apply one
-    # idempotent product-aware title only to Walmart cards so HP/Target personal
-    # alert presentation stays unchanged.
     if is_walmart:
         personalize_dm_card_title(card)
 

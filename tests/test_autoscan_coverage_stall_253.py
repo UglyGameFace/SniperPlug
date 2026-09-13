@@ -109,6 +109,9 @@ def test_open_page_circuit_keeps_tiny_api_only_recovery_claim_lane(monkeypatch) 
         async def fake_maintenance(_db):
             return SimpleNamespace(quarantined=0, rearmed=0)
 
+        async def noop_page_pacing_debt(_conn, *, now):
+            return 0
+
         async def noop_no_price_dormancy(_conn, *, now):
             return 0
 
@@ -122,6 +125,7 @@ def test_open_page_circuit_keeps_tiny_api_only_recovery_claim_lane(monkeypatch) 
 
         monkeypatch.setattr(bulk_runtime, "ensure_exact_runtime_schema_once", noop_schema)
         monkeypatch.setattr(bulk_runtime, "maintain_terminal_identity_rows_bounded", fake_maintenance)
+        monkeypatch.setattr(bulk_runtime, "normalize_legacy_page_pacing_debt", noop_page_pacing_debt)
         monkeypatch.setattr(bulk_runtime, "park_mature_confirmed_no_price_retries", noop_no_price_dormancy)
         monkeypatch.setattr(bulk_runtime, "load_walmart_exact_queue_pressure", fake_pressure)
         monkeypatch.setattr(bulk_runtime, "claim_due_rows_batched", fake_claim)

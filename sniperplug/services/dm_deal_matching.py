@@ -9,6 +9,7 @@ from sniperplug.services.dm_deal_alerts import (
     smart_requirements,
     walmart_cash_cents,
 )
+from sniperplug.services.dm_deal_badges import personalize_dm_card_title
 from sniperplug.services.dm_flip_opportunities import (
     FlipAssessment,
     assess_flip_opportunity,
@@ -227,6 +228,11 @@ def match_dm_deal(
 
     if product_match.reason:
         reason += f" • {product_match.reason}"
+
+    # Bulk Walmart fanout clones the card embed after this decision. Apply one
+    # idempotent product-aware title here so matched DMs stand out without a
+    # separate DM renderer or any proof/fanout behavior change.
+    personalize_dm_card_title(card)
 
     return DmDealMatchDecision(
         True,

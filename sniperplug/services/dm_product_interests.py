@@ -11,6 +11,7 @@ PRODUCT_INTEREST_PREFIX = "interest:"
 BRAND_PREFIX = "brand:"
 MAX_PRODUCT_INTERESTS = 20
 MAX_BRANDS = 20
+PRODUCT_PAGE_SIZE = 25
 
 
 def normalize_match_text(value: object) -> str:
@@ -103,27 +104,83 @@ def _profile(
     )
 
 
-# Product-level profiles only. Department-sized filtering stays in the existing
-# category system; these are the narrower second layer requested by users.
+# Product-sized interests only. Broad departments remain in the category editor.
+# Every profile has human aliases because typed command options are a backup UI,
+# not a secret-code exercise.
 PRODUCT_INTEREST_PROFILES: tuple[ProductInterestProfile, ...] = (
     _profile(
         "pokemon_tcg_sealed",
         "Pokémon TCG sealed products",
         "🃏",
-        ("pokemon tcg", "pokemon cards", "pokemon packs", "pokemon sealed", "pokemon resale", "pokemon booster", "pokemon etb"),
+        (
+            "pokemon tcg",
+            "pokemon cards",
+            "pokemon packs",
+            "pokemon sealed",
+            "pokemon resale",
+            "pokemon booster",
+            "pokemon etb",
+        ),
         ("pokemon", "pokémon"),
-        ("booster pack", "booster bundle", "booster box", "elite trainer box", "etb", "collection box", "premium collection", "ultra premium collection", "ultra-premium collection", "blister", "collector chest", "tin", "trading card", "tcg"),
-        excluded=("binder", "card sleeve", "sleeves", "deck box", "playmat", "plush", "costume", "video game", "book", "poster"),
-        description="Sealed packs, boxes, tins, ETBs and collections. Resale qualification still comes from the separate strict Flip assessment.",
+        (
+            "booster pack",
+            "booster bundle",
+            "booster box",
+            "elite trainer box",
+            "etb",
+            "collection box",
+            "premium collection",
+            "ultra premium collection",
+            "ultra-premium collection",
+            "blister",
+            "collector chest",
+            "tin",
+            "trading card",
+            "tcg",
+        ),
+        excluded=(
+            "binder",
+            "card sleeve",
+            "sleeves",
+            "deck box",
+            "playmat",
+            "plush",
+            "costume",
+            "video game",
+            "book",
+            "poster",
+        ),
+        description="Sealed packs, boxes, tins, ETBs and collections.",
     ),
-    _profile("needoh", "NeeDoh sensory toys", "🧸", ("needoh", "nee doh", "nee-doh"), ("needoh", "nee doh", "nee-doh")),
+    _profile(
+        "needoh",
+        "NeeDoh sensory toys",
+        "🧸",
+        ("needoh", "nee doh", "nee-doh"),
+        ("needoh", "nee doh", "nee-doh"),
+    ),
     _profile(
         "portable_chargers",
         "Portable chargers / power banks",
         "🔋",
-        ("portable charger", "portable chargers", "power bank", "power banks", "battery bank", "portable battery"),
-        ("portable charger", "power bank", "battery bank", "portable battery", "powercore", "magsafe battery", "magnetic battery pack"),
-        description="Portable battery packs and power banks, not ordinary wall chargers or cables.",
+        (
+            "portable charger",
+            "portable chargers",
+            "power bank",
+            "power banks",
+            "battery bank",
+            "portable battery",
+        ),
+        (
+            "portable charger",
+            "power bank",
+            "battery bank",
+            "portable battery",
+            "powercore",
+            "magsafe battery",
+            "magnetic battery pack",
+        ),
+        description="Portable battery packs, not ordinary wall plugs or cables.",
     ),
     _profile(
         "magsafe_batteries",
@@ -134,36 +191,273 @@ PRODUCT_INTEREST_PROFILES: tuple[ProductInterestProfile, ...] = (
         ("battery pack", "power bank", "portable charger", "portable battery"),
     ),
     _profile(
+        "iphones",
+        "Apple iPhones",
+        "📱",
+        ("iphone", "iphones", "apple iphone", "apple iphones"),
+        ("iphone",),
+        excluded=(
+            "iphone case",
+            "case for iphone",
+            "screen protector",
+            "iphone charger",
+            "iphone cable",
+            "iphone mount",
+            "iphone wallet",
+        ),
+        description="iPhone devices, not cases, chargers, cables or protectors.",
+    ),
+    _profile(
+        "airpods",
+        "Apple AirPods",
+        "🎧",
+        ("airpods", "air pods", "apple airpods", "apple air pods"),
+        ("airpods", "air pods"),
+        excluded=(
+            "airpods case",
+            "case for airpods",
+            "airpods cover",
+            "ear tips",
+            "replacement case",
+        ),
+        description="AirPods earbuds/headphones, not cases or replacement accessories.",
+    ),
+    _profile(
         "designer_fragrance",
         "Designer cologne / perfume",
         "🧴",
-        ("cologne", "designer cologne", "mens cologne", "men's cologne", "perfume", "designer fragrance", "edp", "edt"),
-        ("cologne", "perfume", "fragrance", "eau de parfum", "eau de toilette", "parfum", "edp", "edt"),
-        excluded=("body spray", "body mist", "fragrance mist", "deodorant", "antiperspirant", "body lotion", "shower gel"),
+        (
+            "cologne",
+            "designer cologne",
+            "mens cologne",
+            "men's cologne",
+            "perfume",
+            "designer fragrance",
+            "edp",
+            "edt",
+        ),
+        (
+            "cologne",
+            "perfume",
+            "fragrance",
+            "eau de parfum",
+            "eau de toilette",
+            "parfum",
+            "edp",
+            "edt",
+        ),
+        excluded=(
+            "body spray",
+            "body mist",
+            "fragrance mist",
+            "deodorant",
+            "antiperspirant",
+            "body lotion",
+            "shower gel",
+        ),
     ),
-    _profile("lego_sets", "LEGO sets", "🧱", ("lego", "lego sets", "lego set"), ("lego",), excluded=("storage box", "display case", "keychain", "key chain", "shirt", "book", "sticker")),
-    _profile("hot_wheels_premium", "Hot Wheels premium collectibles", "🏎️", ("hot wheels premium", "hot wheels car culture", "hot wheels collectible"), ("hot wheels",), ("premium", "car culture", "team transport", "collector", "boulevard")),
-    _profile("funko_pop", "Funko Pop collectibles", "🎁", ("funko", "funko pop", "pop vinyl"), ("funko pop", "funko! pop", "pop vinyl")),
-    _profile("gaming_controllers", "Gaming controllers", "🎮", ("controller", "gaming controller", "xbox controller", "dualsense"), ("controller", "gamepad", "dualsense", "joy-con", "joy con")),
-    _profile("headphones_earbuds", "Headphones / earbuds", "🎧", ("headphones", "earbuds", "gaming headset", "wireless earbuds"), ("headphones", "earbuds", "ear buds", "headset", "airpods")),
-    _profile("bluetooth_speakers", "Bluetooth speakers", "🔊", ("bluetooth speaker", "portable speaker", "wireless speaker"), ("bluetooth speaker", "portable speaker", "wireless speaker")),
-    _profile("ssds", "SSDs / portable SSDs", "💾", ("ssd", "nvme", "portable ssd", "external ssd"), ("ssd", "nvme", "solid state drive"), excluded=("enclosure", "case only", "adapter")),
-    _profile("microsd_cards", "microSD memory cards", "💾", ("microsd", "micro sd", "memory card"), ("microsd", "micro sd"), excluded=("adapter only", "reader only")),
-    _profile("robot_vacuums", "Robot vacuums", "🤖", ("robot vacuum", "robotic vacuum", "roomba"), ("robot vacuum", "robotic vacuum", "roomba")),
+    _profile(
+        "lego_sets",
+        "LEGO sets",
+        "🧱",
+        ("lego", "lego sets", "lego set"),
+        ("lego",),
+        excluded=(
+            "storage box",
+            "display case",
+            "keychain",
+            "key chain",
+            "shirt",
+            "book",
+            "sticker",
+        ),
+    ),
+    _profile(
+        "hot_wheels_premium",
+        "Hot Wheels premium collectibles",
+        "🏎️",
+        (
+            "hot wheels premium",
+            "hot wheels car culture",
+            "hot wheels collectible",
+        ),
+        ("hot wheels",),
+        ("premium", "car culture", "team transport", "collector", "boulevard"),
+    ),
+    _profile(
+        "funko_pop",
+        "Funko Pop collectibles",
+        "🎁",
+        ("funko", "funko pop", "pop vinyl"),
+        ("funko pop", "funko! pop", "pop vinyl"),
+    ),
+    _profile(
+        "gaming_controllers",
+        "Gaming controllers",
+        "🎮",
+        (
+            "controller",
+            "controllers",
+            "gaming controller",
+            "xbox controller",
+            "dualsense",
+        ),
+        ("controller", "gamepad", "dualsense", "joy-con", "joy con"),
+    ),
+    _profile(
+        "headphones_earbuds",
+        "Headphones / earbuds",
+        "🎧",
+        ("headphones", "earbuds", "gaming headset", "wireless earbuds"),
+        ("headphones", "earbuds", "ear buds", "headset"),
+    ),
+    _profile(
+        "bluetooth_speakers",
+        "Bluetooth speakers",
+        "🔊",
+        ("bluetooth speaker", "portable speaker", "wireless speaker"),
+        ("bluetooth speaker", "portable speaker", "wireless speaker"),
+    ),
+    _profile(
+        "ssds",
+        "SSDs / portable SSDs",
+        "💾",
+        ("ssd", "ssds", "nvme", "portable ssd", "external ssd"),
+        ("ssd", "nvme", "solid state drive"),
+        excluded=("enclosure", "case only", "adapter"),
+    ),
+    _profile(
+        "microsd_cards",
+        "microSD memory cards",
+        "💾",
+        ("microsd", "micro sd", "memory card"),
+        ("microsd", "micro sd"),
+        excluded=("adapter only", "reader only"),
+    ),
+    _profile(
+        "robot_vacuums",
+        "Robot vacuums",
+        "🤖",
+        ("robot vacuum", "robotic vacuum", "roomba"),
+        ("robot vacuum", "robotic vacuum", "roomba"),
+    ),
     _profile("air_fryers", "Air fryers", "🍳", ("air fryer", "air fryers"), ("air fryer",)),
-    _profile("countertop_ice_makers", "Countertop ice makers", "🧊", ("ice maker", "countertop ice maker"), ("ice maker",), excluded=("refrigerator replacement", "ice maker kit")),
-    _profile("coffee_makers", "Coffee makers", "☕", ("coffee maker", "keurig", "espresso machine"), ("coffee maker", "keurig", "espresso machine", "coffee machine")),
-    _profile("power_tools", "Power tools", "🛠️", ("power tools", "drill", "impact driver", "circular saw"), ("drill", "impact driver", "impact wrench", "circular saw", "reciprocating saw", "power tool", "tool combo kit")),
-    _profile("tool_batteries", "Tool batteries / charger kits", "🔋", ("tool battery", "dewalt battery", "milwaukee battery", "ryobi battery"), ("battery", "battery kit", "battery charger kit"), ("dewalt", "milwaukee", "ryobi", "makita", "hart", "craftsman", "power tool")),
-    _profile("diapers", "Diapers", "👶", ("diapers", "diaper"), ("diaper", "diapers"), excluded=("diaper bag", "diaper pail")),
-    _profile("strollers", "Baby strollers", "👶", ("stroller", "baby stroller"), ("stroller",), excluded=("stroller accessory", "stroller organizer")),
-    _profile("car_seats", "Car seats / boosters", "👶", ("car seat", "booster seat", "infant car seat"), ("car seat", "booster seat"), excluded=("seat cover", "car seat protector")),
-    _profile("energy_drinks", "Energy drinks", "🥤", ("energy drink", "energy drinks"), ("energy drink",)),
-    _profile("sneakers", "Sneakers", "👟", ("sneakers", "sneaker", "athletic shoes"), ("sneaker", "sneakers", "athletic shoe", "running shoe", "basketball shoe")),
-    _profile("smartwatches", "Smartwatches", "⌚", ("smartwatch", "smart watch", "apple watch", "galaxy watch"), ("smartwatch", "smart watch", "apple watch", "galaxy watch", "pixel watch"), excluded=("watch band", "watch strap", "screen protector")),
-    _profile("tablets", "Tablets", "📱", ("tablet", "ipad", "galaxy tab"), ("tablet", "ipad", "galaxy tab", "fire hd"), excluded=("tablet case", "screen protector", "keyboard case")),
-    _profile("laptops", "Laptops", "💻", ("laptop", "notebook computer", "macbook"), ("laptop", "notebook computer", "macbook", "chromebook"), excluded=("laptop bag", "laptop sleeve", "laptop stand")),
-    _profile("monitors", "Computer monitors", "🖥️", ("monitor", "gaming monitor", "computer monitor"), ("monitor",), excluded=("monitor arm", "monitor stand", "baby monitor")),
+    _profile(
+        "countertop_ice_makers",
+        "Countertop ice makers",
+        "🧊",
+        ("ice maker", "countertop ice maker"),
+        ("ice maker",),
+        excluded=("refrigerator replacement", "ice maker kit"),
+    ),
+    _profile(
+        "coffee_makers",
+        "Coffee makers",
+        "☕",
+        ("coffee maker", "keurig", "espresso machine"),
+        ("coffee maker", "keurig", "espresso machine", "coffee machine"),
+    ),
+    _profile(
+        "power_tools",
+        "Power tools",
+        "🛠️",
+        (
+            "tools",
+            "tool",
+            "power tool",
+            "power tools",
+            "drill",
+            "impact driver",
+            "circular saw",
+        ),
+        (
+            "drill",
+            "impact driver",
+            "impact wrench",
+            "circular saw",
+            "reciprocating saw",
+            "power tool",
+            "tool combo kit",
+        ),
+    ),
+    _profile(
+        "tool_batteries",
+        "Tool batteries / charger kits",
+        "🔋",
+        ("tool battery", "dewalt battery", "milwaukee battery", "ryobi battery"),
+        ("battery", "battery kit", "battery charger kit"),
+        ("dewalt", "milwaukee", "ryobi", "makita", "hart", "craftsman", "power tool"),
+    ),
+    _profile(
+        "diapers",
+        "Diapers",
+        "👶",
+        ("diapers", "diaper"),
+        ("diaper", "diapers"),
+        excluded=("diaper bag", "diaper pail"),
+    ),
+    _profile(
+        "strollers",
+        "Baby strollers",
+        "👶",
+        ("stroller", "baby stroller"),
+        ("stroller",),
+        excluded=("stroller accessory", "stroller organizer"),
+    ),
+    _profile(
+        "car_seats",
+        "Car seats / boosters",
+        "👶",
+        ("car seat", "booster seat", "infant car seat"),
+        ("car seat", "booster seat"),
+        excluded=("seat cover", "car seat protector"),
+    ),
+    _profile(
+        "energy_drinks",
+        "Energy drinks",
+        "🥤",
+        ("energy drink", "energy drinks"),
+        ("energy drink",),
+    ),
+    _profile(
+        "sneakers",
+        "Sneakers",
+        "👟",
+        ("sneakers", "sneaker", "athletic shoes"),
+        ("sneaker", "sneakers", "athletic shoe", "running shoe", "basketball shoe"),
+    ),
+    _profile(
+        "smartwatches",
+        "Smartwatches",
+        "⌚",
+        ("smartwatch", "smart watch", "apple watch", "galaxy watch"),
+        ("smartwatch", "smart watch", "apple watch", "galaxy watch", "pixel watch"),
+        excluded=("watch band", "watch strap", "screen protector"),
+    ),
+    _profile(
+        "tablets",
+        "Tablets",
+        "📱",
+        ("tablet", "tablets", "ipad", "galaxy tab"),
+        ("tablet", "ipad", "galaxy tab", "fire hd"),
+        excluded=("tablet case", "screen protector", "keyboard case"),
+    ),
+    _profile(
+        "laptops",
+        "Laptops",
+        "💻",
+        ("laptop", "laptops", "notebook computer", "macbook"),
+        ("laptop", "notebook computer", "macbook", "chromebook"),
+        excluded=("laptop bag", "laptop sleeve", "laptop stand"),
+    ),
+    _profile(
+        "monitors",
+        "Computer monitors",
+        "🖥️",
+        ("monitor", "monitors", "gaming monitor", "computer monitor"),
+        ("monitor",),
+        excluded=("monitor arm", "monitor stand", "baby monitor"),
+    ),
 )
 
 _PROFILE_BY_KEY = {profile.key: profile for profile in PRODUCT_INTEREST_PROFILES}
@@ -186,14 +480,37 @@ _BRAND_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 _CATEGORY_EMOJIS: dict[str, str] = {
-    "gpus": "💻", "brand_direct_electronics": "📺", "sneakers": "👟", "cpus": "💻",
-    "apple": "🍎", "ram": "💾", "ssds": "💾", "premium_apparel": "👕",
-    "gold_jewelry": "💍", "watches": "⌚", "fragrance_beauty": "🧴", "motor_oil": "🚗",
-    "tools": "🛠️", "appliances": "🏠", "mobile_accessories": "📱", "viral_gadgets": "✨",
-    "smart_home": "🏠", "office_school": "📎", "household_essentials": "🧼", "baby_kids": "👶",
-    "pet_supplies": "🐾", "outdoor_sports": "🏕️", "shoes_apparel": "👟", "seasonal_holiday": "🎁",
-    "walmart_cash": "💵", "home_kitchen": "🍳", "grocery_pantry": "🛒", "toys_collectibles": "🧸",
-    "open_box_restored": "♻️", "health_wellness": "🩹", "business_bulk": "📦",
+    "gpus": "💻",
+    "brand_direct_electronics": "📺",
+    "sneakers": "👟",
+    "cpus": "💻",
+    "apple": "🍎",
+    "ram": "💾",
+    "ssds": "💾",
+    "premium_apparel": "👕",
+    "gold_jewelry": "💍",
+    "watches": "⌚",
+    "fragrance_beauty": "🧴",
+    "motor_oil": "🚗",
+    "tools": "🛠️",
+    "appliances": "🏠",
+    "mobile_accessories": "📱",
+    "viral_gadgets": "✨",
+    "smart_home": "🏠",
+    "office_school": "📎",
+    "household_essentials": "🧼",
+    "baby_kids": "👶",
+    "pet_supplies": "🐾",
+    "outdoor_sports": "🏕️",
+    "shoes_apparel": "👟",
+    "seasonal_holiday": "🎁",
+    "walmart_cash": "💵",
+    "home_kitchen": "🍳",
+    "grocery_pantry": "🛒",
+    "toys_collectibles": "🧸",
+    "open_box_restored": "♻️",
+    "health_wellness": "🩹",
+    "business_bulk": "📦",
 }
 
 
@@ -211,12 +528,25 @@ def product_interest_catalog() -> tuple[ProductInterestProfile, ...]:
     return PRODUCT_INTEREST_PROFILES
 
 
+def product_interest_pages(
+    *,
+    page_size: int = PRODUCT_PAGE_SIZE,
+) -> tuple[tuple[ProductInterestProfile, ...], ...]:
+    size = max(1, min(PRODUCT_PAGE_SIZE, int(page_size)))
+    return tuple(
+        PRODUCT_INTEREST_PROFILES[index : index + size]
+        for index in range(0, len(PRODUCT_INTEREST_PROFILES), size)
+    )
+
+
 def product_interest_label(key: str) -> str:
     profile = _PROFILE_BY_KEY.get(str(key or "").strip().lower())
     return profile.label if profile else str(key or "").replace("_", " ").title()
 
 
-def parse_product_interest_input(values: Iterable[str] | str | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def parse_product_interest_input(
+    values: Iterable[str] | str | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     keys: list[str] = []
     unknown: list[str] = []
     for value in split_values(values):
@@ -225,7 +555,9 @@ def parse_product_interest_input(values: Iterable[str] | str | None) -> tuple[tu
     return dedupe(keys)[:MAX_PRODUCT_INTERESTS], dedupe(unknown)
 
 
-def normalize_product_interests(values: Iterable[str] | str | None) -> tuple[str, ...]:
+def normalize_product_interests(
+    values: Iterable[str] | str | None,
+) -> tuple[str, ...]:
     return parse_product_interest_input(values)[0]
 
 
@@ -246,12 +578,16 @@ def brand_label(slug: str) -> str:
     return special.get(key, key.replace("_", " ").title())
 
 
-def split_product_preferences(categories: Iterable[str] | str | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def split_product_preferences(
+    categories: Iterable[str] | str | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     interests: list[str] = []
     brands: list[str] = []
     for token in split_tokens(categories):
         if token.startswith(PRODUCT_INTEREST_PREFIX):
-            key = _ALIAS_TO_KEY.get(normalize_slug(token[len(PRODUCT_INTEREST_PREFIX) :]))
+            key = _ALIAS_TO_KEY.get(
+                normalize_slug(token[len(PRODUCT_INTEREST_PREFIX) :])
+            )
             if key:
                 interests.append(key)
         elif token.startswith(BRAND_PREFIX):
@@ -261,7 +597,9 @@ def split_product_preferences(categories: Iterable[str] | str | None) -> tuple[t
     return dedupe(interests)[:MAX_PRODUCT_INTERESTS], dedupe(brands)[:MAX_BRANDS]
 
 
-def product_preference_tokens(categories: Iterable[str] | str | None) -> tuple[str, ...]:
+def product_preference_tokens(
+    categories: Iterable[str] | str | None,
+) -> tuple[str, ...]:
     interests, brands = split_product_preferences(categories)
     return compose_product_preference_tokens(interests, brands)
 
@@ -271,7 +609,10 @@ def compose_product_preference_tokens(
     brands: Iterable[str] | str | None,
 ) -> tuple[str, ...]:
     return (
-        *(f"{PRODUCT_INTEREST_PREFIX}{key}" for key in normalize_product_interests(interests)),
+        *(
+            f"{PRODUCT_INTEREST_PREFIX}{key}"
+            for key in normalize_product_interests(interests)
+        ),
         *(f"{BRAND_PREFIX}{slug}" for slug in normalize_brands(brands)),
     )
 
@@ -288,8 +629,10 @@ def update_product_preferences(
 ) -> tuple[str, ...]:
     tokens = list(split_tokens(categories))
     non_product = [
-        token for token in tokens
-        if not token.startswith(PRODUCT_INTEREST_PREFIX) and not token.startswith(BRAND_PREFIX)
+        token
+        for token in tokens
+        if not token.startswith(PRODUCT_INTEREST_PREFIX)
+        and not token.startswith(BRAND_PREFIX)
     ]
     current_interests, current_brands = split_product_preferences(tokens)
 
@@ -309,7 +652,9 @@ def update_product_preferences(
         remove_set = set(normalize_brands(remove_brands))
         brands = [slug for slug in dedupe(brands) if slug not in remove_set]
 
-    return dedupe((*non_product, *compose_product_preference_tokens(interests, brands)))
+    return dedupe(
+        (*non_product, *compose_product_preference_tokens(interests, brands))
+    )
 
 
 def match_product_preferences(
@@ -328,17 +673,24 @@ def match_product_preferences(
             (
                 _PROFILE_BY_KEY[key]
                 for key in interest_keys
-                if key in _PROFILE_BY_KEY and _PROFILE_BY_KEY[key].matches(normalized)
+                if key in _PROFILE_BY_KEY
+                and _PROFILE_BY_KEY[key].matches(normalized)
             ),
             None,
         )
         if matched_profile is None:
-            return ProductPreferenceMatch(False, "none of your specific product interests matched")
+            return ProductPreferenceMatch(
+                False,
+                "none of your specific product interests matched",
+            )
 
     matched_brand = ""
     if brand_slugs:
         for slug in brand_slugs:
-            phrases = _BRAND_ALIASES.get(slug, (slug.replace("_", " "),))
+            phrases = _BRAND_ALIASES.get(
+                slug,
+                (slug.replace("_", " "),),
+            )
             if any(phrase_in_text(normalized, phrase) for phrase in phrases):
                 matched_brand = slug
                 break
@@ -376,13 +728,18 @@ def product_emoji_for_text(search_text: str) -> str:
 
 def product_badge_text(search_text: str, *, heat_emoji: str) -> str:
     badges: list[str] = []
-    for emoji in (str(heat_emoji or "").strip(), product_emoji_for_text(search_text)):
+    for emoji in (
+        str(heat_emoji or "").strip(),
+        product_emoji_for_text(search_text),
+    ):
         if emoji and emoji not in badges:
             badges.append(emoji)
     return " ".join(badges[:2])
 
 
-def product_interest_catalog_lines(limit: int | None = None) -> tuple[str, ...]:
+def product_interest_catalog_lines(
+    limit: int | None = None,
+) -> tuple[str, ...]:
     profiles = (
         PRODUCT_INTEREST_PROFILES
         if limit is None

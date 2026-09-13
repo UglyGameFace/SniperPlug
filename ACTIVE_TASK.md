@@ -12,7 +12,7 @@ Current PR: #290, open draft and mergeable.
 Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
 ## Status
-**Implementation and focused cleanup are complete; executable exact-head validation is blocked by GitHub runner non-execution. Do not mark ready or merge yet.**
+**Implementation and focused cleanup are complete; exact-head validation exposed and repaired two test-integration regressions. A fresh complete exact-head rerun is required. Do not mark ready or merge yet.**
 
 ## Findings / root cause
 PR #288 production telemetry repeatedly showed:
@@ -33,15 +33,20 @@ This is a scheduling/persistence mismatch. Raising concurrency/caps, weakening p
 - `process_actionable_walmart_exact_queue_batch()` initializes runtime schema before v290 normalization, so the status/due index exists before the helper forces that access path.
 - `fetch_exact_candidate_with_page_pacing()` remains the canonical fetch path and retains the one-HTML-probe-per-60-seconds boundary.
 - `persist_exact_queue_outcomes_bulk()` remains the canonical outcome writer and applies the existing page failure policy before v290 adjusts only local pacing waits.
+- Canonical failure persistence writes `last_attempt_at = observed_at`; v290's post-persistence scheduler guards on that exact timestamp before changing the pacing slot.
 - `claim_due_rows_batched()` and existing page-recovery claim caps are unchanged.
 - Existing queue compatibility code already uses the same `UPDATE ... FROM ... RETURNING` SQLite/libSQL shape.
 
 ## Scope
-Exactly four net changed files:
+Exactly six net changed files:
 - `ACTIVE_TASK.md`
 - `sniperplug/services/walmart_exact_queue_bulk_runtime.py`
 - `sniperplug/services/walmart_page_pacing_debt.py`
 - `tests/test_walmart_page_pacing_debt_290.py`
+- `tests/test_autoscan_coverage_stall_253.py`
+- `tests/test_walmart_deal_delivery_stall_256.py`
+
+The two existing regression files are included only because they exercise the same exact batch entry point with intentionally non-executable fake DB objects. They now stub the newly added v290 pre-pressure normalization step just as they already stub the other DB-touching collaborators. No production escape hatch was added for fake test connections.
 
 No PR #273, PR #200, setup, DM, HP/Target, site, or other unrelated work is included.
 
@@ -55,6 +60,8 @@ No PR #273, PR #200, setup, DM, HP/Target, site, or other unrelated work is incl
 - Preserve the existing 30-minute floor for new deferrals and spread later rows one minute apart.
 - Keep real page HTTP/challenge/price-mismatch errors, Product Lookup behavior, proof gates, page concurrency, drain concurrency, and claim caps unchanged.
 - Add write telemetry: `page_pacing_slots=<n> page_pacing_schedule=page_pacing_slot_v290`.
+- Corrected the v290 runtime-wiring regression to assert the imported shared marker constant rather than demand a duplicated literal marker string.
+- Updated #253/#256 compatibility tests to stub the new normalization collaborator when they intentionally use `FakeDatabase(object())`.
 
 ## Regression coverage added
 `tests/test_walmart_page_pacing_debt_290.py` covers:
@@ -70,26 +77,37 @@ No PR #273, PR #200, setup, DM, HP/Target, site, or other unrelated work is incl
 - normalization before pressure measurement;
 - new serialization after canonical persistence and before commit.
 
+Existing #253 and #256 tests continue to verify page-circuit claim caps and paced-probe behavior while treating the v290 normalization DB read as an independently stubbed collaborator.
+
 ## Validation / results
-Repository comparison against canonical main confirms the PR is based directly on current main, behind by zero, mergeable, and the net scope is exactly the four intended files.
+Repository comparison against canonical main previously confirmed the PR was based directly on current main, behind by zero, and mergeable. Recheck is required on the new exact head after the compatibility-test updates.
 
 Focused SQL-shape validation using local SQLite 3.46 passed for:
 - a 200-row bounded legacy `WITH ... UPDATE ... FROM ... RETURNING` migration;
 - three newly deferred rows serialized to the expected 30/31/32-minute schedule.
 
-Base main was previously validated for PR #289 with a full `1453 passed, 1 warning` suite plus compile/import/pip/native-libsql/diff/scope/conflict/worktree gates. That is base evidence only and is not counted as exact-head #290 validation.
+On exact head `338c75ffe70e65d9579969e761ff5c89f208a406`:
+- v290 targeted suite passed: `7 passed, 1 warning`;
+- native libsql/process tests, compileall, import smoke, and pip check completed before the full-suite failure, but they are prior-head evidence only after the new test-only commits;
+- full suite reached `1458 passed, 2 failed, 1 warning`;
+- both failures were existing compatibility tests whose fake DB object did not stub the newly added `normalize_legacy_page_pacing_debt()` call;
+- no production runtime defect was indicated by those failures;
+- both tests were updated narrowly to stub that collaborator, preserving their original assertions.
+
+The sole warning remains the existing `discord.player` `audioop` deprecation warning for Python 3.13 removal.
 
 ### GitHub-hosted CI blocker
-On the latest code-equivalent PR heads, all three hosted workflows are created and then fail before any repository step executes. The inspected `Python Check` job reports `steps=null` and `logs_url=null`. A direct rerun request succeeded, but the replacement job immediately failed with the same no-steps/no-logs state.
+On code-equivalent PR heads, all three hosted workflows are created and then fail before any repository step executes. Inspected jobs report `steps=null` and `logs_url=null`; a direct rerun reproduced the same no-steps/no-logs state.
 
-Therefore the red checks are runner-side non-execution, not evidence of test failures, but they also cannot be counted as passes.
+Therefore the hosted red checks are runner-side non-execution, not evidence of test failures, but they also cannot be counted as passes.
 
 ## Validation still required
-Before PR #290 can be called complete/ready:
+Before PR #290 can be called complete/ready, rerun on the new exact head:
 - v290 regressions;
 - #240/#241 page-lane tests;
+- #253 coverage-stall page-circuit regression;
 - #255 page request pacing;
-- #256 pacing/claim behavior where present;
+- #256 pacing/claim behavior;
 - #277-#289 Walmart recovery/dormancy/pressure/Product Lookup/page lifecycle regressions;
 - native libsql/process tests;
 - gateway #284 regression;
@@ -98,19 +116,19 @@ Before PR #290 can be called complete/ready:
 - pip check;
 - full pytest suite;
 - real diff check;
-- exact changed-file scope;
+- exact six-file changed scope;
 - conflict-marker scan;
 - clean worktree;
 - exact final SHA recheck.
 
 ## Cleanup / conflicts
-- No temporary bypass, retry shim, monkey patch, or duplicate proof path was added.
+- No temporary bypass, retry shim, runtime fake-connection guard, monkey patch, or duplicate proof path was added.
 - The canonical exact fetch and bulk persistence paths remain authoritative.
+- The only extra files added to scope are the two directly affected existing regression tests.
 - Unrelated work is untouched.
-- GitHub currently reports the PR mergeable against unchanged main.
 
 ## Blockers / risks
-Only demonstrated blocker: no executable exact-head CI environment is currently producing test evidence. GitHub-hosted jobs fail before runner steps, and this chat does not have the repository's authenticated Python 3.12/native-libsql validation checkout mounted locally.
+No code blocker is currently known after the two compatibility-test repairs. The remaining blocker is fresh executable exact-head validation. GitHub-hosted jobs still fail before runner steps, so local Python 3.12/native-libsql validation remains the authoritative executable gate.
 
 ## Production acceptance after merge
 Use fresh deployment logs only. Acceptance requires:
@@ -132,10 +150,11 @@ Use fresh deployment logs only. Acceptance requires:
 - SP-SETUP-DELIVERY-UX
 - SP-DM-DELIVERY-STARVATION
 - SP-DM-NEW-LOW-ALERT
+- SP-WM-DM-PERSONALIZATION — category + product type + brand/set + include/exclude + product-aware emojis/deal-strength presentation
 - SP-WM-CASH-PDP-AMOUNT
 - eBay watcher PR #200
 - HP/Target standalone watcher deployment/acceptance
 - SniperPlug-Site work
 
 ## Next step
-Obtain executable exact-head validation. If and only if the complete gate passes, record the validated SHA, mark PR #290 ready for review, and proceed to merge/production acceptance separately.
+Run one complete executable exact-head validation after the v290 compatibility-test repairs and this task-record update. If and only if the complete gate passes, record the validated SHA, update PR #290 validation evidence, mark it ready for review, and proceed to merge/production acceptance separately.

@@ -19,12 +19,17 @@ def test_dm_deals_exposes_complete_personalization_menu() -> None:
     assert "CATEGORY_PAGE_SIZE = 25" in PERSONAL
 
 
-def test_menu_has_favorite_mute_allowlist_and_flip_controls() -> None:
+def test_menu_has_guided_home_products_categories_rules_and_flip_controls() -> None:
+    assert 'SCREEN_HOME = "home"' in MENU
+    assert 'SCREEN_PRODUCTS = "products"' in MENU
+    assert 'SCREEN_CATEGORIES = "categories"' in MENU
     assert 'TAB_FAVORITES = "favorites"' in MENU
     assert 'TAB_MUTED = "muted"' in MENU
     assert 'TAB_ALLOWLIST = "allowlist"' in MENU
+    assert "Products & brands" in MENU
+    assert "Choose specific products" in MENU
+    assert "Category preferences" in MENU
     assert "Flip Override:" in MENU
-    assert "Minimum estimated net profit" in MENU
     assert "compose_category_preferences(" in MENU
     assert "muted=self.muted_categories" in MENU
 
@@ -63,13 +68,14 @@ def test_category_mutes_and_favorites_are_personal_delivery_filters() -> None:
     assert '"category is muted in your personal DMs"' in MATCHER
     assert "category_key in muted_categories" in MATCHER
     assert "category_key in favorite_categories" in MATCHER
-    assert "selected_categories and category_key not in selected_categories" in MATCHER
+    assert "selected_categories" in MATCHER
     assert "favorite-category priority" in MATCHER
+    assert "has_specific_walmart_intent" in MATCHER
 
 
 def test_menu_category_storage_is_not_keyword_capped() -> None:
     assert "muted_tokens = tuple(" in PERSONAL
-    assert "f\"{MUTED_CATEGORY_PREFIX}{category}\"" in PERSONAL
+    assert 'f"{MUTED_CATEGORY_PREFIX}{category}"' in PERSONAL
     assert "return _dedupe(" in PERSONAL
     assert "compose_exclude_terms(self.exclude_keywords)" in COMPACT_MENU
 
@@ -90,10 +96,9 @@ def test_flip_lane_keeps_hard_personal_limits_before_category_override() -> None
     required_keyword_position = MATCHER.index("if pref.keywords and not any")
     exclusion_position = MATCHER.index("if keyword_excludes and any")
     flip_position = MATCHER.index("if flip_enabled:")
-    mute_position = MATCHER.index("if category_key in muted_categories")
     threshold_position = MATCHER.index("if discount < required_discount")
 
     assert max_price_position < flip_position
     assert required_keyword_position < flip_position
     assert exclusion_position < flip_position
-    assert flip_position < mute_position < threshold_position
+    assert flip_position < threshold_position

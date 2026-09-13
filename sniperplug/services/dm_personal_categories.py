@@ -5,6 +5,11 @@ from typing import Any, Iterable
 
 from sniperplug.services.dm_deal_alerts import normalize_categories, normalize_terms
 from sniperplug.services.dm_flip_opportunities import DEFAULT_FLIP_MIN_PROFIT_CENTS
+from sniperplug.services.dm_product_interests import (
+    BRAND_PREFIX,
+    PRODUCT_INTEREST_PREFIX,
+    product_preference_tokens,
+)
 from sniperplug.services.opportunity_watchlist import (
     OPPORTUNITY_CATEGORIES,
     OpportunityCategory,
@@ -233,6 +238,8 @@ def split_category_preferences(
             value.startswith(MUTED_CATEGORY_PREFIX)
             or value == FLIP_ALERTS_TOKEN
             or value.startswith(FLIP_MIN_PROFIT_PREFIX)
+            or value.startswith(PRODUCT_INTEREST_PREFIX)
+            or value.startswith(BRAND_PREFIX)
         ):
             continue
         else:
@@ -275,6 +282,7 @@ def compose_category_preferences(
     muted: Iterable[str] | str | None = None,
     flip_enabled: bool = False,
     flip_min_profit_cents: int = DEFAULT_FLIP_MIN_PROFIT_CENTS,
+    product_tokens: Iterable[str] | str | None = None,
 ) -> tuple[str, ...]:
     selected_values = normalize_personal_categories(selected)
     favorite_tokens = tuple(
@@ -292,7 +300,13 @@ def compose_category_preferences(
     if flip_enabled or safe_profit != DEFAULT_FLIP_MIN_PROFIT_CENTS:
         flip_tokens.append(f"{FLIP_MIN_PROFIT_PREFIX}{safe_profit}")
     return _dedupe(
-        (*selected_values, *favorite_tokens, *muted_tokens, *flip_tokens)
+        (
+            *selected_values,
+            *favorite_tokens,
+            *muted_tokens,
+            *flip_tokens,
+            *product_preference_tokens(product_tokens),
+        )
     )
 
 
@@ -327,6 +341,7 @@ def update_favorite_categories(
         muted=current_muted,
         flip_enabled=current_flip_enabled,
         flip_min_profit_cents=current_flip_profit,
+        product_tokens=existing_categories,
     )
 
 
@@ -354,6 +369,7 @@ def update_muted_categories(
         muted=muted,
         flip_enabled=current_flip_enabled,
         flip_min_profit_cents=current_flip_profit,
+        product_tokens=existing_categories,
     )
 
 
@@ -376,6 +392,7 @@ def update_flip_settings(
             if minimum_profit_cents is None
             else int(minimum_profit_cents)
         ),
+        product_tokens=existing_categories,
     )
 
 

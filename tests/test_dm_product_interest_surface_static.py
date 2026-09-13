@@ -42,6 +42,12 @@ def test_authoritative_matcher_keeps_specific_intent_hard_even_for_flip() -> Non
     assert "none of your selected brands matched" in PRODUCTS
 
 
+def test_specific_filters_and_badges_are_walmart_only() -> None:
+    assert 'is_walmart = retailer.startswith("walmart")' in MATCHER
+    assert "if is_walmart:" in MATCHER
+    assert "HP/Target delivery retains its existing behavior" in MATCHER
+
+
 def test_dm_badges_are_product_aware_and_bounded_to_two() -> None:
     assert "badges[:2]" in BADGES
     assert 'return "💸"' in BADGES

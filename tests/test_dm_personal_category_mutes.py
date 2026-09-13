@@ -5,7 +5,10 @@ from types import SimpleNamespace
 import discord
 
 from sniperplug.cogs.dm_deal_alerts import build_dm_settings_embed
-from sniperplug.cogs.dm_deal_preferences_view import DmDealPreferencesView
+from sniperplug.cogs.dm_deal_preferences_view import (
+    SCREEN_CATEGORIES,
+    DmDealPreferencesView,
+)
 from sniperplug.services.dm_deal_alerts import DmDealAlertPreference
 from sniperplug.services.dm_deal_matching import match_dm_deal
 from sniperplug.services.dm_personal_categories import (
@@ -149,7 +152,7 @@ def test_menu_persists_every_category_without_keyword_cap() -> None:
     assert len(all_keys) > 12
 
 
-def test_menu_builds_pages_from_the_live_catalog() -> None:
+def test_menu_builds_category_screen_from_the_live_catalog() -> None:
     view = DmDealPreferencesView(
         bot=SimpleNamespace(db=None),
         user_id=1,
@@ -157,6 +160,8 @@ def test_menu_builds_pages_from_the_live_catalog() -> None:
     )
 
     assert sum(len(page) for page in view._pages()) == len(OPPORTUNITY_CATEGORIES)
+    view.screen = SCREEN_CATEGORIES
+    view._rebuild_items()
     category_select = view.children[1]
     assert isinstance(category_select, discord.ui.Select)
     assert len(category_select.options) <= 25

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 
@@ -8,6 +8,11 @@ import pytest
 
 from scripts.install_sqlite_snapshot import install_snapshot
 from sniperplug.services.local_sqlite_backup import create_local_sqlite_backup
+from sniperplug.storage.db import Database
+from sniperplug.storage.local_sqlite import (
+    LOCAL_SQLITE_BUSY_TIMEOUT_MS,
+    configure_local_sqlite_connection,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +77,30 @@ async def test_local_backup_is_a_noop_for_remote_backend(tmp_path: Path) -> None
     assert not (tmp_path / "backups").exists()
 
 
+@pytest.mark.asyncio
+async def test_local_sqlite_connections_wait_for_short_writer_contention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "TURSO_DATABASE_URL",
+        "TURSO_AUTH_TOKEN",
+        "LIBSQL_URL",
+        "LIBSQL_AUTH_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    db = Database(str(tmp_path / "sniperplug.sqlite3"))
+    await db.connect()
+    try:
+        assert await configure_local_sqlite_connection(db) is True
+        cursor = await db.require_conn().execute("PRAGMA busy_timeout")
+        row = await cursor.fetchone()
+        assert int(row[0]) == LOCAL_SQLITE_BUSY_TIMEOUT_MS
+    finally:
+        await db.close()
+
+
 def test_snapshot_installer_preserves_existing_db_and_installs_verified_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -109,26 +138,32 @@ def test_snapshot_installer_rejects_wrong_database_shape(tmp_path: Path) -> None
         install_snapshot(source, tmp_path / "data" / "sniperplug.sqlite3")
 
 
-def test_canonical_runtime_embeds_watchers_only_with_local_sqlite() -> None:
+def test_canonical_runtime_embeds_watchers_only_with_explicit_local_sqlite() -> None:
+    assert 'LOCAL_SQLITE_MODE_ENV = "SNIPERPLUG_LOCAL_SQLITE"' in PROCESS_RUNTIME
     assert 'EMBED_HP_WATCHER_ENV = "SNIPERPLUG_EMBED_HP_WATCHER"' in PROCESS_RUNTIME
     assert 'EMBED_TARGET_WATCHER_ENV = "SNIPERPLUG_EMBED_TARGET_WATCHER"' in PROCESS_RUNTIME
     assert 'backend != "sqlite"' in PROCESS_RUNTIME
+    assert "_assert_remote_database_env_absent" in PROCESS_RUNTIME
     assert "require_remote_database=False" in PROCESS_RUNTIME
     assert "run_hp_watcher" in PROCESS_RUNTIME
     assert "run_target_watcher" in PROCESS_RUNTIME
     assert "_supervise_embedded_watcher" in PROCESS_RUNTIME
     assert "run_local_sqlite_backup_loop" in PROCESS_RUNTIME
+    assert "configure_local_sqlite_connection" in PROCESS_RUNTIME
 
-    # Each watcher still creates its own database connection. In one Discloud
-    # app, the shared DATABASE_PATH therefore points those independent
-    # connections at the same WAL file instead of sharing one transaction stream.
+    # Each watcher creates its own database connection. In one Discloud app the
+    # shared DATABASE_PATH points those independent connections at the same WAL
+    # file instead of sharing a transaction stream.
     assert "db = create_runtime_database(resolved.database_path)" in HP_RUNTIME
     assert "db = create_runtime_database(resolved.database_path)" in TARGET_RUNTIME
+    assert "configure_local_sqlite_connection(db)" in HP_RUNTIME
+    assert "configure_local_sqlite_connection(db)" in TARGET_RUNTIME
 
 
 def test_discloud_diamond_layout_retires_standalone_watcher_apps() -> None:
     assert "RAM=1024" in DISCLOUD
     assert "VERSION=3.11" in DISCLOUD
+    assert "SNIPERPLUG_LOCAL_SQLITE=true" in DEPLOY_DOC
     assert "SNIPERPLUG_EMBED_TARGET_WATCHER=true" in DEPLOY_DOC
     assert "SNIPERPLUG_EMBED_HP_WATCHER=false" in DEPLOY_DOC
     assert "TURSO_DATABASE_URL" in DEPLOY_DOC

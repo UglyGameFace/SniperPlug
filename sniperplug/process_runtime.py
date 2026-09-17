@@ -24,11 +24,18 @@ from sniperplug.target_watcher.config import TargetWatcherSettings
 
 
 log = logging.getLogger("sniperplug")
+LOCAL_SQLITE_MODE_ENV = "SNIPERPLUG_LOCAL_SQLITE"
 EMBED_HP_WATCHER_ENV = "SNIPERPLUG_EMBED_HP_WATCHER"
 EMBED_TARGET_WATCHER_ENV = "SNIPERPLUG_EMBED_TARGET_WATCHER"
 EMBEDDED_WATCHER_RESTART_SECONDS = 30.0
 SQLITE_BACKUP_INTERVAL_HOURS_ENV = "SNIPERPLUG_SQLITE_BACKUP_INTERVAL_HOURS"
 SQLITE_BACKUP_RETENTION_ENV = "SNIPERPLUG_SQLITE_BACKUP_RETENTION"
+REMOTE_DATABASE_ENV_NAMES = (
+    "TURSO_DATABASE_URL",
+    "TURSO_AUTH_TOKEN",
+    "LIBSQL_URL",
+    "LIBSQL_AUTH_TOKEN",
+)
 
 
 class ProcessIsolatedSniperPlugBot(SniperPlugBot):
@@ -42,6 +49,9 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
     """
 
     def __init__(self, settings: Settings):
+        self._local_sqlite_mode = env_enabled(LOCAL_SQLITE_MODE_ENV, default=False)
+        if self._local_sqlite_mode:
+            _assert_remote_database_env_absent()
         super().__init__(settings)
         # The base constructor does not connect, so replacement here creates no
         # abandoned connection and keeps every inherited service on one API.
@@ -65,12 +75,18 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
         target_enabled = env_enabled(EMBED_TARGET_WATCHER_ENV, default=False)
         backend = str(getattr(self.db, "backend", "unknown") or "unknown")
 
-        if (hp_enabled or target_enabled) and backend != "sqlite":
-            raise RuntimeError(
-                "Embedded HP/Target watchers require SniperPlug's local SQLite backend. "
-                "Remove TURSO_DATABASE_URL/TURSO_AUTH_TOKEN (and LIBSQL_URL/"
-                "LIBSQL_AUTH_TOKEN) before enabling embedded watchers."
-            )
+        if hp_enabled or target_enabled:
+            if not self._local_sqlite_mode:
+                raise RuntimeError(
+                    "Embedded HP/Target watchers require SNIPERPLUG_LOCAL_SQLITE=true."
+                )
+            _assert_remote_database_env_absent()
+            if backend != "sqlite":
+                raise RuntimeError(
+                    "Embedded HP/Target watchers require SniperPlug's local SQLite backend. "
+                    "Remove TURSO_DATABASE_URL/TURSO_AUTH_TOKEN (and LIBSQL_URL/"
+                    "LIBSQL_AUTH_TOKEN) before enabling embedded watchers."
+                )
 
         if backend == "sqlite":
             interval_hours = _positive_float_env(SQLITE_BACKUP_INTERVAL_HOURS_ENV, 6.0)
@@ -84,9 +100,10 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
                 name="sniperplug-local-sqlite-backup",
             )
             log.info(
-                "Local SQLite production mode active path=%s backup_interval_h=%.2f "
-                "backup_retention=%s turso_required=false",
+                "Local SQLite production mode active path=%s explicit_mode=%s "
+                "backup_interval_h=%.2f backup_retention=%s turso_required=false",
                 self.settings.database_path,
+                str(self._local_sqlite_mode).lower(),
                 interval_hours,
                 retention,
             )
@@ -98,6 +115,7 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
                 require_remote_database=False,
                 run_once=False,
             )
+            _assert_remote_database_env_absent()
             hp_settings.validate_runtime()
             self._embedded_watcher_tasks["hp"] = asyncio.create_task(
                 _supervise_embedded_watcher("hp", run_hp_watcher, hp_settings),
@@ -111,6 +129,7 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
                 require_remote_database=False,
                 run_once=False,
             )
+            _assert_remote_database_env_absent()
             target_settings.validate_runtime()
             self._embedded_watcher_tasks["target"] = asyncio.create_task(
                 _supervise_embedded_watcher(
@@ -182,6 +201,15 @@ async def _supervise_embedded_watcher(
                 EMBEDDED_WATCHER_RESTART_SECONDS,
             )
         await asyncio.sleep(EMBEDDED_WATCHER_RESTART_SECONDS)
+
+
+def _assert_remote_database_env_absent() -> None:
+    present = [name for name in REMOTE_DATABASE_ENV_NAMES if os.getenv(name, "").strip()]
+    if present:
+        raise RuntimeError(
+            "SNIPERPLUG_LOCAL_SQLITE=true cannot be combined with remote libSQL/Turso "
+            "credentials. Remove: " + ", ".join(present)
+        )
 
 
 def _positive_float_env(name: str, default: float) -> float:

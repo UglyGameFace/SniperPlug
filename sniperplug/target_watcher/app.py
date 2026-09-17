@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from sniperplug.storage.local_sqlite import configure_local_sqlite_connection
 from sniperplug.storage.process_database import create_runtime_database
 from sniperplug.target_watcher.config import TargetWatcherSettings
 from sniperplug.target_watcher.production_service import ProductionTargetWatcherService
@@ -21,6 +22,7 @@ async def run(settings: TargetWatcherSettings | None = None) -> None:
     db = create_runtime_database(resolved.database_path)
     await db.connect()
     try:
+        await configure_local_sqlite_connection(db)
         await db.init()
         backend = str(getattr(db, "backend", "unknown") or "unknown")
         log.info(

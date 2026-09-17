@@ -17,6 +17,7 @@ from sniperplug.services.error_logging import (
 )
 from sniperplug.services.gateway_runtime_monitor import monitor_gateway_loop_health
 from sniperplug.services.local_sqlite_backup import run_local_sqlite_backup_loop
+from sniperplug.storage.local_sqlite import configure_local_sqlite_connection
 from sniperplug.storage.process_database import create_runtime_database
 from sniperplug.target_watcher.app import run as run_target_watcher
 from sniperplug.target_watcher.config import TargetWatcherSettings
@@ -52,6 +53,7 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
 
     async def setup_hook(self) -> None:
         await super().setup_hook()
+        await configure_local_sqlite_connection(self.db)
         self._gateway_health_task = asyncio.create_task(
             monitor_gateway_loop_health(self),
             name="sniperplug-gateway-loop-correlation",

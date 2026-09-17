@@ -37,11 +37,18 @@ Required base settings:
 ```env
 DISCORD_TOKEN=your_discord_bot_token
 DATABASE_PATH=./data/sniperplug.sqlite3
+SNIPERPLUG_LOCAL_SQLITE=true
 SNIPERPLUG_EMBED_TARGET_WATCHER=true
 SNIPERPLUG_EMBED_HP_WATCHER=false
 SNIPERPLUG_SQLITE_BACKUP_INTERVAL_HOURS=6
 SNIPERPLUG_SQLITE_BACKUP_RETENTION=14
 ```
+
+`SNIPERPLUG_LOCAL_SQLITE=true` is a safety assertion, not a secret alternate
+storage implementation. The existing database factory still owns SQLite/Turso
+selection. Local production mode refuses to start if any Turso/libSQL credential
+is still present, so a stale secret cannot silently put one embedded watcher back
+on the remote database.
 
 Target additionally requires:
 
@@ -68,9 +75,9 @@ LIBSQL_AUTH_TOKEN
 
 This is important. The existing database factory intentionally preserves backwards
 compatibility: if Turso credentials are present it selects Turso; when they are
-absent it selects the local SQLite implementation. Embedded HP/Target startup also
-fails closed if a remote backend is active, preventing an accidental split-brain
-migration.
+absent it selects the local SQLite implementation. Explicit local mode and embedded
+watcher startup both fail closed when remote credentials are present, preventing an
+accidental split-brain migration.
 
 ## 3. Migrate the existing production data once
 
@@ -105,7 +112,11 @@ Do not run the installer while SniperPlug is writing to the target database.
 ## 4. Local SQLite durability
 
 The normal database layer already enables SQLite WAL mode and foreign keys. The
-canonical runtime also creates an online, integrity-checked snapshot immediately
+canonical runtime gives the bot and embedded watcher connections a bounded SQLite
+busy timeout so ordinary overlapping writes wait rather than immediately failing
+with `database is locked`.
+
+The canonical runtime also creates an online, integrity-checked snapshot immediately
 at startup and then every six hours by default under:
 
 ```text
@@ -126,6 +137,7 @@ Before starting, verify:
 - canonical SniperPlug is the only app that owns the SQLite file;
 - old HP and Target standalone apps are stopped;
 - the four Turso/libSQL variables are absent;
+- `SNIPERPLUG_LOCAL_SQLITE=true`;
 - `DATABASE_PATH=./data/sniperplug.sqlite3`;
 - the migrated file exists;
 - Target is enabled only when its API key is present;
@@ -138,7 +150,7 @@ Expected startup evidence includes:
 ```text
 Database connected backend=sqlite
 Database schema ready backend=sqlite
-Local SQLite production mode active ... turso_required=false
+Local SQLite production mode active ... explicit_mode=true ... turso_required=false
 Embedded retailer watchers configured backend=sqlite hp=false target=true separate_discloud_watcher_apps_required=false
 Local SQLite backup verified ...
 SniperPlug online as ...

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
-import shutil
 import sqlite3
 import sys
 
@@ -37,6 +36,24 @@ def sqlite_tables(path: Path) -> set[str]:
         connection.close()
 
 
+def copy_sqlite_database(source: Path, destination: Path) -> None:
+    """Copy one consistent SQLite snapshot, including committed WAL state."""
+
+    destination.unlink(missing_ok=True)
+    source_connection = sqlite3.connect(
+        f"file:{source.as_posix()}?mode=ro",
+        uri=True,
+        timeout=30.0,
+    )
+    destination_connection = sqlite3.connect(destination.as_posix(), timeout=30.0)
+    try:
+        source_connection.backup(destination_connection)
+        destination_connection.commit()
+    finally:
+        destination_connection.close()
+        source_connection.close()
+
+
 def install_snapshot(source: Path, target: Path, *, require_tables: bool = True) -> Path | None:
     source = source.expanduser().resolve()
     target = target.expanduser().resolve()
@@ -62,7 +79,7 @@ def install_snapshot(source: Path, target: Path, *, require_tables: bool = True)
     if target.exists():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup = target.with_name(f"{target.name}.pre-migration-{stamp}.bak")
-        shutil.copy2(target, backup)
+        copy_sqlite_database(target, backup)
         backup_ok, backup_detail = sqlite_integrity(backup)
         if not backup_ok:
             backup.unlink(missing_ok=True)
@@ -71,8 +88,7 @@ def install_snapshot(source: Path, target: Path, *, require_tables: bool = True)
             )
 
     staged = target.with_suffix(target.suffix + ".installing")
-    staged.unlink(missing_ok=True)
-    shutil.copy2(source, staged)
+    copy_sqlite_database(source, staged)
     staged_ok, staged_detail = sqlite_integrity(staged)
     if not staged_ok:
         staged.unlink(missing_ok=True)

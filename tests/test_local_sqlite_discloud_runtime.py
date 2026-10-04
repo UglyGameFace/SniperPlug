@@ -199,6 +199,6 @@ def test_discloud_diamond_layout_retires_standalone_watcher_apps() -> None:
     assert "SNIPERPLUG_EMBED_TARGET_WATCHER=true" in DEPLOY_DOC
     assert "SNIPERPLUG_EMBED_HP_WATCHER=false" in DEPLOY_DOC
     assert "TURSO_DATABASE_URL" in DEPLOY_DOC
-    assert "separate Discloud applications" in DEPLOY_DOC
+    assert "separate discloud applications" in DEPLOY_DOC.lower()
     assert "scripts/install_sqlite_snapshot.py" in DEPLOY_DOC
     assert "Discloud app backup" in DEPLOY_DOC

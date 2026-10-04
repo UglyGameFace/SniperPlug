@@ -44,6 +44,47 @@ def _row_dict(row: Any) -> dict[str, Any]:
     raise TypeError(f"Expected mapping-like database row, got {type(row).__name__}")
 
 
+class _ReadOnlyRemoteSource:
+    """Allow only the exact remote statement classes needed for recovery export.
+
+    Turso's Hrana endpoint rejects SQLite's PRAGMA query_only setting, so safety
+    is enforced before SQL reaches the remote connection. The exporter may open
+    a read transaction, run SELECT statements, and inspect table metadata via
+    PRAGMA table_info. Everything else is rejected locally.
+    """
+
+    def __init__(self, source: Any) -> None:
+        self._source = source
+
+    @staticmethod
+    def _assert_allowed(sql: str) -> None:
+        statement = str(sql or "").strip()
+        upper = statement.upper()
+
+        if upper == "BEGIN" or upper.startswith("BEGIN "):
+            return
+        if upper.startswith("SELECT "):
+            return
+        if upper.startswith("PRAGMA TABLE_INFO("):
+            return
+
+        raise RuntimeError(
+            "Recovery exporter blocked a non-read-only remote SQL statement: "
+            + statement.splitlines()[0][:160]
+        )
+
+    async def execute(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | list[Any] | None = None,
+    ):
+        self._assert_allowed(sql)
+        return await self._source.execute(sql, params)
+
+    async def rollback(self) -> None:
+        await self._source.rollback()
+
+
 async def _fetchall(source: Any, sql: str, params: tuple[Any, ...] | None = None) -> list[dict[str, Any]]:
     cursor = await source.execute(sql, params)
     return [_row_dict(row) for row in await cursor.fetchall()]
@@ -225,18 +266,12 @@ async def export_connection_to_sqlite(
     transaction_started = False
     destination: sqlite3.Connection | None = None
 
-    try:
-        await source.execute("PRAGMA query_only=ON")
-        query_only_rows = await _fetchall(source, "PRAGMA query_only")
-        if not query_only_rows:
-            raise RuntimeError("Could not verify query_only mode on remote database")
-        query_only_value = next(iter(query_only_rows[0].values()), 0)
-        if int(query_only_value or 0) != 1:
-            raise RuntimeError("Remote database did not enter query_only mode")
+    remote = _ReadOnlyRemoteSource(source)
 
-        await source.execute("BEGIN")
+    try:
+        await remote.execute("BEGIN")
         transaction_started = True
-        schema = await _schema_rows(source)
+        schema = await _schema_rows(remote)
         table_rows = [row for row in schema if str(row.get("type")) == "table"]
         table_names = {str(row.get("name") or "") for row in table_rows}
         missing_remote = sorted(required - table_names)
@@ -265,7 +300,7 @@ async def export_connection_to_sqlite(
         for row in table_rows:
             name = str(row["name"])
             table_counts[name] = await _copy_table(
-                source,
+                remote,
                 destination,
                 table=name,
                 create_sql=str(row["sql"]),
@@ -281,7 +316,7 @@ async def export_connection_to_sqlite(
                     destination.execute(sql)
             destination.commit()
 
-        await source.rollback()
+        await remote.rollback()
         transaction_started = False
 
         destination.execute("PRAGMA foreign_keys=ON")
@@ -312,7 +347,7 @@ async def export_connection_to_sqlite(
                 pass
         if transaction_started:
             try:
-                await source.rollback()
+                await remote.rollback()
             except Exception:
                 pass
         raise

@@ -103,9 +103,19 @@ Implementation and executable validation are complete on the migration code. The
 - final exact-head SHA validation;
 - rerun exact-head CI once after this `ACTIVE_TASK.md` record update; no implementation files changed after the green `600d3ec...` run.
 
+## Discloud backup inspection — October 4, 2026
+A fresh user-supplied Discloud app backup was inspected before any production cutover.
+
+Findings:
+- the archive contains `data/sniperplug.sqlite3` plus its WAL/SHM sidecars and current application logs;
+- that SQLite database passes `PRAGMA integrity_check`, but its newest stored activity is from May 30, 2026 and it has only 15 user/system tables, so it is a stale pre-Turso/local fallback and is **not** acceptable as the production migration source;
+- the archive contains no `sniperplug.turso-replica.sqlite3` or other embedded-replica database file;
+- production logs show Turso read/write quota blocks from September 30 through October 1 around 08:05, but live Turso-backed application reads continue successfully on October 3–4;
+- because remote reads are available after the quota reset while the Turso UI remains unusable/full, the migration now includes `scripts/export_turso_snapshot.py`, a read-only in-app recovery exporter that copies current Turso state to a verified local SQLite snapshot without issuing remote writes.
+
 ## Production migration blockers / risks
-- The existing Turso production data must be exported/downloaded as a SQLite snapshot before cutover. Starting an empty DB would lose current guild settings, DM preferences, queues, histories and watcher state.
-- The current Turso account is read-blocked, so export availability must be confirmed. The code cannot manufacture a production snapshot while the provider refuses reads.
+- The existing Turso production data must be captured as a current SQLite snapshot before cutover. Starting an empty DB or using the stale May local fallback would lose current guild settings, DM preferences, queues, histories and watcher state.
+- Turso's UI/provider export is unavailable while the account is full, but the October 4 Discloud backup proves live remote reads resumed after the October 1 quota reset. The read-only exporter should be attempted before waiting for provider support/reset; if remote reads become blocked again, no safe current snapshot can be created from Turso until reads return.
 - ChatGPT has GitHub access here but no connected Discloud account-management tool, so live Discloud environment-variable changes, app stop/start, file upload and app-backup operations require the user's Discloud control plane unless a compatible connector becomes available.
 - Discloud runtime-file retention across every deployment path is not assumed. Off-host Discloud app backups remain mandatory before production redeploys.
 - HP transport/PDP failures are a separate backlog item and embedded HP stays disabled in the runbook until that root cause is repaired.
@@ -117,4 +127,4 @@ Implementation and executable validation are complete on the migration code. The
 - Turso query-efficiency cleanup is no longer required to avoid Turso billing after local cutover, but obviously wasteful SQL remains eligible for a later performance task if local runtime metrics justify it.
 
 ## Next step
-PR #293 is ready for review. Do not merge/cut over until a production snapshot is available for Discloud. Then install the verified snapshot, remove Turso/libSQL credentials, enable explicit local mode, keep HP disabled, verify Target and bot state, and retire Turso only after live acceptance.
+Validate the new read-only Turso exporter on the exact PR head. Then run it inside the existing Discloud app while Turso reads still work, install the verified completed snapshot, remove Turso/libSQL credentials, enable explicit local mode, keep HP disabled, verify Target and bot state, and retire Turso only after live acceptance.

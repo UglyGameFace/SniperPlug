@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 import logging
 import os
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from sniperplug.bot import SniperPlugBot, env_enabled
@@ -25,6 +26,7 @@ from sniperplug.target_watcher.config import TargetWatcherSettings
 
 log = logging.getLogger("sniperplug")
 LOCAL_SQLITE_MODE_ENV = "SNIPERPLUG_LOCAL_SQLITE"
+LOCAL_SQLITE_ALLOW_EMPTY_ENV = "SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY"
 EMBED_HP_WATCHER_ENV = "SNIPERPLUG_EMBED_HP_WATCHER"
 EMBED_TARGET_WATCHER_ENV = "SNIPERPLUG_EMBED_TARGET_WATCHER"
 EMBEDDED_WATCHER_RESTART_SECONDS = 30.0
@@ -52,6 +54,7 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
         self._local_sqlite_mode = env_enabled(LOCAL_SQLITE_MODE_ENV, default=False)
         if self._local_sqlite_mode:
             _assert_remote_database_env_absent()
+            _assert_local_database_present(settings.database_path)
         super().__init__(settings)
         # The base constructor does not connect, so replacement here creates no
         # abandoned connection and keeps every inherited service on one API.
@@ -201,6 +204,48 @@ async def _supervise_embedded_watcher(
                 EMBEDDED_WATCHER_RESTART_SECONDS,
             )
         await asyncio.sleep(EMBEDDED_WATCHER_RESTART_SECONDS)
+
+
+def _assert_local_database_present(database_path: str) -> None:
+    """Refuse an accidental empty production cutover.
+
+    Local SQLite is durable state, not a cache. When explicit local production
+    mode is enabled, the migrated database must already exist before the normal
+    SQLite connector gets a chance to create a fresh file. A deliberately fresh
+    deployment requires a one-time explicit override.
+    """
+
+    configured = Path(str(database_path or "./data/sniperplug.sqlite3")).expanduser()
+    path = configured if configured.is_absolute() else (Path.cwd() / configured).resolve()
+    allow_empty = env_enabled(LOCAL_SQLITE_ALLOW_EMPTY_ENV, default=False)
+
+    reason = ""
+    if not path.exists():
+        reason = "missing"
+    elif not path.is_file():
+        reason = "not-a-file"
+    elif path.stat().st_size <= 0:
+        reason = "empty"
+    else:
+        return
+
+    if allow_empty:
+        log.critical(
+            "Local SQLite empty bootstrap explicitly allowed path=%s reason=%s "
+            "override=%s; remove the override after the first successful boot",
+            path,
+            reason,
+            LOCAL_SQLITE_ALLOW_EMPTY_ENV,
+        )
+        return
+
+    raise RuntimeError(
+        "SNIPERPLUG_LOCAL_SQLITE=true requires an existing non-empty database "
+        f"file at {path} (state={reason}). Install the migrated production "
+        "snapshot before startup. Only if intentionally starting from an empty "
+        f"database, set {LOCAL_SQLITE_ALLOW_EMPTY_ENV}=true for the first boot "
+        "and remove it immediately afterward."
+    )
 
 
 def _assert_remote_database_env_absent() -> None:

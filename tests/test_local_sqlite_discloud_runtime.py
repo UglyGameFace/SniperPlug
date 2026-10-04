@@ -7,6 +7,10 @@ import sqlite3
 import pytest
 
 from scripts.install_sqlite_snapshot import install_snapshot
+from sniperplug.process_runtime import (
+    LOCAL_SQLITE_ALLOW_EMPTY_ENV,
+    _assert_local_database_present,
+)
 from sniperplug.services.local_sqlite_backup import create_local_sqlite_backup
 from sniperplug.storage.db import Database
 from sniperplug.storage.local_sqlite import (
@@ -101,6 +105,32 @@ async def test_local_sqlite_connections_wait_for_short_writer_contention(
         await db.close()
 
 
+def test_local_production_refuses_missing_or_empty_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(LOCAL_SQLITE_ALLOW_EMPTY_ENV, raising=False)
+    missing = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(RuntimeError, match="requires an existing non-empty database"):
+        _assert_local_database_present(str(missing))
+
+    empty = tmp_path / "empty.sqlite3"
+    empty.touch()
+    with pytest.raises(RuntimeError, match="state=empty"):
+        _assert_local_database_present(str(empty))
+
+
+def test_local_production_allows_explicit_one_time_empty_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = tmp_path / "fresh.sqlite3"
+    monkeypatch.setenv(LOCAL_SQLITE_ALLOW_EMPTY_ENV, "true")
+
+    _assert_local_database_present(str(missing))
+
+
 def test_snapshot_installer_preserves_existing_db_and_installs_verified_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -140,6 +170,8 @@ def test_snapshot_installer_rejects_wrong_database_shape(tmp_path: Path) -> None
 
 def test_canonical_runtime_embeds_watchers_only_with_explicit_local_sqlite() -> None:
     assert 'LOCAL_SQLITE_MODE_ENV = "SNIPERPLUG_LOCAL_SQLITE"' in PROCESS_RUNTIME
+    assert 'LOCAL_SQLITE_ALLOW_EMPTY_ENV = "SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY"' in PROCESS_RUNTIME
+    assert "_assert_local_database_present(settings.database_path)" in PROCESS_RUNTIME
     assert 'EMBED_HP_WATCHER_ENV = "SNIPERPLUG_EMBED_HP_WATCHER"' in PROCESS_RUNTIME
     assert 'EMBED_TARGET_WATCHER_ENV = "SNIPERPLUG_EMBED_TARGET_WATCHER"' in PROCESS_RUNTIME
     assert 'backend != "sqlite"' in PROCESS_RUNTIME

@@ -12,7 +12,7 @@ Draft PR: #293.
 Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
 ## Status
-Implementation is in progress. The architecture and migration safety path are implemented on the branch, but exact-head executable validation, cleanup, merge, live Discloud migration, and production acceptance are still pending.
+Implementation is in progress. The architecture and migration safety path are implemented on the branch, including a fail-closed guard against accidentally booting a missing/empty local production database. Exact-head executable validation, cleanup, merge, live Discloud migration, and production acceptance are still pending.
 
 ## Findings / root cause
 - Turso blocked the account after the monthly free allowance was exceeded: about 530M rows read and 11.16M rows written were visible in the supplied production dashboard.
@@ -21,6 +21,7 @@ Implementation is in progress. The architecture and migration safety path are im
 - `create_runtime_database()` is already shared by the canonical bot plus the HP and Target watcher entrypoints.
 - HP and Target were originally deployed as separate Discloud apps specifically because separate apps cannot share the canonical app's local SQLite file. Simply removing Turso credentials from all three apps would therefore create three isolated databases and break shared state/fanout semantics.
 - The correct local architecture is one canonical Discloud application. Embedded HP/Target workers use independent SQLite connections to the same WAL file so their transactions are not interleaved on one connection.
+- A missing local database is dangerous because SQLite normally creates it automatically; explicit local production mode now requires an existing non-empty database before connection. A deliberately fresh install needs the one-time `SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY=true` override.
 - HP currently has a separate production HTTP/PDP timeout incident. The local-database task does not guess at that unrelated transport root cause, so the production runbook keeps embedded HP disabled until that incident is handled under its own task.
 
 ## Execution path
@@ -36,6 +37,7 @@ Implementation is in progress. The architecture and migration safety path are im
 - `sniperplug/process_runtime.py`
   - explicit `SNIPERPLUG_LOCAL_SQLITE=true` production assertion;
   - fail closed if local mode is combined with any Turso/libSQL credentials;
+  - fail closed before SQLite can create a missing/empty production DB, with a one-time explicit empty-bootstrap override only;
   - supervised embedded HP and Target watcher tasks;
   - watcher settings forced to the canonical `DATABASE_PATH` and local-database validation mode;
   - embedded services require a confirmed `backend=sqlite`;
@@ -88,7 +90,7 @@ Implementation is in progress. The architecture and migration safety path are im
 - PR exact changed-file scope and diff review;
 - conflict-marker / accidental secret / generated-file scan;
 - final exact-head SHA validation;
-- exact-head CI where GitHub allocates runners.
+- exact-head CI where GitHub allocates runners. The prior head's three workflow jobs failed before runner execution (`steps=null`), so they are infrastructure failures rather than executable code evidence.
 
 ## Production migration blockers / risks
 - The existing Turso production data must be exported/downloaded as a SQLite snapshot before cutover. Starting an empty DB would lose current guild settings, DM preferences, queues, histories and watcher state.
@@ -104,4 +106,4 @@ Implementation is in progress. The architecture and migration safety path are im
 - Turso query-efficiency cleanup is no longer required to avoid Turso billing after local cutover, but obviously wasteful SQL remains eligible for a later performance task if local runtime metrics justify it.
 
 ## Next step
-Run targeted and repository validation on the exact PR #293 head, inspect the full diff for architectural conflicts, then correct any failures before considering the PR ready. After merge, perform the guarded Turso-snapshot -> local-SQLite Discloud cutover and verify production state before retiring Turso.
+Run one exact-head CI attempt after the migration-bootstrap guard, inspect any real executable failures if runners allocate, then perform final diff/scope/conflict cleanup. After merge, perform the guarded Turso-snapshot -> local-SQLite Discloud cutover and verify production state before retiring Turso.

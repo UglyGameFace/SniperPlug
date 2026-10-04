@@ -90,18 +90,58 @@ queues, history, DM preferences and watcher state is intentional. Local producti
 mode now fails closed before SQLite can create a missing/empty file unless the
 one-time `SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY=true` override is explicitly set.
 
-1. Stop the canonical SniperPlug app and the old standalone HP/Target watcher apps.
-2. Export/download the current Turso database as a SQLite snapshot when Turso
-   permits reads/export again.
-3. Put that snapshot somewhere in the canonical Discloud app, for example
-   `./migration/sniperplug-turso.sqlite3`.
-4. With SniperPlug still stopped, run:
+1. Create/download a fresh Discloud app backup before changing storage.
+2. Stop the old standalone HP/Target watcher apps so they stop consuming Turso.
+3. Obtain a current production SQLite snapshot using either route below.
+4. Install the verified snapshot into the canonical local database path.
+5. Only after the snapshot is installed, remove Turso/libSQL credentials and
+   enable explicit local mode.
+
+### Route A — provider export works
+
+If Turso allows a normal SQLite export/download, place it somewhere in the
+canonical Discloud app, for example:
+
+```text
+./migration/sniperplug-turso.sqlite3
+```
+
+### Route B — Turso UI is quota/storage locked but reads still work
+
+Keep the current Turso/libSQL environment variables in place temporarily and run:
+
+```bash
+python scripts/export_turso_snapshot.py \
+  --output ./migration/sniperplug-turso-export.sqlite3
+```
+
+The recovery exporter:
+
+- forces the remote connection into `PRAGMA query_only=ON`;
+- starts a read transaction so the copied tables come from one consistent
+  remote snapshot;
+- reads schema and rows in bounded batches without issuing remote
+  `INSERT`, `UPDATE`, `DELETE`, or migration statements;
+- uses rowid keyset pagination where safe and an offset fallback for
+  `WITHOUT ROWID` tables;
+- recreates tables, indexes, triggers, and views locally;
+- verifies required SniperPlug production tables;
+- runs `PRAGMA integrity_check` and `PRAGMA foreign_key_check`;
+- publishes the completed SQLite file only after verification passes;
+- writes a SHA-256 manifest beside the export.
+
+If Turso blocks reads during the copy, the command exits non-zero and leaves only
+a `.partial` file. **Never install a `.partial` export.**
+
+Then install whichever completed snapshot route produced:
 
 ```bash
 python scripts/install_sqlite_snapshot.py \
-  ./migration/sniperplug-turso.sqlite3 \
+  ./migration/sniperplug-turso-export.sqlite3 \
   --target ./data/sniperplug.sqlite3
 ```
+
+For Route A, replace the source argument with the provider-exported filename.
 
 The installer:
 

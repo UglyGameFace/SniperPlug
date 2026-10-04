@@ -117,7 +117,7 @@ python scripts/export_turso_snapshot.py \
 
 The recovery exporter:
 
-- forces the remote connection into `PRAGMA query_only=ON`;
+- enforces a local remote-SQL allowlist so only `SELECT`, `BEGIN`, rollback, and the read-only `PRAGMA table_info(...)` metadata query can reach Turso; this avoids Hrana's rejection of `PRAGMA query_only=ON` while still blocking remote writes before execution;
 - starts a read transaction so the copied tables come from one consistent
   remote snapshot;
 - reads schema and rows in bounded batches without issuing remote

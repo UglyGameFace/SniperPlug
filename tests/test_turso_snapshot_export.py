@@ -3,11 +3,63 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 from typing import Any
 
 import pytest
 
-from scripts.export_turso_snapshot import export_connection_to_sqlite
+from scripts.export_turso_snapshot import _ReadOnlyRemoteSource, export_connection_to_sqlite
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_exporter_direct_cli_imports_repository_package() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/export_turso_snapshot.py", "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Create a verified local SQLite snapshot" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_remote_read_only_guard_blocks_writes_before_source_execution() -> None:
+    class _Recorder:
+        def __init__(self) -> None:
+            self.executed: list[str] = []
+
+        async def execute(self, sql: str, params=None):
+            self.executed.append(sql)
+            return _FakeCursor([])
+
+        async def rollback(self) -> None:
+            return None
+
+    recorder = _Recorder()
+    guarded = _ReadOnlyRemoteSource(recorder)
+
+    await guarded.execute("SELECT 1")
+    await guarded.execute("PRAGMA table_info(\"guild_settings\")")
+    await guarded.execute("BEGIN")
+
+    with pytest.raises(RuntimeError, match="blocked a non-read-only"):
+        await guarded.execute("DELETE FROM guild_settings")
+
+    with pytest.raises(RuntimeError, match="blocked a non-read-only"):
+        await guarded.execute("PRAGMA query_only=ON")
+
+    assert recorder.executed == [
+        "SELECT 1",
+        'PRAGMA table_info("guild_settings")',
+        "BEGIN",
+    ]
 
 
 class _FakeCursor:
@@ -190,6 +242,7 @@ async def test_read_only_turso_export_preserves_schema_and_data(tmp_path: Path) 
         if statement
     }
     assert source_prefixes <= {"BEGIN", "SELECT", "PRAGMA"}
+    assert all("QUERY_ONLY" not in statement.upper() for statement in source.executed_sql)
     assert any("WHERE rowid > ?" in statement for statement in source.executed_sql)
     assert any("OFFSET ?" in statement for statement in source.executed_sql)
 

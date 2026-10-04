@@ -126,5 +126,11 @@ Findings:
 - HP transport/PDP timeout/403 incident remains backlog after this database migration task.
 - Turso query-efficiency cleanup is no longer required to avoid Turso billing after local cutover, but obviously wasteful SQL remains eligible for a later performance task if local runtime metrics justify it.
 
+## October 4 Discloud console follow-up
+After PR #293 merged and deployed, running the documented recovery command directly in the Discloud console failed before connecting to Turso: `ModuleNotFoundError: No module named 'sniperplug'`. Root cause: executing `python scripts/export_turso_snapshot.py` sets `sys.path[0]` to the `scripts` directory, so the sibling `sniperplug` package was not importable. Follow-up branch `fix/discloud-exporter-import-294` adds the same repository-root bootstrap already used by `scripts/smoke_imports.py` and a subprocess regression covering the exact direct CLI launch shape.
+
+## October 4 Hrana recovery follow-up
+The next live Discloud export attempt reached Turso but failed on `PRAGMA query_only=ON` with Hrana `SQL_PARSE_ERROR`. Hrana rejects that SQLite connection-level pragma. The exporter now enforces read-only behavior locally with a strict SQL allowlist, allowing only SELECT, BEGIN/rollback, and `PRAGMA table_info(...)`; any write or unsupported pragma is rejected before the source connection sees it. The incomplete `.partial` export remains invalid and will be replaced on the next run.
+
 ## Next step
 The read-only Turso exporter is validated on exact head `27de7d21ec890966625472634f5c381142937b26`: Python 3.11 and Python 3.12 full suites each passed `1495 passed, 1 warning`, and import smoke passed. PR #293 may now be merged/deployed **without changing the existing Turso/libSQL environment**, which keeps production on the current remote backend. After deployment, run `python scripts/export_turso_snapshot.py --output ./migration/sniperplug-turso-export.sqlite3` inside Discloud while reads still work. Do not remove Turso credentials or enable local mode until that command finishes successfully and the completed snapshot is installed.

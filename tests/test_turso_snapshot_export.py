@@ -3,11 +3,30 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 from typing import Any
 
 import pytest
 
 from scripts.export_turso_snapshot import export_connection_to_sqlite
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_exporter_direct_cli_imports_repository_package() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/export_turso_snapshot.py", "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Create a verified local SQLite snapshot" in result.stdout
 
 
 class _FakeCursor:

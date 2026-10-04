@@ -38,6 +38,7 @@ Required base settings:
 DISCORD_TOKEN=your_discord_bot_token
 DATABASE_PATH=./data/sniperplug.sqlite3
 SNIPERPLUG_LOCAL_SQLITE=true
+SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY=false
 SNIPERPLUG_EMBED_TARGET_WATCHER=true
 SNIPERPLUG_EMBED_HP_WATCHER=false
 SNIPERPLUG_SQLITE_BACKUP_INTERVAL_HOURS=6
@@ -48,7 +49,10 @@ SNIPERPLUG_SQLITE_BACKUP_RETENTION=14
 storage implementation. The existing database factory still owns SQLite/Turso
 selection. Local production mode refuses to start if any Turso/libSQL credential
 is still present, so a stale secret cannot silently put one embedded watcher back
-on the remote database.
+on the remote database. It also refuses to create a missing or empty production
+SQLite file. `SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY=true` exists only as an explicit
+one-time escape hatch for a deliberately fresh database; leave it `false` for the
+migration and remove the override immediately after any intentional fresh boot.
 
 Target additionally requires:
 
@@ -82,7 +86,9 @@ accidental split-brain migration.
 ## 3. Migrate the existing production data once
 
 Do not start with an empty SQLite file unless losing the current guild settings,
-queues, history, DM preferences and watcher state is intentional.
+queues, history, DM preferences and watcher state is intentional. Local production
+mode now fails closed before SQLite can create a missing/empty file unless the
+one-time `SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY=true` override is explicitly set.
 
 1. Stop the canonical SniperPlug app and the old standalone HP/Target watcher apps.
 2. Export/download the current Turso database as a SQLite snapshot when Turso
@@ -138,6 +144,7 @@ Before starting, verify:
 - old HP and Target standalone apps are stopped;
 - the four Turso/libSQL variables are absent;
 - `SNIPERPLUG_LOCAL_SQLITE=true`;
+- `SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY=false` (or unset);
 - `DATABASE_PATH=./data/sniperplug.sqlite3`;
 - the migrated file exists;
 - Target is enabled only when its API key is present;

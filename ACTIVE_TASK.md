@@ -12,7 +12,7 @@ Draft PR: #293.
 Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
 ## Status
-Implementation is in progress. The architecture and migration safety path are implemented on the branch, including a fail-closed guard against accidentally booting a missing/empty local production database. Exact-head executable validation, cleanup, merge, live Discloud migration, and production acceptance are still pending.
+Implementation and executable validation are complete on the migration code. The branch includes the fail-closed missing/empty-database guard, embedded watcher/local-SQLite architecture, migration installer, backup path and deployment runbook. Live Discloud cutover and production acceptance are still pending because this chat has no Discloud control-plane connector.
 
 ## Findings / root cause
 - Turso blocked the account after the monthly free allowance was exceeded: about 530M rows read and 11.16M rows written were visible in the supplied production dashboard.
@@ -77,7 +77,18 @@ Implementation is in progress. The architecture and migration safety path are im
   - embedded watcher/local-mode architecture guards;
   - Discloud deployment-surface guards.
 
-## Validation required before ready/merge
+## Validation / results
+- Exact migration-code head `600d3ec94e5d326805199b784cd7df04240d32e2` passed both hosted full suites:
+  - Python 3.11: `1492 passed, 1 warning`;
+  - Python 3.12: `1492 passed, 1 warning`.
+- `pip check` passed.
+- compileall passed.
+- import smoke passed (`37 modules, 22 symbols`).
+- PR is 25 commits ahead / 0 behind production `main`; raw GitHub state reports `mergeable=true` and `rebaseable=true`.
+- Final diff inspection found no conflict markers, committed secrets, breakpoint/debug artifacts, or unrelated file scope. The apparent secret hit is the documented placeholder `TARGET_REDSKY_API_KEY=your_target_redsky_key`; CLI `print()` calls are intentional migration-script output.
+- One earlier exact-head run exposed two static regressions only (lost Python 3.14 rationale comment and case-sensitive deployment-doc assertion); both were corrected and the subsequent full suites passed.
+
+## Final exact-head validation required after this task-record-only commit
 - targeted `tests/test_local_sqlite_discloud_runtime.py`;
 - existing database/runtime tests, including `test_libsql_process_connection.py` and local SQLite storage coverage;
 - HP and Target watcher configuration/runtime regressions;
@@ -90,7 +101,7 @@ Implementation is in progress. The architecture and migration safety path are im
 - PR exact changed-file scope and diff review;
 - conflict-marker / accidental secret / generated-file scan;
 - final exact-head SHA validation;
-- exact-head CI where GitHub allocates runners. The prior head's three workflow jobs failed before runner execution (`steps=null`), so they are infrastructure failures rather than executable code evidence.
+- rerun exact-head CI once after this `ACTIVE_TASK.md` record update; no implementation files changed after the green `600d3ec...` run.
 
 ## Production migration blockers / risks
 - The existing Turso production data must be exported/downloaded as a SQLite snapshot before cutover. Starting an empty DB would lose current guild settings, DM preferences, queues, histories and watcher state.
@@ -106,4 +117,4 @@ Implementation is in progress. The architecture and migration safety path are im
 - Turso query-efficiency cleanup is no longer required to avoid Turso billing after local cutover, but obviously wasteful SQL remains eligible for a later performance task if local runtime metrics justify it.
 
 ## Next step
-Run one exact-head CI attempt after the migration-bootstrap guard, inspect any real executable failures if runners allocate, then perform final diff/scope/conflict cleanup. After merge, perform the guarded Turso-snapshot -> local-SQLite Discloud cutover and verify production state before retiring Turso.
+Confirm the task-record-only head remains green, then mark PR #293 ready for review. Do not perform the live cutover until a production snapshot is available in Discloud; after merge, install the verified snapshot, remove Turso/libSQL credentials, enable explicit local mode, keep HP disabled, verify Target and bot state, then retire Turso only after acceptance.

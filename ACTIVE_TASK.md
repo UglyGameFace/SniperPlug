@@ -12,7 +12,7 @@ Draft PR: #293.
 Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
 ## Status
-Implementation and executable validation are complete on the migration code. The branch includes the fail-closed missing/empty-database guard, embedded watcher/local-SQLite architecture, migration installer, backup path and deployment runbook. Live Discloud cutover and production acceptance are still pending because this chat has no Discloud control-plane connector.
+Implementation and executable validation are complete on the migration code. The branch includes the fail-closed missing/empty-database guard, embedded watcher/local-SQLite architecture, migration installer, backup path and deployment runbook. PR #293 is now marked ready for review. Live Discloud cutover and production acceptance are still pending because this chat has no Discloud control-plane connector.
 
 ## Findings / root cause
 - Turso blocked the account after the monthly free allowance was exceeded: about 530M rows read and 11.16M rows written were visible in the supplied production dashboard.
@@ -117,4 +117,4 @@ Implementation and executable validation are complete on the migration code. The
 - Turso query-efficiency cleanup is no longer required to avoid Turso billing after local cutover, but obviously wasteful SQL remains eligible for a later performance task if local runtime metrics justify it.
 
 ## Next step
-Confirm the task-record-only head remains green, then mark PR #293 ready for review. Do not perform the live cutover until a production snapshot is available in Discloud; after merge, install the verified snapshot, remove Turso/libSQL credentials, enable explicit local mode, keep HP disabled, verify Target and bot state, then retire Turso only after acceptance.
+PR #293 is ready for review. Do not merge/cut over until a production snapshot is available for Discloud. Then install the verified snapshot, remove Turso/libSQL credentials, enable explicit local mode, keep HP disabled, verify Target and bot state, and retire Turso only after live acceptance.

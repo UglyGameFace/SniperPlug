@@ -218,6 +218,14 @@ async def export_connection_to_sqlite(
     destination: sqlite3.Connection | None = None
 
     try:
+        await source.execute("PRAGMA query_only=ON")
+        query_only_rows = await _fetchall(source, "PRAGMA query_only")
+        if not query_only_rows:
+            raise RuntimeError("Could not verify query_only mode on remote database")
+        query_only_value = next(iter(query_only_rows[0].values()), 0)
+        if int(query_only_value or 0) != 1:
+            raise RuntimeError("Remote database did not enter query_only mode")
+
         await source.execute("BEGIN")
         transaction_started = True
         schema = await _schema_rows(source)

@@ -13,6 +13,14 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+
+# Running `python scripts/export_turso_snapshot.py` makes the scripts directory
+# sys.path[0]. Add the repository root so the sibling `sniperplug` package is
+# importable in Discloud exactly as it is for the existing smoke-import script.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 from sniperplug.storage.process_database import SnowflakeSafeLibsqlProcessConnection
 
 

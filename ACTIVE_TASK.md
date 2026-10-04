@@ -1,99 +1,130 @@
 # Active Task
 
 ## Active task / outcome
-**SP-WM-DM-PERSONALIZATION — production UX repair after merged PR #291.**
+**SP-LOCAL-SQLITE-DISCLOUD — move canonical production storage from Turso to local Discloud SQLite.**
 
-Outcome: keep the specific Walmart product/brand matching added by PR #291, but replace the confusing wall-of-text configuration flow with a guided, compact Discord UI where products and categories are clearly separated, obvious product choices require no secret aliases, and stale broad category state cannot silently block an explicitly selected Walmart product.
+Outcome: use the existing local SQLite backend inside the canonical SniperPlug Discloud Diamond app, eliminate Turso row-read/write quota dependency, and keep HP/Target capable of sharing the same authoritative data by running them as supervised tasks inside the canonical app instead of separate Discloud applications.
 
-Base main: `bfb9ccf54bf68f2d5c440d50fa13cd0c7df3e715` (PR #291 merge).
-Branch: `fix/walmart-dm-ux-292`.
-Intended PR: #292, draft until exact-head executable validation passes.
+Base main: `8b34e316977ac0a4b754b8e751d8a73377f03484` (PR #292 merge).
+Branch: `infra/local-sqlite-discloud-293`.
+Draft PR: #293.
 
 Do not switch to unrelated work without the user's explicit FORCE SWITCH instruction.
 
-## Why PR #291 is not production-accepted
-PR #291 passed executable validation and merged, but screenshot-based production acceptance exposed a real UX failure:
-- the personal DM menu became a very large instructional embed with category controls, product controls, rules, Flip Override and safety documentation all competing on one screen;
-- the Product catalog exposed internal storage keys such as `pokemon_tcg_sealed` and `portable_chargers`;
-- Specific products used a free-text modal that rejected ordinary user input such as `iphones`, `airpods`, and `tools` when it did not exactly map to a predeclared alias;
-- broad category mutes/allowlists were still evaluated after specific Walmart product intent, so old category state could unexpectedly veto an item the subscriber had deliberately selected.
+## Status
+Implementation and executable validation are complete on the migration code. The branch includes the fail-closed missing/empty-database guard, embedded watcher/local-SQLite architecture, migration installer, backup path and deployment runbook. PR #293 is now marked ready for review. Live Discloud cutover and production acceptance are still pending because this chat has no Discloud control-plane connector.
 
-The active task therefore remains SP-WM-DM-PERSONALIZATION until this repair is validated and production-accepted.
+## Findings / root cause
+- Turso blocked the account after the monthly free allowance was exceeded: about 530M rows read and 11.16M rows written were visible in the supplied production dashboard.
+- Production analytics showed sustained high database activity rather than one isolated query: roughly tens of millions of row reads and around one million writes per day after the Turso-backed production workload became active.
+- SniperPlug already has a real local `aiosqlite` path in `Database.connect()` with WAL and foreign keys; Turso is selected only when Turso/libSQL credentials are present.
+- `create_runtime_database()` is already shared by the canonical bot plus the HP and Target watcher entrypoints.
+- HP and Target were originally deployed as separate Discloud apps specifically because separate apps cannot share the canonical app's local SQLite file. Simply removing Turso credentials from all three apps would therefore create three isolated databases and break shared state/fanout semantics.
+- The correct local architecture is one canonical Discloud application. Embedded HP/Target workers use independent SQLite connections to the same WAL file so their transactions are not interleaved on one connection.
+- A missing local database is dangerous because SQLite normally creates it automatically; explicit local production mode now requires an existing non-empty database before connection. A deliberately fresh install needs the one-time `SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY=true` override.
+- HP currently has a separate production HTTP/PDP timeout incident. The local-database task does not guess at that unrelated transport root cause, so the production runbook keeps embedded HP disabled until that incident is handled under its own task.
 
-## Root cause / execution path
-- `/dm_deals` in `sniperplug/cogs/dm_deal_alerts.py` opens `DmDealPreferencesView` and remains the command owner.
-- `sniperplug/cogs/dm_deal_preferences_view.py` had become a monolithic dashboard/category editor/rules editor/product editor/help page.
-- `sniperplug/services/dm_product_interests.py` maps human product intent to structured `interest:*` tokens and previously lacked obvious iPhone/AirPods/tool aliases.
-- `sniperplug/services/dm_deal_matching.py` is the canonical live matcher used by Walmart bulk, Walmart legacy and verified-retailer fanout.
-- The canonical matcher previously applied specific Walmart product/brand matching and then separately applied category mute/allowlist checks, allowing old broad category state to cross into the newer explicit product layer.
-- A pre-existing stale `match_dm_deal()` symbol still exists in `sniperplug/services/dm_deal_alerts.py`, but no live fanout imports it; static coverage locks all live fanouts to `dm_deal_matching.py`.
+## Execution path
+1. `main.py` -> `sniperplug.process_runtime.run()`.
+2. `ProcessIsolatedSniperPlugBot` creates the canonical runtime database through `create_runtime_database(settings.database_path)`.
+3. With no Turso/libSQL credentials, the existing database factory falls through to local SQLite at `DATABASE_PATH`.
+4. `SniperPlugBot.setup_hook()` initializes the schema and normal bot services.
+5. `ProcessIsolatedSniperPlugBot.setup_hook()` configures the local SQLite connection for bounded writer contention, starts verified local snapshot backups, then optionally starts embedded HP/Target watcher supervisors.
+6. Each embedded watcher calls its existing watcher runtime with `require_remote_database=False`, opens its own connection to the exact same `DATABASE_PATH`, initializes compatible schema idempotently, and runs its existing service loop.
+7. The canonical bot remains the Discord publisher and consumes the same durable verified-retailer event tables.
 
-## Repair design
-### Guided UI
-The private editor now has three screens instead of one giant embed:
-1. **Dashboard** — short summary plus Products & brands, Categories, Deal rules, Mode, Flip Override, Save and Close.
-2. **Products & brands** — real Discord multi-select product profiles with pagination, optional arbitrary brand entry, clear controls and return to Dashboard.
-3. **Categories** — broad Favorites, Muted and Only-these category modes with category multi-select, pagination/search and return to Dashboard.
+## Changes
+- `sniperplug/process_runtime.py`
+  - explicit `SNIPERPLUG_LOCAL_SQLITE=true` production assertion;
+  - fail closed if local mode is combined with any Turso/libSQL credentials;
+  - fail closed before SQLite can create a missing/empty production DB, with a one-time explicit empty-bootstrap override only;
+  - supervised embedded HP and Target watcher tasks;
+  - watcher settings forced to the canonical `DATABASE_PATH` and local-database validation mode;
+  - embedded services require a confirmed `backend=sqlite`;
+  - coordinated cancellation before canonical DB shutdown;
+  - local backup scheduling.
+- `sniperplug/storage/local_sqlite.py`
+  - canonical bounded SQLite `busy_timeout` configuration for the independent writer connections.
+- `sniperplug/services/local_sqlite_backup.py`
+  - SQLite online backup API snapshots;
+  - post-copy `PRAGMA integrity_check`;
+  - atomic publication and bounded retention;
+  - remote-backend no-op behavior.
+- `sniperplug/hp_watcher/app.py` and `sniperplug/target_watcher/app.py`
+  - configure local SQLite contention before schema work;
+  - log the real backend instead of always claiming process-isolated Turso.
+- `scripts/install_sqlite_snapshot.py`
+  - integrity-check a supplied SQLite export;
+  - verify core SniperPlug table identity;
+  - preserve an existing local DB through SQLite's online backup API;
+  - stage and atomically install the production snapshot;
+  - remove stale WAL/SHM sidecars;
+  - final integrity validation.
+- `discloud.config`
+  - canonical app RAM raised from 512 MB to 1024 MB for the consolidated bot/watcher runtime while staying within Diamond capacity.
+- `discloud.hp-watcher.config` / `discloud.target-watcher.config`
+  - explicitly marked legacy standalone remote-database deployments so they are not accidentally run beside local embedded workers.
+- `docs/DISCLOUD_DEPLOY.md`
+  - canonical Diamond/local-SQLite migration and recovery runbook;
+  - required environment changes;
+  - watcher ownership rules;
+  - backup-before-redeploy discipline and production acceptance checks.
+- `tests/test_local_sqlite_discloud_runtime.py`
+  - snapshot creation/integrity regression;
+  - remote-backend no-op regression;
+  - SQLite writer timeout regression;
+  - safe migration installer regressions;
+  - embedded watcher/local-mode architecture guards;
+  - Discloud deployment-surface guards.
 
-The old Product catalog button and free-text `_ProductInterestModal` are removed from the primary menu. Typed `/dm_deals` product/category options remain only as a compatibility/backup surface.
+## Validation / results
+- Exact migration-code head `600d3ec94e5d326805199b784cd7df04240d32e2` passed both hosted full suites:
+  - Python 3.11: `1492 passed, 1 warning`;
+  - Python 3.12: `1492 passed, 1 warning`.
+- `pip check` passed.
+- compileall passed.
+- import smoke passed (`37 modules, 22 symbols`).
+- PR is 25 commits ahead / 0 behind production `main`; raw GitHub state reports `mergeable=true` and `rebaseable=true`.
+- Final diff inspection found no conflict markers, committed secrets, breakpoint/debug artifacts, or unrelated file scope. The apparent secret hit is the documented placeholder `TARGET_REDSKY_API_KEY=your_target_redsky_key`; CLI `print()` calls are intentional migration-script output.
+- One earlier exact-head run exposed two static regressions only (lost Python 3.14 rationale comment and case-sensitive deployment-doc assertion); both were corrected and the subsequent full suites passed.
 
-### Product usability
-- Added dedicated `iphones` and `airpods` profiles with accessory exclusions.
-- `tools` / `tool` now resolve naturally to the existing Power tools profile.
-- Existing product profiles and strict lookalike exclusions remain intact.
-- Product profiles are paged at Discord's 25-option Select limit.
-- Product/brand storage capacity is raised above the current catalog size so selecting across multiple pages is not silently truncated.
-
-### Category/product precedence
-For Walmart only:
-- when no specific product/brand filters exist, category mutes and allowlists keep their existing behavior;
-- when specific Walmart product and/or brand filters exist, those explicit choices become the inclusion layer and broad category mutes/allowlists do not veto a matching chosen product;
-- exact proof, maximum price, Walmart Cash-only, required/excluded keywords, minimum markdown/score/savings, dedupe and daily limits remain hard;
-- specific product/brand matching remains hard and Flip Override cannot bypass it;
-- favorites remain a Smart-mode priority hint;
-- HP/Target keep their existing behavior.
-
-## Current branch scope
-Expected repair files:
-- `ACTIVE_TASK.md`
-- `sniperplug/cogs/dm_deal_preferences_view.py`
-- `sniperplug/services/dm_product_interests.py`
-- `sniperplug/services/dm_deal_matching.py`
-- `tests/test_dm_product_interests_personalization.py`
-- `tests/test_dm_product_interest_surface_static.py`
-- `tests/test_dm_deal_rules_menu.py`
-- `tests/test_dm_personalization_command_static.py`
-- `tests/test_dm_personal_category_mutes.py`
-
-No database migration, new fanout, retry shim or public Walmart posting change is intended.
-
-## Validation required before ready/merge
-- new product alias/profile tests, including iPhones/AirPods/tools and accessory exclusions;
-- product pagination/select limits;
-- explicit product intent vs stale category allowlist/mute regression;
-- no-specific-product category fallback regression;
-- menu save/close UX tests;
-- existing category/favorite/mute/Flip tests;
-- existing DM rule tests;
-- canonical fanout/matcher static checks;
-- Walmart/Target/HP compatibility tests where applicable;
+## Final exact-head validation required after this task-record-only commit
+- targeted `tests/test_local_sqlite_discloud_runtime.py`;
+- existing database/runtime tests, including `test_libsql_process_connection.py` and local SQLite storage coverage;
+- HP and Target watcher configuration/runtime regressions;
+- verified-retailer event/fanout regressions;
+- Walmart queue/storage regressions relevant to SQLite concurrency;
 - compileall;
-- import smoke;
-- dependency check;
-- full pytest suite using the known Termux Ubuntu Python 3.12 workflow, with native libsql tests run separately when the clean aarch64 venv intentionally lacks `libsql`;
-- `git diff origin/main...HEAD --check`;
-- exact changed-file scope;
-- conflict-marker scan;
-- clean worktree;
-- final exact SHA recheck.
+- import smoke for `main.py`, HP watcher and Target watcher;
+- `pip check` / repository dependency validation;
+- full pytest suite using repository conventions;
+- PR exact changed-file scope and diff review;
+- conflict-marker / accidental secret / generated-file scan;
+- final exact-head SHA validation;
+- rerun exact-head CI once after this `ACTIVE_TASK.md` record update; no implementation files changed after the green `600d3ec...` run.
 
-## Hosted CI blocker
-GitHub-hosted workflow jobs have recently failed before allocating a runner (`steps=[]`, `runner_id=0`). Those jobs are not code evidence. Use exact-head Termux validation if that condition persists.
+## Discloud backup inspection — October 4, 2026
+A fresh user-supplied Discloud app backup was inspected before any production cutover.
+
+Findings:
+- the archive contains `data/sniperplug.sqlite3` plus its WAL/SHM sidecars and current application logs;
+- that SQLite database passes `PRAGMA integrity_check`, but its newest stored activity is from May 30, 2026 and it has only 15 user/system tables, so it is a stale pre-Turso/local fallback and is **not** acceptable as the production migration source;
+- the archive contains no `sniperplug.turso-replica.sqlite3` or other embedded-replica database file;
+- production logs show Turso read/write quota blocks from September 30 through October 1 around 08:05, but live Turso-backed application reads continue successfully on October 3–4;
+- because remote reads are available after the quota reset while the Turso UI remains unusable/full, the migration now includes `scripts/export_turso_snapshot.py`, a read-only in-app recovery exporter that copies current Turso state to a verified local SQLite snapshot without issuing remote writes.
+
+## Production migration blockers / risks
+- The existing Turso production data must be captured as a current SQLite snapshot before cutover. Starting an empty DB or using the stale May local fallback would lose current guild settings, DM preferences, queues, histories and watcher state.
+- Turso's UI/provider export is unavailable while the account is full, but the October 4 Discloud backup proves live remote reads resumed after the October 1 quota reset. The read-only exporter should be attempted before waiting for provider support/reset; if remote reads become blocked again, no safe current snapshot can be created from Turso until reads return.
+- ChatGPT has GitHub access here but no connected Discloud account-management tool, so live Discloud environment-variable changes, app stop/start, file upload and app-backup operations require the user's Discloud control plane unless a compatible connector becomes available.
+- Discloud runtime-file retention across every deployment path is not assumed. Off-host Discloud app backups remain mandatory before production redeploys.
+- HP transport/PDP failures are a separate backlog item and embedded HP stays disabled in the runbook until that root cause is repaired.
 
 ## Suspended / backlog
-- `SP-MOVIE-TICKETS-RECOVERY` / PR #273 remains suspended.
-- eBay watcher PR #200 remains unrelated.
-- Backlog: SP-SETUP-DELIVERY-UX, SP-DM-DELIVERY-STARVATION, SP-DM-NEW-LOW-ALERT, SP-WM-CASH-PDP-AMOUNT, HP/Target standalone watcher deployment/acceptance, SniperPlug-Site.
+- PR #273 / `SP-MOVIE-TICKETS-RECOVERY` remains suspended and untouched.
+- PR #200 eBay watcher remains suspended and untouched.
+- HP transport/PDP timeout/403 incident remains backlog after this database migration task.
+- Turso query-efficiency cleanup is no longer required to avoid Turso billing after local cutover, but obviously wasteful SQL remains eligible for a later performance task if local runtime metrics justify it.
 
 ## Next step
-Open draft PR #292 from this repair branch, inspect exact scope, then run the targeted and full exact-head executable validation before marking it ready or merging.
+The read-only Turso exporter is validated on exact head `27de7d21ec890966625472634f5c381142937b26`: Python 3.11 and Python 3.12 full suites each passed `1495 passed, 1 warning`, and import smoke passed. PR #293 may now be merged/deployed **without changing the existing Turso/libSQL environment**, which keeps production on the current remote backend. After deployment, run `python scripts/export_turso_snapshot.py --output ./migration/sniperplug-turso-export.sqlite3` inside Discloud while reads still work. Do not remove Turso credentials or enable local mode until that command finishes successfully and the completed snapshot is installed.

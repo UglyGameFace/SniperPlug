@@ -73,6 +73,12 @@ def test_extreme_exact_price_still_blocks_accessories_and_unproven_offers() -> N
     assert not extreme.eligible_exact_extreme_candidate(replace(base, api_current_price=99))
     assert not extreme.eligible_exact_extreme_candidate(replace(base, can_add_to_cart=False))
     assert not extreme.eligible_exact_extreme_candidate(replace(base, stock_status="Sold out"))
+    assert not extreme.eligible_exact_extreme_candidate(replace(base, stock_status="Not available online"))
+    # Guard against bool("false") == True in upstream Walmart availability.
+    for value in ("false", "no", "0", "off"):
+        attrs = dict(base.variant_attributes)
+        attrs["availableOnline"] = value
+        assert not extreme.eligible_exact_extreme_candidate(replace(base, variant_attributes=attrs))
     assert not extreme.eligible_exact_extreme_candidate(replace(base, selected_offer_id=None))
     assert not extreme.eligible_exact_extreme_candidate(replace(base, product_url="https://www.walmart.com/ip/999", direct_product_url="https://www.walmart.com/ip/999"))
     attrs = dict(base.variant_attributes)

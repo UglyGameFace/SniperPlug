@@ -300,3 +300,54 @@ def test_extreme_optin_and_fanout_accept_turso_mapping_rows(monkeypatch) -> None
             await conn.close()
 
     asyncio.run(scenario())
+
+
+def test_health_summary_explains_qualified_vs_filtered_candidates_on_turso_rows() -> None:
+    """The health panel must not mistake cheap accessories for extreme finds."""
+    async def scenario():
+        from dataclasses import replace
+
+        conn = await aiosqlite.connect(":memory:")
+        db = SimpleNamespace(require_conn=lambda: conn)
+        try:
+            await ensure_walmart_exact_verification_queue(db)
+            await extreme.ensure_extreme_tables(db)
+            current = datetime.now(timezone.utc).isoformat()
+            phone = candidate()
+            accessory = replace(
+                phone,
+                title="Galaxy S24 FE Case",
+                product_id="29500012",
+                sku="29500012",
+                product_url="https://www.walmart.com/ip/29500012",
+                direct_product_url="https://www.walmart.com/ip/29500012",
+                variant_attributes={
+                    **phone.variant_attributes,
+                    "exactDetailItemId": "29500012",
+                },
+            )
+            for product in (phone, accessory):
+                await conn.execute(
+                    f"INSERT INTO {QUEUE_TABLE} "
+                    "(item_id, first_seen_at, last_seen_at, next_attempt_at, "
+                    "status, verified_at, exact_current_cents, snapshot_json) "
+                    "VALUES (?, ?, ?, ?, 'verified_no_reference', ?, 100, ?)",
+                    (
+                        product.product_id, current, current, current,
+                        current, _candidate_snapshot(product),
+                    ),
+                )
+            await conn.commit()
+            conn.row_factory = lambda cursor, values: {
+                desc[0]: value for desc, value in zip(cursor.description, values)
+            }
+            summary = await extreme.extreme_price_health_summary(db)
+            assert "Last 15 min" in summary
+            assert "**2** exact-verified queue rows" in summary
+            assert "**1** match primary-product" in summary
+            assert "**1** are after the delivery cursor" in summary
+            assert "not confirmed Discord posts" in summary
+        finally:
+            await conn.close()
+
+    asyncio.run(scenario())

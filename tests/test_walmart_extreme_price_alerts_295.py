@@ -386,3 +386,63 @@ def test_extreme_rejection_reasons_match_sender_eligibility_without_softening() 
         assert reason == expected
         assert extreme.eligible_exact_extreme_candidate(original) is (reason is None)
     assert extreme.extreme_rejection_reason(None) == "missing_snapshot"
+
+
+def test_qualified_extreme_item_waits_when_no_opted_in_live_route(monkeypatch) -> None:
+    """A transient empty guild reconciliation cannot consume an unsent lead."""
+    async def scenario():
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        db = SimpleNamespace(require_conn=lambda: conn)
+        try:
+            await ensure_walmart_exact_verification_queue(db)
+            await extreme.set_extreme_alerts_enabled(db, 295, True)
+            now = datetime.now(timezone.utc).isoformat()
+            phone = candidate()
+            await conn.execute(
+                f"INSERT INTO {QUEUE_TABLE} "
+                "(item_id, first_seen_at, last_seen_at, next_attempt_at, "
+                "status, verified_at, exact_current_cents, snapshot_json) "
+                "VALUES (?, ?, ?, ?, 'verified_no_reference', ?, 100, ?)",
+                (phone.product_id, now, now, now, now, _candidate_snapshot(phone)),
+            )
+            await conn.commit()
+
+            reconciliations = 0
+            async def live_route(_db, _bot, *, required_retailer):
+                nonlocal reconciliations
+                assert required_retailer == "walmart"
+                reconciliations += 1
+                if reconciliations == 1:
+                    return LiveGuildLoadResult(guilds=())
+                return LiveGuildLoadResult(guilds=(LiveAutoScanGuild(295, 123),))
+
+            deliveries = []
+            async def post(**kwargs):
+                deliveries.append(kwargs)
+                return SimpleNamespace(attempted=1, posted=1, errors=())
+
+            monkeypatch.setattr(extreme, "list_live_public_alert_guilds", live_route)
+            monkeypatch.setattr(extreme, "maybe_post_public_deal_cards", post)
+            bot = SimpleNamespace(db=db)
+            before_cursor = await conn.execute(
+                f"SELECT last_verified_at, last_item_id FROM {extreme.STATE_TABLE} WHERE state_key='walmart'"
+            )
+            initial = tuple(await before_cursor.fetchone())
+            stalled = await extreme.fanout_recent_extreme_walmart_prices(bot)
+            assert stalled == {"examined": 1, "eligible": 1, "posted": 0}
+            after_cursor = await conn.execute(
+                f"SELECT last_verified_at, last_item_id FROM {extreme.STATE_TABLE} WHERE state_key='walmart'"
+            )
+            assert tuple(await after_cursor.fetchone()) == initial
+            assert deliveries == []
+
+            resumed = await extreme.fanout_recent_extreme_walmart_prices(bot)
+            assert resumed == {"examined": 1, "eligible": 1, "posted": 1}
+            assert len(deliveries) == 1
+            assert deliveries[0]["guild_id"] == 295
+            assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["examined"] == 0
+        finally:
+            await conn.close()
+
+    asyncio.run(scenario())

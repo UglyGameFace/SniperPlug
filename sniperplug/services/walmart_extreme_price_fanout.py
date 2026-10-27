@@ -344,6 +344,138 @@ async def extreme_price_health_summary(db: Any) -> str:
     )
 
 
+async def _record_missing_guild_deliveries(
+    conn: Any,
+    *,
+    missing_guild_ids: set[str],
+    item_id: str,
+    verified_at: str,
+    snapshot_json: str,
+) -> None:
+    """Persist missing recipients before advancing the global cursor.
+
+    This intentionally fails closed if there are too many absent recipients
+    to queue safely. A cursor that did not move can be retried after recovery.
+    """
+    if not missing_guild_ids:
+        return
+    if len(missing_guild_ids) > MAX_PENDING_GUILDS_PER_OFFER:
+        raise RuntimeError(
+            f"Too many absent extreme-price destinations: "
+            f"{len(missing_guild_ids)} > {MAX_PENDING_GUILDS_PER_OFFER}"
+        )
+    for guild_id in sorted(missing_guild_ids):
+        await conn.execute(
+            f"INSERT INTO {PENDING_TABLE} "
+            "(guild_id, item_id, verified_at, snapshot_json) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, item_id, verified_at) DO NOTHING",
+            (guild_id, item_id, verified_at, snapshot_json),
+        )
+    await conn.commit()
+
+
+async def _replay_missing_guild_deliveries(
+    bot: Any,
+    conn: Any,
+    opted_ids: set[str],
+    cutoff: str,
+) -> tuple[int, Any | None]:
+    """Retry absent guilds only while the exact official snapshot is unchanged.
+
+    The existing public post sender still owns delivery receipts and dedupe.
+    Never replay on expired or changed exact-price evidence, even if a guild
+    reappears, and do not manufacture a new Walmart API price.
+    """
+    cursor = await conn.execute(f"SELECT 1 FROM {PENDING_TABLE} LIMIT 1")
+    if await cursor.fetchone() is None:
+        return 0, None
+    await conn.execute(f"DELETE FROM {PENDING_TABLE} WHERE verified_at < ?", (cutoff,))
+    await conn.commit()
+
+    live = await list_live_public_alert_guilds(
+        bot.db, bot, required_retailer="walmart"
+    )
+    live_ids = {
+        snowflake_text(guild.guild_id)
+        for guild in live.guilds
+        if snowflake_text(guild.guild_id) in opted_ids
+    }
+    if not live_ids:
+        return 0, live
+
+    posted = 0
+    remaining = MAX_REPLAY_PER_CYCLE
+    # Stay below SQLite variable limits and bound the total number of replays.
+    sorted_ids = sorted(live_ids)
+    for start in range(0, len(sorted_ids), 200):
+        if remaining <= 0:
+            break
+        part = sorted_ids[start : start + 200]
+        placeholders = ",".join("?" for _ in part)
+        cursor = await conn.execute(
+            f"SELECT guild_id, item_id, verified_at, snapshot_json FROM {PENDING_TABLE} "
+            f"WHERE verified_at >= ? AND guild_id IN ({placeholders}) "
+            "ORDER BY verified_at ASC, item_id ASC LIMIT ?",
+            (cutoff, *part, remaining),
+        )
+        for row in await cursor.fetchall():
+            guild_id = str(_row_get(row, "guild_id", 0))
+            item_id = str(_row_get(row, "item_id", 1))
+            verified_at = str(_row_get(row, "verified_at", 2))
+            snapshot = str(_row_get(row, "snapshot_json", 3))
+            cursor_now = await conn.execute(
+                f"SELECT verified_at, snapshot_json, status FROM {QUEUE_TABLE} "
+                "WHERE item_id = ?",
+                (item_id,),
+            )
+            current = await cursor_now.fetchone()
+            same_proof = (
+                current is not None
+                and str(_row_get(current, "verified_at", 0)) == verified_at
+                and str(_row_get(current, "snapshot_json", 1)) == snapshot
+                and str(_row_get(current, "status", 2)) in (
+                    "verified_no_reference", "verified_under_threshold",
+                    "verified_reference",
+                )
+            )
+            card = build_extreme_price_card(
+                _candidate_from_snapshot(snapshot)
+            ) if same_proof else None
+            if card is not None:
+                try:
+                    result = await maybe_post_public_deal_cards(
+                        bot=bot,
+                        guild_id=int(guild_id),
+                        cards=[card],
+                        source_label="walmart_extreme_exact_price",
+                        fallback_retailer="walmart",
+                        allow_verified_extreme=True,
+                    )
+                except Exception:
+                    log.exception(
+                        "Walmart extreme pending replay failed guild=%s item=%s",
+                        guild_id, item_id,
+                    )
+                    continue
+                posted += int(getattr(result, "posted", 0) or 0)
+                if delivery_requires_retry(result):
+                    log.warning(
+                        "Walmart extreme pending replay retained guild=%s item=%s",
+                        guild_id, item_id,
+                    )
+                    continue
+            # Item changed, expired, became ineligible, or delivery/duplicate
+            # handling completed: clear its replay record, never send stale proof.
+            await conn.execute(
+                f"DELETE FROM {PENDING_TABLE} WHERE guild_id = ? "
+                "AND item_id = ? AND verified_at = ?",
+                (guild_id, item_id, verified_at),
+            )
+            await conn.commit()
+            remaining -= 1
+    return posted, live
+
+
 async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
     """Post only opt-in, exact-verified, unusually cheap primary products.
 

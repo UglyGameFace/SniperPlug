@@ -504,6 +504,9 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
             raise RuntimeError("Walmart extreme-price cursor missing")
         previous = (str(_row_get(state, "last_verified_at", 0)), str(_row_get(state, "last_item_id", 1)))
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
+        replayed, replay_live = await _replay_missing_guild_deliveries(
+            bot, conn, opted_ids, cutoff,
+        )
         cursor = await conn.execute(
             f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
             "WHERE status IN ('verified_no_reference', 'verified_under_threshold', 'verified_reference') "
@@ -515,8 +518,16 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         )
         rows = await cursor.fetchall()
         next_cursor = previous
-        examined = eligible = posted = 0
-        enabled: list[int] | None = None
+        examined = eligible = 0
+        posted = replayed
+        enabled: list[int] | None = (
+            [
+                int(guild.guild_id)
+                for guild in replay_live.guilds
+                if snowflake_text(guild.guild_id) in opted_ids
+            ]
+            if replay_live is not None else None
+        )
         for row in rows:
             item_id, verified_at, snapshot = (
                 str(_row_get(row, "item_id", 0)),
@@ -549,6 +560,18 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                             item_id, len(opted_ids),
                         )
                         break
+                # Persist a bounded, expiring ticket for opted-in guilds that
+                # were absent from reconciliation before acknowledging the
+                # global cursor after any live destination receives this item.
+                missing = opted_ids - {snowflake_text(gid) for gid in enabled}
+                if missing:
+                    await _record_missing_guild_deliveries(
+                        conn,
+                        missing_guild_ids=missing,
+                        item_id=item_id,
+                        verified_at=verified_at,
+                        snapshot_json=snapshot,
+                    )
                 for guild_id in enabled:
                     result = await maybe_post_public_deal_cards(
                         bot=bot,

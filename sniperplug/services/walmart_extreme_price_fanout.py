@@ -75,6 +75,21 @@ _LOCK = asyncio.Lock()
 _READY_CONNECTIONS: dict[int, Any] = {}
 log = logging.getLogger("sniperplug.autoscan.extreme_price")
 
+def _row_get(row: Any, column: str, index: int) -> Any:
+    """Read both Turso mapping rows and SQLite positional/Row results."""
+    if row is None:
+        return None
+    try:
+        return row[column]
+    except (KeyError, IndexError, TypeError):
+        pass
+    try:
+        return row[index]
+    except (KeyError, IndexError, TypeError):
+        pass
+    return getattr(row, column, None)
+
+
 
 def build_extreme_price_card(candidate: Any) -> Any | None:
     if not eligible_exact_extreme_candidate(candidate):
@@ -169,14 +184,14 @@ async def extreme_alerts_enabled(db: Any, guild_id: int) -> bool:
         (snowflake_text(guild_id),),
     )
     row = await cursor.fetchone()
-    return bool(row and int(row[0]))
+    return bool(row and int(_row_get(row, "enabled", 0) or 0))
 
 
 async def set_extreme_alerts_enabled(db: Any, guild_id: int, enabled: bool) -> None:
     await ensure_extreme_tables(db)
     conn = db.require_conn()
-    existing_cursor = await conn.execute(f"SELECT COUNT(*) FROM {SETTINGS_TABLE} WHERE enabled = 1")
-    previously_enabled = int((await existing_cursor.fetchone())[0] or 0)
+    existing_cursor = await conn.execute(f"SELECT COUNT(*) AS enabled_count FROM {SETTINGS_TABLE} WHERE enabled = 1")
+    previously_enabled = int(_row_get(await existing_cursor.fetchone(), "enabled_count", 0) or 0)
     await conn.execute(
         f"INSERT INTO {SETTINGS_TABLE} (guild_id, enabled) VALUES (?, ?) "
         "ON CONFLICT(guild_id) DO UPDATE SET enabled = excluded.enabled",
@@ -235,7 +250,7 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         opted_cursor = await conn.execute(
             f"SELECT guild_id FROM {SETTINGS_TABLE} WHERE enabled = 1"
         )
-        opted_ids = {str(row[0]) for row in await opted_cursor.fetchall()}
+        opted_ids = {str(_row_get(row, "guild_id", 0)) for row in await opted_cursor.fetchall()}
         # Almost all servers keep this optional lane disabled. Never run the
         # full live-guild reconciliation on every 20-second worker cycle.
         if not opted_ids:
@@ -246,7 +261,7 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         state = await cursor.fetchone()
         if state is None:
             raise RuntimeError("Walmart extreme-price cursor missing")
-        previous = (str(state[0]), str(state[1]))
+        previous = (str(_row_get(state, "last_verified_at", 0)), str(_row_get(state, "last_item_id", 1)))
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
         cursor = await conn.execute(
             f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
@@ -262,7 +277,11 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         examined = eligible = posted = 0
         enabled: list[int] | None = None
         for row in rows:
-            item_id, verified_at, snapshot = str(row[0]), str(row[1]), str(row[2])
+            item_id, verified_at, snapshot = (
+                str(_row_get(row, "item_id", 0)),
+                str(_row_get(row, "verified_at", 1)),
+                str(_row_get(row, "snapshot_json", 2)),
+            )
             examined += 1
             candidate = _candidate_from_snapshot(snapshot)
             card = build_extreme_price_card(candidate)

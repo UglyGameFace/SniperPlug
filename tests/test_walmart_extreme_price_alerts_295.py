@@ -366,6 +366,14 @@ def test_extreme_rejection_reasons_match_sender_eligibility_without_softening() 
         (replace(base, can_add_to_cart=False), "not_cart_buyable"),
         (replace(base, stock_status="Out of stock"), "unavailable_stock"),
         (replace(base, selected_offer_id=None), "offer_or_seller_proof_missing"),
+        (
+            replace(base, variant_attributes={**base.variant_attributes, "exactDetailPriceProof": "no"}),
+            "exact_price_proof_missing",
+        ),
+        (
+            replace(base, direct_product_url="https://www.walmart.com/ip/999", product_url="https://www.walmart.com/ip/999"),
+            "item_url_mismatch",
+        ),
         (replace(base, api_current_price=99), "price_mismatch_or_over_limit"),
         (replace(base, current_price=2), "price_mismatch_or_over_limit"),
         (

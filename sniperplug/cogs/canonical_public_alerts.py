@@ -634,7 +634,7 @@ async def build_global_autoscan_health_embed(
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
     extreme_enabled = await extreme_alerts_enabled(db, guild_id)
-    extreme_summary = await extreme_price_health_summary(db)
+    extreme_summary = await extreme_price_health_summary(db, guild_id=guild_id)
     hp_health = await load_hp_watcher_health(db)
     target_health = await load_target_watcher_health(db)
     target_location = await get_guild_target_location(db, guild_id)

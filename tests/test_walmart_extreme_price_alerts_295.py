@@ -543,10 +543,10 @@ def test_missing_guild_never_receives_changed_exact_price_and_optout_clears_queu
             bot = SimpleNamespace(db=db)
             assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["posted"] == 1
             # Exact current price or offer changed after original verification.
-            new_phone = replace(phone, api_current_price=2, current_price=2)
+            new_phone = replace(phone, api_current_price=20, current_price=20)
             await conn.execute(
                 f"UPDATE {QUEUE_TABLE} SET verified_at = ?, snapshot_json = ?, "
-                "exact_current_cents = 200 WHERE item_id = ?",
+                "exact_current_cents = 2000 WHERE item_id = ?",
                 ((datetime.now(timezone.utc) + __import__("datetime").timedelta(seconds=1)).isoformat(),
                  _candidate_snapshot(new_phone), phone.product_id),
             )

@@ -235,6 +235,63 @@ def delivery_requires_retry(result: Any) -> bool:
     )
 
 
+async def extreme_price_health_summary(db: Any) -> str:
+    """Explain the last 15 minutes of exact-price candidates, without polling Walmart.
+
+    Bounded to a small sample from the same durable queue and statuses consumed
+    by the optional sender. This is an observation, not an availability claim,
+    delivery receipt, or a complete count of the retailer's catalog.
+    """
+    await ensure_extreme_tables(db)
+    conn = db.require_conn()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
+    cursor = await conn.execute(
+        f"SELECT last_verified_at, last_item_id FROM {STATE_TABLE} "
+        "WHERE state_key = 'walmart'"
+    )
+    state = await cursor.fetchone()
+    if state is None:
+        return "Extreme-price cursor is not initialized."
+    last_seen = (
+        str(_row_get(state, "last_verified_at", 0) or ""),
+        str(_row_get(state, "last_item_id", 1) or ""),
+    )
+    limit = 60
+    cursor = await conn.execute(
+        f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
+        "WHERE status IN ('verified_no_reference', 'verified_under_threshold', "
+        "'verified_reference') "
+        "AND exact_current_cents BETWEEN 1 AND ? "
+        "AND verified_at >= ? AND snapshot_json <> '' "
+        "ORDER BY verified_at DESC, item_id DESC LIMIT ?",
+        (MAX_PRICE_CENTS, cutoff, limit),
+    )
+    rows = await cursor.fetchall()
+    qualified = 0
+    unprocessed = 0
+    for row in rows:
+        item_id = str(_row_get(row, "item_id", 0) or "")
+        verified_at = str(_row_get(row, "verified_at", 1) or "")
+        raw = _row_get(row, "snapshot_json", 2)
+        try:
+            eligible = eligible_exact_extreme_candidate(_candidate_from_snapshot(raw))
+        except (TypeError, ValueError, KeyError, AttributeError):
+            eligible = False
+        if not eligible:
+            continue
+        qualified += 1
+        if (verified_at, item_id) > last_seen:
+            unprocessed += 1
+    capped = " (sample capped at 60)" if len(rows) >= limit else ""
+    return (
+        f"Last {FRESHNESS_MINUTES} min: **{len(rows)}** exact-verified queue "
+        f"rows at $10 or less{capped}; **{qualified}** match primary-product, "
+        f"seller, stock, offer and price checks; **{unprocessed}** are after "
+        "the delivery cursor. These are candidates, not confirmed Discord posts. "
+        "A zero here can mean no eligible API offers, not that the bot is offline."
+    )
+
+
 async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
     """Post only opt-in, exact-verified, unusually cheap primary products.
 

@@ -439,7 +439,12 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()
                     # Separate opt-in lead lane: existing verified markdown fanout is unchanged.
-                    await fanout_recent_extreme_walmart_prices(self.bot)
+                    try:
+                        await fanout_recent_extreme_walmart_prices(self.bot)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        legacy.log.exception("Optional extreme-price alert lane failed")
                     await self._run_walmart_post_fanout_maintenance()
                 except asyncio.CancelledError:
                     raise

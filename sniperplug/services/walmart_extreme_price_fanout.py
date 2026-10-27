@@ -53,10 +53,16 @@ def eligible_exact_extreme_candidate(candidate: Any) -> bool:
         return False
     if candidate.can_add_to_cart is not True:
         return False
+    # Walmart can expose online availability as bools or strings. The legacy
+    # provider's bool(value) can misread a nonempty "false" as True, so verify
+    # the source-level value before allowing an automatic extreme-price alert.
+    online = str(attrs.get("availableOnline") or "").strip().lower()
+    if online in {"no", "false", "0", "off"}:
+        return False
     if candidate.is_member_only or candidate.is_checkout_price:
         return False
-    stock = str(candidate.stock_status or "").lower()
-    if any(x in stock for x in ("sold out", "out of stock", "unavailable")):
+    stock = str(candidate.stock_status or "").strip().lower()
+    if any(x in stock for x in ("sold out", "out of stock", "out-of-stock", "unavailable", "not available", "not in stock")):
         return False
     title = " ".join(str(x or "") for x in (candidate.title, candidate.parent_title))
     return bool(PRIMARY_PRODUCT.search(title) and not ACCESSORY.search(title))

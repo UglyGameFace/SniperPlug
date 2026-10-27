@@ -2,19 +2,17 @@ from __future__ import annotations
 
 """Walmart extreme-price leads, kept separate from verified markdown alerts."""
 
-import re
-from typing import Any
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sniperplug.services.autoscan_live_guild_reconciliation import list_live_public_alert_guilds
 from sniperplug.services.discord_snowflake import snowflake_text
 from sniperplug.services.low_price_scout import ScoutLead, build_scout_card, score_candidate
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.walmart_exact_verification_queue import QUEUE_TABLE, _candidate_from_snapshot
-
-
 from sniperplug.services.public_deal_quality import walmart_item_id_from_url
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 
@@ -82,6 +80,13 @@ def build_extreme_price_card(candidate: Any) -> Any | None:
             score=70,
             reasons=("recognizable primary product", "official Walmart exact-item price"),
         )
+    # Raw reference context can be untrusted in this lane; it must not appear
+    # as a claimed original-price discount in an automatic lead.
+    lead = ScoutLead(
+        candidate=candidate,
+        score=lead.score,
+        reasons=tuple(reason for reason in lead.reasons if "price context" not in reason),
+    )
     card = build_scout_card(lead)
     card.url = candidate.direct_product_url or candidate.product_url
     card.embed.url = card.url
@@ -192,15 +197,15 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         return {"examined": 0, "eligible": 0, "posted": 0}
     async with _LOCK:
         await ensure_extreme_tables(db)
-        live = await list_live_public_alert_guilds(db, bot, required_retailer="walmart")
-        enabled = [
-            int(guild.guild_id)
-            for guild in live.guilds
-            if await extreme_alerts_enabled(db, int(guild.guild_id))
-        ]
-        if not enabled:
-            return {"examined": 0, "eligible": 0, "posted": 0}
         conn = db.require_conn()
+        opted_cursor = await conn.execute(
+            f"SELECT guild_id FROM {SETTINGS_TABLE} WHERE enabled = 1"
+        )
+        opted_ids = {str(row[0]) for row in await opted_cursor.fetchall()}
+        # Almost all servers keep this optional lane disabled. Never run the
+        # full live-guild reconciliation on every 20-second worker cycle.
+        if not opted_ids:
+            return {"examined": 0, "eligible": 0, "posted": 0}
         cursor = await conn.execute(
             f"SELECT last_verified_at, last_item_id FROM {STATE_TABLE} WHERE state_key = 'walmart'"
         )
@@ -221,6 +226,7 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         rows = await cursor.fetchall()
         next_cursor = previous
         examined = eligible = posted = 0
+        enabled: list[int] | None = None
         for row in rows:
             item_id, verified_at, snapshot = str(row[0]), str(row[1]), str(row[2])
             examined += 1
@@ -228,6 +234,15 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
             card = build_extreme_price_card(candidate)
             if card is not None:
                 eligible += 1
+                if enabled is None:
+                    live = await list_live_public_alert_guilds(
+                        db, bot, required_retailer="walmart"
+                    )
+                    enabled = [
+                        int(guild.guild_id)
+                        for guild in live.guilds
+                        if snowflake_text(guild.guild_id) in opted_ids
+                    ]
                 for guild_id in enabled:
                     result = await maybe_post_public_deal_cards(
                         bot=bot,
@@ -261,6 +276,6 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         if examined:
             log.info(
                 "Walmart extreme exact-price examined=%s eligible=%s posted=%s destinations=%s",
-                examined, eligible, posted, len(enabled),
+                examined, eligible, posted, len(enabled or ()),
             )
         return {"examined": examined, "eligible": eligible, "posted": posted}

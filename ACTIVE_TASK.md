@@ -18,7 +18,33 @@ Base main: `b5fd137a945de415c5474a65f95c812432670599`; branch `fix/walmart-extre
 - HP/Target, broad refactors, and source-specific localized Walmart offer fetching are out of scope. Honest limitation: nationally queried Affiliate prices do not prove store-local $1 deals.
 
 ## Status
-Implementation in progress. No production claim before full validation, runtime approval, and observed delivery.
+Implementation and hosted regression validation complete for the new guarded opt-in alert code.
+Draft PR #296 is open; no code has been merged/deployed to Discloud.
+Production acceptance remains blocked by lack of live Discloud control-plane access and absence of the original $1 offer's exact Walmart item/offer ID.
+
+## Implemented changes
+- New `sniperplug/services/walmart_extreme_price_fanout.py`: separate 15-minute freshness window, bounded 40-row cursor, selected exact statuses that lack a trusted markdown above normal thresholds, sub-$10 current API price, verified seller/offer/item identity, buyable status, recognizable primary product, accessory exclusions and honest no-reference labeling.
+- Per-guild explicit opt-in stored by exact-text Discord guild ID, default OFF; `/walmart_extreme_alerts enabled:true`; health dashboard shows opt-in status.
+- `sniperplug/cogs/global_auto_scan_runner.py`: fanout after normal verified markdown/DM fanout but before queue maintenance. Guild-wide live reconciliation is avoided entirely when the optional setting is empty, and otherwise deferred until an eligible lead appears.
+- `sniperplug/services/public_deal_posts.py`: one opt-in exact-price sender guard; original verified-markdown, manual scout, and DM behavior preserve defaults. Uses existing channels, feedback, durable reservation, duplicate receipt and short scout-style dedupe; no secondary Discord publisher.
+- `tests/test_walmart_extreme_price_alerts_295.py`: $1 S24 FE no-reference eligibility, accessory/mismatch/unavailable rejects, on/off, durable cursor retry, actual shared sender and forged proof rejection.
+
+## Validation / results
+- Base `main`: b5fd137a945de415c5474a65f95c812432670599.
+- Exact implementation head before this task-record-only update: `40efa21572a49955d44cfff06f5531d8e477abd8`.
+- GitHub Python tests on Python 3.11: **1502 passed, 1 warning**.
+- GitHub Python Check on Python 3.12: **1502 passed, 1 warning**; 37-module / 22-symbol import smoke passed.
+- Separate import smoke passed; `pip check` and `compileall` passed on both CI jobs.
+- Existing generic scout-block and verified-markdown gates still pass their regressions; the opt-in true sender path has a direct integration regression with synthetic $1 offer and tests the forged-card fail-closed path.
+- Reviewed draft PR diff for file scope and safety. No shared code was deleted. Existing code paths stay on their old defaults.
+- **Exact-head PR checks must be reverified once this record update commits.** Only the task record changes in that final commit.
+
+## Unvalidated / blockers / risks
+- The original reported $1 Galaxy S24 FE offer's true item ID, exact seller variant, regional checkout, and appearance in the Walmart Affiliate API are unproven. API search has no store ZIP context, so store-only deals cannot be promised.
+- No live Discloud/Discord end-to-end alert has yet been observed; do not call the fix deployed or production accepted. Keep PR draft until operational acceptance or verified readiness to merge.
+- The large existing delayed retry population remains a source/API evidence limitation, not bypassed. This task preserves the current exact verification conditions; it does not claim to solve all missed Walmart listings.
+- Expected operator acceptance: preserve current DB snapshot/backend; merge and deploy verified code safely; run `/walmart_extreme_alerts enabled:true` once in the chosen server; check `/autoscan_health` and the exact-price log/durable receipt using a genuine current Walmart API offer. Do not infer a verified percent markdown from the new lead.
+
 
 ## Planned execution path
 Walmart API catalog -> existing global exact queue -> official exact verified candidate + durable queue state -> dedicated bounded extreme-price candidate lane (no trusted reference needed) -> per-guild explicit opt-in -> existing public-post channel, receipt/dedupe and failure handling; verified markdown and DM fanout unchanged.

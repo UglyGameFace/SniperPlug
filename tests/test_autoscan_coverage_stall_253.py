@@ -257,17 +257,23 @@ def test_incomplete_catalog_hint_cannot_escape_terminal_identity_quarantine() ->
     asyncio.run(run())
 
 
-def test_catalog_page_window_advances_across_full_passes_and_wraps() -> None:
+def test_catalog_page_window_keeps_fresh_page_while_rotating_depth() -> None:
     assert CATALOG_MAX_PAGE == 40
     assert catalog_pages_for_completed_passes(0) == (1, 2)
-    assert catalog_pages_for_completed_passes(1) == (3, 4)
-    assert catalog_pages_for_completed_passes(18) == (37, 38)
-    assert catalog_pages_for_completed_passes(19) == (39, 40)
-    assert catalog_pages_for_completed_passes(20) == (1, 2)
-    # Production screenshot was around 98 completed passes: it should no longer
-    # return to page 1 merely because the route cursor wrapped many times.
-    assert catalog_pages_for_completed_passes(98) == (37, 38)
+    assert catalog_pages_for_completed_passes(1) == (1, 3)
+    assert catalog_pages_for_completed_passes(18) == (1, 20)
+    assert catalog_pages_for_completed_passes(37) == (1, 39)
+    assert catalog_pages_for_completed_passes(38) == (1, 40)
+    assert catalog_pages_for_completed_passes(39) == (1, 2)
+    assert catalog_pages_for_completed_passes(98) == (1, 22)
 
+    # All existing search depth remains reachable in a complete cycle, but
+    # every route pass also sees the newest listings (without extra requests).
+    windows = [catalog_pages_for_completed_passes(i) for i in range(39)]
+    assert {page for pair in windows for page in pair} == set(range(1, 41))
+    assert all(len(pair) == 2 and pair[0] == 1 for pair in windows)
+    assert all(pair[0] != pair[1] for pair in windows)
+    assert catalog_pages_for_completed_passes(-20) == (1, 2)
 
 def test_queue_health_explains_large_page_backlog_vs_per_batch_capacity() -> None:
     health = WalmartExactQueueHealth(

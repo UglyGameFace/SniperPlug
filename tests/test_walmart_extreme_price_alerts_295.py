@@ -621,3 +621,90 @@ def test_extreme_optout_waits_for_inflight_verified_delivery(monkeypatch) -> Non
             await conn.close()
 
     asyncio.run(scenario())
+
+
+def test_pending_replay_with_no_live_guild_does_not_skip_new_verified_offer(monkeypatch) -> None:
+    """Regression: replay_live=empty must not bypass the #301 cursor guard."""
+    from dataclasses import replace
+    from datetime import timedelta
+
+    async def scenario():
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = lambda cur, vals: {
+            col[0]: value for col, value in zip(cur.description, vals)
+        }
+        db = SimpleNamespace(require_conn=lambda: conn)
+        try:
+            await ensure_walmart_exact_verification_queue(db)
+            await extreme.set_extreme_alerts_enabled(db, 295, True)
+            old_time = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+            new_time = datetime.now(timezone.utc).isoformat()
+            first = candidate()
+            second = replace(
+                first,
+                product_id="29500012",
+                sku="29500012",
+                product_url="https://www.walmart.com/ip/29500012",
+                direct_product_url="https://www.walmart.com/ip/29500012",
+                variant_attributes={
+                    **first.variant_attributes,
+                    "exactDetailItemId": "29500012",
+                },
+            )
+            for item, stamp in ((first, old_time), (second, new_time)):
+                await conn.execute(
+                    f"INSERT INTO {QUEUE_TABLE} "
+                    "(item_id, first_seen_at, last_seen_at, next_attempt_at, "
+                    "status, verified_at, exact_current_cents, snapshot_json) "
+                    "VALUES (?, ?, ?, ?, 'verified_no_reference', ?, 100, ?)",
+                    (item.product_id, stamp, stamp, stamp, stamp, _candidate_snapshot(item)),
+                )
+            # Simulate a previously delivered item with a pending recovery ticket,
+            # followed by a newly verified offer not yet visited by the cursor.
+            await conn.execute(
+                f"UPDATE {extreme.STATE_TABLE} SET last_verified_at = ?, last_item_id = ? "
+                "WHERE state_key = 'walmart'",
+                (old_time, first.product_id),
+            )
+            await conn.execute(
+                f"INSERT INTO {extreme.PENDING_TABLE} "
+                "(guild_id, item_id, verified_at, snapshot_json) VALUES (?, ?, ?, ?)",
+                ("295", first.product_id, old_time, _candidate_snapshot(first)),
+            )
+            await conn.commit()
+
+            accessible = False
+            posted_ids = []
+
+            async def fake_live(*_args, **_kwargs):
+                guilds = (LiveAutoScanGuild(295, 123),) if accessible else ()
+                return LiveGuildLoadResult(guilds=guilds)
+
+            async def fake_post(**kwargs):
+                posted_ids.append(kwargs["cards"][0].extreme_exact_candidate.product_id)
+                return SimpleNamespace(attempted=1, posted=1, errors=())
+
+            monkeypatch.setattr(extreme, "list_live_public_alert_guilds", fake_live)
+            monkeypatch.setattr(extreme, "maybe_post_public_deal_cards", fake_post)
+            bot = SimpleNamespace(db=db)
+            stalled = await extreme.fanout_recent_extreme_walmart_prices(bot)
+            assert stalled == {"examined": 1, "eligible": 1, "posted": 0}
+            cursor = await conn.execute(
+                f"SELECT last_verified_at, last_item_id FROM {extreme.STATE_TABLE} "
+                "WHERE state_key='walmart'"
+            )
+            row = await cursor.fetchone()
+            assert (row["last_verified_at"], row["last_item_id"]) == (
+                old_time, first.product_id
+            )
+            assert posted_ids == []
+
+            accessible = True
+            resumed = await extreme.fanout_recent_extreme_walmart_prices(bot)
+            assert resumed == {"examined": 1, "eligible": 1, "posted": 2}
+            assert posted_ids == [first.product_id, second.product_id]
+            assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["posted"] == 0
+        finally:
+            await conn.close()
+
+    asyncio.run(scenario())

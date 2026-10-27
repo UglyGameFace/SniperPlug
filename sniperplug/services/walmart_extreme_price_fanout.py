@@ -280,7 +280,7 @@ def delivery_requires_retry(result: Any) -> bool:
     )
 
 
-async def extreme_price_health_summary(db: Any) -> str:
+async def extreme_price_health_summary(db: Any, guild_id: int | None = None) -> str:
     """Explain the last 15 minutes of exact-price candidates, without polling Walmart.
 
     Bounded to a small sample from the same durable queue and statuses consumed
@@ -329,6 +329,18 @@ async def extreme_price_health_summary(db: Any) -> str:
         qualified += 1
         if (verified_at, item_id) > last_seen:
             unprocessed += 1
+    pending_detail = ""
+    if guild_id is not None:
+        cursor = await conn.execute(
+            f"SELECT COUNT(*) AS n FROM {PENDING_TABLE} "
+            "WHERE guild_id = ? AND verified_at >= ?",
+            (snowflake_text(guild_id), cutoff),
+        )
+        pending = int(_row_get(await cursor.fetchone(), "n", 0) or 0)
+        pending_detail = (
+            f" Pending recovery for this server: **{pending}**"
+            " (previously missed due to temporary live-route absence)."
+        )
     capped = " (sample capped at 60)" if len(rows) >= limit else ""
     rejection_line = "; ".join(
         f"{count} {reason.replace('_', ' ')}"
@@ -341,6 +353,7 @@ async def extreme_price_health_summary(db: Any) -> str:
         "the delivery cursor. These are candidates, not confirmed Discord posts. "
         f"Not eligible: {rejection_line}. "
         "This is a bounded sample, not proof of the entire live Walmart catalog."
+        f"{pending_detail}"
     )
 
 
@@ -419,6 +432,7 @@ async def _replay_missing_guild_deliveries(
             (cutoff, *part, remaining),
         )
         for row in await cursor.fetchall():
+            remaining -= 1
             guild_id = str(_row_get(row, "guild_id", 0))
             item_id = str(_row_get(row, "item_id", 1))
             verified_at = str(_row_get(row, "verified_at", 2))
@@ -472,7 +486,6 @@ async def _replay_missing_guild_deliveries(
                 (guild_id, item_id, verified_at),
             )
             await conn.commit()
-            remaining -= 1
     return posted, live
 
 

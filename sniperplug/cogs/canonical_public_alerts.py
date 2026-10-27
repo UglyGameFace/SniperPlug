@@ -33,6 +33,10 @@ from sniperplug.services.walmart_delivery_recovery import (
     share_walmart_manual_lead,
 )
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
+from sniperplug.services.walmart_extreme_price_fanout import (
+    extreme_alerts_enabled,
+    set_extreme_alerts_enabled,
+)
 from sniperplug.services.walmart_global_catalog_autoscan import load_global_catalog_state
 
 
@@ -142,6 +146,7 @@ class CanonicalPublicAlertsCog(commands.Cog):
     @deal_categories.error
     @autoscan_health.error
     @walmart_recovery.error
+    @walmart_extreme_alerts.error
     async def canonical_public_alert_error(
         self,
         interaction: discord.Interaction,
@@ -589,6 +594,7 @@ async def build_global_autoscan_health_embed(
     )
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
+    extreme_enabled = await extreme_alerts_enabled(db, guild_id)
     hp_health = await load_hp_watcher_health(db)
     target_health = await load_target_watcher_health(db)
     target_location = await get_guild_target_location(db, guild_id)
@@ -718,6 +724,17 @@ async def build_global_autoscan_health_embed(
             f"{global_state.summary_line(total_routes=len(routes))}\n"
             "Target keeps one global TCIN catalog and advances bounded per-location "
             "cursors instead of copying the catalog for every server."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Walmart extreme exact-price leads",
+        value=(
+            f"**{'enabled' if extreme_enabled else 'disabled'}** for this server. "
+            "Optional, separate alerts for exact API offers at $10 or less on recognizable "
+            "primary products, even without a verified original price. "
+            "Not a claimed 40% markdown; check local checkout. "
+            "Use /walmart_extreme_alerts to change this setting."
         ),
         inline=False,
     )

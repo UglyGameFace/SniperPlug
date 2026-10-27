@@ -384,6 +384,18 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                         for guild in live.guilds
                         if snowflake_text(guild.guild_id) in opted_ids
                     ]
+                    if not enabled:
+                        # A temporary live-guild reconciliation outage must
+                        # not acknowledge a qualified offer that no server saw.
+                        # Leave this item at the cursor for a future retry;
+                        # the 15-minute price-freshness limit still applies.
+                        log.warning(
+                            "Walmart extreme-price eligible item has no currently "
+                            "live opted-in destination; cursor retained item=%s "
+                            "opted_in_count=%s",
+                            item_id, len(opted_ids),
+                        )
+                        break
                 for guild_id in enabled:
                     result = await maybe_post_public_deal_cards(
                         bot=bot,

@@ -95,6 +95,9 @@ BATCH_LIMIT = 40
 FRESHNESS_MINUTES = 15
 SETTINGS_TABLE = "walmart_extreme_price_alert_settings"
 STATE_TABLE = "walmart_extreme_price_fanout_state"
+PENDING_TABLE = "walmart_extreme_price_guild_pending"
+MAX_PENDING_GUILDS_PER_OFFER = 128
+MAX_REPLAY_PER_CYCLE = 32
 _LOCK = asyncio.Lock()
 _READY_CONNECTIONS: dict[int, Any] = {}
 log = logging.getLogger("sniperplug.autoscan.extreme_price")
@@ -191,6 +194,18 @@ async def ensure_extreme_tables(db: Any) -> None:
         f"CREATE TABLE IF NOT EXISTS {STATE_TABLE} "
         "(state_key TEXT PRIMARY KEY, last_verified_at TEXT NOT NULL, last_item_id TEXT NOT NULL)"
     )
+    # Outbox is used only for a qualified offer with a temporarily absent
+    # opted-in destination. Existing sender receipts remain authoritative.
+    await conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {PENDING_TABLE} "
+        "(guild_id TEXT NOT NULL, item_id TEXT NOT NULL, verified_at TEXT NOT NULL, "
+        "snapshot_json TEXT NOT NULL, "
+        "PRIMARY KEY (guild_id, item_id, verified_at))"
+    )
+    await conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{PENDING_TABLE}_time "
+        f"ON {PENDING_TABLE} (verified_at)"
+    )
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
     await conn.execute(
         f"INSERT INTO {STATE_TABLE} (state_key, last_verified_at, last_item_id) "
@@ -221,6 +236,12 @@ async def set_extreme_alerts_enabled(db: Any, guild_id: int, enabled: bool) -> N
         "ON CONFLICT(guild_id) DO UPDATE SET enabled = excluded.enabled",
         (snowflake_text(guild_id), int(bool(enabled))),
     )
+    if not enabled:
+        # Explicit opt-out cancels undelivered leads; never replay after opt-out.
+        await conn.execute(
+            f"DELETE FROM {PENDING_TABLE} WHERE guild_id = ?",
+            (snowflake_text(guild_id),),
+        )
     # Enabling the first server must not replay an old queue backlog.
     if enabled and not previously_enabled:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()

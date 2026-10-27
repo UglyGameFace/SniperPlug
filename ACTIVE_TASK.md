@@ -18,9 +18,9 @@ Base main: `b5fd137a945de415c5474a65f95c812432670599`; branch `fix/walmart-extre
 - HP/Target, broad refactors, and source-specific localized Walmart offer fetching are out of scope. Honest limitation: nationally queried Affiliate prices do not prove store-local $1 deals.
 
 ## Status
-Implementation and hosted regression validation complete for the new guarded opt-in alert code.
-Draft PR #296 is open; no code has been merged/deployed to Discloud.
-Production acceptance remains blocked by lack of live Discloud control-plane access and absence of the original $1 offer's exact Walmart item/offer ID.
+**PR #296 merged to main** on October 27, 2026 at commit `78e5fcffb457ce7dc0fc1cbc764263e44c8f7068`.
+The guarded opt-in Walmart implementation is integrated in GitHub, not yet verified as deployed to the live Discloud instance. No live Discord posting or actual $1 Samsung offer proof has been observed.
+The active task stays open for safe deployment, explicit server opt-in, live alert validation, and final acceptance. The Discloud/Turso cutover remains suspended as preserved below.
 
 ## Implemented changes
 - New `sniperplug/services/walmart_extreme_price_fanout.py`: separate 15-minute freshness window, bounded 40-row cursor, selected exact statuses that lack a trusted markdown above normal thresholds, sub-$10 current API price, verified seller/offer/item identity, buyable status, recognizable primary product, accessory exclusions and honest no-reference labeling.
@@ -31,15 +31,16 @@ Production acceptance remains blocked by lack of live Discloud control-plane acc
 
 ## Validation / results
 - Base `main`: b5fd137a945de415c5474a65f95c812432670599.
-- Exact implementation head before this task-record-only update: `fba761881a18c57a0db4f03f941217989366c27c`.
+- Final validated PR implementation head: `314767247e0000ffbb90744fa5433bde23f2e6bc`.
 - GitHub Python tests on Python 3.11: **1503 passed, 1 warning**.
 - GitHub Python Check on Python 3.12: **1503 passed, 1 warning**; 37-module / 22-symbol import smoke passed.
 - Separate import smoke passed; `pip check` and `compileall` passed on both CI jobs.
 - Existing generic scout-block and verified-markdown gates still pass their regressions; the opt-in true sender path has a direct integration regression with synthetic $1 offer and tests the forged-card fail-closed path.
-- Reviewed draft PR diff for file scope and safety. No shared code was deleted. Existing code paths stay on their old defaults.
-- **Exact-head PR checks must be reverified once this record update commits.** Only the task record changes in that final commit.
+- Reviewed merged PR diff for file scope and safety. No shared code was deleted. Existing code paths stay on their old defaults.
+- All three PR checks passed on exact final PR head; subsequent main push checks must be verified separately. The only post-merge change here is task-record documentation.
 
 ## Unvalidated / blockers / risks
+- Walmart raw `availableOnline` text can be misread by the existing provider using `bool(value)`; the new extreme-price lane explicitly rejects negative source flags and not-available stock. This narrowly guarded known source issue without changing other provider semantics.
 - The original reported $1 Galaxy S24 FE offer's true item ID, exact seller variant, regional checkout, and appearance in the Walmart Affiliate API are unproven. API search has no store ZIP context, so store-only deals cannot be promised.
 - No live Discloud/Discord end-to-end alert has yet been observed; do not call the fix deployed or production accepted. Keep PR draft until operational acceptance or verified readiness to merge.
 - The large existing delayed retry population remains a source/API evidence limitation, not bypassed. This task preserves the current exact verification conditions; it does not claim to solve all missed Walmart listings.

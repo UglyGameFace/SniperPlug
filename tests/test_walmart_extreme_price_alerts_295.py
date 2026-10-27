@@ -347,7 +347,34 @@ def test_health_summary_explains_qualified_vs_filtered_candidates_on_turso_rows(
             assert "**1** match primary-product" in summary
             assert "**1** are after the delivery cursor" in summary
             assert "not confirmed Discord posts" in summary
+            assert "Not eligible: 1 accessory or parts" in summary
         finally:
             await conn.close()
 
     asyncio.run(scenario())
+
+
+
+def test_extreme_rejection_reasons_match_sender_eligibility_without_softening() -> None:
+    from dataclasses import replace
+
+    base = candidate()
+    cases = (
+        (base, None),
+        (replace(base, title="Samsung Galaxy S24 FE Case"), "accessory_or_parts"),
+        (replace(base, title="Crest 3D White toothpaste"), "not_recognized_primary_product"),
+        (replace(base, can_add_to_cart=False), "not_cart_buyable"),
+        (replace(base, stock_status="Out of stock"), "unavailable_stock"),
+        (replace(base, selected_offer_id=None), "offer_or_seller_proof_missing"),
+        (replace(base, api_current_price=99), "price_mismatch_or_over_limit"),
+        (replace(base, current_price=2), "price_mismatch_or_over_limit"),
+        (
+            replace(base, variant_attributes={**base.variant_attributes, "availableOnline": "false"}),
+            "unavailable_online",
+        ),
+    )
+    for original, expected in cases:
+        reason = extreme.extreme_rejection_reason(original)
+        assert reason == expected
+        assert extreme.eligible_exact_extreme_candidate(original) is (reason is None)
+    assert extreme.extreme_rejection_reason(None) == "missing_snapshot"

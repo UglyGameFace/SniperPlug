@@ -104,7 +104,7 @@ def build_extreme_price_card(candidate: Any) -> Any | None:
             card.embed.set_field_at(
                 index,
                 name="Walmart exact API price",
-                value=f"Exact offer price: **${float(candidate.api_current_price):.2f}**. No verified reference price or discount.",
+                value=f"Exact offer price: **${float(candidate.api_current_price):.2f}**. No comparison price or discount percentage is claimed.",
                 inline=False,
             )
             break

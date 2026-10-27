@@ -33,6 +33,10 @@ from sniperplug.services.walmart_delivery_recovery import (
     share_walmart_manual_lead,
 )
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
+from sniperplug.services.walmart_extreme_price_fanout import (
+    extreme_alerts_enabled,
+    set_extreme_alerts_enabled,
+)
 from sniperplug.services.walmart_global_catalog_autoscan import load_global_catalog_state
 
 
@@ -139,9 +143,48 @@ class CanonicalPublicAlertsCog(commands.Cog):
         )
         view.message = message
 
+    @app_commands.command(
+        name="walmart_extreme_alerts",
+        description="Opt into exact-price Walmart finds with no verified original price.",
+    )
+    @app_commands.describe(enabled="Receive separately labeled extreme exact-price leads")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def walmart_extreme_alerts(
+        self,
+        interaction: discord.Interaction,
+        enabled: bool,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is None:
+            await interaction.followup.send(
+                "Use this in the server whose Walmart alerts you manage.",
+                ephemeral=True,
+            )
+            return
+        guild_id = int(interaction.guild_id)
+        await set_extreme_alerts_enabled(self.bot.db, guild_id, enabled)
+        config = await get_public_alert_config(self.bot.db, guild_id)
+        route_ready = bool(config.get("enabled") and config.get("channel_id") and
+                           "walmart" in set(config.get("retailers") or ()))
+        message = (
+            "Extreme exact-price Walmart leads are now **ON** for this server. "
+            "This is separate from verified markdowns, which retain the saved percent threshold. "
+            "Only eligible, confirmed exact-item prices up to $10 on primary products are considered. "
+            "No reference-price discount is claimed."
+            if enabled else
+            "Extreme exact-price Walmart leads are now **OFF**. Verified Walmart markdowns are unchanged."
+        )
+        if enabled and not route_ready:
+            message += (
+                "\nYour Walmart public alert channel is not fully configured yet. "
+                "Run /setup_sniperplug_here in the destination channel."
+            )
+        await interaction.followup.send(message, ephemeral=True)
+
     @deal_categories.error
     @autoscan_health.error
     @walmart_recovery.error
+    @walmart_extreme_alerts.error
     async def canonical_public_alert_error(
         self,
         interaction: discord.Interaction,
@@ -589,6 +632,7 @@ async def build_global_autoscan_health_embed(
     )
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
+    extreme_enabled = await extreme_alerts_enabled(db, guild_id)
     hp_health = await load_hp_watcher_health(db)
     target_health = await load_target_watcher_health(db)
     target_location = await get_guild_target_location(db, guild_id)
@@ -718,6 +762,17 @@ async def build_global_autoscan_health_embed(
             f"{global_state.summary_line(total_routes=len(routes))}\n"
             "Target keeps one global TCIN catalog and advances bounded per-location "
             "cursors instead of copying the catalog for every server."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Walmart extreme exact-price leads",
+        value=(
+            f"**{'enabled' if extreme_enabled else 'disabled'}** for this server. "
+            "Optional, separate alerts for exact API offers at $10 or less on recognizable "
+            "primary products, even without a verified original price. "
+            "Not a claimed 40% markdown; check local checkout. "
+            "Use /walmart_extreme_alerts to change this setting."
         ),
         inline=False,
     )

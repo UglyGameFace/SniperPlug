@@ -1,6 +1,67 @@
 # Active Task
 
 ## Active task / outcome
+**SP-WALMART-EXTREME-PRICE-295: restore detection and opt-in delivery for extreme exact-price Walmart leads without relabeling them as verified markdowns.**
+
+User explicitly authorized a task switch on 2026-10-27:
+`FORCE SWITCH: Fix Walmart missed-deal alerts in SniperPlug`
+`Reason: Prioritize verified extreme-price discovery and delivery without weakening genuine discount verification.`
+
+Base main: `b5fd137a945de415c5474a65f95c812432670599`; branch `fix/walmart-extreme-price-alerts-295`; issue #295.
+
+## Scope / findings
+- Walmart global discovery covers 265 keyword routes at two routes per minute with bounded/paged search; no ZIP/store context in Affiliate search. An outside screenshot of a $1 Samsung Galaxy S24 FE open-box demo is not proof that the API returned a matching item/offer or a buyable $1 price.
+- Exact verification queue distinguishes official current price and item/offer/seller identity from a trusted reference price. Only `verified_markdown` enters global public fanout. Exact low-price items missing an API reference can remain `verified_no_reference` even when seller, offer, and current price were verified.
+- Existing `low_price_scout` supports review-only leads; existing public scout/markdown quality boundaries must remain intact. Existing durable public post receipts and duplicate control must be reused; no parallel uncontrolled sender.
+- Public health inspects at most 80 recent events; 71 were below 40% and nine quality-rejected. The 36,819 delayed retries need separate troubleshooting, but no proof these alone caused the exact missed phone.
+- Existing static tests deliberately forbid generic auto-posted scout leads. New extreme-price mode must have explicit guarded eligibility, separate configuration, honest labeling, and regression coverage rather than weakening those safeguards.
+- HP/Target, broad refactors, and source-specific localized Walmart offer fetching are out of scope. Honest limitation: nationally queried Affiliate prices do not prove store-local $1 deals.
+
+## Status
+Implementation and hosted regression validation complete for the new guarded opt-in alert code.
+Draft PR #296 is open; no code has been merged/deployed to Discloud.
+Production acceptance remains blocked by lack of live Discloud control-plane access and absence of the original $1 offer's exact Walmart item/offer ID.
+
+## Implemented changes
+- New `sniperplug/services/walmart_extreme_price_fanout.py`: separate 15-minute freshness window, bounded 40-row cursor, selected exact statuses that lack a trusted markdown above normal thresholds, sub-$10 current API price, verified seller/offer/item identity, buyable status, recognizable primary product, accessory exclusions and honest no-reference labeling.
+- Per-guild explicit opt-in stored by exact-text Discord guild ID, default OFF; `/walmart_extreme_alerts enabled:true`; health dashboard shows opt-in status.
+- `sniperplug/cogs/global_auto_scan_runner.py`: fanout after normal verified markdown/DM fanout but before queue maintenance. Guild-wide live reconciliation is avoided entirely when the optional setting is empty, and otherwise deferred until an eligible lead appears.
+- `sniperplug/services/public_deal_posts.py`: one opt-in exact-price sender guard; original verified-markdown, manual scout, and DM behavior preserve defaults. Uses existing channels, feedback, durable reservation, duplicate receipt and short scout-style dedupe; no secondary Discord publisher.
+- `tests/test_walmart_extreme_price_alerts_295.py`: $1 S24 FE no-reference eligibility, accessory/mismatch/unavailable rejects, on/off, durable cursor retry, actual shared sender and forged proof rejection.
+
+## Validation / results
+- Base `main`: b5fd137a945de415c5474a65f95c812432670599.
+- Exact implementation head before this task-record-only update: `fba761881a18c57a0db4f03f941217989366c27c`.
+- GitHub Python tests on Python 3.11: **1503 passed, 1 warning**.
+- GitHub Python Check on Python 3.12: **1503 passed, 1 warning**; 37-module / 22-symbol import smoke passed.
+- Separate import smoke passed; `pip check` and `compileall` passed on both CI jobs.
+- Existing generic scout-block and verified-markdown gates still pass their regressions; the opt-in true sender path has a direct integration regression with synthetic $1 offer and tests the forged-card fail-closed path.
+- Reviewed draft PR diff for file scope and safety. No shared code was deleted. Existing code paths stay on their old defaults.
+- **Exact-head PR checks must be reverified once this record update commits.** Only the task record changes in that final commit.
+
+## Unvalidated / blockers / risks
+- The original reported $1 Galaxy S24 FE offer's true item ID, exact seller variant, regional checkout, and appearance in the Walmart Affiliate API are unproven. API search has no store ZIP context, so store-only deals cannot be promised.
+- No live Discloud/Discord end-to-end alert has yet been observed; do not call the fix deployed or production accepted. Keep PR draft until operational acceptance or verified readiness to merge.
+- The large existing delayed retry population remains a source/API evidence limitation, not bypassed. This task preserves the current exact verification conditions; it does not claim to solve all missed Walmart listings.
+- Expected operator acceptance: preserve current DB snapshot/backend; merge and deploy verified code safely; run `/walmart_extreme_alerts enabled:true` once in the chosen server; check `/autoscan_health` and the exact-price log/durable receipt using a genuine current Walmart API offer. Do not infer a verified percent markdown from the new lead.
+
+
+## Planned execution path
+Walmart API catalog -> existing global exact queue -> official exact verified candidate + durable queue state -> dedicated bounded extreme-price candidate lane (no trusted reference needed) -> per-guild explicit opt-in -> existing public-post channel, receipt/dedupe and failure handling; verified markdown and DM fanout unchanged.
+
+## Definition of done
+- Verify source evidence and avoid false proof/percentage claims; be explicit about price, condition, buyer availability.
+- Opt-in, precondition gating, bounded cursor, dedupe, no double-post, proper failure treatment and diagnostic visibility.
+- Targeted and relevant tests, Python 3.11/3.12 CI, import/compile, code/secret/conflict/diff scan, and deployment acceptance when possible.
+- Review obsolete/conflicting code in affected area, preserve other user work. Record blockers and remaining validation truthfully.
+
+## Suspended work: SP-LOCAL-SQLITE-DISCLOUD
+The prior record, findings, code changes, CI evidence, branch/PR status, blockers, runbook, and next step are reproduced verbatim below to resume without lost context. **Do not execute this migration while #295 is active.**
+
+---
+# Active Task
+
+## Active task / outcome
 **SP-LOCAL-SQLITE-DISCLOUD — move canonical production storage from Turso to local Discloud SQLite.**
 
 Outcome: use the existing local SQLite backend inside the canonical SniperPlug Discloud Diamond app, eliminate Turso row-read/write quota dependency, and keep HP/Target capable of sharing the same authoritative data by running them as supervised tasks inside the canonical app instead of separate Discloud applications.

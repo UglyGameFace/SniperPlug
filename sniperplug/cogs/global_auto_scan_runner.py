@@ -44,6 +44,7 @@ from sniperplug.services.walmart_exact_queue_pressure import (
 from sniperplug.services.walmart_exact_queue_bulk_runtime import (
     process_actionable_walmart_exact_queue_batch,
 )
+from sniperplug.services.walmart_extreme_price_fanout import fanout_recent_extreme_walmart_prices
 from sniperplug.services.walmart_request_coordinator import (
     walmart_request_coordinator,
 )
@@ -437,6 +438,13 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     ):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()
+                    # Separate opt-in lead lane: existing verified markdown fanout is unchanged.
+                    try:
+                        await fanout_recent_extreme_walmart_prices(self.bot)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        legacy.log.exception("Optional extreme-price alert lane failed")
                     await self._run_walmart_post_fanout_maintenance()
                 except asyncio.CancelledError:
                     raise

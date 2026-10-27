@@ -68,6 +68,7 @@ async def maybe_post_public_deal_cards(
     min_alert_score: int = 90,
     min_public_discount: int = 50,
     allow_review_scout: bool = False,
+    allow_verified_extreme: bool = False,
 ) -> PublicPostResult:
     if guild_id is None or not cards:
         return PublicPostResult()
@@ -147,7 +148,14 @@ async def maybe_post_public_deal_cards(
             skipped_wrong_retailer += 1
             continue
 
-        if allow_review_scout:
+        if allow_verified_extreme:
+            # Separate, exact-price-only opt-in lane; not a markdown or generic scout.
+            from sniperplug.services.walmart_extreme_price_fanout import valid_extreme_price_card
+
+            public_ready = valid_extreme_price_card(card)
+            if not public_ready:
+                not_alertable_reasons.append("extreme_exact_price_proof_rejected")
+        elif allow_review_scout:
             public_ready = prepare_public_scout_candidate(card, source_label=source_label)
             if not public_ready:
                 not_alertable_reasons.append("scout_quality_rejected")
@@ -182,7 +190,7 @@ async def maybe_post_public_deal_cards(
 
         current_price = _float_or_none(getattr(card, "current_price", None))
         product_key = card_product_key(card, retailer=retailer)
-        alert_key = PUBLIC_SCOUT_ALERT_KEY if allow_review_scout else PUBLIC_ALERT_KEY
+        alert_key = PUBLIC_SCOUT_ALERT_KEY if (allow_review_scout or allow_verified_extreme) else PUBLIC_ALERT_KEY
         recent_alert = await safe_find_recent_alert(
             db,
             guild_id=guild_id,
@@ -252,7 +260,7 @@ async def maybe_post_public_deal_cards(
             current_price=current_price,
             channel_id=getattr(channel, "id", config["channel_id"]),
             message_id=getattr(message, "id", None),
-            allow_review_scout=allow_review_scout,
+            allow_review_scout=(allow_review_scout or allow_verified_extreme),
         )
         notes.extend(finalize_notes)
         if not finalized:
@@ -260,7 +268,7 @@ async def maybe_post_public_deal_cards(
                 f"CRITICAL: public post for {retailer} was sent but no durable duplicate guard could be confirmed; "
                 "the reservation was intentionally retained for stale-time protection"
             )
-        if not allow_review_scout:
+        if not allow_review_scout and not allow_verified_extreme:
             cache_after_posting.append(card)
         posted += 1
 

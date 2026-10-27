@@ -3,6 +3,7 @@ from __future__ import annotations
 """Walmart extreme-price leads, kept separate from verified markdown alerts."""
 
 import asyncio
+from collections import Counter
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -31,41 +32,64 @@ ACCESSORY = re.compile(
 )
 
 
-def eligible_exact_extreme_candidate(candidate: Any) -> bool:
-    """Allow a real exact price without inventing a discount/reference price."""
-    if candidate is None or exact_offer_identity(candidate) is None:
-        return False
+def extreme_rejection_reason(candidate: Any) -> str | None:
+    """Explain the first failed gate without weakening exact-offer evidence.
+
+    A None result is the *same* eligibility result used by public posting.
+    Reasons are coarse and safe for a public server-owner health summary: no
+    raw API payloads, item IDs, sellers, or per-product URLs are disclosed.
+    """
+    if candidate is None:
+        return "missing_snapshot"
     attrs = getattr(candidate, "variant_attributes", None) or {}
     if str(attrs.get("exactDetailPriceProof", "")).strip().lower() != "yes":
-        return False
+        return "exact_price_proof_missing"
     item_id = str(attrs.get("exactDetailItemId") or "")
     url = getattr(candidate, "direct_product_url", None) or getattr(candidate, "product_url", "")
     if not item_id.isdigit() or walmart_item_id_from_url(url) != item_id:
-        return False
+        return "item_url_mismatch"
     if str(getattr(candidate, "retailer", "") or "").strip().lower() != "walmart":
-        return False
+        return "wrong_retailer"
+    if exact_offer_identity(candidate) is None:
+        return "offer_or_seller_proof_missing"
     try:
         current = float(candidate.api_current_price)
         displayed = float(candidate.current_price)
     except (TypeError, ValueError, OverflowError):
-        return False
+        return "exact_price_missing"
     if not (0 < current <= MAX_PRICE_CENTS / 100 and abs(current - displayed) < 0.01):
-        return False
+        return "price_mismatch_or_over_limit"
     if candidate.can_add_to_cart is not True:
-        return False
-    # Walmart can expose online availability as bools or strings. The legacy
-    # provider's bool(value) can misread a nonempty "false" as True, so verify
-    # the source-level value before allowing an automatic extreme-price alert.
+        return "not_cart_buyable"
+    # Nonempty "false" from source metadata must not be treated as bool True.
     online = str(attrs.get("availableOnline") or "").strip().lower()
     if online in {"no", "false", "0", "off"}:
-        return False
+        return "unavailable_online"
     if candidate.is_member_only or candidate.is_checkout_price:
-        return False
+        return "restricted_checkout_price"
     stock = str(candidate.stock_status or "").strip().lower()
-    if any(x in stock for x in ("sold out", "out of stock", "out-of-stock", "unavailable", "not available", "not in stock")):
-        return False
-    title = " ".join(str(x or "") for x in (candidate.title, candidate.parent_title))
-    return bool(PRIMARY_PRODUCT.search(title) and not ACCESSORY.search(title))
+    if any(
+        blocked in stock
+        for blocked in (
+            "sold out", "out of stock", "out-of-stock", "unavailable",
+            "not available", "not in stock",
+        )
+    ):
+        return "unavailable_stock"
+    title = " ".join(
+        str(value or "")
+        for value in (candidate.title, candidate.parent_title)
+    )
+    if ACCESSORY.search(title):
+        return "accessory_or_parts"
+    if PRIMARY_PRODUCT.search(title) is None:
+        return "not_recognized_primary_product"
+    return None
+
+
+def eligible_exact_extreme_candidate(candidate: Any) -> bool:
+    """Allow a proved exact price without inventing an original price."""
+    return extreme_rejection_reason(candidate) is None
 
 BATCH_LIMIT = 40
 FRESHNESS_MINUTES = 15
@@ -269,26 +293,33 @@ async def extreme_price_health_summary(db: Any) -> str:
     rows = await cursor.fetchall()
     qualified = 0
     unprocessed = 0
+    rejected: Counter[str] = Counter()
     for row in rows:
         item_id = str(_row_get(row, "item_id", 0) or "")
         verified_at = str(_row_get(row, "verified_at", 1) or "")
         raw = _row_get(row, "snapshot_json", 2)
         try:
-            eligible = eligible_exact_extreme_candidate(_candidate_from_snapshot(raw))
+            reason = extreme_rejection_reason(_candidate_from_snapshot(raw))
         except (TypeError, ValueError, KeyError, AttributeError):
-            eligible = False
-        if not eligible:
+            reason = "unreadable_snapshot"
+        if reason is not None:
+            rejected[reason] += 1
             continue
         qualified += 1
         if (verified_at, item_id) > last_seen:
             unprocessed += 1
     capped = " (sample capped at 60)" if len(rows) >= limit else ""
+    rejection_line = "; ".join(
+        f"{count} {reason.replace('_', ' ')}"
+        for reason, count in rejected.most_common(4)
+    ) or "none"
     return (
         f"Last {FRESHNESS_MINUTES} min: **{len(rows)}** exact-verified queue "
         f"rows at $10 or less{capped}; **{qualified}** match primary-product, "
         f"seller, stock, offer and price checks; **{unprocessed}** are after "
         "the delivery cursor. These are candidates, not confirmed Discord posts. "
-        "A zero here can mean no eligible API offers, not that the bot is offline."
+        f"Not eligible: {rejection_line}. "
+        "This is a bounded sample, not proof of the entire live Walmart catalog."
     )
 
 

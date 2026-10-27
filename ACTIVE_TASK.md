@@ -53,6 +53,19 @@ No new production logs after PR #298 were available at the start of this slice. 
 
 **Validation:** all three checks green on PR #299; **1505 passed on Python 3.11 and 3.12**, import smoke passed, post-merge `main` checks to verify. **Outstanding acceptance:** verify the read-only diagnostic with a production `/autoscan_health` screenshot and separately observe real extreme-price alert delivery and receipt. The diagnostic counts a bounded recent candidate sample, not Walmart's entire live catalog nor confirmed Discord posts. Keep DB migration and movie-ticket source out of scope.
 
+## Oct 27 live enabled-state screenshot and reason-code diagnostic
+
+The owner supplied a live `/autoscan_health` screenshot for their Walmart channel after PR #299. Grounded findings:
+- Global Walmart enrollment yes; saved public alert setup healthy; **extreme exact-price alerts enabled**. This confirms PR #298's Turso opt-in crash was resolved and PR #299's health panel deployed.
+- Latest 80 24-hour exact fanout decisions: **0 posts to this server**, **72 below its 40% threshold**, **8 quality/proof rejects**, no duplicate/delivery failure reported. This is not an exhaustive count of all 24-hour events.
+- Extreme alert last-15-minute capped diagnostic: **2** verified-price queue rows at $10 or less, **0** eligible primary-product/seller/stock/offer/price matches, **0** beyond delivery cursor. No proof these two were actual valuable phones, and no reason breakdown previously existed.
+- Exact queue `total 43,999`, `due now 30`, `delayed transient retries 38,546`, `verified 3,808`. Do not confuse delayed retries with the immediately due workload.
+- The screenshot does not prove a recent qualifying extreme-price alert was missed; instead, it exposes the remaining lack of visibility into **which eligibility guard** excluded each priced row.
+
+Follow-up branch `fix/walmart-extreme-rejection-breakdown-300` uses one shared `extreme_rejection_reason` function as the *sole* definition of sender eligibility. It preserves exact offer/seller/item proof and the existing $10 cap, and reports aggregate, coarsely labeled first-rejection reasons among the existing bounded 60-row sample in `/autoscan_health`. This avoids raw item IDs, per-offer records, additional API calls, new tables, or unverified deal posting. Targeted unit tests assert identical sender decisions and expected reasons for a real-primary-product fixture, accessories, nonprimary products, unavailable items, missing offer proof, price mismatch, and Turso-style dict rows.
+
+**Acceptance:** green full CI; check updated health screenshot to learn what blocked the two actual candidates. A real extreme-price Discord alert with saved receipt remains unobserved; retain current protections and do not infer that an API item is buyable from a catalog price alone.
+
 ## Implemented changes
 - New `sniperplug/services/walmart_extreme_price_fanout.py`: separate 15-minute freshness window, bounded 40-row cursor, selected exact statuses that lack a trusted markdown above normal thresholds, sub-$10 current API price, verified seller/offer/item identity, buyable status, recognizable primary product, accessory exclusions and honest no-reference labeling.
 - Per-guild explicit opt-in stored by exact-text Discord guild ID, default OFF; `/walmart_extreme_alerts enabled:true`; health dashboard shows opt-in status.

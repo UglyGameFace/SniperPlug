@@ -651,13 +651,17 @@ def test_pending_replay_with_no_live_guild_does_not_skip_new_verified_offer(monk
                     "exactDetailItemId": "29500012",
                 },
             )
+            # Real outbox tickets copy queue.snapshot_json byte-for-byte;
+            # calling _candidate_snapshot again changes its last_checked_at.
+            old_snapshot = _candidate_snapshot(first)
             for item, stamp in ((first, old_time), (second, new_time)):
+                snapshot = old_snapshot if item is first else _candidate_snapshot(item)
                 await conn.execute(
                     f"INSERT INTO {QUEUE_TABLE} "
                     "(item_id, first_seen_at, last_seen_at, next_attempt_at, "
                     "status, verified_at, exact_current_cents, snapshot_json) "
                     "VALUES (?, ?, ?, ?, 'verified_no_reference', ?, 100, ?)",
-                    (item.product_id, stamp, stamp, stamp, stamp, _candidate_snapshot(item)),
+                    (item.product_id, stamp, stamp, stamp, stamp, snapshot),
                 )
             # Simulate a previously delivered item with a pending recovery ticket,
             # followed by a newly verified offer not yet visited by the cursor.
@@ -669,7 +673,7 @@ def test_pending_replay_with_no_live_guild_does_not_skip_new_verified_offer(monk
             await conn.execute(
                 f"INSERT INTO {extreme.PENDING_TABLE} "
                 "(guild_id, item_id, verified_at, snapshot_json) VALUES (?, ?, ?, ?)",
-                ("295", first.product_id, old_time, _candidate_snapshot(first)),
+                ("295", first.product_id, old_time, old_snapshot),
             )
             await conn.commit()
 

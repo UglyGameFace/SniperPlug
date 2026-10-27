@@ -241,3 +241,62 @@ def test_sender_notes_are_not_mistaken_for_failed_posts() -> None:
            "not_alertable_reasons": ("category_error:database offline",)}
     )
     assert extreme.delivery_requires_retry(category_failure) is True
+
+
+def test_extreme_optin_and_fanout_accept_turso_mapping_rows(monkeypatch) -> None:
+    """Regress production KeyError: 0 in the Turso dictionary-backed cursor.
+
+    Mock only the row representation on a real aiosqlite database so the
+    command's COUNT/UPSERT and the worker's opt-in, cursor and queue query all
+    exercise their actual SQL without numeric-key shortcuts.
+    """
+    async def scenario():
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        db = SimpleNamespace(require_conn=lambda: conn)
+        try:
+            await ensure_walmart_exact_verification_queue(db)
+            await extreme.ensure_extreme_tables(db)
+            now = datetime.now(timezone.utc).isoformat()
+            await conn.execute(
+                f"INSERT INTO {QUEUE_TABLE} "
+                "(item_id, first_seen_at, last_seen_at, next_attempt_at, "
+                "status, verified_at, exact_current_cents, snapshot_json) "
+                "VALUES (?, ?, ?, ?, 'verified_no_reference', ?, 100, ?)",
+                ("29500011", now, now, now, now, _candidate_snapshot(candidate())),
+            )
+            await conn.commit()
+            # This representation reproduces the production Turso failure:
+            # dict rows accept named columns but row[0] raises KeyError.
+            conn.row_factory = lambda cursor, values: {
+                desc[0]: value for desc, value in zip(cursor.description, values)
+            }
+            assert not await extreme.extreme_alerts_enabled(db, 295)
+            await extreme.set_extreme_alerts_enabled(db, 295, True)
+            assert await extreme.extreme_alerts_enabled(db, 295)
+
+            async def fake_live(_db, _bot, *, required_retailer):
+                assert required_retailer == "walmart"
+                return LiveGuildLoadResult(guilds=(LiveAutoScanGuild(295, 123),))
+
+            delivered = []
+            async def fake_post(**kwargs):
+                delivered.append(kwargs)
+                return SimpleNamespace(posted=1, attempted=1, errors=())
+
+            monkeypatch.setattr(extreme, "list_live_public_alert_guilds", fake_live)
+            monkeypatch.setattr(extreme, "maybe_post_public_deal_cards", fake_post)
+            bot = SimpleNamespace(db=db)
+            result = await extreme.fanout_recent_extreme_walmart_prices(bot)
+            assert result["examined"] == 1
+            assert result["eligible"] == 1
+            assert result["posted"] == 1
+            assert len(delivered) == 1
+            assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["examined"] == 0
+            await extreme.set_extreme_alerts_enabled(db, 295, False)
+            assert not await extreme.extreme_alerts_enabled(db, 295)
+            assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["posted"] == 0
+        finally:
+            await conn.close()
+
+    asyncio.run(scenario())

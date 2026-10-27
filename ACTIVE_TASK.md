@@ -30,6 +30,13 @@ The active task stays open for safe deployment, explicit server opt-in, live ale
 - Verification: PR #297 and post-merge `main` checks were green on Python 3.11/3.12 (1503 tests each on PR), import smoke, compile, pip check; final three-file diff was reviewed for scope, conflicts, and secrets. **Still pending:** live Discloud scanner shows page `1,depth`, genuine retailer exact proof, Discord receipt and no duplicate posts. Walmart API may continue returning `api_price_missing`/6001, and user has not supplied the original offer ID.
 - Movie ticket channel permissions are unrelated backlog and **must not be touched** under this task. Other existing app storage cutover remains suspended.
 
+## October 27 production blocker: Turso mapping rows
+Owner's Discloud logs confirm the prior fresh-page search change **is deployed** (`page window **1,4**/**40**`) and a normal verified Walmart fanout recorded **one actual public post** (16:59:34 logger prefix 15:59:34). At 17:03:35 `/walmart_extreme_alerts` failed with `KeyError: 0` in `set_extreme_alerts_enabled`. This is a real end-to-end activation blocker, not a hypothetical missed item.
+
+Read-only inspection of the new feature identified every SQLite-index-only access in its opt-in/count, fanout guild list, cursor and candidate rows. Production Turso uses dictionary-like cursor rows. Branch `fix/walmart-extreme-row-compat-298` changes these reads to name-first with positional fallback consistent with existing Walmart health helpers, aliases the aggregate `enabled_count`, and adds a real SQL integration test with dictionary row_factory reproducing the error. **No change to discount, price proof, seller/offer, other cogs, or database backend.**
+
+Acceptance requires green full CI on exact PR head, merge/push, live Discloud deployment of that merge, successful `/walmart_extreme_alerts enabled:true`, enabled state in `/autoscan_health`, and a real qualified exact-price alert/receipt. The original S24 FE $1 offer remains unproven from official Walmart evidence. No access to live Turso/Discloud is available via this chat.
+
 ## Implemented changes
 - New `sniperplug/services/walmart_extreme_price_fanout.py`: separate 15-minute freshness window, bounded 40-row cursor, selected exact statuses that lack a trusted markdown above normal thresholds, sub-$10 current API price, verified seller/offer/item identity, buyable status, recognizable primary product, accessory exclusions and honest no-reference labeling.
 - Per-guild explicit opt-in stored by exact-text Discord guild ID, default OFF; `/walmart_extreme_alerts enabled:true`; health dashboard shows opt-in status.

@@ -31,9 +31,9 @@ Production acceptance remains blocked by lack of live Discloud control-plane acc
 
 ## Validation / results
 - Base `main`: b5fd137a945de415c5474a65f95c812432670599.
-- Exact implementation head before this task-record-only update: `40efa21572a49955d44cfff06f5531d8e477abd8`.
-- GitHub Python tests on Python 3.11: **1502 passed, 1 warning**.
-- GitHub Python Check on Python 3.12: **1502 passed, 1 warning**; 37-module / 22-symbol import smoke passed.
+- Exact implementation head before this task-record-only update: `fba761881a18c57a0db4f03f941217989366c27c`.
+- GitHub Python tests on Python 3.11: **1503 passed, 1 warning**.
+- GitHub Python Check on Python 3.12: **1503 passed, 1 warning**; 37-module / 22-symbol import smoke passed.
 - Separate import smoke passed; `pip check` and `compileall` passed on both CI jobs.
 - Existing generic scout-block and verified-markdown gates still pass their regressions; the opt-in true sender path has a direct integration regression with synthetic $1 offer and tests the forged-card fail-closed path.
 - Reviewed draft PR diff for file scope and safety. No shared code was deleted. Existing code paths stay on their old defaults.

@@ -216,3 +216,22 @@ def test_existing_sender_enforces_extreme_proof_and_scout_dedupe(monkeypatch) ->
         assert len(sent) == 1
 
     asyncio.run(scenario())
+
+
+def test_sender_notes_are_not_mistaken_for_failed_posts() -> None:
+    successful = SimpleNamespace(
+        attempted=1, posted=1, skipped_duplicate=0,
+        skipped_not_alertable=0, skipped_disabled=0, skipped_wrong_retailer=0,
+        errors=("Alternative configured channel was used",),
+        not_alertable_reasons=(),
+    )
+    assert extreme.delivery_requires_retry(successful) is False
+    critical = SimpleNamespace(**{**vars(successful), "errors": ("CRITICAL: receipt was not confirmed",)})
+    assert extreme.delivery_requires_retry(critical) is True
+    no_send = SimpleNamespace(**{**vars(successful), "posted": 0, "errors": ("Discord forbidden",)})
+    assert extreme.delivery_requires_retry(no_send) is True
+    category_failure = SimpleNamespace(
+        **{**vars(successful), "posted": 0, "skipped_not_alertable": 1,
+           "not_alertable_reasons": ("category_error:database offline",)}
+    )
+    assert extreme.delivery_requires_retry(category_failure) is True

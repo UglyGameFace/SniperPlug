@@ -22,6 +22,14 @@ Base main: `b5fd137a945de415c5474a65f95c812432670599`; branch `fix/walmart-extre
 The guarded opt-in Walmart implementation is integrated in GitHub, not yet verified as deployed to the live Discloud instance. No live Discord posting or actual $1 Samsung offer proof has been observed.
 The active task stays open for safe deployment, explicit server opt-in, live alert validation, and final acceptance. The Discloud/Turso cutover remains suspended as preserved below.
 
+## Oct 27 post-merge production-log evidence / same-task continuation
+- Owner supplied production logs 16:23-16:40. Verifier batches often had 8/8 or 24/24 `api_price_missing` failures, and Product Lookup 6001 no-match; some batches did yield verified markdowns/no-reference offers. Upstream Walmart current-price coverage is incomplete; *do not* assert that a missing API price is an available bargain.
+- Catalog routes 173-188 were on deep window 37-38 of 40 (some returning zero results). With 265 routes and two routes per minute, the old deep-only plan could go ~20 full passes before page 1 returned, making new products invisible for many hours. Discovery also paused at fresh exact backlog 14/12, 29/12, 39/12. Recurrent no-price work limits exact throughput.
+- Continue existing Walmart missed-deal active task on branch `fix/walmart-fresh-catalog-pages-297` from main `7ebd2cb8b113608e6e09e561bfb5b19109311b97`. PR pending. **Preserve the existing exact seller/offer and trusted price rules** and 40% verified threshold.
+- Narrowest direct correction: change the authoritative `catalog_pages_for_completed_passes` planner to always request fresh page 1 and rotate a single deep page 2-40 using the existing durable pass counter. Preserve two pages per keyword, concurrency, route count, state, no extra API calls or app workers. Adjust misleading page range display and test complete 40-page coverage.
+- Verification still required: targeted/full Python 3.11/3.12 suite; CI; diff/conflict/compatibility inspection; live scan shows page `1,depth` and no duplicate posts. Remaining limitation: new results must actually be exposed by Walmart's API, and exact verification may continue returning `api_price_missing`. Do not mislabel API misses as verified offers.
+- Movie ticket channel permissions are unrelated backlog and **must not be touched** under this task. Other existing app storage cutover remains suspended.
+
 ## Implemented changes
 - New `sniperplug/services/walmart_extreme_price_fanout.py`: separate 15-minute freshness window, bounded 40-row cursor, selected exact statuses that lack a trusted markdown above normal thresholds, sub-$10 current API price, verified seller/offer/item identity, buyable status, recognizable primary product, accessory exclusions and honest no-reference labeling.
 - Per-guild explicit opt-in stored by exact-text Discord guild ID, default OFF; `/walmart_extreme_alerts enabled:true`; health dashboard shows opt-in status.

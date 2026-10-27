@@ -573,3 +573,51 @@ def test_missing_guild_never_receives_changed_exact_price_and_optout_clears_queu
             await conn.close()
 
     asyncio.run(scenario())
+
+
+def test_extreme_optout_waits_for_inflight_verified_delivery(monkeypatch) -> None:
+    """Once an opt-out completes, no previously selected in-flight post remains."""
+    async def scenario():
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        db = SimpleNamespace(require_conn=lambda: conn)
+        try:
+            await ensure_walmart_exact_verification_queue(db)
+            await extreme.set_extreme_alerts_enabled(db, 295, True)
+            now = datetime.now(timezone.utc).isoformat()
+            phone = candidate()
+            await conn.execute(
+                f"INSERT INTO {QUEUE_TABLE} "
+                "(item_id, first_seen_at, last_seen_at, next_attempt_at, "
+                "status, verified_at, exact_current_cents, snapshot_json) "
+                "VALUES (?, ?, ?, ?, 'verified_no_reference', ?, 100, ?)",
+                (phone.product_id, now, now, now, now, _candidate_snapshot(phone)),
+            )
+            await conn.commit()
+
+            entered = asyncio.Event()
+            released = asyncio.Event()
+            async def fake_live(*_args, **_kwargs):
+                return LiveGuildLoadResult(guilds=(LiveAutoScanGuild(295, 123),))
+            async def slow_post(**kwargs):
+                entered.set()
+                await released.wait()
+                return SimpleNamespace(attempted=1, posted=1, errors=())
+
+            monkeypatch.setattr(extreme, "list_live_public_alert_guilds", fake_live)
+            monkeypatch.setattr(extreme, "maybe_post_public_deal_cards", slow_post)
+            bot = SimpleNamespace(db=db)
+            worker = asyncio.create_task(extreme.fanout_recent_extreme_walmart_prices(bot))
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            optout = asyncio.create_task(extreme.set_extreme_alerts_enabled(db, 295, False))
+            await asyncio.sleep(0.02)
+            assert not optout.done(), "Opt-out must not complete mid-send"
+            released.set()
+            assert (await worker)["posted"] == 1
+            await optout
+            assert not await extreme.extreme_alerts_enabled(db, 295)
+            assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["posted"] == 0
+        finally:
+            await conn.close()
+
+    asyncio.run(scenario())

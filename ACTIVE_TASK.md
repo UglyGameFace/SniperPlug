@@ -1,6 +1,41 @@
 # Active Task
 
 ## Active task / outcome
+**SP-WALMART-EXTREME-PRICE-295: restore detection and opt-in delivery for extreme exact-price Walmart leads without relabeling them as verified markdowns.**
+
+User explicitly authorized a task switch on 2026-10-27:
+`FORCE SWITCH: Fix Walmart missed-deal alerts in SniperPlug`
+`Reason: Prioritize verified extreme-price discovery and delivery without weakening genuine discount verification.`
+
+Base main: `b5fd137a945de415c5474a65f95c812432670599`; branch `fix/walmart-extreme-price-alerts-295`; issue #295.
+
+## Scope / findings
+- Walmart global discovery covers 265 keyword routes at two routes per minute with bounded/paged search; no ZIP/store context in Affiliate search. An outside screenshot of a $1 Samsung Galaxy S24 FE open-box demo is not proof that the API returned a matching item/offer or a buyable $1 price.
+- Exact verification queue distinguishes official current price and item/offer/seller identity from a trusted reference price. Only `verified_markdown` enters global public fanout. Exact low-price items missing an API reference can remain `verified_no_reference` even when seller, offer, and current price were verified.
+- Existing `low_price_scout` supports review-only leads; existing public scout/markdown quality boundaries must remain intact. Existing durable public post receipts and duplicate control must be reused; no parallel uncontrolled sender.
+- Public health inspects at most 80 recent events; 71 were below 40% and nine quality-rejected. The 36,819 delayed retries need separate troubleshooting, but no proof these alone caused the exact missed phone.
+- Existing static tests deliberately forbid generic auto-posted scout leads. New extreme-price mode must have explicit guarded eligibility, separate configuration, honest labeling, and regression coverage rather than weakening those safeguards.
+- HP/Target, broad refactors, and source-specific localized Walmart offer fetching are out of scope. Honest limitation: nationally queried Affiliate prices do not prove store-local $1 deals.
+
+## Status
+Implementation in progress. No production claim before full validation, runtime approval, and observed delivery.
+
+## Planned execution path
+Walmart API catalog -> existing global exact queue -> official exact verified candidate + durable queue state -> dedicated bounded extreme-price candidate lane (no trusted reference needed) -> per-guild explicit opt-in -> existing public-post channel, receipt/dedupe and failure handling; verified markdown and DM fanout unchanged.
+
+## Definition of done
+- Verify source evidence and avoid false proof/percentage claims; be explicit about price, condition, buyer availability.
+- Opt-in, precondition gating, bounded cursor, dedupe, no double-post, proper failure treatment and diagnostic visibility.
+- Targeted and relevant tests, Python 3.11/3.12 CI, import/compile, code/secret/conflict/diff scan, and deployment acceptance when possible.
+- Review obsolete/conflicting code in affected area, preserve other user work. Record blockers and remaining validation truthfully.
+
+## Suspended work: SP-LOCAL-SQLITE-DISCLOUD
+The prior record, findings, code changes, CI evidence, branch/PR status, blockers, runbook, and next step are reproduced verbatim below to resume without lost context. **Do not execute this migration while #295 is active.**
+
+---
+# Active Task
+
+## Active task / outcome
 **SP-LOCAL-SQLITE-DISCLOUD — move canonical production storage from Turso to local Discloud SQLite.**
 
 Outcome: use the existing local SQLite backend inside the canonical SniperPlug Discloud Diamond app, eliminate Turso row-read/write quota dependency, and keep HP/Target capable of sharing the same authoritative data by running them as supervised tasks inside the canonical app instead of separate Discloud applications.

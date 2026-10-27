@@ -48,22 +48,18 @@ def _walmart_item_id(candidate) -> str:
 
 
 def catalog_pages_for_completed_passes(completed_passes: int) -> tuple[int, ...]:
-    """Return the next persistent two-page Affiliate search window.
+    """Keep a fresh page-1 request while rotating the other page into depth.
 
-    Walmart's Affiliate search endpoint exposes at most the first 1,000 results
-    for a keyword and SniperPlug requests 25 rows per page. The old catalog loop
-    repeated pages 1-2 on every full route pass, so dozens of completed passes
-    did not deepen coverage. Use the durable completed-pass counter as the page
-    cursor: every route in one full pass sees the same page window, then the next
-    full pass advances by two pages and wraps after page 40.
+    Deep-only page windows can return no products for hours even while new
+    clearance listings appear at the front. Retain the same two requests per
+    keyword and the existing durable full-pass counter. Every pass fetches page
+    one plus one page from 2-40. No extra API calls or parallel worker.
     """
 
-    window_count = max(1, (CATALOG_MAX_PAGE + CATALOG_PAGES_PER_QUERY - 1) // CATALOG_PAGES_PER_QUERY)
-    window_index = max(0, int(completed_passes)) % window_count
-    start = (window_index * CATALOG_PAGES_PER_QUERY) + 1
-    end = min(CATALOG_MAX_PAGE, start + CATALOG_PAGES_PER_QUERY - 1)
-    return tuple(range(start, end + 1))
-
+    if CATALOG_MAX_PAGE <= 1:
+        return (1,)
+    deep_index = max(0, int(completed_passes)) % (CATALOG_MAX_PAGE - 1)
+    return (1, 2 + deep_index)
 
 async def _current_catalog_pages(db) -> tuple[tuple[int, ...], int]:
     completed_passes = 0
@@ -95,12 +91,10 @@ async def discover_walmart_catalog_candidates(
     selected offer, seller, variant, fulfillment, current-price, and trusted
     reference-price verification.
 
-    Search depth rotates with the durable global completed-pass counter instead
-    of repeating pages 1-2 forever. With two pages per route pass and Walmart's
-    1,000-result search bound, twenty completed full route passes cover pages
-    1-40 for every configured query before wrapping. This deepens discovery
-    without increasing requests per minute or creating one scan per Discord
-    server.
+    Page 1 is queried on every route pass for current listings. The second
+    page rotates through pages 2-40 using the durable full-pass counter, so
+    deep coverage continues without starving current deals or increasing
+    requests per minute. The two page requests do not depend on server count.
 
     Keeping exact verification out of the catalog pass prevents the catalog
     worker from holding the shared Walmart operation lock through search pages
@@ -187,11 +181,8 @@ async def discover_walmart_catalog_candidates(
                 f"{type(error).__name__}: {error}"
             )
 
-    page_label = (
-        str(catalog_pages[0])
-        if len(catalog_pages) == 1
-        else f"{catalog_pages[0]}-{catalog_pages[-1]}"
-    )
+    # The sampled pages are noncontiguous after the first pass.
+    page_label = ",".join(str(page) for page in catalog_pages)
     warnings.append(
         "Walmart catalog page window: "
         f"pages **{page_label}**/**{CATALOG_MAX_PAGE}** • "

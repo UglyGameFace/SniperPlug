@@ -227,6 +227,15 @@ async def extreme_alerts_enabled(db: Any, guild_id: int) -> bool:
 
 
 async def set_extreme_alerts_enabled(db: Any, guild_id: int, enabled: bool) -> None:
+    # Do not acknowledge an opt-out while this worker is still in the middle
+    # of delivering a just-selected exact offer to that same server.
+    async with _LOCK:
+        await _set_extreme_alerts_enabled_locked(db, guild_id, enabled)
+
+
+async def _set_extreme_alerts_enabled_locked(
+    db: Any, guild_id: int, enabled: bool
+) -> None:
     await ensure_extreme_tables(db)
     conn = db.require_conn()
     existing_cursor = await conn.execute(f"SELECT COUNT(*) AS enabled_count FROM {SETTINGS_TABLE} WHERE enabled = 1")

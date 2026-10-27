@@ -446,3 +446,128 @@ def test_qualified_extreme_item_waits_when_no_opted_in_live_route(monkeypatch) -
             await conn.close()
 
     asyncio.run(scenario())
+
+
+def test_missing_second_guild_replays_after_first_guild_cursor_advanced(monkeypatch) -> None:
+    """Live guild A must not make a temporarily absent guild B lose the offer."""
+    async def scenario():
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = lambda cursor, values: {
+            col[0]: val for col, val in zip(cursor.description, values)
+        }
+        db = SimpleNamespace(require_conn=lambda: conn)
+        try:
+            await ensure_walmart_exact_verification_queue(db)
+            await extreme.set_extreme_alerts_enabled(db, 295, True)
+            await extreme.set_extreme_alerts_enabled(db, 296, True)
+            now = datetime.now(timezone.utc).isoformat()
+            phone = candidate()
+            await conn.execute(
+                f"INSERT INTO {QUEUE_TABLE} "
+                "(item_id, first_seen_at, last_seen_at, next_attempt_at, "
+                "status, verified_at, exact_current_cents, snapshot_json) "
+                "VALUES (?, ?, ?, ?, 'verified_no_reference', ?, 100, ?)",
+                (phone.product_id, now, now, now, now, _candidate_snapshot(phone)),
+            )
+            await conn.commit()
+
+            live_guilds = {295}
+            deliveries = []
+            async def fake_live(*_args, **_kwargs):
+                return LiveGuildLoadResult(
+                    guilds=tuple(LiveAutoScanGuild(g, g + 1000) for g in sorted(live_guilds))
+                )
+            async def fake_post(**kwargs):
+                deliveries.append(kwargs["guild_id"])
+                return SimpleNamespace(attempted=1, posted=1, errors=())
+
+            monkeypatch.setattr(extreme, "list_live_public_alert_guilds", fake_live)
+            monkeypatch.setattr(extreme, "maybe_post_public_deal_cards", fake_post)
+            bot = SimpleNamespace(db=db)
+
+            first = await extreme.fanout_recent_extreme_walmart_prices(bot)
+            assert first == {"examined": 1, "eligible": 1, "posted": 1}
+            assert deliveries == [295]
+            read = await conn.execute(
+                f"SELECT guild_id, item_id, verified_at FROM {extreme.PENDING_TABLE}"
+            )
+            queued = await read.fetchall()
+            assert len(queued) == 1 and queued[0]["guild_id"] == "296"
+
+            live_guilds.add(296)
+            second = await extreme.fanout_recent_extreme_walmart_prices(bot)
+            assert second["examined"] == 0
+            assert second["posted"] == 1
+            assert deliveries == [295, 296]
+            assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["posted"] == 0
+            read = await conn.execute(f"SELECT COUNT(*) AS n FROM {extreme.PENDING_TABLE}")
+            assert (await read.fetchone())["n"] == 0
+        finally:
+            await conn.close()
+
+    asyncio.run(scenario())
+
+
+def test_missing_guild_never_receives_changed_exact_price_and_optout_clears_queue(monkeypatch) -> None:
+    from dataclasses import replace
+
+    async def scenario():
+        conn = await aiosqlite.connect(":memory:")
+        conn.row_factory = aiosqlite.Row
+        db = SimpleNamespace(require_conn=lambda: conn)
+        try:
+            await ensure_walmart_exact_verification_queue(db)
+            await extreme.set_extreme_alerts_enabled(db, 295, True)
+            await extreme.set_extreme_alerts_enabled(db, 296, True)
+            now = datetime.now(timezone.utc).isoformat()
+            phone = candidate()
+            await conn.execute(
+                f"INSERT INTO {QUEUE_TABLE} "
+                "(item_id, first_seen_at, last_seen_at, next_attempt_at, "
+                "status, verified_at, exact_current_cents, snapshot_json) "
+                "VALUES (?, ?, ?, ?, 'verified_no_reference', ?, 100, ?)",
+                (phone.product_id, now, now, now, now, _candidate_snapshot(phone)),
+            )
+            await conn.commit()
+            live = {295}
+            sent = []
+            async def fake_live(*_args, **_kwargs):
+                return LiveGuildLoadResult(
+                    guilds=tuple(LiveAutoScanGuild(g, g + 1000) for g in sorted(live))
+                )
+            async def fake_post(**kwargs):
+                sent.append(kwargs["guild_id"])
+                return SimpleNamespace(attempted=1, posted=1, errors=())
+            monkeypatch.setattr(extreme, "list_live_public_alert_guilds", fake_live)
+            monkeypatch.setattr(extreme, "maybe_post_public_deal_cards", fake_post)
+            bot = SimpleNamespace(db=db)
+            assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["posted"] == 1
+            # Exact current price or offer changed after original verification.
+            new_phone = replace(phone, api_current_price=2, current_price=2)
+            await conn.execute(
+                f"UPDATE {QUEUE_TABLE} SET verified_at = ?, snapshot_json = ?, "
+                "exact_current_cents = 200 WHERE item_id = ?",
+                ((datetime.now(timezone.utc) + __import__("datetime").timedelta(seconds=1)).isoformat(),
+                 _candidate_snapshot(new_phone), phone.product_id),
+            )
+            await conn.commit()
+            live.add(296)
+            assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["posted"] == 0
+            assert sent == [295]
+            row = await conn.execute(f"SELECT COUNT(*) FROM {extreme.PENDING_TABLE}")
+            assert (await row.fetchone())[0] == 0
+
+            # Explicit opt-out is authoritative even if a replay ticket exists.
+            await conn.execute(
+                f"INSERT INTO {extreme.PENDING_TABLE} "
+                "(guild_id,item_id,verified_at,snapshot_json) VALUES(?,?,?,?)",
+                ("296", phone.product_id, now, _candidate_snapshot(phone)),
+            )
+            await conn.commit()
+            await extreme.set_extreme_alerts_enabled(db, 296, False)
+            row = await conn.execute(f"SELECT COUNT(*) FROM {extreme.PENDING_TABLE}")
+            assert (await row.fetchone())[0] == 0
+        finally:
+            await conn.close()
+
+    asyncio.run(scenario())

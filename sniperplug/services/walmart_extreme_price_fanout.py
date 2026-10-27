@@ -166,3 +166,88 @@ async def set_extreme_alerts_enabled(db: Any, guild_id: int, enabled: bool) -> N
             (cutoff,),
         )
     await conn.commit()
+
+
+async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
+    """Post only opt-in, exact-verified, unusually cheap primary products.
+
+    This uses its own cursor and existing public-send dedupe/reservations.
+    It never advances or changes the verified-markdown/DM fanout cursor.
+    """
+    db = getattr(bot, "db", None)
+    if db is None or _LOCK.locked():
+        return {"examined": 0, "eligible": 0, "posted": 0}
+    async with _LOCK:
+        await ensure_extreme_tables(db)
+        live = await list_live_public_alert_guilds(db, bot, required_retailer="walmart")
+        enabled = [
+            int(guild.guild_id)
+            for guild in live.guilds
+            if await extreme_alerts_enabled(db, int(guild.guild_id))
+        ]
+        if not enabled:
+            return {"examined": 0, "eligible": 0, "posted": 0}
+        conn = db.require_conn()
+        cursor = await conn.execute(
+            f"SELECT last_verified_at, last_item_id FROM {STATE_TABLE} WHERE state_key = 'walmart'"
+        )
+        state = await cursor.fetchone()
+        if state is None:
+            raise RuntimeError("Walmart extreme-price cursor missing")
+        previous = (str(state[0]), str(state[1]))
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
+        cursor = await conn.execute(
+            f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
+            "WHERE status = 'verified_no_reference' "
+            "AND exact_current_cents BETWEEN 1 AND ? "
+            "AND verified_at >= ? AND snapshot_json <> '' "
+            "AND (verified_at, item_id) > (?, ?) "
+            "ORDER BY verified_at ASC, item_id ASC LIMIT ?",
+            (MAX_PRICE_CENTS, cutoff, *previous, BATCH_LIMIT),
+        )
+        rows = await cursor.fetchall()
+        next_cursor = previous
+        examined = eligible = posted = 0
+        for row in rows:
+            item_id, verified_at, snapshot = str(row[0]), str(row[1]), str(row[2])
+            examined += 1
+            candidate = _candidate_from_snapshot(snapshot)
+            card = build_extreme_price_card(candidate)
+            if card is not None:
+                eligible += 1
+                for guild_id in enabled:
+                    result = await maybe_post_public_deal_cards(
+                        bot=bot,
+                        guild_id=guild_id,
+                        cards=[card],
+                        source_label="walmart_extreme_exact_price",
+                        fallback_retailer="walmart",
+                        allow_verified_extreme=True,
+                    )
+                    posted += result.posted
+                    if result.errors:
+                        # Failed posts remain eligible next cycle. Existing durable
+                        # receipts prevent double delivery to successful guilds.
+                        log.error(
+                            "Walmart extreme-price delivery failed guild=%s item=%s errors=%s",
+                            guild_id, item_id, result.errors,
+                        )
+                        break
+                else:
+                    next_cursor = (verified_at, item_id)
+                    continue
+                break
+            next_cursor = (verified_at, item_id)
+        if next_cursor != previous:
+            await conn.execute(
+                f"UPDATE {STATE_TABLE} SET last_verified_at = ?, last_item_id = ? "
+                "WHERE state_key = 'walmart'",
+                next_cursor,
+            )
+            await conn.commit()
+        if examined:
+            log.info(
+                "Walmart extreme exact-price examined=%s eligible=%s posted=%s destinations=%s",
+                examined, eligible, posted, len(enabled),
+            )
+        return {"examined": examined, "eligible": eligible, "posted": posted}

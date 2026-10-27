@@ -37,6 +37,15 @@ Read-only inspection of the new feature identified every SQLite-index-only acces
 
 Acceptance requires green full CI on exact PR head, merge/push, live Discloud deployment of that merge, successful `/walmart_extreme_alerts enabled:true`, enabled state in `/autoscan_health`, and a real qualified exact-price alert/receipt. The original S24 FE $1 offer remains unproven from official Walmart evidence. No access to live Turso/Discloud is available via this chat.
 
+## Oct 27 activation bug hotfix (PR #298, merged)
+Latest owner-supplied live Discloud logs prove:
+1. `page window **1,4**/**40**` after PR #297, meaning the catalog freshness fix is genuinely deployed.
+2. Normal verified-deal Walmart fanout at 16:59:34 recorded `public guild checks/posts 4/1`; at least one regular Walmart alert was posted. This does **not** establish the optional extreme-price lane delivered.
+3. `/walmart_extreme_alerts` failed at 17:03:35 with `KeyError: 0` because Turso cursor rows are name-keyed mappings, while the new opt-in code assumed numeric SQLite indexes.
+4. PR #298 squash-merged into main as `0f6be9ec8cf55894a0fa3d9f55152e76ad0c2ad2`; corrected the aggregate count, enabled setting, opted guild list, cursor, and queue reads to use named column-first / positional fallback. Added an actual SQL dict-row regression across enable/disable, fanout, cursor, and dedupe; **1504 tests passed on both Python 3.11 and 3.12**, with import smoke green. No DB migrations or existing Discord settings changes.
+
+**Live acceptance still pending**: latest PR #298 code needs to deploy in the existing Discloud app, with existing Turso/SQLite connection unchanged; user can repeat `/walmart_extreme_alerts enabled:true` and then `/autoscan_health` to verify saved state. Watch `sniperplug.autoscan.extreme_price` logs for real qualifying exact-item leads, posts and saved receipts. Do not claim the new extreme feed has sent a real alert until observed, and don't confuse a normal markdown fanout post with an extreme-price delivery. Persistent Walmart Affiliate `api_price_missing` and item 6001 no-match are ongoing source constraints; do not invent item prices or alter strong selected-offer proof.
+
 ## Implemented changes
 - New `sniperplug/services/walmart_extreme_price_fanout.py`: separate 15-minute freshness window, bounded 40-row cursor, selected exact statuses that lack a trusted markdown above normal thresholds, sub-$10 current API price, verified seller/offer/item identity, buyable status, recognizable primary product, accessory exclusions and honest no-reference labeling.
 - Per-guild explicit opt-in stored by exact-text Discord guild ID, default OFF; `/walmart_extreme_alerts enabled:true`; health dashboard shows opt-in status.
@@ -57,7 +66,7 @@ Acceptance requires green full CI on exact PR head, merge/push, live Discloud de
 ## Unvalidated / blockers / risks
 - Walmart raw `availableOnline` text can be misread by the existing provider using `bool(value)`; the new extreme-price lane explicitly rejects negative source flags and not-available stock. This narrowly guarded known source issue without changing other provider semantics.
 - The original reported $1 Galaxy S24 FE offer's true item ID, exact seller variant, regional checkout, and appearance in the Walmart Affiliate API are unproven. API search has no store ZIP context, so store-only deals cannot be promised.
-- No live Discloud/Discord end-to-end alert has yet been observed; do not call the fix deployed or production accepted. Keep PR draft until operational acceptance or verified readiness to merge.
+- No live **extreme-price** end-to-end alert has yet been observed; do not call the fix deployed or production accepted. Keep PR draft until operational acceptance or verified readiness to merge.
 - The large existing delayed retry population remains a source/API evidence limitation, not bypassed. This task preserves the current exact verification conditions; it does not claim to solve all missed Walmart listings.
 - Expected operator acceptance: preserve current DB snapshot/backend; merge and deploy verified code safely; run `/walmart_extreme_alerts enabled:true` once in the chosen server; check `/autoscan_health` and the exact-price log/durable receipt using a genuine current Walmart API offer. Do not infer a verified percent markdown from the new lead.
 

@@ -493,6 +493,8 @@ def test_missing_second_guild_replays_after_first_guild_cursor_advanced(monkeypa
             )
             queued = await read.fetchall()
             assert len(queued) == 1 and queued[0]["guild_id"] == "296"
+            summary = await extreme.extreme_price_health_summary(db, guild_id=296)
+            assert "Pending recovery for this server: **1**" in summary
 
             live_guilds.add(296)
             second = await extreme.fanout_recent_extreme_walmart_prices(bot)

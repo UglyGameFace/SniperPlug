@@ -211,7 +211,7 @@ def test_existing_sender_enforces_extreme_proof_and_scout_dedupe(monkeypatch) ->
         assert len(sent) == 1
         assert alerts[0]["alert_key"] == posts.PUBLIC_SCOUT_ALERT_KEY
         assert recorded[0]["allow_review_scout"] is True
-        assert "No verified reference price" in str(sent[0]["embed"].to_dict())
+        assert "No comparison price or discount percentage is claimed" in str(sent[0]["embed"].to_dict())
 
         # A forged card label is insufficient to enter this sender path.
         card.extreme_exact_candidate = None

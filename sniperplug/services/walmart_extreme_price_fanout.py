@@ -186,6 +186,34 @@ async def set_extreme_alerts_enabled(db: Any, guild_id: int, enabled: bool) -> N
     await conn.commit()
 
 
+def delivery_requires_retry(result: Any) -> bool:
+    """Do not mistake a fallback-channel note for a failed Discord delivery.
+
+    PublicPostResult.errors contains both true errors and informational notes.
+    Use the structured post/skip counts as the authoritative outcome. An
+    unconfirmed post receipt is explicitly critical even after Discord sent it.
+    """
+    attempted = int(getattr(result, "attempted", 1) or 1)
+    completed = sum(
+        int(getattr(result, attr, 0) or 0)
+        for attr in (
+            "posted",
+            "skipped_duplicate",
+            "skipped_not_alertable",
+            "skipped_disabled",
+            "skipped_wrong_retailer",
+        )
+    )
+    if completed < attempted:
+        return True
+    if any(str(note).startswith("CRITICAL:") for note in getattr(result, "errors", ())):
+        return True
+    return any(
+        str(reason).startswith("category_error:")
+        for reason in getattr(result, "not_alertable_reasons", ())
+    )
+
+
 async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
     """Post only opt-in, exact-verified, unusually cheap primary products.
 
@@ -253,7 +281,7 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                         allow_verified_extreme=True,
                     )
                     posted += result.posted
-                    if result.errors:
+                    if delivery_requires_retry(result):
                         # Failed posts remain eligible next cycle. Existing durable
                         # receipts prevent double delivery to successful guilds.
                         log.error(

@@ -4,6 +4,16 @@ from __future__ import annotations
 
 import re
 from typing import Any
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
+
+from sniperplug.services.autoscan_live_guild_reconciliation import list_live_public_alert_guilds
+from sniperplug.services.discord_snowflake import snowflake_text
+from sniperplug.services.low_price_scout import ScoutLead, build_scout_card, score_candidate
+from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
+from sniperplug.services.walmart_exact_verification_queue import QUEUE_TABLE, _candidate_from_snapshot
+
 
 from sniperplug.services.public_deal_quality import walmart_item_id_from_url
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
@@ -53,16 +63,6 @@ def eligible_exact_extreme_candidate(candidate: Any) -> bool:
     title = " ".join(str(x or "") for x in (candidate.title, candidate.parent_title))
     return bool(PRIMARY_PRODUCT.search(title) and not ACCESSORY.search(title))
 
-import asyncio
-import logging
-from datetime import datetime, timedelta, timezone
-
-from sniperplug.services.autoscan_live_guild_reconciliation import list_live_public_alert_guilds
-from sniperplug.services.discord_snowflake import snowflake_text
-from sniperplug.services.low_price_scout import ScoutLead, build_scout_card, score_candidate
-from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
-from sniperplug.services.walmart_exact_verification_queue import QUEUE_TABLE, _candidate_from_snapshot
-
 BATCH_LIMIT = 40
 FRESHNESS_MINUTES = 15
 SETTINGS_TABLE = "walmart_extreme_price_alert_settings"
@@ -83,7 +83,20 @@ def build_extreme_price_card(candidate: Any) -> Any | None:
             reasons=("recognizable primary product", "official Walmart exact-item price"),
         )
     card = build_scout_card(lead)
+    card.url = candidate.direct_product_url or candidate.product_url
+    card.embed.url = card.url
     card.embed.title = "Extreme exact-price find: " + str(candidate.title or "")[:155]
+    # The private scout may show an untrusted raw MSRP. Do not repeat it in an
+    # automatic alert when the source did not prove a reference/markdown.
+    for index, field in enumerate(card.embed.fields):
+        if str(field.name) == "💰 Scout price":
+            card.embed.set_field_at(
+                index,
+                name="Walmart exact API price",
+                value=f"Exact offer price: **${float(candidate.api_current_price):.2f}**. No verified reference price or discount.",
+                inline=False,
+            )
+            break
     card.embed.add_field(
         name="Exact price, NOT a verified markdown",
         value=(
@@ -198,7 +211,7 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
         cursor = await conn.execute(
             f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
-            "WHERE status = 'verified_no_reference' "
+            "WHERE status IN ('verified_no_reference', 'verified_under_threshold', 'verified_reference') "
             "AND exact_current_cents BETWEEN 1 AND ? "
             "AND verified_at >= ? AND snapshot_json <> '' "
             "AND (verified_at, item_id) > (?, ?) "

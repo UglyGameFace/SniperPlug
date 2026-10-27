@@ -140,3 +140,79 @@ def test_automatic_extreme_lane_does_not_change_generic_scout_or_verified_poster
     params = signature(maybe_post_public_deal_cards).parameters
     assert params["allow_verified_extreme"].default is False
     assert params["allow_review_scout"].default is False
+
+
+def test_existing_sender_enforces_extreme_proof_and_scout_dedupe(monkeypatch) -> None:
+    from sniperplug.services import public_deal_posts as posts
+    from sniperplug.services import deal_category_preferences as categories
+
+    async def scenario():
+        sent = []
+        recorded = []
+        alerts = []
+
+        class Channel:
+            id = 901
+
+            async def send(self, **kwargs):
+                sent.append(kwargs)
+                return SimpleNamespace(id=902)
+
+        async def config(*args, **kwargs):
+            return {"enabled": True, "channel_id": 901, "retailers": ("walmart",)}
+
+        async def prefs(*args, **kwargs):
+            return {}
+
+        async def channel(*args, **kwargs):
+            return Channel(), None
+
+        async def no_recent(*args, **kwargs):
+            alerts.append(kwargs)
+            return None
+
+        async def allowed(*args, **kwargs):
+            return True
+
+        async def noop(*args, **kwargs):
+            return None
+
+        async def finalize(*args, **kwargs):
+            recorded.append(kwargs)
+            return True, []
+
+        monkeypatch.setattr(posts, "get_public_alert_config", config)
+        monkeypatch.setattr(categories, "get_category_preferences", prefs)
+        monkeypatch.setattr(categories, "decide_category", lambda *args: SimpleNamespace(action="allow"))
+        monkeypatch.setattr(posts, "resolve_public_alert_channel", channel)
+        monkeypatch.setattr(posts, "safe_find_recent_alert", no_recent)
+        monkeypatch.setattr(posts, "reserve_public_deal_post", allowed)
+        monkeypatch.setattr(posts, "mark_public_deal_sending", noop)
+        monkeypatch.setattr(posts, "build_deal_feedback_view", noop)
+        monkeypatch.setattr(posts, "finalize_successful_public_post", finalize)
+
+        card = extreme.build_extreme_price_card(candidate())
+        bot = SimpleNamespace(db=object())
+        kwargs = {
+            "bot": bot, "guild_id": 295, "cards": [card],
+            "source_label": "walmart_extreme_exact_price",
+            "fallback_retailer": "walmart",
+            "min_public_discount": 40,
+            "allow_verified_extreme": True,
+        }
+        result = await posts.maybe_post_public_deal_cards(**kwargs)
+        assert result.posted == 1
+        assert len(sent) == 1
+        assert alerts[0]["alert_key"] == posts.PUBLIC_SCOUT_ALERT_KEY
+        assert recorded[0]["allow_review_scout"] is True
+        assert "No verified reference price" in str(sent[0]["embed"].to_dict())
+
+        # A forged card label is insufficient to enter this sender path.
+        card.extreme_exact_candidate = None
+        rejected = await posts.maybe_post_public_deal_cards(**kwargs)
+        assert rejected.posted == 0
+        assert rejected.skipped_not_alertable == 1
+        assert "extreme_exact_price_proof_rejected" in rejected.not_alertable_reasons
+        assert len(sent) == 1
+
+    asyncio.run(scenario())

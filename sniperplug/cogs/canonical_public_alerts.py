@@ -35,6 +35,7 @@ from sniperplug.services.walmart_delivery_recovery import (
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
 from sniperplug.services.walmart_extreme_price_fanout import (
     extreme_alerts_enabled,
+    extreme_price_health_summary,
     set_extreme_alerts_enabled,
 )
 from sniperplug.services.walmart_global_catalog_autoscan import load_global_catalog_state
@@ -633,6 +634,7 @@ async def build_global_autoscan_health_embed(
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
     extreme_enabled = await extreme_alerts_enabled(db, guild_id)
+    extreme_summary = await extreme_price_health_summary(db)
     hp_health = await load_hp_watcher_health(db)
     target_health = await load_target_watcher_health(db)
     target_location = await get_guild_target_location(db, guild_id)
@@ -772,7 +774,8 @@ async def build_global_autoscan_health_embed(
             "Optional, separate alerts for exact API offers at $10 or less on recognizable "
             "primary products, even without a verified original price. "
             "Not a claimed 40% markdown; check local checkout. "
-            "Use /walmart_extreme_alerts to change this setting."
+            "Use /walmart_extreme_alerts to change this setting.\n"
+            f"{extreme_summary}"
         ),
         inline=False,
     )

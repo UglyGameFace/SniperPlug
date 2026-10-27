@@ -95,6 +95,9 @@ BATCH_LIMIT = 40
 FRESHNESS_MINUTES = 15
 SETTINGS_TABLE = "walmart_extreme_price_alert_settings"
 STATE_TABLE = "walmart_extreme_price_fanout_state"
+PENDING_TABLE = "walmart_extreme_price_guild_pending"
+MAX_PENDING_GUILDS_PER_OFFER = 128
+MAX_REPLAY_PER_CYCLE = 32
 _LOCK = asyncio.Lock()
 _READY_CONNECTIONS: dict[int, Any] = {}
 log = logging.getLogger("sniperplug.autoscan.extreme_price")
@@ -191,6 +194,18 @@ async def ensure_extreme_tables(db: Any) -> None:
         f"CREATE TABLE IF NOT EXISTS {STATE_TABLE} "
         "(state_key TEXT PRIMARY KEY, last_verified_at TEXT NOT NULL, last_item_id TEXT NOT NULL)"
     )
+    # Outbox is used only for a qualified offer with a temporarily absent
+    # opted-in destination. Existing sender receipts remain authoritative.
+    await conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {PENDING_TABLE} "
+        "(guild_id TEXT NOT NULL, item_id TEXT NOT NULL, verified_at TEXT NOT NULL, "
+        "snapshot_json TEXT NOT NULL, "
+        "PRIMARY KEY (guild_id, item_id, verified_at))"
+    )
+    await conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{PENDING_TABLE}_time "
+        f"ON {PENDING_TABLE} (verified_at)"
+    )
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
     await conn.execute(
         f"INSERT INTO {STATE_TABLE} (state_key, last_verified_at, last_item_id) "
@@ -212,6 +227,15 @@ async def extreme_alerts_enabled(db: Any, guild_id: int) -> bool:
 
 
 async def set_extreme_alerts_enabled(db: Any, guild_id: int, enabled: bool) -> None:
+    # Do not acknowledge an opt-out while this worker is still in the middle
+    # of delivering a just-selected exact offer to that same server.
+    async with _LOCK:
+        await _set_extreme_alerts_enabled_locked(db, guild_id, enabled)
+
+
+async def _set_extreme_alerts_enabled_locked(
+    db: Any, guild_id: int, enabled: bool
+) -> None:
     await ensure_extreme_tables(db)
     conn = db.require_conn()
     existing_cursor = await conn.execute(f"SELECT COUNT(*) AS enabled_count FROM {SETTINGS_TABLE} WHERE enabled = 1")
@@ -221,6 +245,12 @@ async def set_extreme_alerts_enabled(db: Any, guild_id: int, enabled: bool) -> N
         "ON CONFLICT(guild_id) DO UPDATE SET enabled = excluded.enabled",
         (snowflake_text(guild_id), int(bool(enabled))),
     )
+    if not enabled:
+        # Explicit opt-out cancels undelivered leads; never replay after opt-out.
+        await conn.execute(
+            f"DELETE FROM {PENDING_TABLE} WHERE guild_id = ?",
+            (snowflake_text(guild_id),),
+        )
     # Enabling the first server must not replay an old queue backlog.
     if enabled and not previously_enabled:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
@@ -259,7 +289,7 @@ def delivery_requires_retry(result: Any) -> bool:
     )
 
 
-async def extreme_price_health_summary(db: Any) -> str:
+async def extreme_price_health_summary(db: Any, guild_id: int | None = None) -> str:
     """Explain the last 15 minutes of exact-price candidates, without polling Walmart.
 
     Bounded to a small sample from the same durable queue and statuses consumed
@@ -308,6 +338,18 @@ async def extreme_price_health_summary(db: Any) -> str:
         qualified += 1
         if (verified_at, item_id) > last_seen:
             unprocessed += 1
+    pending_detail = ""
+    if guild_id is not None:
+        cursor = await conn.execute(
+            f"SELECT COUNT(*) AS n FROM {PENDING_TABLE} "
+            "WHERE guild_id = ? AND verified_at >= ?",
+            (snowflake_text(guild_id), cutoff),
+        )
+        pending = int(_row_get(await cursor.fetchone(), "n", 0) or 0)
+        pending_detail = (
+            f" Pending recovery for this server: **{pending}**"
+            " (previously missed due to temporary live-route absence)."
+        )
     capped = " (sample capped at 60)" if len(rows) >= limit else ""
     rejection_line = "; ".join(
         f"{count} {reason.replace('_', ' ')}"
@@ -320,7 +362,140 @@ async def extreme_price_health_summary(db: Any) -> str:
         "the delivery cursor. These are candidates, not confirmed Discord posts. "
         f"Not eligible: {rejection_line}. "
         "This is a bounded sample, not proof of the entire live Walmart catalog."
+        f"{pending_detail}"
     )
+
+
+async def _record_missing_guild_deliveries(
+    conn: Any,
+    *,
+    missing_guild_ids: set[str],
+    item_id: str,
+    verified_at: str,
+    snapshot_json: str,
+) -> None:
+    """Persist missing recipients before advancing the global cursor.
+
+    This intentionally fails closed if there are too many absent recipients
+    to queue safely. A cursor that did not move can be retried after recovery.
+    """
+    if not missing_guild_ids:
+        return
+    if len(missing_guild_ids) > MAX_PENDING_GUILDS_PER_OFFER:
+        raise RuntimeError(
+            f"Too many absent extreme-price destinations: "
+            f"{len(missing_guild_ids)} > {MAX_PENDING_GUILDS_PER_OFFER}"
+        )
+    for guild_id in sorted(missing_guild_ids):
+        await conn.execute(
+            f"INSERT INTO {PENDING_TABLE} "
+            "(guild_id, item_id, verified_at, snapshot_json) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(guild_id, item_id, verified_at) DO NOTHING",
+            (guild_id, item_id, verified_at, snapshot_json),
+        )
+    await conn.commit()
+
+
+async def _replay_missing_guild_deliveries(
+    bot: Any,
+    conn: Any,
+    opted_ids: set[str],
+    cutoff: str,
+) -> tuple[int, Any | None]:
+    """Retry absent guilds only while the exact official snapshot is unchanged.
+
+    The existing public post sender still owns delivery receipts and dedupe.
+    Never replay on expired or changed exact-price evidence, even if a guild
+    reappears, and do not manufacture a new Walmart API price.
+    """
+    cursor = await conn.execute(f"SELECT 1 FROM {PENDING_TABLE} LIMIT 1")
+    if await cursor.fetchone() is None:
+        return 0, None
+    await conn.execute(f"DELETE FROM {PENDING_TABLE} WHERE verified_at < ?", (cutoff,))
+    await conn.commit()
+
+    live = await list_live_public_alert_guilds(
+        bot.db, bot, required_retailer="walmart"
+    )
+    live_ids = {
+        snowflake_text(guild.guild_id)
+        for guild in live.guilds
+        if snowflake_text(guild.guild_id) in opted_ids
+    }
+    if not live_ids:
+        return 0, live
+
+    posted = 0
+    remaining = MAX_REPLAY_PER_CYCLE
+    # Stay below SQLite variable limits and bound the total number of replays.
+    sorted_ids = sorted(live_ids)
+    for start in range(0, len(sorted_ids), 200):
+        if remaining <= 0:
+            break
+        part = sorted_ids[start : start + 200]
+        placeholders = ",".join("?" for _ in part)
+        cursor = await conn.execute(
+            f"SELECT guild_id, item_id, verified_at, snapshot_json FROM {PENDING_TABLE} "
+            f"WHERE verified_at >= ? AND guild_id IN ({placeholders}) "
+            "ORDER BY verified_at ASC, item_id ASC LIMIT ?",
+            (cutoff, *part, remaining),
+        )
+        for row in await cursor.fetchall():
+            remaining -= 1
+            guild_id = str(_row_get(row, "guild_id", 0))
+            item_id = str(_row_get(row, "item_id", 1))
+            verified_at = str(_row_get(row, "verified_at", 2))
+            snapshot = str(_row_get(row, "snapshot_json", 3))
+            cursor_now = await conn.execute(
+                f"SELECT verified_at, snapshot_json, status FROM {QUEUE_TABLE} "
+                "WHERE item_id = ?",
+                (item_id,),
+            )
+            current = await cursor_now.fetchone()
+            same_proof = (
+                current is not None
+                and str(_row_get(current, "verified_at", 0)) == verified_at
+                and str(_row_get(current, "snapshot_json", 1)) == snapshot
+                and str(_row_get(current, "status", 2)) in (
+                    "verified_no_reference", "verified_under_threshold",
+                    "verified_reference",
+                )
+            )
+            card = build_extreme_price_card(
+                _candidate_from_snapshot(snapshot)
+            ) if same_proof else None
+            if card is not None:
+                try:
+                    result = await maybe_post_public_deal_cards(
+                        bot=bot,
+                        guild_id=int(guild_id),
+                        cards=[card],
+                        source_label="walmart_extreme_exact_price",
+                        fallback_retailer="walmart",
+                        allow_verified_extreme=True,
+                    )
+                except Exception:
+                    log.exception(
+                        "Walmart extreme pending replay failed guild=%s item=%s",
+                        guild_id, item_id,
+                    )
+                    continue
+                posted += int(getattr(result, "posted", 0) or 0)
+                if delivery_requires_retry(result):
+                    log.warning(
+                        "Walmart extreme pending replay retained guild=%s item=%s",
+                        guild_id, item_id,
+                    )
+                    continue
+            # Item changed, expired, became ineligible, or delivery/duplicate
+            # handling completed: clear its replay record, never send stale proof.
+            await conn.execute(
+                f"DELETE FROM {PENDING_TABLE} WHERE guild_id = ? "
+                "AND item_id = ? AND verified_at = ?",
+                (guild_id, item_id, verified_at),
+            )
+            await conn.commit()
+    return posted, live
 
 
 async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
@@ -351,6 +526,9 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
             raise RuntimeError("Walmart extreme-price cursor missing")
         previous = (str(_row_get(state, "last_verified_at", 0)), str(_row_get(state, "last_item_id", 1)))
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
+        replayed, replay_live = await _replay_missing_guild_deliveries(
+            bot, conn, opted_ids, cutoff,
+        )
         cursor = await conn.execute(
             f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
             "WHERE status IN ('verified_no_reference', 'verified_under_threshold', 'verified_reference') "
@@ -362,8 +540,16 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         )
         rows = await cursor.fetchall()
         next_cursor = previous
-        examined = eligible = posted = 0
-        enabled: list[int] | None = None
+        examined = eligible = 0
+        posted = replayed
+        enabled: list[int] | None = (
+            [
+                int(guild.guild_id)
+                for guild in replay_live.guilds
+                if snowflake_text(guild.guild_id) in opted_ids
+            ]
+            if replay_live is not None else None
+        )
         for row in rows:
             item_id, verified_at, snapshot = (
                 str(_row_get(row, "item_id", 0)),
@@ -396,6 +582,18 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                             item_id, len(opted_ids),
                         )
                         break
+                # Persist a bounded, expiring ticket for opted-in guilds that
+                # were absent from reconciliation before acknowledging the
+                # global cursor after any live destination receives this item.
+                missing = opted_ids - {snowflake_text(gid) for gid in enabled}
+                if missing:
+                    await _record_missing_guild_deliveries(
+                        conn,
+                        missing_guild_ids=missing,
+                        item_id=item_id,
+                        verified_at=verified_at,
+                        snapshot_json=snapshot,
+                    )
                 for guild_id in enabled:
                     result = await maybe_post_public_deal_cards(
                         bot=bot,

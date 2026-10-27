@@ -52,3 +52,117 @@ def eligible_exact_extreme_candidate(candidate: Any) -> bool:
         return False
     title = " ".join(str(x or "") for x in (candidate.title, candidate.parent_title))
     return bool(PRIMARY_PRODUCT.search(title) and not ACCESSORY.search(title))
+
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
+
+from sniperplug.services.autoscan_live_guild_reconciliation import list_live_public_alert_guilds
+from sniperplug.services.discord_snowflake import snowflake_text
+from sniperplug.services.low_price_scout import ScoutLead, build_scout_card, score_candidate
+from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
+from sniperplug.services.walmart_exact_verification_queue import QUEUE_TABLE, _candidate_from_snapshot
+
+BATCH_LIMIT = 40
+FRESHNESS_MINUTES = 15
+SETTINGS_TABLE = "walmart_extreme_price_alert_settings"
+STATE_TABLE = "walmart_extreme_price_fanout_state"
+_LOCK = asyncio.Lock()
+_READY_CONNECTIONS: dict[int, Any] = {}
+log = logging.getLogger("sniperplug.autoscan.extreme_price")
+
+
+def build_extreme_price_card(candidate: Any) -> Any | None:
+    if not eligible_exact_extreme_candidate(candidate):
+        return None
+    lead = score_candidate(candidate)
+    if lead is None:
+        lead = ScoutLead(
+            candidate=candidate,
+            score=70,
+            reasons=("recognizable primary product", "official Walmart exact-item price"),
+        )
+    card = build_scout_card(lead)
+    card.embed.title = "Extreme exact-price find: " + str(candidate.title or "")[:155]
+    card.embed.add_field(
+        name="Exact price, NOT a verified markdown",
+        value=(
+            "Walmart's official exact-item API returned $"
+            + f"{float(candidate.api_current_price):.2f}"
+            + " for this seller/offer/variant. No original price or discount is claimed. "
+            + "Recheck condition, local availability, shipping and checkout price."
+        ),
+        inline=False,
+    )
+    card.embed.set_footer(text="Extreme exact-price lead; original price unverified; verify checkout")
+    card.extreme_exact_candidate = candidate
+    card.should_alert = True
+    return card
+
+
+def valid_extreme_price_card(card: Any) -> bool:
+    """Recheck the provenance at the shared public-send boundary."""
+    candidate = getattr(card, "extreme_exact_candidate", None)
+    if not eligible_exact_extreme_candidate(candidate):
+        return False
+    try:
+        return (
+            str(card.selected_offer_id or "") == str(candidate.selected_offer_id or "")
+            and abs(float(card.current_price) - float(candidate.api_current_price)) < 0.01
+            and walmart_item_id_from_url(card.url)
+            == str(candidate.variant_attributes.get("exactDetailItemId") or "")
+        )
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+async def ensure_extreme_tables(db: Any) -> None:
+    conn = db.require_conn()
+    if _READY_CONNECTIONS.get(id(conn)) is conn:
+        return
+    await conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {SETTINGS_TABLE} "
+        "(guild_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0)"
+    )
+    await conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {STATE_TABLE} "
+        "(state_key TEXT PRIMARY KEY, last_verified_at TEXT NOT NULL, last_item_id TEXT NOT NULL)"
+    )
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
+    await conn.execute(
+        f"INSERT INTO {STATE_TABLE} (state_key, last_verified_at, last_item_id) "
+        "VALUES ('walmart', ?, '') ON CONFLICT(state_key) DO NOTHING",
+        (cutoff,),
+    )
+    await conn.commit()
+    _READY_CONNECTIONS[id(conn)] = conn
+
+
+async def extreme_alerts_enabled(db: Any, guild_id: int) -> bool:
+    await ensure_extreme_tables(db)
+    cursor = await db.require_conn().execute(
+        f"SELECT enabled FROM {SETTINGS_TABLE} WHERE guild_id = ?",
+        (snowflake_text(guild_id),),
+    )
+    row = await cursor.fetchone()
+    return bool(row and int(row[0]))
+
+
+async def set_extreme_alerts_enabled(db: Any, guild_id: int, enabled: bool) -> None:
+    await ensure_extreme_tables(db)
+    conn = db.require_conn()
+    existing_cursor = await conn.execute(f"SELECT COUNT(*) FROM {SETTINGS_TABLE} WHERE enabled = 1")
+    previously_enabled = int((await existing_cursor.fetchone())[0] or 0)
+    await conn.execute(
+        f"INSERT INTO {SETTINGS_TABLE} (guild_id, enabled) VALUES (?, ?) "
+        "ON CONFLICT(guild_id) DO UPDATE SET enabled = excluded.enabled",
+        (snowflake_text(guild_id), int(bool(enabled))),
+    )
+    # Enabling the first server must not replay an old queue backlog.
+    if enabled and not previously_enabled:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_MINUTES)).isoformat()
+        await conn.execute(
+            f"UPDATE {STATE_TABLE} SET last_verified_at = ?, last_item_id = '' WHERE state_key = 'walmart'",
+            (cutoff,),
+        )
+    await conn.commit()

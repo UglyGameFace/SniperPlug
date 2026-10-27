@@ -59,7 +59,7 @@ def test_extreme_exact_price_can_qualify_without_a_markdown_reference() -> None:
     assert is_public_deal_candidate(card, min_discount=40) is False
     text = str(card.embed.to_dict()).lower()
     assert "not a verified markdown" in text
-    assert "no verified reference price or discount" in text
+    assert "no comparison price or discount percentage is claimed" in text
     assert "$1.00" in text
     assert "99%" not in text
 

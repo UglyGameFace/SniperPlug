@@ -41,8 +41,6 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
     """
     if candidate is None:
         return "missing_snapshot"
-    if exact_offer_identity(candidate) is None:
-        return "offer_or_seller_proof_missing"
     attrs = getattr(candidate, "variant_attributes", None) or {}
     if str(attrs.get("exactDetailPriceProof", "")).strip().lower() != "yes":
         return "exact_price_proof_missing"
@@ -52,6 +50,8 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
         return "item_url_mismatch"
     if str(getattr(candidate, "retailer", "") or "").strip().lower() != "walmart":
         return "wrong_retailer"
+    if exact_offer_identity(candidate) is None:
+        return "offer_or_seller_proof_missing"
     try:
         current = float(candidate.api_current_price)
         displayed = float(candidate.current_price)

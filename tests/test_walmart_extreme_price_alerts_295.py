@@ -64,6 +64,46 @@ def test_extreme_exact_price_can_qualify_without_a_markdown_reference() -> None:
     assert "99%" not in text
 
 
+
+def test_galaxy_tab_extreme_price_requires_real_tablet_and_exact_proof() -> None:
+    """A $1 Galaxy Tab S11 must not be filtered as an unknown primary product."""
+    from dataclasses import replace
+
+    base = candidate()
+    for title in (
+        "Samsung Galaxy Tab S11 11-inch Widescreen Tablet with S Pen 256GB Android 16 Silver",
+        "Samsung Galaxy Tab S11 Ultra 256GB",
+        "Samsung Galaxy Tab S10 FE 128GB",
+        "Samsung Galaxy Tab S9 128GB",
+    ):
+        tablet = replace(base, title=title)
+        assert extreme.extreme_rejection_reason(tablet) is None, title
+        card = extreme.build_extreme_price_card(tablet)
+        assert card is not None and extreme.valid_extreme_price_card(card)
+
+        # Product recognition does not bypass official exact-item, price, or stock proof.
+        assert extreme.extreme_rejection_reason(
+            replace(tablet, variant_attributes={**tablet.variant_attributes, "exactDetailPriceProof": "no"})
+        ) == "exact_price_proof_missing"
+        assert extreme.extreme_rejection_reason(
+            replace(tablet, can_add_to_cart=False)
+        ) == "not_cart_buyable"
+
+    for accessory_title in (
+        "Samsung Galaxy Tab S11 Case",
+        "Samsung Galaxy Tab S11 Screen Protector",
+        "Samsung Galaxy Tab S11 Replacement Screen",
+        "Samsung Galaxy Tab S11 Book Cover",
+        "Samsung Galaxy Tab S11 Display Dummy",
+    ):
+        assert extreme.extreme_rejection_reason(
+            replace(base, title=accessory_title)
+        ) == "accessory_or_parts", accessory_title
+
+    assert extreme.extreme_rejection_reason(
+        replace(base, title="Samsung Galaxy Tab A9 64GB")
+    ) == "not_recognized_primary_product"
+
 def test_extreme_exact_price_still_blocks_accessories_and_unproven_offers() -> None:
     from dataclasses import replace
 

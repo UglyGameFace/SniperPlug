@@ -72,8 +72,12 @@ def primary_product_evidence(candidate: Any, *, trusted_reference: float | None 
         return None
     attrs = getattr(candidate, "variant_attributes", None) or {}
     category = str(attrs.get("category") or attrs.get("categoryPath") or "").lower()
+    # A parent such as "Cell Phones & Accessories" may contain the real
+    # "Cell Phones" product leaf. Reject accessory *leaves*, not the entire
+    # ancestry, or we silently discard new phone brands again.
+    category_leaf = re.split(r"[/|>]", category)[-1].strip()
     if category and any(dept in category for dept in VALUABLE_DEPARTMENTS):
-        if not any(bad in category for bad in ACCESSORY_DEPARTMENTS):
+        if not any(bad in category_leaf for bad in ACCESSORY_DEPARTMENTS):
             return "walmart_category"
     if DURABLE_PRODUCT_TYPE.search(title):
         return "product_type"

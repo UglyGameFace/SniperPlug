@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -16,21 +15,13 @@ from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.walmart_exact_verification_queue import QUEUE_TABLE, _candidate_from_snapshot
 from sniperplug.services.public_deal_quality import walmart_item_id_from_url
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
+from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
+from sniperplug.services.walmart_extreme_price_signals import (
+    ACCESSORY,
+    primary_product_evidence,
+)
 
 MAX_PRICE_CENTS = 1000
-PRIMARY_PRODUCT = re.compile(
-    r"\b(?:galaxy\s+(?:tab\s+(?:[sa]\d{1,2}|active\d{1,2})|s\d{2}|z\s*(?:fold|flip)|a\d{2})|s2\d\s*(?:fe|ultra|plus)?"
-    r"|iphone\s*\d{2}|ipad\s*(?:pro|air|mini|\d+)|pixel\s*[6-9]"
-    r"|macbook|laptop|playstation\s*[45]|ps[45]|xbox\s+(?:series|one)"
-    r"|nintendo\s+switch|oled\s+tv|robot\s+vacuum)\b",
-    re.IGNORECASE,
-)
-ACCESSORY = re.compile(
-    r"\b(?:case|cover|protector|charger|cable|adapter|replacement|parts? only"
-    r"|box only|mount|holder|remote control|display dummy)\b",
-    re.IGNORECASE,
-)
-
 
 def extreme_rejection_reason(candidate: Any) -> str | None:
     """Explain the first failed gate without weakening exact-offer evidence.
@@ -82,7 +73,9 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
     )
     if ACCESSORY.search(title):
         return "accessory_or_parts"
-    if PRIMARY_PRODUCT.search(title) is None:
+    if primary_product_evidence(
+        candidate, trusted_reference=_trusted_reference(candidate)
+    ) is None:
         return "not_recognized_primary_product"
     return None
 

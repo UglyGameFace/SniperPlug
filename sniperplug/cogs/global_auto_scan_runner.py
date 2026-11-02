@@ -55,7 +55,7 @@ GLOBAL_DISCOVERY_INITIAL_DELAY_SECONDS = 45
 GLOBAL_DISCOVERY_INTERVAL_SECONDS = 60
 GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS = 15
 GLOBAL_DISCOVERY_MIN_DISCOUNT = 10
-GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 2
+GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 3
 GLOBAL_BACKPRESSURE_LOG_INTERVAL_SECONDS = 5 * 60
 GLOBAL_CLAIM_BUSY_LOG_INTERVAL_SECONDS = 60
 GLOBAL_FANOUT_EVENT_LIMIT = 20
@@ -301,6 +301,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         preset=preset,
                         db=self.bot.db,
                         min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
+                        catalog_claim=claim,
                     )
 
                     completed = await complete_catalog_claim(self.bot.db, claim)

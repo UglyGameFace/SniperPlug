@@ -19,7 +19,7 @@ from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 
 MAX_PRICE_CENTS = 1000
 PRIMARY_PRODUCT = re.compile(
-    r"\b(?:galaxy\s+(?:s\d{2}|z\s*(?:fold|flip)|a\d{2})|s2\d\s*(?:fe|ultra|plus)?"
+    r"\b(?:galaxy\s+(?:tab\s+s\d{1,2}|s\d{2}|z\s*(?:fold|flip)|a\d{2})|s2\d\s*(?:fe|ultra|plus)?"
     r"|iphone\s*\d{2}|ipad\s*(?:pro|air|mini|\d+)|pixel\s*[6-9]"
     r"|macbook|laptop|playstation\s*[45]|ps[45]|xbox\s+(?:series|one)"
     r"|nintendo\s+switch|oled\s+tv|robot\s+vacuum)\b",

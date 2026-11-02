@@ -75,6 +75,8 @@ def test_galaxy_tab_extreme_price_requires_real_tablet_and_exact_proof() -> None
         "Samsung Galaxy Tab S11 Ultra 256GB",
         "Samsung Galaxy Tab S10 FE 128GB",
         "Samsung Galaxy Tab S9 128GB",
+        "Samsung Galaxy Tab A9 64GB",
+        "Samsung Galaxy Tab Active5 128GB",
     ):
         tablet = replace(base, title=title)
         assert extreme.extreme_rejection_reason(tablet) is None, title
@@ -101,7 +103,7 @@ def test_galaxy_tab_extreme_price_requires_real_tablet_and_exact_proof() -> None
         ) == "accessory_or_parts", accessory_title
 
     assert extreme.extreme_rejection_reason(
-        replace(base, title="Samsung Galaxy Tab A9 64GB")
+        replace(base, title="Samsung Galaxy Tab Toy Sticker")
     ) == "not_recognized_primary_product"
 
 def test_extreme_exact_price_still_blocks_accessories_and_unproven_offers() -> None:

@@ -523,10 +523,13 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             )
             if event_rows or decision_rows or queue_cleanup.deleted:
                 legacy.log.info(
-                    "Walmart post-fanout maintenance events=%s decisions=%s exact_queue=%s",
+                    "Walmart post-fanout maintenance events=%s decisions=%s "
+                    "exact_queue=%s expired=%s overflow=%s",
                     event_rows,
                     decision_rows,
                     queue_cleanup.deleted,
+                    queue_cleanup.expired_selected,
+                    queue_cleanup.overflow_selected,
                 )
         except asyncio.CancelledError:
             raise

@@ -127,6 +127,18 @@ def test_dynamic_extreme_value_signals_prioritize_any_brand_and_reject_junk() ->
     source_category = replace(base, title="Nova X9 256GB", variant_attributes={
         **base.variant_attributes, "category": "Electronics/Computers/Tablets",
     })
+    new_phone_brand = replace(base, title="Invented Z5 Ultra 256GB", variant_attributes={
+        **base.variant_attributes,
+        "category": "Electronics/Cell Phones & Accessories/Cell Phones",
+    })
+    assert primary_product_evidence(new_phone_brand) == "walmart_category"
+
+    accessory_leaf = replace(base, title="Unlabeled X5 Bundle", variant_attributes={
+        **base.variant_attributes,
+        "category": "Electronics/Cell Phones & Accessories/Phone Cases",
+    })
+    assert primary_product_evidence(accessory_leaf) is None
+
     for product in (generic, unknown_brand, source_category):
         assert primary_product_evidence(product) is not None
         assert extreme.extreme_rejection_reason(product) is None

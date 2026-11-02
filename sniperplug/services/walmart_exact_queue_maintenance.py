@@ -125,6 +125,11 @@ async def maybe_prune_walmart_exact_queue_bounded(
                     time.monotonic() + CLEANUP_OVERFLOW_PROBE_SECONDS
                 )
 
+            # Expired selections already count against the current excess:
+            # never delete more healthy rows than needed to return below cap.
+            state.overflow_remaining = max(
+                0, state.overflow_remaining - len(expired_ids),
+            )
             if state.overflow_remaining:
                 # Don't evict fresh candidates or proof currently needed for
                 # Discord delivery. The oldest rows are cheap to seek using the
@@ -191,7 +196,7 @@ async def maybe_prune_walmart_exact_queue_bounded(
         # Any expired row reclaimed also reduces the true overflow; avoid
         # repeatedly evicting healthy rows after the budget is exhausted.
         state.overflow_remaining = max(
-            0, state.overflow_remaining - len(selected),
+            0, state.overflow_remaining - len(overflow_ids),
         )
         state.next_due_monotonic = time.monotonic() + (
             CLEANUP_FOLLOWUP_SECONDS

@@ -175,3 +175,61 @@ def test_catalog_scan_rejects_claim_query_mismatch_without_spending_api_calls() 
             requested_by="global_catalog_autoscan", preset=bad_preset,
             db=object(), min_discount=10, catalog_claim=claim,
         ))
+
+def test_catalog_fails_closed_if_future_config_would_expand_http_budget(monkeypatch) -> None:
+    claim = fake_claim()
+    monkeypatch.setattr(catalog, "CATALOG_SORT_PASSES", ((None, None), ("new", None)))
+    with pytest.raises(ValueError, match="request budget exceeded"):
+        asyncio.run(catalog.discover_walmart_catalog_candidates(
+            requested_by="global_catalog_autoscan",
+            preset=HuntPreset(
+                "global_catalog_autoscan", "Walmart", "x", "budget",
+                claim.queries, 10,
+            ),
+            db=object(), min_discount=10, catalog_claim=claim,
+        ))
+
+
+def test_catalog_provider_overreturn_cannot_amplify_database_ingress(monkeypatch) -> None:
+    async def run() -> None:
+        claim = fake_claim()
+        calls = 0
+        persisted = []
+
+        async def scan(_query, _page, _size, _sort, _order, _requested):
+            nonlocal calls
+            calls += 1
+            start = 950_000 + 200 * calls
+            return ProviderScanResult(
+                provider_key="walmart",
+                candidates=tuple(
+                    SourceCandidate(
+                        source_key="walmart", retailer="Walmart",
+                        title=f"Product {i}", product_url=f"https://www.walmart.com/ip/{start + i}",
+                        product_id=str(start + i), current_price=1.0,
+                    ) for i in range(90)
+                ),
+            )
+
+        async def enqueue(_db, candidates, **_kwargs):
+            persisted.extend(candidates)
+            return SimpleNamespace(summary_line=lambda: "queued")
+
+        monkeypatch.setattr(catalog, "run_walmart_autoscan_scan_off_event_loop", scan)
+        monkeypatch.setattr(catalog, "enqueue_walmart_exact_verification_candidates_bulk", enqueue)
+
+        result = await catalog.discover_walmart_catalog_candidates(
+            requested_by="global_catalog_autoscan",
+            preset=HuntPreset(
+                "global_catalog_autoscan", "Walmart", "x", "budget",
+                claim.queries, 10,
+            ),
+            db=object(), min_discount=10, catalog_claim=claim,
+        )
+        assert calls == 4
+        assert len(persisted) == 4 * catalog.hunt.RESULTS_PER_PAGE
+        assert result.products_checked == len(persisted)
+        assert result.pages_checked == 4
+        assert any("capped 90 to" in warning for warning in result.warnings)
+
+    asyncio.run(run())

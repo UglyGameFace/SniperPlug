@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from sniperplug.models.candidate import SourceCandidate
+from sniperplug.services.walmart_extreme_price_signals import is_priority_extreme_discovery
 from sniperplug.providers.base import ProviderScanRequest
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 
@@ -301,6 +302,13 @@ def _enrichment_priority(candidate: SourceCandidate, *, min_discount: int) -> fl
 
     reference = _trusted_reference(candidate)
     score = 5.0
+    # A $1-$10 potentially high-value item must not wait behind thousands of
+    # ordinary 10%-off candidates. This is discovery scheduling only; all
+    # exact-item offer, stock, price and seller proof remains mandatory later.
+    if is_priority_extreme_discovery(
+        candidate, current_price=current, trusted_reference=reference
+    ):
+        score += 400.0
     if reference is not None:
         discount = _percent_off(current, reference)
         if discount is not None and discount >= max(1, int(min_discount)):

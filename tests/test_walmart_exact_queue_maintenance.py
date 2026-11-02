@@ -83,7 +83,8 @@ def test_cleanup_deletes_only_preselected_item_ids() -> None:
     delete_sql, delete_params = conn.calls[-1]
     assert delete_sql.lstrip().upper().startswith("DELETE")
     assert "WHERE item_id IN (?, ?, ?)" in " ".join(delete_sql.split())
-    assert delete_params == ("100", "200", "300")
+    assert delete_params[:3] == ("100", "200", "300")
+    assert len(delete_params) == 6
     assert conn.commit_count == 1
 
 

@@ -425,6 +425,16 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         else:
                             legacy.log.info(result.summary_line())
 
+                    # Short-lived, exact-verified low-price offers take the
+                    # fast delivery lane before ordinary markdown backlogs.
+                    # This reuses the same sender, receipts, budgets and proof
+                    # gates, without a second poller or any extra API requests.
+                    try:
+                        await fanout_recent_extreme_walmart_prices(self.bot)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        legacy.log.exception("Optional extreme-price alert lane failed")
                     fanout = await fanout_recent_exact_walmart_deals(
                         self.bot,
                         event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
@@ -438,13 +448,6 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     ):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()
-                    # Separate opt-in lead lane: existing verified markdown fanout is unchanged.
-                    try:
-                        await fanout_recent_extreme_walmart_prices(self.bot)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        legacy.log.exception("Optional extreme-price alert lane failed")
                     await self._run_walmart_post_fanout_maintenance()
                 except asyncio.CancelledError:
                     raise

@@ -118,10 +118,10 @@ def test_overlapping_stale_and_overflow_rows_still_fill_unique_batch() -> None:
     assert conn.calls[2][1][-1] == CLEANUP_BATCH_SIZE - stale_count
     delete_sql, delete_params = conn.calls[-1]
     assert delete_sql.lstrip().upper().startswith("DELETE")
-    assert len(delete_params) == CLEANUP_BATCH_SIZE
-    assert len(set(delete_params)) == CLEANUP_BATCH_SIZE
+    assert len(delete_params) == CLEANUP_BATCH_SIZE + 3  # safety cutoff + verification/lease guards
+    assert len(set(delete_params[:CLEANUP_BATCH_SIZE])) == CLEANUP_BATCH_SIZE
     assert delete_params[:3] == ("0", "1", "2")
-    assert delete_params[-1] == str(CLEANUP_BATCH_SIZE - 1)
+    assert delete_params[CLEANUP_BATCH_SIZE - 1] == str(CLEANUP_BATCH_SIZE - 1)
     assert conn.commit_count == 1
 
 

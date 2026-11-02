@@ -21,6 +21,7 @@ from sniperplug.services.walmart_global_catalog_autoscan import (
 
 
 CATALOG_SEARCH_CONCURRENCY = 3
+GLOBAL_CATALOG_REQUEST_BUDGET = 4
 CATALOG_PAGES_PER_QUERY = 2
 CATALOG_PROVIDER_RESULT_LIMIT = 1000
 CATALOG_MAX_PAGE = max(1, CATALOG_PROVIDER_RESULT_LIMIT // hunt.RESULTS_PER_PAGE)
@@ -167,6 +168,14 @@ async def discover_walmart_catalog_candidates(
             for page in catalog_pages
         )
 
+    # Fail closed on accidental configuration changes that could multiply
+    # vendor calls, DB reads and queued item rows.
+    if (
+        catalog_claim is not None
+        and len(page_plan) * len(CATALOG_SORT_PASSES) > GLOBAL_CATALOG_REQUEST_BUDGET
+    ):
+        raise ValueError("global Walmart catalog request budget exceeded")
+
     async def scan_one(
         query: str,
         page: int,
@@ -212,7 +221,14 @@ async def discover_walmart_catalog_candidates(
                 warnings.append(warning)
             continue
 
-        candidates = list(result.candidates)
+        # The API response must not amplify stored queue rows beyond the
+        # bounded 25-result page requested from the provider.
+        candidates = list(result.candidates[:hunt.RESULTS_PER_PAGE])
+        if len(result.candidates) > hunt.RESULTS_PER_PAGE:
+            warnings.append(
+                "Walmart provider exceeded requested page size; "
+                f"capped {len(result.candidates)} to {hunt.RESULTS_PER_PAGE}"
+            )
         tag_candidates_with_route(candidates, query=query)
         all_candidates.extend(candidates)
         for warning in result.warnings:

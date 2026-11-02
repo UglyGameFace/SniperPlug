@@ -55,7 +55,7 @@ GLOBAL_DISCOVERY_INITIAL_DELAY_SECONDS = 45
 GLOBAL_DISCOVERY_INTERVAL_SECONDS = 60
 GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS = 15
 GLOBAL_DISCOVERY_MIN_DISCOUNT = 10
-GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 2
+GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 3
 GLOBAL_BACKPRESSURE_LOG_INTERVAL_SECONDS = 5 * 60
 GLOBAL_CLAIM_BUSY_LOG_INTERVAL_SECONDS = 60
 GLOBAL_FANOUT_EVENT_LIMIT = 20
@@ -301,6 +301,7 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         preset=preset,
                         db=self.bot.db,
                         min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
+                        catalog_claim=claim,
                     )
 
                     completed = await complete_catalog_claim(self.bot.db, claim)
@@ -425,6 +426,16 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         else:
                             legacy.log.info(result.summary_line())
 
+                    # Short-lived, exact-verified low-price offers take the
+                    # fast delivery lane before ordinary markdown backlogs.
+                    # This reuses the same sender, receipts, budgets and proof
+                    # gates, without a second poller or any extra API requests.
+                    try:
+                        await fanout_recent_extreme_walmart_prices(self.bot)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        legacy.log.exception("Optional extreme-price alert lane failed")
                     fanout = await fanout_recent_exact_walmart_deals(
                         self.bot,
                         event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
@@ -438,13 +449,6 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     ):
                         legacy.log.info(fanout.summary_line())
                     await self._fanout_external_verified_events()
-                    # Separate opt-in lead lane: existing verified markdown fanout is unchanged.
-                    try:
-                        await fanout_recent_extreme_walmart_prices(self.bot)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        legacy.log.exception("Optional extreme-price alert lane failed")
                     await self._run_walmart_post_fanout_maintenance()
                 except asyncio.CancelledError:
                     raise
@@ -519,10 +523,13 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             )
             if event_rows or decision_rows or queue_cleanup.deleted:
                 legacy.log.info(
-                    "Walmart post-fanout maintenance events=%s decisions=%s exact_queue=%s",
+                    "Walmart post-fanout maintenance events=%s decisions=%s "
+                    "exact_queue=%s expired=%s overflow=%s",
                     event_rows,
                     decision_rows,
                     queue_cleanup.deleted,
+                    queue_cleanup.expired_selected,
+                    queue_cleanup.overflow_selected,
                 )
         except asyncio.CancelledError:
             raise

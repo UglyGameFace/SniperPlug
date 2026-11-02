@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,13 +12,41 @@ from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHeal
 
 STATE_TABLE = "walmart_global_catalog_autoscan_state"
 STATE_KEY = "walmart"
-DEFAULT_ROUTES_PER_BATCH = 4
-# Two catalog routes currently produce four search requests. Search requests may
-# wait up to 45s for exact-priority capacity and then spend up to 12s in Walmart
-# HTTP, so three minutes leaves a conservative degraded-batch margin while
-# bounding crash/restart starvation far below the historical 15-minute lease.
+DEFAULT_ROUTES_PER_BATCH = 3
+# Three fresh page-one routes plus one rotating deep request use the prior
+# four-search-per-minute budget. Search requests may wait up to 45s for
+# exact-priority capacity and then spend up to 12s in Walmart HTTP, so three
+# minutes leaves a conservative degraded-batch margin while bounding
+# crash/restart starvation far below the historical 15-minute lease.
 CLAIM_LEASE_SECONDS = 3 * 60
 DEFAULT_ACTIONABLE_QUEUE_LIMIT = 450
+
+# Cache the schema per live connection; no DDL or no-op UPSERT on each claim.
+_STATE_ATTR = "_sniperplug_walmart_catalog_schema_state"
+_FALLBACK_STATES: dict[int, "_CatalogSchemaState"] = {}
+
+
+@dataclass
+class _CatalogSchemaState:
+    connection: Any
+    ready: bool = False
+    lock: asyncio.Lock | None = None
+
+
+def _schema_state_for(conn: Any) -> _CatalogSchemaState:
+    state = getattr(conn, _STATE_ATTR, None)
+    if isinstance(state, _CatalogSchemaState) and state.connection is conn:
+        return state
+    state = _FALLBACK_STATES.get(id(conn))
+    if state is None or state.connection is not conn:
+        state = _CatalogSchemaState(connection=conn)
+        try:
+            setattr(conn, _STATE_ATTR, state)
+        except Exception:
+            _FALLBACK_STATES[id(conn)] = state
+    return state
+
+
 
 
 @dataclass(frozen=True)
@@ -78,39 +107,48 @@ class GlobalCatalogState:
 
 
 async def ensure_global_catalog_state(db: Any) -> None:
+    """Create schema once per connection, not per read/lease/health cycle."""
     conn = db.require_conn()
-    await conn.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
-            state_key TEXT PRIMARY KEY,
-            cursor_index INTEGER NOT NULL DEFAULT 0,
-            completed_routes INTEGER NOT NULL DEFAULT 0,
-            completed_passes INTEGER NOT NULL DEFAULT 0,
-            claim_token TEXT NOT NULL DEFAULT '',
-            claim_start_index INTEGER,
-            claim_route_count INTEGER NOT NULL DEFAULT 0,
-            lease_until TEXT,
-            last_started_at TEXT,
-            last_completed_at TEXT,
-            last_error TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL
+    state = _schema_state_for(conn)
+    if state.ready:
+        return
+    if state.lock is None:
+        state.lock = asyncio.Lock()
+    async with state.lock:
+        if state.ready:
+            return
+        await conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
+                state_key TEXT PRIMARY KEY,
+                cursor_index INTEGER NOT NULL DEFAULT 0,
+                completed_routes INTEGER NOT NULL DEFAULT 0,
+                completed_passes INTEGER NOT NULL DEFAULT 0,
+                claim_token TEXT NOT NULL DEFAULT '',
+                claim_start_index INTEGER,
+                claim_route_count INTEGER NOT NULL DEFAULT 0,
+                lease_until TEXT,
+                last_started_at TEXT,
+                last_completed_at TEXT,
+                last_error TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
         )
-        """
-    )
-    now = _utc_now().isoformat()
-    await conn.execute(
-        f"""
-        INSERT INTO {STATE_TABLE} (
-            state_key, cursor_index, completed_routes, completed_passes,
-            claim_token, claim_route_count, last_error, updated_at
+        now = _utc_now().isoformat()
+        await conn.execute(
+            f"""
+            INSERT INTO {STATE_TABLE} (
+                state_key, cursor_index, completed_routes, completed_passes,
+                claim_token, claim_route_count, last_error, updated_at
+            )
+            VALUES (?, 0, 0, 0, '', 0, '', ?)
+            ON CONFLICT(state_key) DO NOTHING
+            """,
+            (STATE_KEY, now),
         )
-        VALUES (?, 0, 0, 0, '', 0, '', ?)
-        ON CONFLICT(state_key) DO NOTHING
-        """,
-        (STATE_KEY, now),
-    )
-    await conn.commit()
-
+        await conn.commit()
+        state.ready = True
 
 async def claim_next_catalog_routes(
     db: Any,

@@ -103,7 +103,7 @@ def test_galaxy_tab_extreme_price_requires_real_tablet_and_exact_proof() -> None
         ) == "accessory_or_parts", accessory_title
 
     assert extreme.extreme_rejection_reason(
-        replace(base, title="Samsung Galaxy Tab Toy Sticker")
+        replace(base, title="Generic Mystery Bundle")
     ) == "not_recognized_primary_product"
 
 

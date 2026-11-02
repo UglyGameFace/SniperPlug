@@ -162,7 +162,12 @@ async def maybe_prune_walmart_exact_queue_bounded(
                         *selected, room,
                     ),
                 )
-                overflow_ids = _item_ids(await overflow_cursor.fetchall())[:room]
+                for item_id in _item_ids(await overflow_cursor.fetchall()):
+                    if item_id in selected or item_id in overflow_ids:
+                        continue
+                    overflow_ids.append(item_id)
+                    if len(overflow_ids) >= room:
+                        break
                 selected.extend(overflow_ids)
 
         if not selected:

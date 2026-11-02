@@ -106,6 +106,76 @@ def test_galaxy_tab_extreme_price_requires_real_tablet_and_exact_proof() -> None
         replace(base, title="Samsung Galaxy Tab Toy Sticker")
     ) == "not_recognized_primary_product"
 
+
+def test_dynamic_extreme_value_signals_prioritize_any_brand_and_reject_junk() -> None:
+    """Catch general product anomalies, not a manually enumerated model list."""
+    from dataclasses import replace
+    from sniperplug.services.walmart_exact_price_enrichment import _enrichment_priority
+    from sniperplug.services.walmart_extreme_price_signals import (
+        is_priority_extreme_discovery,
+        primary_product_evidence,
+    )
+
+    base = candidate()
+    # Neither name appears in any Samsung/Apple/console-specific list.
+    generic = replace(base, title="Axiom Z42 128GB Tablet with Stylus", variant_attributes={
+        **base.variant_attributes, "category": "Electronics/Computers/Tablets",
+    })
+    unknown_brand = replace(base, title="Brand New Widget X9 256GB", variant_attributes={
+        **base.variant_attributes, "category": "Electronics/Computers/Tablets",
+    })
+    source_category = replace(base, title="Nova X9 256GB", variant_attributes={
+        **base.variant_attributes, "category": "Electronics/Computers/Tablets",
+    })
+    for product in (generic, unknown_brand, source_category):
+        assert primary_product_evidence(product) is not None
+        assert extreme.extreme_rejection_reason(product) is None
+        assert is_priority_extreme_discovery(
+            product, current_price=1.0, trusted_reference=None,
+        )
+        assert _enrichment_priority(product, min_discount=40) > 400
+
+    # A credible source reference can identify an expensive oddball outside
+    # curated categories without the system claiming an invented MSRP.
+    oddball = replace(base, title="Niche Collector Set", typical_price=80.0,
+                     api_reference_price=80.0,
+                     variant_attributes={
+                         **base.variant_attributes, "referencePriceTrusted": "yes",
+                         "trustedReferencePrice": "80.00",
+                     })
+    assert primary_product_evidence(oddball, trusted_reference=80.0) == "trusted_reference"
+    assert extreme.extreme_rejection_reason(oddball) is None
+
+    baseline = replace(base, title="Toothpaste Travel Size", variant_attributes={
+        **base.variant_attributes, "category": "Beauty/Personal Care/Oral Care",
+    })
+    assert not is_priority_extreme_discovery(
+        baseline, current_price=1.0, trusted_reference=None,
+    )
+    assert extreme.extreme_rejection_reason(baseline) == "not_recognized_primary_product"
+
+    # Pricing alone, a misleading electronics category, or a cheap device-
+    # branded accessory never qualifies a public extreme alert.
+    for title in ("Generic Tablet Case", "Tablet Screen Protector",
+                  "Replacement Laptop Screen", "Samsung Galaxy Tab S11 Cover"):
+        accessory = replace(
+            generic, title=title,
+            variant_attributes={**generic.variant_attributes, "category": "Electronics"},
+        )
+        assert primary_product_evidence(accessory) is None
+        assert not is_priority_extreme_discovery(
+            accessory, current_price=1.0, trusted_reference=200.0,
+        )
+        assert extreme.extreme_rejection_reason(accessory) == "accessory_or_parts"
+
+    # No arbitrary priority lift for ordinary-priced items.
+    assert not is_priority_extreme_discovery(
+        generic, current_price=19.99, trusted_reference=199.99,
+    )
+    assert _enrichment_priority(generic, min_discount=40) > _enrichment_priority(
+        baseline, min_discount=40,
+    )
+
 def test_extreme_exact_price_still_blocks_accessories_and_unproven_offers() -> None:
     from dataclasses import replace
 

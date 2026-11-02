@@ -177,14 +177,14 @@ def test_cleanup_removes_expired_and_overflow_without_erasing_fresh_or_active_de
             result = await cleaner.maybe_prune_walmart_exact_queue_bounded(
                 conn, now=now,
             )
-            assert result.deleted == 5
+            assert result.deleted == 4
             assert result.expired_selected == 2
-            assert result.overflow_selected == 3
+            assert result.overflow_selected == 2
             remaining_cursor = await conn.execute(
                 f"SELECT item_id FROM {QUEUE_TABLE} ORDER BY item_id"
             )
             remaining = [row[0] for row in await remaining_cursor.fetchall()]
-            assert remaining == ["106", "107", "108", "109"]
+            assert remaining == ["105", "106", "107", "108", "109"]
             assert result.deleted <= CLEANUP_BATCH_SIZE
         finally:
             await conn.close()

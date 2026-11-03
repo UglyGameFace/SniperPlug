@@ -40,7 +40,8 @@ DURABLE_PRODUCT_TYPE = re.compile(
     r"graphics\s*card|gpu|camera|projector|drone|robot\s*vacuum|"
     r"refrigerator|dishwasher|washing\s*machine|dryer|power\s*tool|"
     r"electric\s*bike|treadmill|smartwatch|headphones|earbuds|"
-    r"coffee\s*maker|printer|office\s*chair|mattress)\b",
+    r"coffee\s*maker|printer|office\s*chair|mattress|"
+    r"game\s*controllers?|gaming\s*controllers?|gamepads?|joy[-\s]?cons?)\b",
     re.IGNORECASE,
 )
 # Compatibility fallback for earlier exact snapshots lacking source category;
@@ -146,7 +147,7 @@ NON_HARDWARE_PUBLIC_LEADS = re.compile(
     r"virtual\s*(?:currency|credit|items?)|"
     r"software\s*(?:license|key)|online\s*(?:service|code)|"
     r"(?:video\s*)?games?\s*(?:for|on)\s*(?:nintendo|playstation|xbox)|"
-    r"video\s*game|game\s*cartridge|game\s*disc|game\s*software|"
+    r"video\s*game(?!\s*console)|game\s*cartridge|game\s*disc|game\s*software|"
     r"charging\s*(?:dock|stand)|controller\s*(?:stand|grip|skin|shell)|"
     r"(?:thumbstick|joystick)\s*(?:caps?|covers?|grips?))\b",
     re.IGNORECASE,

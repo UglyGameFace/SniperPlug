@@ -41,7 +41,7 @@ DURABLE_PRODUCT_TYPE = re.compile(
     r"refrigerator|dishwasher|washing\s*machine|dryer|power\s*tool|"
     r"electric\s*bike|treadmill|smartwatch|headphones|earbuds|"
     r"coffee\s*maker|printer|office\s*chair|mattress|"
-    r"game\s*controllers?|gaming\s*controllers?|gamepads?|joy[-\s]?cons?)\b",
+    r"controllers?|gamepads?|joy[-\s]?cons?)\b",
     re.IGNORECASE,
 )
 # Compatibility fallback for earlier exact snapshots lacking source category;

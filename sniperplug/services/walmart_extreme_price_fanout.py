@@ -18,11 +18,41 @@ from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
 from sniperplug.services.walmart_extreme_price_signals import (
     ACCESSORY,
+    PRICE_ERROR_MAX_RATIO,
+    PRICE_ERROR_MIN_REFERENCE,
+    is_trusted_price_error,
     primary_product_evidence,
     public_extreme_value_evidence,
 )
 
+# Absolute "anything this cheap is notable" ceiling. Items above it still
+# qualify when the exact price is a price-error-level ratio of a trusted
+# Walmart reference (see is_trusted_price_error).
 MAX_PRICE_CENTS = 1000
+# SQL prefilter for the ratio path: current*100 <= reference*RATIO_PCT.
+PRICE_ERROR_RATIO_PCT = int(round(PRICE_ERROR_MAX_RATIO * 100))
+PRICE_ERROR_MIN_REFERENCE_CENTS = int(round(PRICE_ERROR_MIN_REFERENCE * 100))
+_EXTREME_PRICE_SQL = (
+    "exact_current_cents >= 1 AND (exact_current_cents <= ? OR "
+    "(exact_reference_cents >= ? AND "
+    "exact_current_cents * 100 <= exact_reference_cents * ?))"
+)
+_EXTREME_PRICE_PARAMS = (
+    MAX_PRICE_CENTS, PRICE_ERROR_MIN_REFERENCE_CENTS, PRICE_ERROR_RATIO_PCT,
+)
+
+
+def is_ratio_price_error_candidate(candidate: Any) -> bool:
+    """True when the exact price is above $10 but a trusted-ratio glitch."""
+    try:
+        current = float(candidate.api_current_price)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return False
+    return current > MAX_PRICE_CENTS / 100 and is_trusted_price_error(
+        candidate,
+        current_price=current,
+        trusted_reference=_trusted_reference(candidate),
+    )
 
 def extreme_rejection_reason(candidate: Any) -> str | None:
     """Explain the first failed gate without weakening exact-offer evidence.
@@ -49,7 +79,13 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
         displayed = float(candidate.current_price)
     except (TypeError, ValueError, OverflowError):
         return "exact_price_missing"
-    if not (0 < current <= MAX_PRICE_CENTS / 100 and abs(current - displayed) < 0.01):
+    if not (0 < current and abs(current - displayed) < 0.01):
+        return "price_mismatch_or_over_limit"
+    if current > MAX_PRICE_CENTS / 100 and not is_trusted_price_error(
+        candidate,
+        current_price=current,
+        trusted_reference=_trusted_reference(candidate),
+    ):
         return "price_mismatch_or_over_limit"
     if candidate.can_add_to_cart is not True:
         return "not_cart_buyable"
@@ -125,16 +161,24 @@ def build_extreme_price_card(candidate: Any) -> Any | None:
     )
     # Do not recycle scout search-route and "cheap price" score reasons.
     # Public reasons must describe the actual exact-item evidence.
-    reasons = (
-        ("high-value product type", "official Walmart exact-item price")
-        if evidence == "high_value_hardware"
-        else ("trusted reference indicates unusual value", "official Walmart exact-item price")
-    )
+    ratio_error = is_ratio_price_error_candidate(candidate)
+    reference = _trusted_reference(candidate)
+    if ratio_error:
+        reasons = (
+            "possible price error: far below Walmart's own reference price",
+            "official Walmart exact-item price",
+        )
+    elif evidence == "high_value_hardware":
+        reasons = ("high-value product type", "official Walmart exact-item price")
+    else:
+        reasons = ("trusted reference indicates unusual value", "official Walmart exact-item price")
     lead = ScoutLead(candidate=candidate, score=70, reasons=reasons)
     card = build_scout_card(lead)
     card.url = candidate.direct_product_url or candidate.product_url
     card.embed.url = card.url
-    card.embed.title = "Extreme exact-price find: " + str(candidate.title or "")[:155]
+    card.embed.title = (
+        "Possible price error: " if ratio_error else "Extreme exact-price find: "
+    ) + str(candidate.title or "")[:155]
     # The private scout may show an untrusted raw MSRP. Do not repeat it in an
     # automatic alert when the source did not prove a reference/markdown.
     for index, field in enumerate(card.embed.fields):
@@ -142,10 +186,29 @@ def build_extreme_price_card(candidate: Any) -> Any | None:
             card.embed.set_field_at(
                 index,
                 name="Walmart exact API price",
-                value=f"Exact offer price: **${float(candidate.api_current_price):.2f}**. No comparison price or discount percentage is claimed.",
+                value=(
+                    f"Exact offer price: **${float(candidate.api_current_price):.2f}**."
+                    + ("" if ratio_error else " No comparison price or discount percentage is claimed.")
+                ),
                 inline=False,
             )
             break
+    if ratio_error and reference:
+        current = float(candidate.api_current_price)
+        card.embed.add_field(
+            name="Walmart reference price",
+            value=(
+                f"Walmart's trusted reference is **${reference:,.2f}**; this offer is "
+                f"**${current:,.2f}** ({current / reference * 100:.0f}% of reference). "
+                "Price errors are often corrected or cancelled quickly. Act fast, "
+                "but verify the checkout total."
+            ),
+            inline=False,
+        )
+        card.embed.set_footer(text="Possible price error; buy fast, verify checkout")
+        card.extreme_exact_candidate = candidate
+        card.should_alert = True
+        return card
     card.embed.add_field(
         name="Exact price, NOT a verified markdown",
         value=(
@@ -311,10 +374,10 @@ async def extreme_price_health_summary(db: Any, guild_id: int | None = None) -> 
         f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
         "WHERE status IN ('verified_no_reference', 'verified_under_threshold', "
         "'verified_reference') "
-        "AND exact_current_cents BETWEEN 1 AND ? "
+        f"AND {_EXTREME_PRICE_SQL} "
         "AND verified_at >= ? AND snapshot_json <> '' "
         "ORDER BY verified_at DESC, item_id DESC LIMIT ?",
-        (MAX_PRICE_CENTS, cutoff, limit),
+        (*_EXTREME_PRICE_PARAMS, cutoff, limit),
     )
     rows = await cursor.fetchall()
     qualified = 0
@@ -528,11 +591,11 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         cursor = await conn.execute(
             f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
             "WHERE status IN ('verified_no_reference', 'verified_under_threshold', 'verified_reference') "
-            "AND exact_current_cents BETWEEN 1 AND ? "
+            f"AND {_EXTREME_PRICE_SQL} "
             "AND verified_at >= ? AND snapshot_json <> '' "
             "AND (verified_at, item_id) > (?, ?) "
             "ORDER BY verified_at ASC, item_id ASC LIMIT ?",
-            (MAX_PRICE_CENTS, cutoff, *previous, BATCH_LIMIT),
+            (*_EXTREME_PRICE_PARAMS, cutoff, *previous, BATCH_LIMIT),
         )
         rows = await cursor.fetchall()
         next_cursor = previous

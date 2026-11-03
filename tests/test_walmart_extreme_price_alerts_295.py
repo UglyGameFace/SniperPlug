@@ -188,6 +188,76 @@ def test_dynamic_extreme_value_signals_prioritize_any_brand_and_reject_junk() ->
         baseline, min_discount=40,
     )
 
+
+def test_public_extreme_requires_high_value_item_not_just_cheap_gaming_or_jewelry() -> None:
+    """Cheap inventory in a hot department must not fill the deals channel."""
+    from dataclasses import replace
+
+    base = candidate(price=9.97)
+
+    unwanted = (
+        ("Time and Tru Goldtone Necklace, 3 Piece, Initial F", "Jewelry/Necklaces"),
+        ("Jessica Simpson Women's Faux Turquoise Dangle Drop Earrings", "Jewelry/Earrings"),
+        ("UNO Legacy Code-In-Box (English/French) for Nintendo Switch", "Video Games"),
+        ("EA Play 1 Month Subscription - Xbox Series X", "Video Games"),
+        ("Razer Gold VGC $10 - $500 [Digital]", "Electronics/Computers"),
+        ("Wireless Controller Charging Dock for Nintendo Switch", "Video Games/Game Controllers"),
+    )
+    for title, category in unwanted:
+        product = replace(
+            base, title=title,
+            variant_attributes={**base.variant_attributes, "categoryPath": category},
+        )
+        assert extreme.extreme_rejection_reason(product) is not None, title
+        assert extreme.build_extreme_price_card(product) is None, title
+
+    valuable = (
+        ("Nintendo Switch OLED Model Gaming Console", "Video Games/Consoles"),
+        ("Nintendo Switch Pro Controller for Nintendo Switch", "Video Games/Game Controllers"),
+        ("Wireless Gamepad Controller for PlayStation 5", "Video Games/Game Controllers"),
+        ("PlayStation 5 Digital Edition Console", "Video Games/Consoles"),
+        ("Samsung Galaxy Tab S11 Tablet", "Electronics/Tablets"),
+        ("Brand New 256 GB Z9 Laptop", "Electronics/Computers/Laptops"),
+    )
+    for title, category in valuable:
+        product = replace(
+            base, title=title,
+            variant_attributes={**base.variant_attributes, "categoryPath": category},
+        )
+        assert extreme.extreme_rejection_reason(product) is None, title
+        card = extreme.build_extreme_price_card(product)
+        assert card is not None and extreme.valid_extreme_price_card(card), title
+        assert "hot route category" not in str(card.embed.to_dict()).lower()
+
+    # A category-level label cannot make an arbitrary $10 game seem valuable.
+    game = replace(
+        base, title="Puzzle Adventure Nintendo Switch",
+        variant_attributes={**base.variant_attributes, "categoryPath": "Video Games"},
+    )
+    assert extreme.extreme_rejection_reason(game) is not None
+
+
+def test_proven_price_anomaly_can_qualify_outside_standard_hardware_types() -> None:
+    """A documented large markdown can cover a niche sought-after collectible."""
+    from dataclasses import replace
+
+    base = candidate(title="Limited Edition Collector Set", price=10.0)
+    with_proof = replace(
+        base, typical_price=100.0, api_reference_price=100.0,
+        variant_attributes={
+            **base.variant_attributes,
+            "referencePriceTrusted": "yes",
+            "trustedReferencePrice": "100.00",
+        },
+    )
+    assert extreme.extreme_rejection_reason(with_proof) is None
+    without_proof = replace(
+        with_proof,
+        variant_attributes={**with_proof.variant_attributes, "referencePriceTrusted": "no"},
+    )
+    assert extreme.extreme_rejection_reason(without_proof) is not None
+
+
 def test_extreme_exact_price_still_blocks_accessories_and_unproven_offers() -> None:
     from dataclasses import replace
 

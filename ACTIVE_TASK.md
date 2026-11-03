@@ -1,5 +1,13 @@
 # Active Task
 
+## November 2 follow-up: high-value Walmart public alert quality (PR #305, open)
+
+- Owner's live Discord screenshots show $9.92 jewelry, $10 earrings, $9.97 Switch game code, $5.99 EA Play subscription, and $10 Razer Gold digital credit posted as "Extreme exact-price finds" without a verified markdown. The prior sender accepted a broad retailer department as value evidence. Mere low price and source category do not prove demand, savings, or resale value.
+- The new authoritative public-send gate requires an actual high-value primary product class (including game consoles and physical controllers/gamepads, as distinct from games and digital credit), an exact hardware category leaf, or a flagged trustworthy reference showing a material price anomaly. Discovery/review remain broad so niche products are still explored. Existing offer identity, exact API price, buyability, stock and official-discount posting guards are unchanged; no new API calls, queues, or database tables.
+- Public alerts no longer repeat misleading low-price scout route reasons. Negative regressions cover each owner-supplied false-positive class and gaming accessories; positives cover consoles, gaming controllers, laptops, tablets, and rare collectibles with source-backed comparison evidence. A platform name appearing in a game title is not enough to qualify as console hardware.
+- Branch: `fix/walmart-extreme-value-gate-306`; PR: https://github.com/UglyGameFace/SniperPlug/pull/305. Earlier unrelated open PRs #200 (eBay) and #273 (movie Local mode) remain untouched.
+- Current production acceptance is **not complete**: no Discloud deployment or real post/false-positive sampling has been verified, and a recognized high-value type alone is not independent proof of actual online demand or discount. After merge, inspect production rejection reasons and newly posted qualified items, track false-positive rate and missed premium items, and verify no ordinary digital goods leak into the public extreme lane. Do not claim market demand has been independently measured.
+
 ## Active task / outcome
 **SP-WALMART-EXTREME-PRICE-295: restore detection and opt-in delivery for extreme exact-price Walmart leads without relabeling them as verified markdowns.**
 

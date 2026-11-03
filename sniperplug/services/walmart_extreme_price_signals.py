@@ -140,18 +140,17 @@ PUBLIC_HIGH_VALUE_CATEGORY_LEAF = re.compile(
 NON_HARDWARE_PUBLIC_LEADS = re.compile(
     r"\b(?:gift\s*cards?|gift\s*certificates?|e[-\s]?gift|"
     r"v\s*g\s*c|subscriptions?|memberships?|prepaid|"
-    r"digital\s*(?:code|credit|delivery|download|game|gift|edition|item)|"
+    r"digital\s*(?:code|credit|delivery|download|game|gift|item)|"
     r"download\s*code|code[-\s]?in[-\s]?box|game\s*code|"
     r"in[-\s]?game\s*(?:currency|credit|coins?|points?)|"
     r"virtual\s*(?:currency|credit|items?)|"
-    r"software\s*(?:license|key)|"
-    r"online\s*(?:service|code)|"
+    r"software\s*(?:license|key)|online\s*(?:service|code)|"
     r"(?:video\s*)?games?\s*(?:for|on)\s*(?:nintendo|playstation|xbox)|"
-    r"(?:video\s*game|game\s*cartridge|game\s*disc|game\s*software))\b|"
-    r"\[\s*digital\s*\]",
+    r"video\s*game|game\s*cartridge|game\s*disc|game\s*software|"
+    r"charging\s*(?:dock|stand)|controller\s*(?:stand|grip|skin|shell)|"
+    r"(?:thumbstick|joystick)\s*(?:caps?|covers?|grips?))\b",
     re.IGNORECASE,
 )
-
 
 def public_extreme_value_evidence(
     candidate: Any, *, trusted_reference: float | None = None

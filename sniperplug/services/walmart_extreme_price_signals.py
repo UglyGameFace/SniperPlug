@@ -118,7 +118,8 @@ PUBLIC_HIGH_VALUE_HARDWARE = re.compile(
     r"laptop|notebook\s*(?:computer|pc)|desktop\s*(?:computer|pc)|"
     r"all[-\s]?in[-\s]?one\s*(?:computer|pc)|television|oled\s*tv|qled\s*tv|"
     r"monitor|game\s*console|gaming\s*console|handheld\s*console|"
-    r"graphics\s*card|gpu|projector|drone|robot\s*vacuum|refrigerator|"
+    r"controllers?|gamepads?|joy[-\s]?cons?|graphics\s*card|gpu|projector|drone|"
+    r"robot\s*vacuum|refrigerator|"
     r"dishwasher|washing\s*machine|tumble\s*dryer|power\s*tool|"
     r"electric\s*bike|treadmill)\b",
     re.IGNORECASE,
@@ -128,7 +129,8 @@ PUBLIC_HIGH_VALUE_CATEGORY_LEAF = re.compile(
     r"mobile\s*phones?|laptops?|laptop\s*computers?|notebooks?|"
     r"desktop\s*(?:computers?|pcs?)|computer\s*monitors?|monitors?|"
     r"televisions?|tvs?|game\s*consoles?|gaming\s*consoles?|"
-    r"video\s*game\s*consoles?|graphics\s*cards?|projectors?|"
+    r"video\s*game\s*consoles?|game\s*controllers?|gaming\s*controllers?|"
+    r"gamepads?|joy[-\s]?cons?|graphics\s*cards?|projectors?|"
     r"robot\s*vacuums?|refrigerators?|dishwashers?|washing\s*machines?|"
     r"treadmills?|electric\s*bikes?)$",
     re.IGNORECASE,
@@ -145,9 +147,8 @@ NON_HARDWARE_PUBLIC_LEADS = re.compile(
     r"software\s*(?:license|key)|"
     r"online\s*(?:service|code)|"
     r"(?:video\s*)?games?\s*(?:for|on)\s*(?:nintendo|playstation|xbox)|"
-    r"(?:for|compatible\s*with)\s+(?:nintendo\s*switch|"
-    r"playstation(?:\s*\d+)?|xbox(?:\s*(?:one|series))?)|"
-    r"game\s*cartridge)\b|\[\s*digital\s*\]",
+    r"(?:video\s*game|game\s*cartridge|game\s*disc|game\s*software))\b|"
+    r"\[\s*digital\s*\]",
     re.IGNORECASE,
 )
 

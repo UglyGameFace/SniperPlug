@@ -147,7 +147,8 @@ NON_HARDWARE_PUBLIC_LEADS = re.compile(
     r"virtual\s*(?:currency|credit|items?)|"
     r"software\s*(?:license|key)|online\s*(?:service|code)|"
     r"(?:video\s*)?games?\s*(?:for|on)\s*(?:nintendo|playstation|xbox)|"
-    r"video\s*game(?!\s*console)|game\s*cartridge|game\s*disc|game\s*software|"
+    r"video\s*game(?!\s*(?:console|controller|gamepad))|"
+    r"game\s*cartridge|game\s*disc|game\s*software|"
     r"charging\s*(?:dock|stand)|controller\s*(?:stand|grip|skin|shell)|"
     r"(?:thumbstick|joystick)\s*(?:caps?|covers?|grips?))\b",
     re.IGNORECASE,
@@ -188,9 +189,20 @@ def public_extreme_value_evidence(
     leaf = re.split(r"[/|>]", category)[-1].strip()
     if (
         PUBLIC_HIGH_VALUE_HARDWARE.search(title)
-        or DEVICE_FAMILY.search(title)
+        or PUBLIC_HIGH_VALUE_HARDWARE.search(source_type)
         or PUBLIC_HIGH_VALUE_CATEGORY_LEAF.fullmatch(leaf)
     ):
+        return "high_value_hardware"
+
+    # Mentions of "Nintendo Switch" or "PlayStation 5" in software titles
+    # do not establish that the item is the actual console. Console listings
+    # must have an explicit hardware type or precise retailer category.
+    console_family = re.search(
+        r"\b(?:nintendo\s*switch|playstation\s*\d+|xbox\s+series)\b",
+        title,
+        re.IGNORECASE,
+    )
+    if DEVICE_FAMILY.search(title) and console_family is None:
         return "high_value_hardware"
 
     # Exact-detail validated reference evidence is a separate path for

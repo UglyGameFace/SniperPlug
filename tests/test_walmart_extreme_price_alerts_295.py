@@ -180,8 +180,13 @@ def test_dynamic_extreme_value_signals_prioritize_any_brand_and_reject_junk() ->
         )
         assert extreme.extreme_rejection_reason(accessory) == "accessory_or_parts"
 
-    # No arbitrary priority lift for ordinary-priced items.
+    # No arbitrary priority lift for ordinary-priced items...
     assert not is_priority_extreme_discovery(
+        generic, current_price=149.99, trusted_reference=199.99,
+    )
+    # ...but a price-error-level ratio (<=20% of reference) is prioritized
+    # even above $10.
+    assert is_priority_extreme_discovery(
         generic, current_price=19.99, trusted_reference=199.99,
     )
     assert _enrichment_priority(generic, min_discount=40) > _enrichment_priority(

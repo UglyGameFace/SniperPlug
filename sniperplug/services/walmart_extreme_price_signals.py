@@ -93,22 +93,68 @@ def primary_product_evidence(candidate: Any, *, trusted_reference: float | None 
     return None
 
 
+# Price errors are relative, not absolute: a $600 TV at $49 is a glitch even
+# though it is far above $10. A price at or below this fraction of a trusted
+# reference counts as a price-error-level anomaly at any price point.
+PRICE_ERROR_MAX_RATIO = 0.20
+PRICE_ERROR_MIN_REFERENCE = 50.0
+ABSOLUTE_EXTREME_MAX_PRICE = 10.0
+
+
+def is_price_error_ratio(
+    current_price: Any, reference_price: Any
+) -> bool:
+    """True when price is <= PRICE_ERROR_MAX_RATIO of a substantial reference."""
+    try:
+        price = float(current_price)
+        reference = float(reference_price)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        price > 0
+        and reference >= PRICE_ERROR_MIN_REFERENCE
+        and price <= reference * PRICE_ERROR_MAX_RATIO
+    )
+
+
+def is_trusted_price_error(
+    candidate: Any, *, current_price: Any, trusted_reference: Any
+) -> bool:
+    """Ratio anomaly backed by an exact-detail validated reference price."""
+    attrs = getattr(candidate, "variant_attributes", None) or {}
+    trusted_flag = str(attrs.get("referencePriceTrusted") or "").strip().lower()
+    return trusted_flag in {"yes", "true", "1"} and is_price_error_ratio(
+        current_price, trusted_reference
+    )
+
+
 def is_priority_extreme_discovery(
     candidate: Any, *, current_price: float | None, trusted_reference: float | None
 ) -> bool:
-    """Boost category-independent, potentially valuable <=$10 leads in the shared queue.
+    """Boost potentially valuable extreme leads in the shared queue.
 
-    A search result is never treated as a verified offer: this only changes
-    ordering inside existing bounded queues; exact detail still must confirm it.
+    Two shapes qualify: a recognized primary product at <=$10, or any
+    non-accessory item at <=20% of a substantial reference price (a likely
+    price error at any price point). A search result is never treated as a
+    verified offer: this only changes ordering inside existing bounded
+    queues; exact detail still must confirm it.
     """
     try:
-        if current_price is None or not 0 < float(current_price) <= 10:
-            return False
+        price = float(current_price) if current_price is not None else None
     except (TypeError, ValueError, OverflowError):
         return False
-    return primary_product_evidence(
-        candidate, trusted_reference=trusted_reference
-    ) is not None
+    if price is None or price <= 0:
+        return False
+    if price <= ABSOLUTE_EXTREME_MAX_PRICE:
+        return primary_product_evidence(
+            candidate, trusted_reference=trusted_reference
+        ) is not None
+    if not is_price_error_ratio(price, trusted_reference):
+        return False
+    title = " ".join(
+        str(getattr(candidate, key, "") or "") for key in ("title", "parent_title")
+    )
+    return bool(title.strip()) and ACCESSORY.search(title) is None
 
 
 # Discovery deliberately stays broad, but a public "extreme" alert needs stronger
@@ -207,17 +253,10 @@ def public_extreme_value_evidence(
 
     # Exact-detail validated reference evidence is a separate path for
     # genuinely unusual items outside hardware, without inventing an MSRP.
-    trusted_flag = str(attrs.get("referencePriceTrusted") or "").strip().lower()
-    try:
-        price = float(getattr(candidate, "api_current_price", None))
-        reference = float(trusted_reference)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if (
-        trusted_flag in {"yes", "true", "1"}
-        and price > 0
-        and reference >= 50
-        and price <= reference * 0.20
+    if is_trusted_price_error(
+        candidate,
+        current_price=getattr(candidate, "api_current_price", None),
+        trusted_reference=trusted_reference,
     ):
         return "trusted_reference_price_anomaly"
     return None

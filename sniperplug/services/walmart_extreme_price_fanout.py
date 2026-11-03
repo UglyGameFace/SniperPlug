@@ -10,7 +10,7 @@ from typing import Any
 
 from sniperplug.services.autoscan_live_guild_reconciliation import list_live_public_alert_guilds
 from sniperplug.services.discord_snowflake import snowflake_text
-from sniperplug.services.low_price_scout import ScoutLead, build_scout_card, score_candidate
+from sniperplug.services.low_price_scout import ScoutLead, build_scout_card
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.walmart_exact_verification_queue import QUEUE_TABLE, _candidate_from_snapshot
 from sniperplug.services.public_deal_quality import walmart_item_id_from_url
@@ -19,6 +19,7 @@ from sniperplug.services.walmart_exact_price_enrichment import _trusted_referenc
 from sniperplug.services.walmart_extreme_price_signals import (
     ACCESSORY,
     primary_product_evidence,
+    public_extreme_value_evidence,
 )
 
 MAX_PRICE_CENTS = 1000
@@ -73,10 +74,15 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
     )
     if ACCESSORY.search(title):
         return "accessory_or_parts"
+    trusted_reference = _trusted_reference(candidate)
     if primary_product_evidence(
-        candidate, trusted_reference=_trusted_reference(candidate)
+        candidate, trusted_reference=trusted_reference
     ) is None:
         return "not_recognized_primary_product"
+    if public_extreme_value_evidence(
+        candidate, trusted_reference=trusted_reference
+    ) is None:
+        return "insufficient_value_evidence"
     return None
 
 
@@ -114,20 +120,17 @@ def _row_get(row: Any, column: str, index: int) -> Any:
 def build_extreme_price_card(candidate: Any) -> Any | None:
     if not eligible_exact_extreme_candidate(candidate):
         return None
-    lead = score_candidate(candidate)
-    if lead is None:
-        lead = ScoutLead(
-            candidate=candidate,
-            score=70,
-            reasons=("recognizable primary product", "official Walmart exact-item price"),
-        )
-    # Raw reference context can be untrusted in this lane; it must not appear
-    # as a claimed original-price discount in an automatic lead.
-    lead = ScoutLead(
-        candidate=candidate,
-        score=lead.score,
-        reasons=tuple(reason for reason in lead.reasons if "price context" not in reason),
+    evidence = public_extreme_value_evidence(
+        candidate, trusted_reference=_trusted_reference(candidate)
     )
+    # Do not recycle scout search-route and "cheap price" score reasons.
+    # Public reasons must describe the actual exact-item evidence.
+    reasons = (
+        ("high-value product type", "official Walmart exact-item price")
+        if evidence == "high_value_hardware"
+        else ("trusted reference indicates unusual value", "official Walmart exact-item price")
+    )
+    lead = ScoutLead(candidate=candidate, score=70, reasons=reasons)
     card = build_scout_card(lead)
     card.url = candidate.direct_product_url or candidate.product_url
     card.embed.url = card.url

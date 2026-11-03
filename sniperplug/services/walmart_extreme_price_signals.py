@@ -108,3 +108,103 @@ def is_priority_extreme_discovery(
     return primary_product_evidence(
         candidate, trusted_reference=trusted_reference
     ) is not None
+
+
+# Discovery deliberately stays broad, but a public "extreme" alert needs stronger
+# value evidence than a $10 item belonging to Electronics, Jewelry or Video Games.
+# These are product *types*, not an allowlist of brands or model/SKU numbers.
+PUBLIC_HIGH_VALUE_HARDWARE = re.compile(
+    r"\b(?:tablet(?:\s+computer)?|smartphone|cell\s*phone|mobile\s*phone|"
+    r"laptop|notebook\s*(?:computer|pc)|desktop\s*(?:computer|pc)|"
+    r"all[-\s]?in[-\s]?one\s*(?:computer|pc)|television|oled\s*tv|qled\s*tv|"
+    r"monitor|game\s*console|gaming\s*console|handheld\s*console|"
+    r"graphics\s*card|gpu|projector|drone|robot\s*vacuum|refrigerator|"
+    r"dishwasher|washing\s*machine|tumble\s*dryer|power\s*tool|"
+    r"electric\s*bike|treadmill)\b",
+    re.IGNORECASE,
+)
+PUBLIC_HIGH_VALUE_CATEGORY_LEAF = re.compile(
+    r"^(?:tablets?|tablet\s*computers?|cell\s*phones?|smartphones?|"
+    r"mobile\s*phones?|laptops?|laptop\s*computers?|notebooks?|"
+    r"desktop\s*(?:computers?|pcs?)|computer\s*monitors?|monitors?|"
+    r"televisions?|tvs?|game\s*consoles?|gaming\s*consoles?|"
+    r"video\s*game\s*consoles?|graphics\s*cards?|projectors?|"
+    r"robot\s*vacuums?|refrigerators?|dishwashers?|washing\s*machines?|"
+    r"treadmills?|electric\s*bikes?)$",
+    re.IGNORECASE,
+)
+# Product-family names in software and accessories do not make those items
+# consoles. These exclusions apply to title, parent title and source type.
+NON_HARDWARE_PUBLIC_LEADS = re.compile(
+    r"\b(?:gift\s*cards?|gift\s*certificates?|e[-\s]?gift|"
+    r"v\s*g\s*c|subscriptions?|memberships?|prepaid|"
+    r"digital\s*(?:code|credit|delivery|download|game|gift|edition|item)|"
+    r"download\s*code|code[-\s]?in[-\s]?box|game\s*code|"
+    r"in[-\s]?game\s*(?:currency|credit|coins?|points?)|"
+    r"virtual\s*(?:currency|credit|items?)|"
+    r"software\s*(?:license|key)|"
+    r"online\s*(?:service|code)|"
+    r"(?:video\s*)?games?\s*(?:for|on)\s*(?:nintendo|playstation|xbox)|"
+    r"(?:for|compatible\s*with)\s+(?:nintendo\s*switch|"
+    r"playstation(?:\s*\d+)?|xbox(?:\s*(?:one|series))?)|"
+    r"game\s*cartridge)\b|\[\s*digital\s*\]",
+    re.IGNORECASE,
+)
+
+
+def public_extreme_value_evidence(
+    candidate: Any, *, trusted_reference: float | None = None
+) -> str | None:
+    """Require plausible exceptional value before an exact-priced public post.
+
+    A generic retailer department is not an item-level price anomaly. Unverified
+    reference prices must not be used to rescue ordinary $10 goods. Discovery
+    may still inspect these items privately using primary_product_evidence.
+    """
+    if candidate is None:
+        return None
+    title = " ".join(
+        str(value or "") for value in (
+            getattr(candidate, "title", ""),
+            getattr(candidate, "parent_title", ""),
+        )
+    ).strip()
+    attrs = getattr(candidate, "variant_attributes", None) or {}
+    source_type = " ".join(
+        str(attrs.get(k) or "") for k in ("productType", "product_type")
+    )
+    fulfillment = str(getattr(candidate, "fulfillment_type", "") or "")
+    if (
+        not title
+        or ACCESSORY.search(title)
+        or NON_HARDWARE_PUBLIC_LEADS.search(" ".join((title, source_type, fulfillment)))
+    ):
+        return None
+
+    # Search metadata can be a whole department ("Video Games" or "Jewelry").
+    # Only a specific, substantial hardware leaf can establish value.
+    category = str(attrs.get("categoryPath") or attrs.get("category") or "").strip()
+    leaf = re.split(r"[/|>]", category)[-1].strip()
+    if (
+        PUBLIC_HIGH_VALUE_HARDWARE.search(title)
+        or DEVICE_FAMILY.search(title)
+        or PUBLIC_HIGH_VALUE_CATEGORY_LEAF.fullmatch(leaf)
+    ):
+        return "high_value_hardware"
+
+    # Exact-detail validated reference evidence is a separate path for
+    # genuinely unusual items outside hardware, without inventing an MSRP.
+    trusted_flag = str(attrs.get("referencePriceTrusted") or "").strip().lower()
+    try:
+        price = float(getattr(candidate, "api_current_price", None))
+        reference = float(trusted_reference)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        trusted_flag in {"yes", "true", "1"}
+        and price > 0
+        and reference >= 50
+        and price <= reference * 0.20
+    ):
+        return "trusted_reference_price_anomaly"
+    return None

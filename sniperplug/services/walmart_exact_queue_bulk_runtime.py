@@ -9,6 +9,9 @@ from typing import Any
 from sniperplug.services.walmart_confirmed_no_price_dormancy import (
     park_mature_confirmed_no_price_retries,
 )
+from sniperplug.services.walmart_exact_batch_prefetch import (
+    prefetch_exact_lookup_items,
+)
 from sniperplug.services.walmart_exact_fetch_pacing import (
     fetch_exact_candidate_with_page_pacing,
     page_html_probe_remaining_seconds,
@@ -235,6 +238,14 @@ async def process_actionable_walmart_exact_queue_batch(
             )
 
     fetch_started = time.monotonic()
+    # One Product Lookup call per 20 claimed IDs instead of one per item. The
+    # per-item verifier below reads from this cache and falls back to its own
+    # request for anything the batch did not return.
+    await prefetch_exact_lookup_items(
+        provider,
+        (getattr(claim, "item_id", "") for claim in claims),
+        timeout_seconds=min(20.0, float(timeout_seconds)),
+    )
     outcomes = await asyncio.gather(*(fetch(claim) for claim in claims))
     fetch_seconds = max(0.0, time.monotonic() - fetch_started)
     counts = {

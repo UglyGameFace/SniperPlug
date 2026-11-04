@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import DealProvider, ProviderCapability, ProviderHealth, ProviderScanRequest, ProviderScanResult, ProviderStatus
+from sniperplug.providers.walmart_lookup_batch_cache import take_prefetched_item
 from sniperplug.services.variant_proof import extract_variant_proof
 from sniperplug.services.walmart_cash import strict_walmart_promotion_proof
 from sniperplug.services.walmart_cash_api_truth import extract_walmart_cash_api_truth
@@ -220,6 +221,12 @@ class WalmartProvider(DealProvider):
         clean_id = str(item_id or "").strip()
         if not clean_id:
             raise WalmartProviderError("Walmart product detail lookup skipped: missing item id.")
+
+        # Served from a worker's batched Product Lookup (up to 20 IDs per call)
+        # when available; exact item ID match, single use, short TTL.
+        prefetched = take_prefetched_item(self, clean_id)
+        if prefetched is not None:
+            return prefetched
 
         params = {"responseGroup": "full"}
         if self.config.publisher_id:

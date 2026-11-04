@@ -13,7 +13,7 @@ from sniperplug.services.walmart_exact_queue_health import WalmartExactQueueHeal
 STATE_TABLE = "walmart_global_catalog_autoscan_state"
 STATE_KEY = "walmart"
 DEFAULT_ROUTES_PER_BATCH = 3
-# Three fresh page-one routes plus one rotating deep request use the prior
+# Three fresh page-one routes plus one price-sorted sniper search use the prior
 # four-search-per-minute budget. Search requests may wait up to 45s for
 # exact-priority capacity and then spend up to 12s in Walmart HTTP, so three
 # minutes leaves a conservative degraded-batch margin while bounding

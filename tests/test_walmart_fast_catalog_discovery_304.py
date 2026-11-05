@@ -12,6 +12,7 @@ from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services import walmart_catalog_discovery_only as catalog
+from sniperplug.services.walmart_price_sniper_routes import PRICE_SNIPER_QUERIES
 from sniperplug.services.walmart_global_catalog_autoscan import (
     GlobalCatalogClaim,
     claim_next_catalog_routes,
@@ -36,52 +37,42 @@ def fake_claim(
 
 def test_catalog_plan_keeps_original_api_budget_but_checks_three_fresh_routes() -> None:
     claim = fake_claim()
-    plan = catalog.catalog_page_plan_for_claim(claim)
+    plan = catalog.catalog_request_plan_for_claim(claim)
     assert len(plan) == 4
-    assert plan[:3] == tuple((query, 1) for query in claim.queries)
-    assert plan[3] == ("query-0", 2)
-    assert catalog.catalog_page_plan_for_claim(claim) == plan
-    assert all(1 <= page <= catalog.CATALOG_MAX_PAGE for _, page in plan)
+    assert plan[:3] == tuple((query, 1, None, None) for query in claim.queries)
+    assert plan[3] == (PRICE_SNIPER_QUERIES[0], 1, "price", "ascending")
+    assert catalog.catalog_request_plan_for_claim(claim) == plan
 
 
 @pytest.mark.parametrize("route_count", [3, 4, 5, 6, 7, 8, 265])
-def test_catalog_deep_rotation_preserves_all_40_pages_for_every_route(route_count: int) -> None:
-    """Exactly 4 searches/batch and every route reaches every deep page.
-
-    Covers awkward wrap boundaries, especially current 265 routes where
-    naively rotating the third page slot starves many product categories.
-    """
-    deep_pages: dict[str, list[int]] = defaultdict(list)
+def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> None:
+    """Exactly 4 searches/batch; every sniper query recurs once per rotation."""
+    counts: dict[str, int] = defaultdict(int)
     fresh_counts: dict[str, int] = defaultdict(int)
     start = 0
     completed = 0
     passes = 0
-
-    # Each minute performs 3 fresh and 1 deep request. Over 39*route_count
-    # batches, each route must receive one visit to each of pages 2..40.
-    for _ in range((catalog.CATALOG_MAX_PAGE - 1) * route_count):
+    rotations = 2
+    batches = len(PRICE_SNIPER_QUERIES) * rotations
+    for _ in range(batches):
         claim = fake_claim(
             total_routes=route_count, start_index=start,
             completed_routes=completed, completed_passes=passes,
         )
-        plan = catalog.catalog_page_plan_for_claim(claim)
+        plan = catalog.catalog_request_plan_for_claim(claim)
         assert len(plan) == 4
-        assert plan[:3] == tuple((query, 1) for query in claim.queries)
-        assert 2 <= plan[3][1] <= 40
-
-        for query, page in plan:
-            if page == 1:
-                fresh_counts[query] += 1
-            else:
-                deep_pages[query].append(page)
+        assert plan[:3] == tuple((query, 1, None, None) for query in claim.queries)
+        query, page, sort_value, order_value = plan[3]
+        assert (page, sort_value, order_value) == (1, "price", "ascending")
+        counts[query] += 1
+        for fresh_query in claim.queries:
+            fresh_counts[fresh_query] += 1
         passes += int(claim.wraps_catalog)
         completed += 3
         start = claim.next_index
 
-    for index in range(route_count):
-        route = f"query-{index}"
-        assert fresh_counts[route] == 3 * (catalog.CATALOG_MAX_PAGE - 1)
-        assert sorted(deep_pages[route]) == list(range(2, 41))
+    assert counts == {query: rotations for query in PRICE_SNIPER_QUERIES}
+    assert sum(fresh_counts.values()) == 3 * batches
 
 
 def test_claim_replay_preserves_same_searches_and_cursor(monkeypatch) -> None:
@@ -98,19 +89,19 @@ def test_claim_replay_preserves_same_searches_and_cursor(monkeypatch) -> None:
             ))
             first = await claim_next_catalog_routes(db, route_count=3, now=started)
             assert first is not None
-            expected = catalog.catalog_page_plan_for_claim(first)
+            expected = catalog.catalog_request_plan_for_claim(first)
             await release_catalog_claim(db, first, error="transient source outage", now=started)
             replay = await claim_next_catalog_routes(db, route_count=3, now=started)
             assert replay is not None
             assert replay.start_index == first.start_index
             assert replay.queries == first.queries
-            assert catalog.catalog_page_plan_for_claim(replay) == expected
+            assert catalog.catalog_request_plan_for_claim(replay) == expected
 
             assert await complete_catalog_claim(db, replay, now=started)
             following = await claim_next_catalog_routes(db, route_count=3, now=started)
             assert following is not None
             assert following.start_index == 3
-            assert len(catalog.catalog_page_plan_for_claim(following)) == 4
+            assert len(catalog.catalog_request_plan_for_claim(following)) == 4
         finally:
             await conn.close()
 
@@ -120,11 +111,11 @@ def test_claim_replay_preserves_same_searches_and_cursor(monkeypatch) -> None:
 def test_catalog_scan_executes_exact_plan_not_unbounded_cartesian_product(monkeypatch) -> None:
     async def run() -> None:
         claim = fake_claim()
-        requests: list[tuple[str, int]] = []
+        requests: list[tuple] = []
         enqueued: list[SourceCandidate] = []
 
-        async def scan(query, page, _page_size, _sort, _order, _requested_by):
-            requests.append((query, page))
+        async def scan(query, page, _page_size, sort, order, _requested_by):
+            requests.append((query, page, sort, order))
             idx = len(requests)
             return ProviderScanResult(
                 provider_key="walmart",
@@ -152,12 +143,17 @@ def test_catalog_scan_executes_exact_plan_not_unbounded_cartesian_product(monkey
             requested_by="global_catalog_autoscan",
             preset=preset, db=object(), min_discount=10, catalog_claim=claim,
         )
-        assert sorted(requests) == sorted(catalog.catalog_page_plan_for_claim(claim))
+        assert sorted(requests) == sorted(catalog.catalog_request_plan_for_claim(claim))
         assert len(requests) == 4
         assert output.searches_attempted == 4
         assert output.pages_checked == 4
         assert len(enqueued) == 4
-        assert any("fresh routes **3**" in note and "planned searches **4**" in note for note in output.warnings)
+        assert any(
+            "fresh routes **3**" in note
+            and "price-sorted sniper searches **1**" in note
+            and "planned searches **4**" in note
+            for note in output.warnings
+        )
         assert any("foreground exact checks **0**" in note for note in output.warnings)
 
     asyncio.run(run())

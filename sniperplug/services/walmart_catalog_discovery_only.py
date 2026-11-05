@@ -18,6 +18,11 @@ from sniperplug.services.walmart_global_catalog_autoscan import (
     GlobalCatalogClaim,
     load_global_catalog_state,
 )
+from sniperplug.services.walmart_price_sniper_routes import (
+    PRICE_SNIPER_ORDER,
+    PRICE_SNIPER_SORT,
+    price_sniper_query_for_batch,
+)
 
 
 CATALOG_SEARCH_CONCURRENCY = 3
@@ -63,46 +68,39 @@ def catalog_pages_for_completed_passes(completed_passes: int) -> tuple[int, ...]
     deep_index = max(0, int(completed_passes)) % (CATALOG_MAX_PAGE - 1)
     return (1, 2 + deep_index)
 
-def catalog_page_plan_for_claim(
+CatalogRequest = tuple[str, int, "str | None", "str | None"]
+
+
+def catalog_request_plan_for_claim(
     claim: GlobalCatalogClaim,
-) -> tuple[tuple[str, int], ...]:
-    """Four bounded API searches: three fresh routes plus one fair deep page.
+) -> tuple[CatalogRequest, ...]:
+    """Four bounded API searches: three fresh routes plus one price sniper.
 
-    The previous plan requested page 1 and a deep page for only two catalog
-    routes per minute. With the same four-request budget, this covers three
-    routes per minute while retaining every deep page 2..40 over time.
+    Page one of each claimed catalog route (relevance order) keeps broad
+    coverage. The fourth request searches a specific high-value product
+    sorted by price, lowest first, where a price error appears at the top.
+    It replaces the former rotating deep relevance page (pages 2-40 of broad
+    department searches), which rarely surfaced price errors.
 
-    The extra deep request rotates between all catalog routes instead of
-    privileging specific product names, stores or departments. Its schedule
-    derives entirely from the durable cursor, including across lease retries
-    and restarts, so it needs no extra writes or new persistent counters.
+    The sniper query derives from the durable claim cursor only, so a
+    retried or replayed claim repeats exactly the same four requests and no
+    new persistent state is needed.
     """
     routes = tuple(claim.queries)
     if not routes:
         return ()
-    plan = [(query, 1) for query in routes]
-    if CATALOG_MAX_PAGE <= 1 or len(routes) != 3 or claim.total_routes < 3:
+    plan: list[CatalogRequest] = [
+        (query, 1, sort_value, order_value)
+        for query in routes
+        for sort_value, order_value in CATALOG_SORT_PASSES
+    ]
+    if len(routes) != 3 or claim.total_routes < 3:
         return tuple(plan)
-
-    # Across a wrapping three-route cursor, the relative route slot changes
-    # by total_routes modulo three per full pass. Compensate for this so each
-    # route receives exactly one deep request per three fresh revisits, even
-    # when total_routes is not a multiple of three (currently ~265).
-    remainder = claim.total_routes % 3
-    if remainder:
-        deep_slot = (
-            remainder * max(0, claim.completed_passes_before)
-            + claim.start_index
-        ) % 3
-    else:
-        deep_slot = max(0, claim.completed_passes_before) % 3
-
-    # Three fresh scans + one deep scan per batch. Each route receives one
-    # deep visit per total_routes batches. This rotates that route across all
-    # 39 deep pages rather than permanently skipping particular pages.
     batch_number = max(0, claim.completed_routes_before) // 3
-    deep_page = 2 + (batch_number // claim.total_routes) % (CATALOG_MAX_PAGE - 1)
-    plan.append((routes[deep_slot], deep_page))
+    plan.append((
+        price_sniper_query_for_batch(batch_number), 1,
+        PRICE_SNIPER_SORT, PRICE_SNIPER_ORDER,
+    ))
     return tuple(plan)
 
 
@@ -138,8 +136,8 @@ async def discover_walmart_catalog_candidates(
     reference-price verification.
 
     The global scan uses a four-request budget: page 1 for each of three
-    freshly claimed routes plus one deeper page rotated fairly across routes.
-    This retains deep coverage without doubling Walmart API traffic. Manual
+    freshly claimed routes plus one price-sorted (lowest first) search for a
+    rotating high-value product, where price errors surface. Manual
     callers without a durable claim preserve the legacy two-page behavior.
     All scans stay global, independent of Discord server count.
 
@@ -158,21 +156,22 @@ async def discover_walmart_catalog_candidates(
     if catalog_claim is not None:
         if preset_queries != catalog_claim.queries:
             raise ValueError("Walmart catalog claim/preset routes differ")
-        page_plan = catalog_page_plan_for_claim(catalog_claim)
+        request_plan = catalog_request_plan_for_claim(catalog_claim)
         completed_passes = catalog_claim.completed_passes_before
     else:
         catalog_pages, completed_passes = await _current_catalog_pages(db)
-        page_plan = tuple(
-            (query, page)
+        request_plan = tuple(
+            (query, page, sort_value, order_value)
             for query in preset_queries
             for page in catalog_pages
+            for sort_value, order_value in CATALOG_SORT_PASSES
         )
 
     # Fail closed on accidental configuration changes that could multiply
     # vendor calls, DB reads and queued item rows.
     if (
         catalog_claim is not None
-        and len(page_plan) * len(CATALOG_SORT_PASSES) > GLOBAL_CATALOG_REQUEST_BUDGET
+        and len(request_plan) > GLOBAL_CATALOG_REQUEST_BUDGET
     ):
         raise ValueError("global Walmart catalog request budget exceeded")
 
@@ -197,8 +196,7 @@ async def discover_walmart_catalog_candidates(
 
     tasks = [
         scan_one(query, page, sort_value, order_value)
-        for query, page in page_plan
-        for sort_value, order_value in CATALOG_SORT_PASSES
+        for query, page, sort_value, order_value in request_plan
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -256,15 +254,22 @@ async def discover_walmart_catalog_candidates(
     # Report the actual bounded page requests, not a fictitious continuous
     # page range. Claim replay deliberately produces the same request plan.
     page_label = ",".join(str(page) for page in dict.fromkeys(
-        page for _query, page in page_plan
+        page for _query, page, _sort, _order in request_plan
     ))
-    fresh_pages = sum(page == 1 for _query, page in page_plan)
-    deep_pages = len(page_plan) - fresh_pages
+    sniper_requests = sum(
+        sort_value == PRICE_SNIPER_SORT for _query, _page, sort_value, _order in request_plan
+    )
+    fresh_pages = sum(
+        page == 1 and sort_value != PRICE_SNIPER_SORT
+        for _query, page, sort_value, _order in request_plan
+    )
+    deep_pages = len(request_plan) - fresh_pages - sniper_requests
     warnings.append(
         "Walmart catalog page window: "
         f"pages **{page_label}**/**{CATALOG_MAX_PAGE}** • "
         f"fresh routes **{fresh_pages}** • rotating deep requests **{deep_pages}** • "
-        f"planned searches **{len(page_plan) * len(CATALOG_SORT_PASSES)}** • "
+        f"price-sorted sniper searches **{sniper_requests}** • "
+        f"planned searches **{len(request_plan)}** • "
         f"completed full passes before this batch **{completed_passes}**."
     )
     warnings.append(

@@ -13,6 +13,7 @@ import zlib
 from typing import Any
 
 from sniperplug.providers.walmart import WalmartProviderError, _trusted_current_price
+from sniperplug.providers.walmart_lookup_batch_cache import take_prefetched_item
 
 
 AFFILIATE_PRODUCT_LOOKUP_EXACT_SOURCE = "affiliate_product_lookup_exact_item"
@@ -112,33 +113,37 @@ def _fetch_exact_affiliate_product_lookup_payload_sync(
             retry_kind="api_exact_lookup_unavailable",
         )
 
-    params = {
-        "ids": clean_id,
-        "responseGroup": "full",
-    }
-    config = getattr(provider, "config", None)
-    publisher_id = str(getattr(config, "publisher_id", "") or "").strip()
-    if publisher_id:
-        params["publisherId"] = publisher_id
+    # A worker batch may already have fetched this exact item with up to 19
+    # others in one Product Lookup call. Use it once instead of a new request.
+    item = take_prefetched_item(provider, clean_id)
+    if item is None:
+        params = {
+            "ids": clean_id,
+            "responseGroup": "full",
+        }
+        config = getattr(provider, "config", None)
+        publisher_id = str(getattr(config, "publisher_id", "") or "").strip()
+        if publisher_id:
+            params["publisherId"] = publisher_id
 
-    url = f"{detail_url}?{urllib.parse.urlencode(params)}"
-    try:
-        payload = _request_exact_lookup_json(provider, url)
-    except WalmartProviderError as error:
-        retry_kind = str(getattr(error, "retry_kind", "") or "").strip().lower()
-        if retry_kind == "api_http_400":
-            _maybe_log_http_400(provider, clean_id, error)
-        elif (
-            retry_kind == "api_exact_lookup_no_match"
-            and str(
-                getattr(error, "exact_lookup_normalization_marker", "") or ""
-            ).strip()
-            == EXACT_LOOKUP_RESULTS_NOT_FOUND_MARKER
-        ):
-            _maybe_log_results_not_found(provider, clean_id, error)
-        raise
+        url = f"{detail_url}?{urllib.parse.urlencode(params)}"
+        try:
+            payload = _request_exact_lookup_json(provider, url)
+        except WalmartProviderError as error:
+            retry_kind = str(getattr(error, "retry_kind", "") or "").strip().lower()
+            if retry_kind == "api_http_400":
+                _maybe_log_http_400(provider, clean_id, error)
+            elif (
+                retry_kind == "api_exact_lookup_no_match"
+                and str(
+                    getattr(error, "exact_lookup_normalization_marker", "") or ""
+                ).strip()
+                == EXACT_LOOKUP_RESULTS_NOT_FOUND_MARKER
+            ):
+                _maybe_log_results_not_found(provider, clean_id, error)
+            raise
 
-    item = exact_item_from_product_lookup_payload(payload, clean_id)
+        item = exact_item_from_product_lookup_payload(payload, clean_id)
     if item is None:
         raise WalmartProviderError(
             f"Walmart Affiliate Product Lookup returned no exact item match for {clean_id}.",

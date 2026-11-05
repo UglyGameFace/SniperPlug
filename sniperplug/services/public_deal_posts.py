@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import logging
 
 from dataclasses import dataclass
@@ -77,6 +79,12 @@ async def maybe_post_public_deal_cards(
     db = getattr(bot, "db", None)
     if db is None:
         return PublicPostResult(attempted=attempted, errors=("public posting skipped: bot database unavailable",))
+    # Fanout passes the *same* card object to every destination. The quality
+    # gate below adds a proof field whose wording ("scout leads ... did not
+    # bypass this gate") then made every later destination fail
+    # ``is_review_or_watchlist``: only the first server ever received a regular
+    # markdown post. Each destination now evaluates a private copy.
+    cards = [isolated_destination_card(card) for card in cards]
 
     fallback_key = normalize_retailer_key(fallback_retailer)
     try:
@@ -300,6 +308,28 @@ async def maybe_post_public_deal_cards(
         cached_active=cached_active,
         errors=tuple(notes[:8]),
     )
+
+
+def isolated_destination_card(card: Any) -> Any:
+    """Return a copy of ``card`` that per-destination gates may mutate freely."""
+
+    try:
+        return copy.deepcopy(card)
+    except Exception:  # noqa: BLE001 - fall back to copying the mutable parts.
+        clone = copy.copy(card)
+        embed = getattr(card, "embed", None)
+        if embed is not None:
+            try:
+                clone.embed = embed.copy()
+            except Exception:  # noqa: BLE001
+                pass
+        attrs = getattr(card, "variant_attributes", None)
+        if isinstance(attrs, dict):
+            try:
+                clone.variant_attributes = dict(attrs)
+            except Exception:  # noqa: BLE001
+                pass
+        return clone
 
 
 async def resolve_public_alert_channel(

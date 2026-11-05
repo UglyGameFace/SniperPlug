@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -33,6 +34,11 @@ from sniperplug.services.walmart_global_offer_memory import (
     _valid_stable_reference,
     exact_offer_identity,
 )
+
+# Must match public_deal_quality's observed-price proof contract exactly.
+OBSERVED_DROP_REFERENCE_SOURCE = "sniperplug.global_exact_offer_memory.stable_price"
+OBSERVED_DROP_LANE = "price_memory_drop"
+OBSERVED_DROP_MIN_DOLLARS = 5.0
 
 
 @dataclass(frozen=True)
@@ -125,6 +131,18 @@ async def persist_exact_queue_outcomes_bulk(
 
     queue_rows: list[tuple[Any, ...]] = []
     offer_inputs: list[_OfferInput] = []
+    # Load remembered prices for this batch's exact offers once. The same rows
+    # feed both observed-price-drop proof (below) and the memory upsert, so the
+    # batch still costs one SELECT and one UPSERT.
+    identities = {
+        id(outcome.candidate): exact_offer_identity(outcome.candidate)
+        for outcome in normalized
+        if outcome.candidate is not None
+    }
+    known_identities = [
+        identity for identity in identities.values() if identity is not None
+    ]
+    memory_rows = await _load_offer_memory_rows(conn, known_identities)
     for outcome in normalized:
         observed_at = _as_utc(outcome.observed_at)
         if outcome.candidate is None:
@@ -138,16 +156,23 @@ async def persist_exact_queue_outcomes_bulk(
             )
             continue
 
-        identity = exact_offer_identity(outcome.candidate)
+        identity = identities.get(id(outcome.candidate))
         if identity is None:
             raise RuntimeError(
                 "Exact Walmart candidate lost seller/offer identity before persistence: "
                 f"{getattr(outcome.claim, 'item_id', '')}"
             )
+        alert_candidate = apply_observed_price_drop_proof(
+            outcome.candidate,
+            identity=identity,
+            memory_row=memory_rows.get(identity.identity_key),
+            observed_at=observed_at,
+            min_discount=min_discount,
+        ) or outcome.candidate
         queue_rows.append(
             _verified_queue_row(
                 outcome.claim,
-                candidate=outcome.candidate,
+                candidate=alert_candidate,
                 identity=identity,
                 observed_at=observed_at,
                 min_discount=min_discount,
@@ -162,7 +187,7 @@ async def persist_exact_queue_outcomes_bulk(
             )
         )
 
-    sql_statements = 0
+    sql_statements = 1 if known_identities else 0
     if queue_rows:
         await _bulk_update_queue(conn, queue_rows)
         sql_statements += 1
@@ -172,6 +197,7 @@ async def persist_exact_queue_outcomes_bulk(
         offer_rows, offer_statements = await _bulk_observe_exact_offers(
             conn,
             offer_inputs,
+            existing=memory_rows,
         )
         sql_statements += offer_statements
 
@@ -331,24 +357,127 @@ def _failure_queue_row(
     )
 
 
-async def _bulk_observe_exact_offers(
+async def _load_offer_memory_rows(
     conn: Any,
-    inputs: list[_OfferInput],
-) -> tuple[int, int]:
-    identities = [value.identity.identity_key for value in inputs]
-    placeholders = ",".join("?" for _ in identities)
+    identities: list[ExactOfferIdentity],
+) -> dict[str, Any]:
+    keys = list(dict.fromkeys(identity.identity_key for identity in identities))
+    if not keys:
+        return {}
+    placeholders = ",".join("?" for _ in keys)
     cursor = await conn.execute(
         f"""
         SELECT *
         FROM {GLOBAL_OFFER_MEMORY_TABLE}
         WHERE identity_key IN ({placeholders})
         """,
-        tuple(identities),
+        tuple(keys),
     )
-    existing = {
+    return {
         str(_row_get(row, "identity_key") or ""): row
         for row in await cursor.fetchall()
     }
+
+
+def apply_observed_price_drop_proof(
+    candidate: SourceCandidate,
+    *,
+    identity: ExactOfferIdentity,
+    memory_row: Any | None,
+    observed_at: datetime,
+    min_discount: int,
+) -> SourceCandidate | None:
+    """Return a copy carrying observed-price-drop proof, or None.
+
+    Walmart's MSRP is never trusted as a markdown reference, so an exact offer
+    without a native was/regular price used to be classified
+    ``verified_no_reference`` forever, even when SniperPlug had repeatedly
+    confirmed this *same* item/offer/seller/variant/condition/fulfillment at a
+    much higher price. The global offer memory already maintained that stable
+    price, but nothing in the scheduled pipeline ever used it.
+
+    This attaches the existing, fail-closed ``price_memory_drop`` proof that
+    ``public_deal_quality`` already validates (fingerprint recomputation, item
+    URL binding, selected-offer binding, >=2 stable confirmations within 30
+    days). The candidate then classifies as ``verified_markdown`` and reaches
+    the ordinary threshold-gated markdown lane. A trusted Walmart reference
+    always wins; memory never overrides or invents one.
+    """
+
+    if memory_row is None or _trusted_reference(candidate) is not None:
+        return None
+    if not _row_identity_matches(memory_row, identity):
+        return None
+    current = _positive_number(
+        getattr(candidate, "api_current_price", None)
+        or getattr(candidate, "current_price", None)
+    )
+    stable = _valid_stable_reference(memory_row, _as_utc(observed_at))
+    stable_count = int(_row_get(memory_row, "stable_seen_count") or 0)
+    if current is None or stable is None or stable <= current:
+        return None
+    drop_dollars = round(stable - current, 2)
+    drop_percent = _percent_off(current, stable)
+    if (
+        drop_percent is None
+        or drop_percent < max(1, int(min_discount))
+        or drop_dollars < OBSERVED_DROP_MIN_DOLLARS
+        or stable_count < MIN_STABLE_CONFIRMATIONS
+    ):
+        return None
+
+    proved = copy.copy(candidate)
+    attrs = dict(getattr(candidate, "variant_attributes", None) or {})
+    attrs.update(
+        {
+            "priceMemoryIdentity": identity.identity_key,
+            "priceMemoryItemId": identity.item_id,
+            "priceMemoryOfferId": identity.offer_id,
+            "priceMemorySellerKey": identity.seller_key,
+            "priceMemoryVariantKey": identity.variant_key,
+            "priceMemoryConditionKey": identity.condition_key,
+            "priceMemoryFulfillmentKey": identity.fulfillment_key,
+            "priceMemoryStableConfirmations": str(stable_count),
+            "priceMemoryReason": (
+                "same exact item, offer, seller, variant, condition, and "
+                "fulfillment is below a repeatedly confirmed price"
+            ),
+            "referencePriceTrusted": "yes",
+            "trustedReferencePrice": f"{stable:.2f}",
+            "trustedReferenceSource": OBSERVED_DROP_REFERENCE_SOURCE,
+            "exactDetailReferenceStatus": "observed_price_memory",
+        }
+    )
+    attrs.pop("observedPriceFallback", None)
+    proved.variant_attributes = attrs
+    proved.api_reference_price = stable
+    proved.typical_price = stable
+    proved.api_reference_path = OBSERVED_DROP_REFERENCE_SOURCE
+    proved.api_discount_percent = drop_percent
+    proved.deal_lane = OBSERVED_DROP_LANE
+    signals = list(getattr(candidate, "signals", ()) or ())
+    signal = (
+        f"SniperPlug observed this exact offer at ${stable:,.2f} "
+        f"({stable_count} confirmations); now ${current:,.2f}"
+    )
+    if signal not in signals:
+        signals.insert(0, signal)
+    proved.signals = signals[:24]
+    return proved
+
+
+async def _bulk_observe_exact_offers(
+    conn: Any,
+    inputs: list[_OfferInput],
+    *,
+    existing: dict[str, Any] | None = None,
+) -> tuple[int, int]:
+    statements = 0
+    if existing is None:
+        existing = await _load_offer_memory_rows(
+            conn, [value.identity for value in inputs]
+        )
+        statements += 1
 
     rows: list[tuple[Any, ...]] = []
     for value in inputs:
@@ -360,7 +489,7 @@ async def _bulk_observe_exact_offers(
             rows.append(prepared)
 
     if not rows:
-        return 0, 1
+        return 0, statements
 
     value_sql = ",".join(
         "(" + ",".join("?" for _ in _OFFER_COLUMNS) + ")"
@@ -395,7 +524,7 @@ async def _bulk_observe_exact_offers(
         """,
         params,
     )
-    return len(rows), 2
+    return len(rows), statements + 1
 
 
 def _prepare_offer_row(

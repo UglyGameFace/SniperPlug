@@ -16,6 +16,9 @@ from sniperplug.services import walmart_global_deal_fanout as legacy
 from sniperplug.services.autoscan_live_guild_reconciliation import (
     list_live_public_alert_guilds,
 )
+from sniperplug.services.ghost_guild_tombstones import load_ghost_tombstones
+from sniperplug.services.public_alert_config import get_public_alert_config
+from sniperplug.services.public_deal_quality import walmart_item_id_from_url
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.dm_deal_alerts import (
     card_search_text,
@@ -76,6 +79,13 @@ WHERE status = 'verified_markdown'
 ORDER BY verified_at ASC, item_id ASC
 LIMIT ?
 """
+# An enrolled server can be missing from Discord's live guild cache during a
+# gateway reconnect or outage. A deal is not acknowledged for such a server; the
+# event is deferred (not blocking newer events) and retried, while servers that
+# already received it are protected by durable post reservations. After this
+# window the offer is too old to announce as current, so the event finalizes.
+MISSING_GUILD_RETRY_SECONDS = 5 * 60
+MISSING_GUILD_MAX_WAIT = timedelta(hours=6)
 _STATE_ATTR = "_sniperplug_walmart_fanout_bulk_state"
 _FALLBACK_STATES: dict[int, "_FanoutRuntimeState"] = {}
 log = logging.getLogger("sniperplug.autoscan.fanout")
@@ -157,6 +167,7 @@ class _ClaimedEvent:
     deal_key: str
     claim_token: str
     card: Any
+    source_verified_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -280,6 +291,12 @@ async def fanout_recent_exact_walmart_deals(
             required_retailer="walmart",
         )
         guilds = list(load_result.guilds)
+        awaited_guild_ids = await _enrolled_walmart_guilds_not_live(
+            db,
+            bot,
+            load_result,
+        )
+        superseded = await _superseded_event_keys(db, claimed_events)
         preferences = await list_enabled_dm_deal_alert_preferences(db)
         totals = {
             "events_processed": 0,
@@ -302,9 +319,22 @@ async def fanout_recent_exact_walmart_deals(
         }
         processed: list[tuple[str, str]] = []
         failed: list[tuple[str, str, str]] = []
+        deferred: list[tuple[str, str, str]] = []
         fanout_decisions: list[WalmartGuildFanoutDecision] = []
+        now_utc = datetime.now(timezone.utc)
 
         for event in claimed_events:
+            if event.deal_key in superseded:
+                # The exact offer was re-verified at a different price or lost
+                # its markdown status since this event was created. Never
+                # announce the old price as current.
+                log.info(
+                    "Global Walmart event superseded before delivery deal=%s reason=%s",
+                    event.deal_key,
+                    superseded[event.deal_key],
+                )
+                processed.append((event.deal_key, event.claim_token))
+                continue
             event_errors: list[str] = []
             event_public_posts = 0
             for guild in guilds:
@@ -505,7 +535,24 @@ async def fanout_recent_exact_walmart_deals(
                         _error_text(event_errors),
                     )
                 )
+            elif awaited_guild_ids and not _event_too_old(event, now_utc):
+                deferred.append(
+                    (
+                        event.deal_key,
+                        event.claim_token,
+                        "awaiting enrolled guilds not in live Discord cache: "
+                        + ",".join(str(gid) for gid in sorted(awaited_guild_ids))[:400],
+                    )
+                )
             else:
+                if awaited_guild_ids:
+                    log.warning(
+                        "Global Walmart event finalized without delivery to absent guilds "
+                        "deal=%s guilds=%s max_wait_h=%s",
+                        event.deal_key,
+                        sorted(awaited_guild_ids),
+                        MISSING_GUILD_MAX_WAIT.total_seconds() / 3600,
+                    )
                 processed.append((event.deal_key, event.claim_token))
                 totals["events_processed"] += 1
 
@@ -519,6 +566,14 @@ async def fanout_recent_exact_walmart_deals(
             processed=processed,
             failed=failed,
         )
+        await _defer_claimed_events_bulk(db, deferred)
+        if deferred:
+            log.warning(
+                "Global Walmart fanout deferred %s event(s) for enrolled guilds "
+                "missing from the live Discord cache guilds=%s",
+                len(deferred),
+                sorted(awaited_guild_ids),
+            )
         return GlobalDealFanoutResult(
             candidates_loaded=ingested.loaded,
             exact_cards=ingested.exact_cards,
@@ -722,7 +777,7 @@ async def _claim_pending_events_bulk(
         WHERE deal_key IN (SELECT deal_key FROM picked)
           AND processed_at IS NULL
           AND (lease_until IS NULL OR lease_until <= ?)
-        RETURNING deal_key, snapshot_json
+        RETURNING deal_key, snapshot_json, source_verified_at
         """,
         (
             now_iso,
@@ -753,6 +808,9 @@ async def _claim_pending_events_bulk(
                 deal_key=deal_key,
                 claim_token=token,
                 card=card,
+                source_verified_at=str(
+                    legacy._row_get(row, "source_verified_at", 2) or ""
+                ),
             )
         )
 
@@ -811,6 +869,141 @@ async def _finalize_claimed_events_bulk(
             """,
             params,
         )
+    await conn.commit()
+
+
+async def _enrolled_walmart_guilds_not_live(
+    db: Any,
+    bot: Any,
+    load_result: Any,
+) -> set[int]:
+    """Enrolled Walmart destinations that Discord's live cache does not show.
+
+    ``list_live_public_alert_guilds`` deliberately returns nothing when the bot
+    has no live guilds at all, so that case re-reads enrollment directly.
+    Tombstoned ghost rows (servers the bot genuinely left) are never awaited.
+    """
+
+    if list(getattr(bot, "guilds", []) or []):
+        candidates = set(int(gid) for gid in load_result.stale_visible_ids)
+        candidates -= set(int(gid) for gid in load_result.tombstoned_visible_ids)
+    else:
+        conn = db.require_conn()
+        cursor = await conn.execute(
+            "SELECT CAST(guild_id AS TEXT) AS guild_id FROM guild_public_alert_settings "
+            "WHERE enabled = 1 AND channel_id IS NOT NULL"
+        )
+        candidates = set()
+        for row in await cursor.fetchall():
+            try:
+                candidates.add(int(str(legacy._row_get(row, "guild_id", 0))))
+            except (TypeError, ValueError):
+                continue
+        if candidates:
+            tombstoned = await load_ghost_tombstones(
+                db.require_conn(),
+                guild_ids=None,
+            )
+            candidates -= set(int(gid) for gid in tombstoned)
+    awaited: set[int] = set()
+    for guild_id in candidates:
+        try:
+            config = await get_public_alert_config(db, guild_id)
+        except Exception:  # noqa: BLE001 - unreadable config: do not drop it.
+            awaited.add(guild_id)
+            continue
+        retailers = {
+            str(value or "").strip().lower()
+            for value in (config.get("retailers") or ())
+        }
+        if config.get("enabled") and config.get("channel_id") and "walmart" in retailers:
+            awaited.add(guild_id)
+    return awaited
+
+
+def _event_too_old(event: "_ClaimedEvent", now: datetime) -> bool:
+    try:
+        verified = datetime.fromisoformat(str(event.source_verified_at))
+    except (TypeError, ValueError):
+        return True
+    if verified.tzinfo is None:
+        verified = verified.replace(tzinfo=timezone.utc)
+    return now - verified > MISSING_GUILD_MAX_WAIT
+
+
+async def _superseded_event_keys(
+    db: Any,
+    events: list["_ClaimedEvent"],
+) -> dict[str, str]:
+    """Events whose exact queue row no longer proves the same current offer."""
+
+    wanted: dict[str, list["_ClaimedEvent"]] = {}
+    for event in events:
+        item_id = walmart_item_id_from_url(
+            getattr(event.card, "direct_product_url", None)
+            or getattr(event.card, "url", None)
+        )
+        if item_id:
+            wanted.setdefault(item_id, []).append(event)
+    if not wanted:
+        return {}
+    placeholders = ",".join("?" for _ in wanted)
+    cursor = await db.require_conn().execute(
+        f"SELECT item_id, status, exact_current_cents FROM {QUEUE_TABLE} "
+        f"WHERE item_id IN ({placeholders})",
+        tuple(wanted),
+    )
+    rows = {
+        str(legacy._row_get(row, "item_id", 0) or ""): row
+        for row in await cursor.fetchall()
+    }
+    superseded: dict[str, str] = {}
+    for item_id, item_events in wanted.items():
+        row = rows.get(item_id)
+        for event in item_events:
+            if row is None:
+                superseded[event.deal_key] = "queue_row_missing"
+                continue
+            status = str(legacy._row_get(row, "status", 1) or "")
+            if status != "verified_markdown":
+                # Transient states (pending/verifying/retry) are re-checks in
+                # flight, not evidence the offer changed; keep the event.
+                if status.startswith("verified_") or status == "not_buyable":
+                    superseded[event.deal_key] = f"status:{status}"
+                continue
+            card_cents = _money_cents(getattr(event.card, "current_price", None))
+            row_cents = _int_value(legacy._row_get(row, "exact_current_cents", 2))
+            if card_cents is not None and row_cents and card_cents != row_cents:
+                superseded[event.deal_key] = f"price:{card_cents}->{row_cents}"
+    return superseded
+
+
+async def _defer_claimed_events_bulk(
+    db: Any,
+    deferred: list[tuple[str, str, str]],
+) -> None:
+    if not deferred:
+        return
+    conn = db.require_conn()
+    retry_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=MISSING_GUILD_RETRY_SECONDS)
+    ).isoformat()
+    placeholders = ",".join("(?, ?, ?)" for _ in deferred)
+    params = tuple(value for row in deferred for value in row)
+    await conn.execute(
+        f"""
+        WITH deferred(deal_key, claim_token, last_error) AS (
+            VALUES {placeholders}
+        )
+        UPDATE {legacy.EVENT_TABLE} AS target
+        SET last_error = deferred.last_error, claim_token = '',
+            lease_until = ?
+        FROM deferred
+        WHERE target.deal_key = deferred.deal_key
+          AND target.claim_token = deferred.claim_token
+        """,
+        (*params, retry_at),
+    )
     await conn.commit()
 
 

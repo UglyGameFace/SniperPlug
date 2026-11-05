@@ -68,13 +68,15 @@ PUBLIC_SCOUT_VALUE_TERMS = (
 )
 
 
-def card_text(card: Any, *, source_label: str = "") -> str:
+def card_text(card: Any, *, source_label: str = "", skip_fields: tuple[str, ...] = ()) -> str:
     parts: list[str] = [str(source_label or ""), str(getattr(card, "label", "") or ""), str(getattr(card, "url", "") or "")]
     embed = getattr(card, "embed", None)
     if embed is not None:
         parts.append(str(getattr(embed, "title", "") or ""))
         parts.append(str(getattr(embed, "description", "") or ""))
         for field in getattr(embed, "fields", []) or []:
+            if skip_fields and str(getattr(field, "name", "") or "") in skip_fields:
+                continue
             parts.append(str(getattr(field, "name", "") or ""))
             parts.append(str(getattr(field, "value", "") or ""))
     return " ".join(parts)
@@ -92,7 +94,9 @@ def float_or_none(value: Any) -> float | None:
 
 
 def is_review_or_watchlist(card: Any, *, source_label: str = "") -> bool:
-    text = card_text(card, source_label=source_label).lower()
+    # SniperPlug's own lane-proof explanation lists what did *not* bypass the
+    # gate (e.g. "scout leads"); it must never count as a review marker.
+    text = card_text(card, source_label=source_label, skip_fields=(PUBLIC_DEAL_LANE_FIELD,)).lower()
     blocked_terms = (
         "watchlist",
         "review-only",

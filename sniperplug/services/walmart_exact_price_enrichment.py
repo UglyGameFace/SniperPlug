@@ -526,6 +526,12 @@ def _merge_exact_candidate(
         merged_attrs["trustedReferenceSource"] = reference_source
         merged_attrs.pop("observedPriceFallback", None)
     else:
+        # Keep the list/MSRP price Walmart returned for *this exact item* as
+        # context for listed-price anomaly leads. It is stored under a key that
+        # no markdown/trust check reads, so it can never become markdown proof.
+        exact_context = _positive_number(exact_attrs.get("referenceContextPrice"))
+        if exact_context is not None:
+            merged_attrs["walmartListedReferencePrice"] = f"{exact_context:.2f}"
         for key in _PRICE_PROOF_ATTRIBUTE_KEYS:
             merged_attrs.pop(key, None)
         exact.typical_price = None

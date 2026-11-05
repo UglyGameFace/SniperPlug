@@ -133,11 +133,13 @@ def is_priority_extreme_discovery(
 ) -> bool:
     """Boost potentially valuable extreme leads in the shared queue.
 
-    Two shapes qualify: a recognized primary product at <=$10, or any
-    non-accessory item at <=20% of a substantial reference price (a likely
-    price error at any price point). A search result is never treated as a
-    verified offer: this only changes ordering inside existing bounded
-    queues; exact detail still must confirm it.
+    Three shapes qualify: a recognized primary product at <=$10, any
+    non-accessory item at <=20% of a substantial trusted reference, or any
+    non-accessory item at <=20% of the list/MSRP price Walmart itself returned
+    for the item (a likely price error at any price point, even when that list
+    price is not trusted enough to prove a markdown). A search result is never
+    treated as a verified offer: this only changes ordering inside existing
+    bounded queues; exact detail still must confirm it.
     """
     try:
         price = float(current_price) if current_price is not None else None
@@ -145,16 +147,143 @@ def is_priority_extreme_discovery(
         return False
     if price is None or price <= 0:
         return False
-    if price <= ABSOLUTE_EXTREME_MAX_PRICE:
-        return primary_product_evidence(
-            candidate, trusted_reference=trusted_reference
-        ) is not None
-    if not is_price_error_ratio(price, trusted_reference):
-        return False
+    if price <= ABSOLUTE_EXTREME_MAX_PRICE and primary_product_evidence(
+        candidate, trusted_reference=trusted_reference
+    ) is not None:
+        return True
     title = " ".join(
         str(getattr(candidate, key, "") or "") for key in ("title", "parent_title")
     )
-    return bool(title.strip()) and ACCESSORY.search(title) is None
+    if not title.strip() or ACCESSORY.search(title) is not None:
+        return False
+    return is_price_error_ratio(price, trusted_reference) or is_price_error_ratio(
+        price, walmart_listed_reference(candidate)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Walmart-listed (MSRP / list) price anomalies
+#
+# Walmart's Affiliate API returns ``msrp`` for most items, but SniperPlug never
+# trusts it as markdown proof (inflated MSRPs are common). That policy is right
+# for "% OFF" posts, yet it left a blind spot: an exact-verified $49 offer on an
+# item Walmart itself lists at $599 had *no* delivery lane at all, because it is
+# neither a verified markdown nor a sub-$10 product-type lead. The listed price
+# is source data, not an invented MSRP, so it can support an opt-in exact-price
+# lead when the anomaly is extreme (<=20% of list) and the offer is either sold
+# by Walmart itself or is recognizably substantial hardware. No percentage is
+# claimed; the alert states both numbers and that the list price is unverified.
+# ---------------------------------------------------------------------------
+LISTED_REFERENCE_KEYS = (
+    "msrp",
+    "referenceContextPrice",
+    "listPrice",
+    "walmartListedReferencePrice",
+)
+CHEAP_CONSUMABLE = re.compile(
+    r"\b(?:detergent|soap|paper\s*towels?|toilet\s*paper|tissue|wipes|diapers?|"
+    r"snacks?|candy|soda|bottled\s*water|shampoo|conditioner|toothpaste|"
+    r"vitamins?|supplements?)\b",
+    re.IGNORECASE,
+)
+WALMART_FIRST_PARTY_SELLERS = {
+    "walmart", "walmart.com", "walmart stores inc", "walmart stores, inc.",
+}
+
+
+def _positive_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(str(value).replace("$", "").replace(",", "").strip())
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def walmart_listed_reference(candidate: Any) -> float | None:
+    """Return the list/MSRP price Walmart's own API returned for this item."""
+
+    attrs = getattr(candidate, "variant_attributes", None) or {}
+    for key in LISTED_REFERENCE_KEYS:
+        value = _positive_float(attrs.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def is_walmart_first_party(candidate: Any) -> bool:
+    attrs = getattr(candidate, "variant_attributes", None) or {}
+    if str(attrs.get("walmartSeller") or "").strip().lower() == "yes":
+        return True
+    seller = " ".join(
+        str(getattr(candidate, "seller_name", None) or attrs.get("seller") or "").lower().split()
+    )
+    return seller in WALMART_FIRST_PARTY_SELLERS
+
+
+def listed_price_anomaly(candidate: Any) -> float | None:
+    """Return Walmart's listed price when the exact price is an extreme anomaly.
+
+    Requirements, all fail-closed:
+    * current exact price is <= 20% of a Walmart-returned list price >= $50;
+    * not an accessory/part, not digital credit/software/subscription, not a
+      cheap consumable (where MSRP inflation is endemic);
+    * sold by Walmart itself, or recognizably substantial hardware. Inflated
+      marketplace-seller MSRPs on ordinary goods therefore cannot qualify.
+    """
+
+    if candidate is None:
+        return None
+    current = _positive_float(getattr(candidate, "api_current_price", None))
+    listed = walmart_listed_reference(candidate)
+    if current is None or listed is None or not is_price_error_ratio(current, listed):
+        return None
+    title = " ".join(
+        str(getattr(candidate, key, "") or "") for key in ("title", "parent_title")
+    ).strip()
+    attrs = getattr(candidate, "variant_attributes", None) or {}
+    source_type = " ".join(
+        str(attrs.get(k) or "") for k in ("productType", "product_type")
+    )
+    fulfillment = str(getattr(candidate, "fulfillment_type", "") or "")
+    if (
+        not title
+        or ACCESSORY.search(title)
+        or NON_HARDWARE_PUBLIC_LEADS.search(" ".join((title, source_type, fulfillment)))
+        or CHEAP_CONSUMABLE.search(title)
+    ):
+        return None
+    if is_walmart_first_party(candidate):
+        return listed
+    if public_extreme_value_evidence(candidate) == "high_value_hardware":
+        return listed
+    return None
+
+
+def exact_price_lead_evidence(
+    candidate: Any, *, trusted_reference: float | None = None
+) -> str | None:
+    """Single authority for whether an exact offer is an alertable price lead.
+
+    Returns ``"listed_price_anomaly"`` (any price, <=20% of Walmart's listed
+    price), ``"high_value_hardware"`` (<=$10 substantial hardware), or None.
+    Verified markdowns never reach this function: they are delivered by the
+    threshold-based markdown lane instead.
+    """
+
+    if candidate is None:
+        return None
+    if listed_price_anomaly(candidate) is not None:
+        return "listed_price_anomaly"
+    current = _positive_float(getattr(candidate, "api_current_price", None))
+    if current is None or current > ABSOLUTE_EXTREME_MAX_PRICE:
+        return None
+    if primary_product_evidence(candidate, trusted_reference=trusted_reference) is None:
+        return None
+    if public_extreme_value_evidence(candidate, trusted_reference=trusted_reference) is None:
+        return None
+    return "high_value_hardware"
 
 
 # Discovery deliberately stays broad, but a public "extreme" alert needs stronger

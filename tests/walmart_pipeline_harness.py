@@ -184,9 +184,21 @@ class FakeWalmartAPI:
 
 # ---------------------------------------------------------------- Discord ----
 class FakeMessage:
-    def __init__(self, message_id: int, embed: Any):
+    def __init__(self, message_id: int, embed: Any, view: Any = None):
         self.id = message_id
         self.embed = embed
+        self.embeds = [embed] if embed is not None else []
+        self.view = view
+        self.edits = 0
+
+    async def edit(self, *, embed: Any = None, view: Any = "unchanged", **_kw: Any):
+        if embed is not None:
+            self.embed = embed
+            self.embeds = [embed]
+        if view != "unchanged":
+            self.view = view
+        self.edits += 1
+        return self
 
 
 class FakeChannel:
@@ -195,13 +207,24 @@ class FakeChannel:
         self.name = name
         self.guild = guild
         self.sent: list[Any] = []
+        self.messages: dict[int, FakeMessage] = {}
         self.fail_with: Exception | None = None
 
     async def send(self, *, embed: Any = None, view: Any = None, **_kw: Any) -> FakeMessage:
         if self.fail_with is not None:
             raise self.fail_with
         self.sent.append(embed)
-        return FakeMessage(len(self.sent) + self.id, embed)
+        message = FakeMessage(len(self.sent) + self.id, embed, view)
+        self.messages[message.id] = message
+        return message
+
+    async def fetch_message(self, message_id: int) -> FakeMessage:
+        message = self.messages.get(int(message_id))
+        if message is None:
+            import discord
+
+            raise discord.NotFound(None, "Unknown Message")
+        return message
 
     def titles(self) -> list[str]:
         return [str(getattr(embed, "title", "") or "") for embed in self.sent]
@@ -231,6 +254,12 @@ class FakeBot:
         for guild in self.guilds:
             if int(guild.id) == int(guild_id):
                 return guild
+        return None
+
+    def get_channel(self, channel_id: int):
+        for guild in self.guilds:
+            if guild.channel.id == int(channel_id):
+                return guild.channel
         return None
 
     async def fetch_channel(self, channel_id: int):
@@ -498,6 +527,31 @@ class Pipeline:
         conn = self.db.require_conn()
         await conn.execute(f"UPDATE {EVENT_TABLE} SET lease_until = NULL")
         await conn.commit()
+
+    async def sweep_expired_posts(self, *, make_stale: bool = True):
+        """Run the posted-deal expiry sweep now (as if its pacing elapsed)."""
+
+        from sniperplug.providers.registry import provider_registry
+        from sniperplug.services.walmart_posted_deal_expiry import (
+            TABLE,
+            sweep_posted_walmart_deals,
+        )
+
+        if make_stale:
+            conn = self.db.require_conn()
+            await conn.execute(
+                f"UPDATE {TABLE} SET last_checked_at = '2000-01-01T00:00:00+00:00'"
+            )
+            await conn.commit()
+        return await sweep_posted_walmart_deals(
+            self.bot,
+            provider=provider_registry.get("walmart"),
+            force=True,
+        )
+
+    def messages(self, guild: FakeGuild | None = None) -> list[FakeMessage]:
+        target = guild or self.guilds[0]
+        return list(target.channel.messages.values())
 
     def posts(self, guild: FakeGuild | None = None) -> list[Any]:
         target = guild or self.guilds[0]

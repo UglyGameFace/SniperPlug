@@ -7,7 +7,8 @@
 - Confirmed and fixed: (R1) only the first enrolled server received regular markdown posts (shared card mutated by the quality gate; matches Oct-27 log `guild checks/posts 4/1`); (R2) MSRP-only exact price errors above $10 had no lane; (R3) observed-price-drop memory was never delivered by the scheduled pipeline; (R4) markdown lane acknowledged deals for servers absent from the live guild cache; (R5) Turso `row[0]` KeyError in the legacy no-price cooldown that would fail every exact cycle.
 - Tuned: exact claim 8 → 20 rows per cycle (one batched lookup request, #308). Display: never "100% OFF" for a paid price.
 - GitHub Actions was refused for the #307/#308 merges (billing/spending-limit annotation). After the repo was made public, re-runs passed: `main` @ `7570a992` 1,543 passed; PR #309 @ `ce10e35` 1,569 passed; import smoke check green on both.
-- Not verified: Discloud deployed SHA, live DB backend, live Walmart responses, real latency, post-deploy extreme-lane volume. Posted-deal expiry/retirement is not implemented (needs a design decision).
+- Not verified: Discloud deployed SHA, live DB backend, live Walmart responses, real latency, post-deploy extreme-lane volume.
+- Follow-up (owner chose edit-in-place): `walmart_posted_deal_expiry.py` records every Walmart public post and edits it to ⛔ EXPIRED on authoritative re-verification (queue row or one paced batched lookup ≤ 20 IDs per 10 min); missing-from-lookup is never expiry; 7-day tracking, 30-day bounded prune.
 
 ## November 2 follow-up: high-value Walmart public alert quality (PR #305, open)
 

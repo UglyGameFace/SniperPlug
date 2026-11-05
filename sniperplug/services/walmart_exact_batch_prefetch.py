@@ -105,6 +105,50 @@ def _fetch_chunk_sync(base: Any, chunk: list[str]) -> dict[str, dict]:
     return found
 
 
+async def fetch_exact_lookup_items(
+    provider: Any,
+    item_ids: Iterable[Any],
+    *,
+    timeout_seconds: float = 30.0,
+) -> tuple[dict[str, dict], int, int]:
+    """Return ``(items_by_id, api_calls, failed_calls)`` from batched lookups.
+
+    Same signed endpoint, request slot and per-item extraction as the verifier
+    prefetch, but the raw Product Lookup items are returned to the caller
+    instead of being cached for one-item consumers. Items Walmart omitted are
+    simply absent from the mapping; callers must treat absence as "unknown".
+    """
+
+    ids = _clean_ids(item_ids)
+    base = lookup_base_provider(provider)
+    if not ids or base is None:
+        return {}, 0, 0
+    found_all: dict[str, dict] = {}
+    calls = failed = 0
+    for start in range(0, len(ids), BATCH_LOOKUP_MAX_IDS):
+        chunk = ids[start:start + BATCH_LOOKUP_MAX_IDS]
+        calls += 1
+        try:
+            async with walmart_request_slot(priority=EXACT_PRIORITY):
+                found = await asyncio.wait_for(
+                    asyncio.to_thread(_fetch_chunk_sync, base, chunk),
+                    timeout=max(1.0, float(timeout_seconds)),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 - absence means unknown.
+            failed += 1
+            log.info(
+                "walmart batched lookup failed ids=%s kind=%s error=%s",
+                len(chunk),
+                str(getattr(error, "retry_kind", "") or type(error).__name__),
+                str(error)[:200],
+            )
+            continue
+        found_all.update(found)
+    return found_all, calls, failed
+
+
 async def prefetch_exact_lookup_items(
     provider: Any,
     item_ids: Iterable[Any],

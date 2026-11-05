@@ -214,10 +214,16 @@ existing offer-memory SELECT, so it adds no statement.
   row; a re-verified different price, `not_buyable`, or loss of markdown status
   supersedes the event (tested).
 * Extreme lane: unchanged #301–#303 outbox (15-min freshness).
-* **Not implemented:** editing/retiring a Discord post when its offer later expires.
-  No background worker does this today; posted markdowns are re-verified only by the
-  24 h safety sweep or a catalog price change, and that result is not propagated to
-  Discord. This needs a design decision (edit vs. follow-up message vs. reaction).
+* **Posted-deal expiry (added after #309, owner chose "edit in place"):**
+  `services/walmart_posted_deal_expiry.py`. Every Walmart public post (both lanes) is
+  recorded with channel, message, item ID and posted price. A self-paced sweep (every
+  10 min) expires a post on authoritative evidence only: the exact worker re-verified the
+  item after posting as `not_buyable` or ≥ 5% and ≥ $1 higher (no API cost), or one
+  batched Product Lookup (≤ 20 IDs, posts unchecked for 2 h) shows out of stock, not
+  online, or that price rise. The message is edited in place (⛔ EXPIRED title, grey,
+  "Deal ended" reason + check time, buttons removed) and `/active_deals` cache marked
+  expired. Absence from a lookup is never expiry. Tracking stops after 7 days; rows
+  pruned after 30 days in bounded batches. Worst-case cost: 6 lookup requests/hour.
 
 ---
 
@@ -245,7 +251,7 @@ extreme-lane volume after R2; Discord permissions in each server.
 1. ~~Get green CI on this branch~~ — done (repo made public; all checks green). 
 2. Merge and deploy, then confirm from logs: `guild checks/posts N/N` for a qualifying deal,
    `Global Walmart fanout deferred` during a reconnect, first `price_memory_drop` post. (P0)
-3. Posted-deal expiry handling (§7). (P1)
+3. ~~Posted-deal expiry handling (§7)~~ — implemented (edit in place).
 4. Decide discovery budget: e.g. 2 broad + 2 sniper searches halves sniper revisit
    (27 → 14 min) but slows broad rotation (89 → 133 min). Needs the real Walmart quota. (P2)
 5. Retire unreachable modules in §4 in a mechanical PR. (P2)

@@ -9,6 +9,7 @@
 - GitHub Actions was refused for the #307/#308 merges (billing/spending-limit annotation). After the repo was made public, re-runs passed: `main` @ `7570a992` 1,543 passed; PR #309 @ `ce10e35` 1,569 passed; import smoke check green on both.
 - Not verified: Discloud deployed SHA, live DB backend, live Walmart responses, real latency, post-deploy extreme-lane volume.
 - Follow-up (owner chose edit-in-place): `walmart_posted_deal_expiry.py` records every Walmart public post and edits it to ⛔ EXPIRED on authoritative re-verification (queue row or one paced batched lookup ≤ 20 IDs per 10 min); missing-from-lookup is never expiry; 7-day tracking, 30-day bounded prune.
+- Harsh re-audit (same PR #310): fixed H1 Walmart-sold MSRP-inflated soft goods qualifying as extreme leads (#309 regression), H2 Walmart `stock: "Not available"` posting as live markdowns (single `stock_status.py` authority), H3 returned deals never re-posted after expiry, H4 expiry edits exceeding Discord embed limits. See audit §11.
 
 ## November 2 follow-up: high-value Walmart public alert quality (PR #305, open)
 

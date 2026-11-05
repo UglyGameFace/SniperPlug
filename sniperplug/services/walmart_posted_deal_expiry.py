@@ -31,6 +31,7 @@ from typing import Any
 import discord
 
 from sniperplug.services.public_deal_quality import walmart_item_id_from_url
+from sniperplug.services.stock_status import is_unavailable_stock
 
 log = logging.getLogger("sniperplug.autoscan.expiry")
 
@@ -46,10 +47,6 @@ MAX_EDIT_ATTEMPTS = 3
 # A price must rise by both of these before the posted deal counts as ended.
 PRICE_RISE_RATIO = 1.05
 PRICE_RISE_MIN_CENTS = 100
-UNAVAILABLE_STOCK = (
-    "not available", "out of stock", "out-of-stock", "sold out", "unavailable",
-    "not in stock",
-)
 
 _SCHEMA_ATTR = "_sniperplug_posted_deal_expiry_schema"
 _SWEEP_ATTR = "_sniperplug_posted_deal_expiry_last_sweep"
@@ -109,6 +106,8 @@ async def ensure_posted_deal_tables(db: Any) -> None:
             channel_id TEXT NOT NULL,
             item_id TEXT NOT NULL,
             product_key TEXT NOT NULL DEFAULT '',
+            deal_key TEXT NOT NULL DEFAULT '',
+            alert_key TEXT NOT NULL DEFAULT '',
             posted_cents INTEGER NOT NULL,
             lane TEXT NOT NULL DEFAULT '',
             posted_at TEXT NOT NULL,
@@ -145,6 +144,8 @@ async def record_posted_walmart_message(
     card: Any,
     product_key: str,
     lane: str,
+    deal_key: str = "",
+    alert_key: str = "",
 ) -> bool:
     """Remember a sent Walmart post so it can be retired when the deal ends."""
 
@@ -160,13 +161,14 @@ async def record_posted_walmart_message(
     await conn.execute(
         f"""
         INSERT INTO {TABLE} (guild_id, message_id, channel_id, item_id, product_key,
-            posted_cents, lane, posted_at, last_checked_at, state)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            deal_key, alert_key, posted_cents, lane, posted_at, last_checked_at, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
         ON CONFLICT(guild_id, message_id) DO NOTHING
         """,
         (
             str(int(guild_id)), str(message_id), str(channel_id), str(item_id),
-            str(product_key or ""), posted_cents, str(lane or "")[:40], now, now,
+            str(product_key or ""), str(deal_key or ""), str(alert_key or ""),
+            posted_cents, str(lane or "")[:40], now, now,
         ),
     )
     await conn.commit()
@@ -201,7 +203,7 @@ def _lookup_evidence(item: dict, posted_cents: int) -> tuple[str, int | None] | 
     if isinstance(online, str):
         online = online.strip().lower() not in {"false", "no", "0", "off"}
     current = _cents(item.get("salePrice"))
-    if any(marker in stock for marker in UNAVAILABLE_STOCK):
+    if is_unavailable_stock(stock):
         return "Walmart now shows this item as out of stock", current
     if online is False:
         return "Walmart no longer offers this item online", current
@@ -272,7 +274,7 @@ async def sweep_posted_walmart_deals(
         f"""
         SELECT p.guild_id, p.message_id, p.channel_id, p.posted_cents,
                q.status, q.exact_current_cents, p.item_id, p.product_key,
-               p.edit_attempts
+               p.edit_attempts, p.deal_key, p.alert_key
         FROM {TABLE} AS p
         JOIN {QUEUE_TABLE} AS q ON q.item_id = p.item_id
         WHERE p.state = 'active'
@@ -297,7 +299,7 @@ async def sweep_posted_walmart_deals(
     cursor = await conn.execute(
         f"""
         SELECT guild_id, message_id, channel_id, posted_cents, item_id,
-               product_key, edit_attempts
+               product_key, edit_attempts, deal_key, alert_key
         FROM {TABLE} INDEXED BY idx_{TABLE}_state_checked
         WHERE state = 'active' AND last_checked_at <= ? AND posted_at >= ?
         ORDER BY last_checked_at ASC
@@ -336,6 +338,7 @@ async def sweep_posted_walmart_deals(
         checked += len(checked_ids)
 
     expired = failures = 0
+    expired_offers: set[tuple[str, int]] = set()
     for (guild_id, message_id), (row, reason) in pending.items():
         outcome = await _retire_message(
             bot,
@@ -365,6 +368,17 @@ async def sweep_posted_walmart_deals(
              guild_id, message_id),
         )
         product_key = str(_row(row, "product_key", 7) or "")
+        if state == "expired":
+            expired_offers.add(
+                (str(_row(row, "item_id", 6) or ""), int(_row(row, "posted_cents", 3) or 0))
+            )
+            await _release_delivery_guards(
+                conn,
+                guild_id=guild_id,
+                product_key=product_key,
+                deal_key=str(_row(row, "deal_key", 9) or ""),
+                alert_key=str(_row(row, "alert_key", 10) or ""),
+            )
         if state == "expired" and product_key:
             try:
                 await conn.execute(
@@ -374,6 +388,8 @@ async def sweep_posted_walmart_deals(
                 )
             except Exception:  # noqa: BLE001 - cache table is optional.
                 pass
+    if expired_offers:
+        await _rearm_markdown_events(conn, expired_offers)
     if pending:
         await conn.commit()
 
@@ -389,6 +405,105 @@ async def sweep_posted_walmart_deals(
     if expired or failures or api_calls:
         log.info(result.summary_line())
     return result
+
+
+async def _release_delivery_guards(
+    conn: Any,
+    *,
+    guild_id: str,
+    product_key: str,
+    deal_key: str,
+    alert_key: str,
+) -> None:
+    """Let a retired deal post again in this server if it genuinely returns.
+
+    The per-server reservation (price-keyed) and the alert dedupe row
+    (suppresses any price >= the last posted price for days) would otherwise
+    keep a restocked or re-dropped offer at the same price from ever posting
+    again, leaving only the EXPIRED message. A new post still requires a fresh
+    exact verification at the deal price, so this cannot replay the old one.
+    """
+
+    try:
+        gid = int(guild_id)
+    except (TypeError, ValueError):
+        return
+    try:
+        if deal_key:
+            await conn.execute(
+                "DELETE FROM guild_public_deal_posts WHERE guild_id = ? AND deal_key = ?",
+                (gid, deal_key),
+            )
+        if product_key and alert_key:
+            await conn.execute(
+                "DELETE FROM alert_dedupe WHERE guild_id = ? AND retailer = 'walmart' "
+                "AND product_key = ? AND alert_key = ?",
+                (gid, product_key, alert_key),
+            )
+    except Exception as error:  # noqa: BLE001 - tables are created elsewhere.
+        log.info("Posted-deal guard release skipped guild=%s error=%s", guild_id, str(error)[:200])
+
+
+async def _rearm_markdown_events(conn: Any, offers: set[tuple[str, int]]) -> None:
+    """Forget processed markdown events for retired offers.
+
+    Markdown fanout events are keyed by item and price and created only when
+    the exact worker verifies a new markdown. Leaving the processed event in
+    place meant a deal that returned at the same price never produced a new
+    event. Removing it lets the *next fresh verification* at that price create
+    one; servers that did not retire their post keep their own delivery
+    guards, so they are not sent a duplicate.
+    """
+
+    from sniperplug.services.walmart_global_deal_fanout import EVENT_TABLE
+
+    for item_id, posted_cents in offers:
+        if not item_id.isdigit() or posted_cents <= 0:
+            continue
+        prefix = f"walmart:{item_id}:price:{posted_cents / 100:.2f}:"
+        try:
+            await conn.execute(
+                f"DELETE FROM {EVENT_TABLE} WHERE processed_at IS NOT NULL "
+                "AND substr(deal_key, 1, ?) = ?",
+                (len(prefix), prefix),
+            )
+        except Exception as error:  # noqa: BLE001
+            log.info("Posted-deal event re-arm skipped item=%s error=%s", item_id, str(error)[:200])
+
+
+EMBED_MAX_FIELDS = 25
+EMBED_MAX_CHARS = 6000
+
+
+def _expired_title(title: str) -> str:
+    if title.startswith("⛔ EXPIRED"):
+        return title[:256]
+    return ("⛔ EXPIRED — " + title)[:256]
+
+
+def _expired_embed(embed: Any, ended_value: str) -> Any:
+    """Mark an embed expired while staying inside Discord's embed limits."""
+
+    embed.title = _expired_title(str(getattr(embed, "title", "") or ""))
+    embed.colour = discord.Colour.dark_grey()
+    # Make room for the new first field (max 25 fields).
+    while len(list(getattr(embed, "fields", []) or [])) >= EMBED_MAX_FIELDS:
+        embed.remove_field(len(embed.fields) - 1)
+    embed.insert_field_at(0, name="⛔ Deal ended", value=ended_value, inline=False)
+    # Keep the total under Discord's 6,000-character limit by trimming the
+    # description, then dropping trailing fields (never the "Deal ended" one).
+    try:
+        overflow = len(embed) - EMBED_MAX_CHARS
+    except Exception:  # noqa: BLE001 - unknown embed type; let Discord decide.
+        overflow = 0
+    if overflow > 0 and embed.description:
+        keep = max(0, len(embed.description) - overflow - 1)
+        embed.description = embed.description[:keep] + ("…" if keep else "")
+        overflow = len(embed) - EMBED_MAX_CHARS
+    while overflow > 0 and len(embed.fields) > 1:
+        embed.remove_field(len(embed.fields) - 1)
+        overflow = len(embed) - EMBED_MAX_CHARS
+    return embed
 
 
 async def _retire_message(
@@ -411,22 +526,32 @@ async def _retire_message(
             channel = await bot.fetch_channel(int(channel_id))
         message = await channel.fetch_message(int(message_id))
         embeds = list(getattr(message, "embeds", None) or [])
-        embed = embeds[0].copy() if embeds else discord.Embed(title="Walmart deal")
-        title = str(getattr(embed, "title", "") or "")
-        if not title.startswith("⛔ EXPIRED"):
-            embed.title = ("⛔ EXPIRED — " + title)[:256]
-        embed.colour = discord.Colour.dark_grey()
         stamp = int(checked_at.timestamp())
-        embed.insert_field_at(
-            0,
-            name="⛔ Deal ended",
-            value=(
-                f"{reason}. It was posted at ${posted_cents / 100:,.2f}. "
-                f"Checked <t:{stamp}:R>."
-            )[:1024],
-            inline=False,
+        ended_value = (
+            f"{reason}. It was posted at ${posted_cents / 100:,.2f}. "
+            f"Checked <t:{stamp}:R>."
+        )[:1024]
+        embed = _expired_embed(
+            embeds[0].copy() if embeds else discord.Embed(title="Walmart deal"),
+            ended_value,
         )
-        await message.edit(embed=embed, view=None)
+        try:
+            await message.edit(embed=embed, view=None)
+        except (discord.NotFound, discord.Forbidden):
+            raise
+        except discord.HTTPException as error:
+            if int(getattr(error, "status", 0) or 0) != 400:
+                raise
+            # Discord rejected the edited embed (size/field limits). Retire the
+            # post with a minimal embed rather than leaving it looking live.
+            original = embeds[0] if embeds else None
+            minimal = discord.Embed(
+                title=_expired_title(str(getattr(original, "title", "") or "Walmart deal")),
+                url=getattr(original, "url", None) or None,
+                colour=discord.Colour.dark_grey(),
+            )
+            minimal.add_field(name="⛔ Deal ended", value=ended_value, inline=False)
+            await message.edit(embed=minimal, view=None)
         return "edited"
     except (discord.NotFound, discord.Forbidden):
         return "gone"

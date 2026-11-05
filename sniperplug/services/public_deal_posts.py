@@ -285,6 +285,8 @@ async def maybe_post_public_deal_cards(
                     card=card,
                     product_key=product_key,
                     lane="extreme" if allow_verified_extreme else "markdown",
+                    deal_key=deal_key,
+                    alert_key=alert_key,
                 )
             except Exception as exc:  # noqa: BLE001 - never blocks delivery.
                 notes.append(f"posted-deal expiry tracking failed: {clean_error_text(exc)}")

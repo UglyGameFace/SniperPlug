@@ -186,6 +186,32 @@ CHEAP_CONSUMABLE = re.compile(
     r"vitamins?|supplements?)\b",
     re.IGNORECASE,
 )
+# Departments where Walmart's MSRP/"list" price is routinely fictional, so a
+# low price against it is ordinary merchandising, not a price error. Matched in
+# the title or the categoryPath. These goods remain eligible through the
+# observed-price-drop and verified-markdown lanes, which use real evidence.
+MSRP_INFLATED_GOODS = re.compile(
+    r"\b(?:jewel(?:ry|lery)|earrings?|necklaces?|bracelets?|pendants?|"
+    r"(?:engagement|wedding|promise|diamond|gold|silver|fashion|cocktail)\s+rings?|"
+    r"anklets?|charms?|cubic\s*zirconia|sterling\s*silver|"
+    r"cloth(?:ing|es)|apparel|shirts?|t-?shirts?|tees?|tops?|blouses?|hoodies?|"
+    r"sweat(?:shirt|er)s?|jackets?|coats?|dress(?:es)?|skirts?|jeans|pants|"
+    r"shorts|leggings|pajamas?|underwear|socks|bras?|swimsuits?|uniforms?|"
+    r"shoes?|sneakers?|boots?|sandals?|slippers?|handbags?|purses?|wallets?|"
+    r"backpacks?|hats?|caps?|scarf|scarves|gloves|"
+    r"beauty|cosmetics?|makeup|fragrances?|perfumes?|parfum|cologne|"
+    r"eau\s+de|lotions?|skin\s*care|nail\s*polish|wigs?|hair\s*extensions?|"
+    r"rugs?|curtains?|drapes?|comforters?|bedding|sheet\s*sets?|pillows?|"
+    r"blankets?|throws?|towels?|bath\s*mats?|wall\s*art|home\s*d[eé]cor|"
+    r"artificial\s*(?:flowers?|plants?)|candles?|"
+    r"dinnerware|drinkware|flatware|mugs?|tumblers?|"
+    r"costumes?|party\s*supplies|seasonal|holiday\s*d[eé]cor|"
+    r"arts?\s*(?:&|and)?\s*crafts?|craft\s*supplies|fabric)\b",
+    re.IGNORECASE,
+)
+# Non-hardware Walmart-sold goods must clear a much higher bar than hardware.
+LISTED_ANOMALY_MIN_REFERENCE = 100.0
+LISTED_ANOMALY_MIN_SAVINGS = 75.0
 WALMART_FIRST_PARTY_SELLERS = {
     "walmart", "walmart.com", "walmart stores inc", "walmart stores, inc.",
 }
@@ -228,9 +254,12 @@ def listed_price_anomaly(candidate: Any) -> float | None:
     Requirements, all fail-closed:
     * current exact price is <= 20% of a Walmart-returned list price >= $50;
     * not an accessory/part, not digital credit/software/subscription, not a
-      cheap consumable (where MSRP inflation is endemic);
-    * sold by Walmart itself, or recognizably substantial hardware. Inflated
-      marketplace-seller MSRPs on ordinary goods therefore cannot qualify.
+      cheap consumable;
+    * either recognizably substantial hardware (any seller), or sold by
+      Walmart itself with a list price >= $100, savings >= $75, and not in a
+      department where MSRP inflation is endemic (apparel, jewelry, shoes,
+      beauty, decor/textiles, tableware). Inflated MSRPs on ordinary goods
+      therefore cannot qualify.
     """
 
     if candidate is None:
@@ -254,9 +283,21 @@ def listed_price_anomaly(candidate: Any) -> float | None:
         or CHEAP_CONSUMABLE.search(title)
     ):
         return None
-    if is_walmart_first_party(candidate):
-        return listed
+    # Substantial hardware (TVs, consoles, laptops, power tools...) at <=20% of
+    # its listed price is a likely price error from any seller.
     if public_extreme_value_evidence(candidate) == "high_value_hardware":
+        return listed
+    # Everything else needs Walmart itself as seller, a substantial list price
+    # and absolute savings, and must not be a department where MSRP inflation
+    # is endemic (apparel, jewelry, shoes, beauty, decor/textiles, tableware).
+    category = str(attrs.get("categoryPath") or attrs.get("category") or "")
+    if (
+        is_walmart_first_party(candidate)
+        and listed >= LISTED_ANOMALY_MIN_REFERENCE
+        and listed - current >= LISTED_ANOMALY_MIN_SAVINGS
+        and MSRP_INFLATED_GOODS.search(title) is None
+        and MSRP_INFLATED_GOODS.search(category) is None
+    ):
         return listed
     return None
 

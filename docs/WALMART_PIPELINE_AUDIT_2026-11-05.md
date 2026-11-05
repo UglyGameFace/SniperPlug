@@ -255,3 +255,22 @@ extreme-lane volume after R2; Discord permissions in each server.
 4. Decide discovery budget: e.g. 2 broad + 2 sniper searches halves sniper revisit
    (27 → 14 min) but slows broad rotation (89 → 133 min). Needs the real Walmart quota. (P2)
 5. Retire unreachable modules in §4 in a mechanical PR. (P2)
+
+---
+
+## 11. Harsh re-audit of this audit's own changes (2026-11-05, afternoon)
+
+Every claim below was reproduced through the production-chain harness before fixing.
+
+| # | Finding | Severity | Introduced by | Fix (PR #310) |
+|---|---|---|---|---|
+| H1 | **Walmart-sold soft goods with inflated MSRPs posted as extreme leads.** The #309 listed-price rule accepted "sold by Walmart" as value evidence, so $9.97 earrings (list $79), $5 T-shirt 6-packs, $8 jackets, $9 perfume, $3 kids' hoodies, $19 rugs and $7 dinnerware would all have posted — the exact junk #305 removed. | High (regression) | #309 (R2) | Substantial hardware still qualifies from any seller. Everything else must be Walmart-sold, list ≥ $100, savings ≥ $75, and outside departments where MSRP inflation is endemic (apparel, jewelry, shoes, beauty, decor/textiles, tableware). Junk cases and keepers (dining set, tent, TV, video doorbell) are permanent tests. |
+| H2 | **Sold-out items posted as live deals.** Walmart's Affiliate API reports out-of-stock as `stock: "Not available"`. The authoritative classifier only recognized "out of stock"/"unavailable"/"sold out", so a "Not available" markdown was `verified_markdown` and posted. Each module kept its own token list. | High (pre-existing) | before #256 | New `services/stock_status.py` is the single authority, used by the exact classifier, recheck, extreme lane and expiry. |
+| H3 | **A deal that came back at the same price after expiring was never re-posted.** The channel would show only the EXPIRED post while the deal was live again (restocks, repeat glitches). Three layers blocked it: the price-keyed reservation, `alert_dedupe` (suppresses any price ≥ last posted), and the processed markdown fanout event. | Medium | #310 | Retiring a post releases that server's reservation and dedupe row and forgets the processed markdown event for that item/price. A re-post still requires a fresh exact verification at the deal price; servers that didn't retire their post keep their guards. |
+| H4 | **Expiry edit could fail on large cards.** Adding the "Deal ended" field to a card already at Discord's 25-field or 6,000-character limit would be rejected; after 3 retries the post would stop being tracked and stay looking live. | Medium | #310 | Make room first (drop trailing fields, trim the description); on an HTTP 400, fall back to a minimal expired embed. |
+
+Checked and **not** a defect:
+
+* Deferral starvation: deferred markdown events reclaim at most every 5 min against 60 claims/min, and the ghost reconciler deletes setup rows for servers the bot left within 30 min, so a gone server cannot hold events for long.
+* `not_buyable` as expiry evidence: it comes only from the exact lookup (`availableOnline` false or unavailable stock), so it is authoritative.
+* Observed-drop and markdown posts do show "Was/typical ~~$X~~ / Save $Y" (an early probe suggested otherwise; that was a probe artifact).

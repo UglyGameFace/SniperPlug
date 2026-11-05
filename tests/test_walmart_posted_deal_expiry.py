@@ -165,3 +165,103 @@ async def test_sweep_is_self_paced(tmp_path, monkeypatch):
         assert p.api.count("lookup") == lookups
     finally:
         await p.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_edit_stays_inside_discord_embed_limits(tmp_path, monkeypatch):
+    p = await _posted(tmp_path, monkeypatch)
+    try:
+        embed = p.messages()[0].embeds[0]
+        embed.description = "x" * 4000
+        while len(embed.fields) < 25:
+            embed.add_field(name=f"Field {len(embed.fields)}", value="y" * 200, inline=True)
+        p.api.set_price(IPAD["itemId"], 489.00)
+        result = await p.sweep_expired_posts()
+        assert result.expired == 1
+        edited = p.messages()[0].embeds[0]
+        assert len(edited.fields) <= 25
+        assert len(edited) <= 6000
+        assert edited.fields[0].name == "⛔ Deal ended"
+        assert edited.title.startswith("⛔ EXPIRED")
+    finally:
+        await p.close()
+
+
+@pytest.mark.asyncio
+async def test_rejected_edit_falls_back_to_minimal_expired_embed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import discord
+
+    p = await _posted(tmp_path, monkeypatch)
+    try:
+        message = p.messages()[0]
+        original_edit = message.edit
+        calls = {"n": 0}
+
+        async def flaky_edit(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise discord.HTTPException(SimpleNamespace(status=400, reason="Bad Request"), "Invalid Form Body")
+            return await original_edit(**kwargs)
+
+        message.edit = flaky_edit
+        p.api.set_price(IPAD["itemId"], 489.00)
+        result = await p.sweep_expired_posts()
+        assert result.expired == 1 and calls["n"] == 2
+        edited = message.embeds[0]
+        assert edited.title.startswith("⛔ EXPIRED") and [f.name for f in edited.fields] == ["⛔ Deal ended"]
+    finally:
+        await p.close()
+
+
+@pytest.mark.asyncio
+async def test_deal_that_returns_after_expiry_is_posted_again(tmp_path, monkeypatch):
+    p = await Pipeline(tmp_path, monkeypatch, guild_ids=(111000, 222000)).start()
+    try:
+        for guild in p.guilds:
+            await p.enroll(guild, threshold=40)
+        p.api.add(dict(IPAD), queries=("ipad mini",))
+        await p.discover("ipad mini")
+        await p.cycle()
+        p.api.set_price(IPAD["itemId"], 489.00)
+        await p.discover("ipad mini")
+        await p.cycle()
+        assert (await p.sweep_expired_posts()).expired == 2
+        # Still at full price: nothing new may be posted.
+        await p.cycle(2)
+        assert [len(p.posts(g)) for g in p.guilds] == [1, 1]
+        # The same $99 deal comes back (restock / second price drop).
+        p.api.set_price(IPAD["itemId"], 99.00)
+        await p.discover("ipad mini")
+        await p.cycle()
+        assert [len(p.posts(g)) for g in p.guilds] == [2, 2]
+        for guild in p.guilds:
+            assert p.messages(guild)[0].embeds[0].title.startswith("⛔ EXPIRED")
+            assert not p.messages(guild)[1].embeds[0].title.startswith("⛔")
+        # And it is not posted a third time on the next cycles.
+        await p.cycle(2)
+        assert [len(p.posts(g)) for g in p.guilds] == [2, 2]
+    finally:
+        await p.close()
+
+
+@pytest.mark.asyncio
+async def test_extreme_lead_that_returns_after_expiry_is_posted_again(tmp_path, monkeypatch):
+    tab = walmart_item(9813, 'Samsung Galaxy Tab S11 11" 256GB Wi-Fi Tablet', 1.00, msrp=899.99)
+    p = await _posted(tmp_path, monkeypatch, tab, extreme=True, query="galaxy tab s11 256")
+    try:
+        p.api.set_price(tab["itemId"], 899.99)
+        await p.discover("galaxy tab s11 256")
+        await p.cycle()
+        assert (await p.sweep_expired_posts()).expired == 1
+        await p.cycle(2)
+        assert len(p.posts()) == 1
+        p.api.set_price(tab["itemId"], 1.00)
+        await p.discover("galaxy tab s11 256")
+        await p.cycle()
+        assert len(p.posts()) == 2
+        await p.cycle(2)
+        assert len(p.posts()) == 2
+    finally:
+        await p.close()

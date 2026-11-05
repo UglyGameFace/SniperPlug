@@ -221,9 +221,12 @@ class FakeChannel:
     async def fetch_message(self, message_id: int) -> FakeMessage:
         message = self.messages.get(int(message_id))
         if message is None:
+            from types import SimpleNamespace
+
             import discord
 
-            raise discord.NotFound(None, "Unknown Message")
+            # Real discord.py reads response.status/reason in the constructor.
+            raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "Unknown Message")
         return message
 
     def titles(self) -> list[str]:

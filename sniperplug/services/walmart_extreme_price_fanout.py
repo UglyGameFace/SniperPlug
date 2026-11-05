@@ -17,12 +17,16 @@ from sniperplug.services.public_deal_quality import walmart_item_id_from_url
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
 from sniperplug.services.walmart_extreme_price_signals import (
+    ABSOLUTE_EXTREME_MAX_PRICE,
     ACCESSORY,
+    exact_price_lead_evidence,
+    listed_price_anomaly,
     primary_product_evidence,
-    public_extreme_value_evidence,
 )
 
-MAX_PRICE_CENTS = 1000
+# Sub-$10 leads may qualify on substantial product type alone. Above this price
+# only a listed-price anomaly (<=20% of Walmart's own list/MSRP price) qualifies.
+MAX_PRICE_CENTS = int(ABSOLUTE_EXTREME_MAX_PRICE * 100)
 
 def extreme_rejection_reason(candidate: Any) -> str | None:
     """Explain the first failed gate without weakening exact-offer evidence.
@@ -49,7 +53,7 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
         displayed = float(candidate.current_price)
     except (TypeError, ValueError, OverflowError):
         return "exact_price_missing"
-    if not (0 < current <= MAX_PRICE_CENTS / 100 and abs(current - displayed) < 0.01):
+    if not (current > 0 and abs(current - displayed) < 0.01):
         return "price_mismatch_or_over_limit"
     if candidate.can_add_to_cart is not True:
         return "not_cart_buyable"
@@ -75,14 +79,19 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
     if ACCESSORY.search(title):
         return "accessory_or_parts"
     trusted_reference = _trusted_reference(candidate)
+    if exact_price_lead_evidence(
+        candidate, trusted_reference=trusted_reference
+    ) is not None:
+        return None
+    if current > MAX_PRICE_CENTS / 100:
+        # Above $10 the only accepted evidence is an extreme anomaly against
+        # Walmart's own listed price; nothing else is claimed for pricier items.
+        return "price_mismatch_or_over_limit"
     if primary_product_evidence(
         candidate, trusted_reference=trusted_reference
     ) is None:
         return "not_recognized_primary_product"
-    if public_extreme_value_evidence(
-        candidate, trusted_reference=trusted_reference
-    ) is None:
-        return "insufficient_value_evidence"
+    return "insufficient_value_evidence"
     return None
 
 
@@ -120,29 +129,38 @@ def _row_get(row: Any, column: str, index: int) -> Any:
 def build_extreme_price_card(candidate: Any) -> Any | None:
     if not eligible_exact_extreme_candidate(candidate):
         return None
-    evidence = public_extreme_value_evidence(
+    evidence = exact_price_lead_evidence(
         candidate, trusted_reference=_trusted_reference(candidate)
     )
+    listed = listed_price_anomaly(candidate) if evidence == "listed_price_anomaly" else None
+    current_price = float(candidate.api_current_price)
     # Do not recycle scout search-route and "cheap price" score reasons.
     # Public reasons must describe the actual exact-item evidence.
     reasons = (
-        ("high-value product type", "official Walmart exact-item price")
-        if evidence == "high_value_hardware"
-        else ("trusted reference indicates unusual value", "official Walmart exact-item price")
+        ("price far below Walmart's own listed price", "official Walmart exact-item price")
+        if listed is not None
+        else ("high-value product type", "official Walmart exact-item price")
     )
     lead = ScoutLead(candidate=candidate, score=70, reasons=reasons)
     card = build_scout_card(lead)
     card.url = candidate.direct_product_url or candidate.product_url
     card.embed.url = card.url
     card.embed.title = "Extreme exact-price find: " + str(candidate.title or "")[:155]
-    # The private scout may show an untrusted raw MSRP. Do not repeat it in an
-    # automatic alert when the source did not prove a reference/markdown.
+    # The private scout may show an untrusted raw MSRP. Replace it with exactly
+    # what was verified, and never derive a discount percentage from it.
+    price_text = (
+        f"Exact offer price: **${current_price:,.2f}**. Walmart lists this item at "
+        f"**${listed:,.2f}** (MSRP/list price). That list price is not a verified "
+        "was-price, so no discount percentage is claimed."
+        if listed is not None
+        else f"Exact offer price: **${current_price:,.2f}**. No comparison price or discount percentage is claimed."
+    )
     for index, field in enumerate(card.embed.fields):
         if str(field.name) == "💰 Scout price":
             card.embed.set_field_at(
                 index,
                 name="Walmart exact API price",
-                value=f"Exact offer price: **${float(candidate.api_current_price):.2f}**. No comparison price or discount percentage is claimed.",
+                value=price_text,
                 inline=False,
             )
             break
@@ -150,8 +168,13 @@ def build_extreme_price_card(candidate: Any) -> Any | None:
         name="Exact price, NOT a verified markdown",
         value=(
             "Walmart's official exact-item API returned $"
-            + f"{float(candidate.api_current_price):.2f}"
-            + " for this seller/offer/variant. No original price or discount is claimed. "
+            + f"{current_price:,.2f}"
+            + " for this seller/offer/variant. "
+            + (
+                f"Walmart's listed price is ${listed:,.2f}; it is shown for context only. "
+                if listed is not None
+                else "No original price or discount is claimed. "
+            )
             + "Recheck condition, local availability, shipping and checkout price."
         ),
         inline=False,
@@ -311,10 +334,10 @@ async def extreme_price_health_summary(db: Any, guild_id: int | None = None) -> 
         f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
         "WHERE status IN ('verified_no_reference', 'verified_under_threshold', "
         "'verified_reference') "
-        "AND exact_current_cents BETWEEN 1 AND ? "
+        "AND exact_current_cents >= 1 "
         "AND verified_at >= ? AND snapshot_json <> '' "
         "ORDER BY verified_at DESC, item_id DESC LIMIT ?",
-        (MAX_PRICE_CENTS, cutoff, limit),
+        (cutoff, limit),
     )
     rows = await cursor.fetchall()
     qualified = 0
@@ -528,11 +551,11 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         cursor = await conn.execute(
             f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
             "WHERE status IN ('verified_no_reference', 'verified_under_threshold', 'verified_reference') "
-            "AND exact_current_cents BETWEEN 1 AND ? "
+            "AND exact_current_cents >= 1 "
             "AND verified_at >= ? AND snapshot_json <> '' "
             "AND (verified_at, item_id) > (?, ?) "
             "ORDER BY verified_at ASC, item_id ASC LIMIT ?",
-            (MAX_PRICE_CENTS, cutoff, *previous, BATCH_LIMIT),
+            (cutoff, *previous, BATCH_LIMIT),
         )
         rows = await cursor.fetchall()
         next_cursor = previous

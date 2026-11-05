@@ -10,6 +10,7 @@ from discord.ext import tasks
 from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs import resilient_auto_scan_runner as resilient
 from sniperplug.providers.registry import provider_registry
+from sniperplug.providers.walmart_lookup_batch_cache import BATCH_LOOKUP_MAX_IDS
 from sniperplug.services.autoscan_live_guild_reconciliation import (
     list_live_public_alert_guilds,
     reconcile_live_public_alert_setups,
@@ -59,7 +60,11 @@ GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 3
 GLOBAL_BACKPRESSURE_LOG_INTERVAL_SECONDS = 5 * 60
 GLOBAL_CLAIM_BUSY_LOG_INTERVAL_SECONDS = 60
 GLOBAL_FANOUT_EVENT_LIMIT = 20
-GLOBAL_EXACT_QUEUE_BATCH_SIZE = 8
+# One batched Product Lookup carries up to 20 item IDs (#308), so a 20-row
+# claim costs the same single API request an 8-row claim did. This raises the
+# steady verification ceiling from 24 to 60 items/minute without new requests;
+# per-item fallbacks still run only for items the batch response omitted.
+GLOBAL_EXACT_QUEUE_BATCH_SIZE = BATCH_LOOKUP_MAX_IDS
 GLOBAL_EXACT_QUEUE_CONCURRENCY = 2
 GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS = 20
 MIN_WORKER_YIELD_SECONDS = 1.0
@@ -392,73 +397,13 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
             while True:
                 cycle_started = time.monotonic()
                 try:
-                    self._exact_active = True
-                    self._runtime_phase = "exact_verification_queue"
-                    result = await process_actionable_walmart_exact_queue_batch(
-                        self.bot.db,
-                        provider=provider_registry.get("walmart"),
-                        limit=GLOBAL_EXACT_QUEUE_BATCH_SIZE,
-                        concurrency=GLOBAL_EXACT_QUEUE_CONCURRENCY,
-                        min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
-                    )
-                    now = time.monotonic()
-                    health_due = (
-                        now - self._last_queue_health_log_monotonic
-                        >= resilient.WALMART_QUEUE_HEALTH_LOG_INTERVAL_SECONDS
-                    )
-                    should_log = (
-                        bool(result.claimed)
-                        or bool(result.terminal_quarantined)
-                        or bool(result.terminal_rearmed)
-                        or health_due
-                    )
-                    if should_log:
-                        if health_due:
-                            pressure = await load_walmart_exact_queue_pressure(
-                                self.bot.db
-                            )
-                            legacy.log.info(
-                                "%s • %s",
-                                result.summary_line(),
-                                bounded_pressure_summary(pressure),
-                            )
-                            self._last_queue_health_log_monotonic = now
-                        else:
-                            legacy.log.info(result.summary_line())
-
-                    # Short-lived, exact-verified low-price offers take the
-                    # fast delivery lane before ordinary markdown backlogs.
-                    # This reuses the same sender, receipts, budgets and proof
-                    # gates, without a second poller or any extra API requests.
-                    try:
-                        await fanout_recent_extreme_walmart_prices(self.bot)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        legacy.log.exception("Optional extreme-price alert lane failed")
-                    fanout = await fanout_recent_exact_walmart_deals(
-                        self.bot,
-                        event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
-                    )
-                    if (
-                        fanout.new_events
-                        or fanout.events_processed
-                        or fanout.public_posts
-                        or fanout.dm_sent
-                        or (health_due and fanout.exact_cards)
-                    ):
-                        legacy.log.info(fanout.summary_line())
-                    await self._fanout_external_verified_events()
-                    await self._run_walmart_post_fanout_maintenance()
+                    await self.run_exact_worker_cycle()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     legacy.log.exception(
                         "Walmart exact-detail queue/fanout batch failed safely; queued rows remain retryable"
                     )
-                finally:
-                    self._exact_active = False
-                    self._runtime_phase = "idle"
 
                 await _sleep_fixed_rate(
                     cycle_started,
@@ -466,6 +411,79 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                 )
         except asyncio.CancelledError:
             return
+
+    async def run_exact_worker_cycle(self):
+        """One production exact-verification + delivery cycle.
+
+        The background worker loop calls exactly this method every
+        ``GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS``. End-to-end tests drive the same
+        method so they exercise the real verification, classification and
+        delivery chain instead of a hand-assembled imitation of it.
+        """
+
+        try:
+            self._exact_active = True
+            self._runtime_phase = "exact_verification_queue"
+            result = await process_actionable_walmart_exact_queue_batch(
+                self.bot.db,
+                provider=provider_registry.get("walmart"),
+                limit=GLOBAL_EXACT_QUEUE_BATCH_SIZE,
+                concurrency=GLOBAL_EXACT_QUEUE_CONCURRENCY,
+                min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
+            )
+            now = time.monotonic()
+            health_due = (
+                now - self._last_queue_health_log_monotonic
+                >= resilient.WALMART_QUEUE_HEALTH_LOG_INTERVAL_SECONDS
+            )
+            should_log = (
+                bool(result.claimed)
+                or bool(result.terminal_quarantined)
+                or bool(result.terminal_rearmed)
+                or health_due
+            )
+            if should_log:
+                if health_due:
+                    pressure = await load_walmart_exact_queue_pressure(
+                        self.bot.db
+                    )
+                    legacy.log.info(
+                        "%s • %s",
+                        result.summary_line(),
+                        bounded_pressure_summary(pressure),
+                    )
+                    self._last_queue_health_log_monotonic = now
+                else:
+                    legacy.log.info(result.summary_line())
+
+            # Short-lived, exact-verified low-price offers take the
+            # fast delivery lane before ordinary markdown backlogs.
+            # This reuses the same sender, receipts, budgets and proof
+            # gates, without a second poller or any extra API requests.
+            try:
+                await fanout_recent_extreme_walmart_prices(self.bot)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                legacy.log.exception("Optional extreme-price alert lane failed")
+            fanout = await fanout_recent_exact_walmart_deals(
+                self.bot,
+                event_limit=GLOBAL_FANOUT_EVENT_LIMIT,
+            )
+            if (
+                fanout.new_events
+                or fanout.events_processed
+                or fanout.public_posts
+                or fanout.dm_sent
+                or (health_due and fanout.exact_cards)
+            ):
+                legacy.log.info(fanout.summary_line())
+            await self._fanout_external_verified_events()
+            await self._run_walmart_post_fanout_maintenance()
+            return result
+        finally:
+            self._exact_active = False
+            self._runtime_phase = "idle"
 
     async def _event_loop_watchdog(self) -> None:
         expected = time.monotonic() + resilient.EVENT_LOOP_WATCHDOG_INTERVAL_SECONDS

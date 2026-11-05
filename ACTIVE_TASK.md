@@ -1,5 +1,14 @@
 # Active Task
 
+## November 5, 2026: end-to-end Walmart pipeline audit and integrated correction
+
+- Owner mandate: audit the whole Walmart discovery → verification → classification → delivery chain against `main` @ `7570a992` (PRs #307 and #308 are **merged**, not open) and fix structural causes with production-chain proof. Full write-up: `docs/WALMART_PIPELINE_AUDIT_2026-11-05.md`.
+- New harness `tests/walmart_pipeline_harness.py` drives the real chain (only Walmart HTTP and Discord gateway objects simulated); `tests/test_walmart_end_to_end_pipeline.py` holds 26 scenarios, 9 of which fail on `7570a992`.
+- Confirmed and fixed: (R1) only the first enrolled server received regular markdown posts (shared card mutated by the quality gate; matches Oct-27 log `guild checks/posts 4/1`); (R2) MSRP-only exact price errors above $10 had no lane; (R3) observed-price-drop memory was never delivered by the scheduled pipeline; (R4) markdown lane acknowledged deals for servers absent from the live guild cache; (R5) Turso `row[0]` KeyError in the legacy no-price cooldown that would fail every exact cycle.
+- Tuned: exact claim 8 → 20 rows per cycle (one batched lookup request, #308). Display: never "100% OFF" for a paid price.
+- GitHub Actions did **not** run for #307/#308 merges (billing/spending-limit annotation). Offline suite here: 1,556 passed, 13 environment-only failures identical to `main`.
+- Not verified: Discloud deployed SHA, live DB backend, live Walmart responses, real latency, post-deploy extreme-lane volume. Posted-deal expiry/retirement is not implemented (needs a design decision).
+
 ## November 2 follow-up: high-value Walmart public alert quality (PR #305, open)
 
 - Owner's live Discord screenshots show $9.92 jewelry, $10 earrings, $9.97 Switch game code, $5.99 EA Play subscription, and $10 Razer Gold digital credit posted as "Extreme exact-price finds" without a verified markdown. The prior sender accepted a broad retailer department as value evidence. Mere low price and source category do not prove demand, savings, or resale value.

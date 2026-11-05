@@ -792,7 +792,7 @@ def _first_present(*values):
 
 def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, decision, discount: float, link_choices: tuple[LinkChoice, ...] = ()) -> discord.Embed:
     score = decision.anomaly.score
-    embed = discord.Embed(title=f"{heat_emoji(discount, deal.current_price)} {discount:.0f}% OFF • {trim_title(deal.title, 72)}", url=deal.product_url, color=embed_color(discount, score))
+    embed = discord.Embed(title=f"{heat_emoji(discount, deal.current_price)} {percent_off_label(discount)} OFF • {trim_title(deal.title, 72)}", url=deal.product_url, color=embed_color(discount, score))
     if deal.image_url:
         embed.set_thumbnail(url=deal.image_url)
     embed.add_field(name="💰 Price", value=price_block(deal.current_price, deal.typical_price), inline=False)
@@ -994,6 +994,14 @@ def proof_lines_for(candidate: SourceCandidate, decision) -> list[str]:
     ]
     lines.extend(f"• {signal}" for signal in important_signals[:4])
     return dedupe_lines(lines) or ["• Product link and current price returned by Walmart API"]
+
+
+def percent_off_label(discount: float) -> str:
+    """Never round a paid price up to "100% OFF" (a $1 offer is 99.9% off)."""
+    value = float(discount or 0)
+    if value >= 99.5:
+        return f"{min(value, 99.9):.1f}%"
+    return f"{value:.0f}%"
 
 
 def heat_emoji(discount: float, current_price: float | None) -> str:

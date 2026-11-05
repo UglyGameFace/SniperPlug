@@ -14,6 +14,17 @@ from sniperplug.services.walmart_exact_verification_queue import (
 LEGACY_COOLDOWN_BATCH_LIMIT = 200
 
 
+def _column(row: Any, name: str, index: int) -> Any:
+    try:
+        return row[name]
+    except (KeyError, IndexError, TypeError):
+        pass
+    try:
+        return row[index]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 def _parse_timestamp(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -90,9 +101,11 @@ async def normalize_legacy_confirmed_no_price_cooldowns(
 
     updates: list[tuple[str, str, str, str]] = []
     for row in selected:
-        item_id = str(row[0] or "").strip()
-        last_attempt_raw = str(row[1] or "").strip()
-        next_attempt_raw = str(row[2] or "").strip()
+        # Turso/libSQL rows are mappings (row[0] raises KeyError); local
+        # SQLite rows support both. Read by column name first.
+        item_id = str(_column(row, "item_id", 0) or "").strip()
+        last_attempt_raw = str(_column(row, "last_attempt_at", 1) or "").strip()
+        next_attempt_raw = str(_column(row, "next_attempt_at", 2) or "").strip()
         last_attempt = _parse_timestamp(last_attempt_raw)
         if not item_id or last_attempt is None or not next_attempt_raw:
             continue

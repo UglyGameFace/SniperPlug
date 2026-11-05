@@ -51,10 +51,10 @@ two stages together.
 * What Discloud is actually running, which database backend it uses today, and
   whether the Galaxy Tab S11 / S24 FE offers were ever returned by the Affiliate API.
 * Walmart's real Affiliate quota (no published figure found; budgets are self-imposed).
-* CI: GitHub Actions jobs for `28f51524` (#307) and `7570a992` (#308) **never ran** —
-  the annotation is *"recent account payments have failed or your spending limit
-  needs to be increased"*. Both PR heads were green individually; the combination on
-  `main` had never been tested before this audit (it passes here: §8).
+* CI: GitHub Actions jobs for `28f51524` (#307) and `7570a992` (#308) were refused at
+  merge time (*"recent account payments have failed or your spending limit needs to be
+  increased"*). After the repository was made public they were re-run on 2026-11-05:
+  `main` @ `7570a992` is green (§8).
 
 ---
 
@@ -229,7 +229,10 @@ existing offer-memory SELECT, so it adds no statement.
   aiohttp internals). Same 13 on this branch; **1,556 passed**.
 * New production-chain scenarios: 26; **9 fail on `main`, 26 pass on this branch.**
 * Turso-shaped (mapping-row) end-to-end run passes; R5 reproduced and fixed.
-* GitHub Actions cannot run until the account billing issue is resolved.
+* GitHub Actions (real dependencies), re-run 2026-11-05 after the repo went public:
+  `main` @ `7570a992` — Python tests / Python Check **1,543 passed**, import smoke check
+  passed; this branch @ `ce10e35` — **1,569 passed** (1,543 + 26 new), import smoke check
+  passed. The 13 offline-only failures above do not occur in CI.
 
 ## 9. Not verified (requires production access)
 
@@ -239,8 +242,8 @@ extreme-lane volume after R2; Discord permissions in each server.
 
 ## 10. Remaining prioritized work
 
-1. Restore GitHub Actions billing and get green CI on this branch. (P0, owner)
-2. Deploy, then confirm from logs: `guild checks/posts N/N` for a qualifying deal,
+1. ~~Get green CI on this branch~~ — done (repo made public; all checks green). 
+2. Merge and deploy, then confirm from logs: `guild checks/posts N/N` for a qualifying deal,
    `Global Walmart fanout deferred` during a reconnect, first `price_memory_drop` post. (P0)
 3. Posted-deal expiry handling (§7). (P1)
 4. Decide discovery budget: e.g. 2 broad + 2 sniper searches halves sniper revisit

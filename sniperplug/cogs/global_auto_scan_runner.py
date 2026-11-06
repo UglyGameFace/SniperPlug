@@ -11,6 +11,7 @@ from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs import resilient_auto_scan_runner as resilient
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.walmart_lookup_batch_cache import BATCH_LOOKUP_MAX_IDS
+from sniperplug.services.walmart_posted_deal_expiry import sweep_posted_walmart_deals
 from sniperplug.services.autoscan_live_guild_reconciliation import (
     list_live_public_alert_guilds,
     reconcile_live_public_alert_setups,
@@ -480,6 +481,17 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                 legacy.log.info(fanout.summary_line())
             await self._fanout_external_verified_events()
             await self._run_walmart_post_fanout_maintenance()
+            # Retire Discord posts whose offer has ended (self-paced: at most
+            # once per 10 minutes and one batched lookup per sweep).
+            try:
+                await sweep_posted_walmart_deals(
+                    self.bot,
+                    provider=provider_registry.get("walmart"),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                legacy.log.exception("Posted-deal expiry sweep failed safely")
             return result
         finally:
             self._exact_active = False

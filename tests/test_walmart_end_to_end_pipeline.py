@@ -468,3 +468,94 @@ async def test_verification_backlog_costs_one_lookup_request_per_twenty_items(tm
         assert sum(ids_per_call) == 50
     finally:
         await p.close()
+
+
+# ------------------------------------------- Walmart-sold MSRP inflation
+# Harsh-audit regression: the first listed-price rule treated "sold by Walmart"
+# as value evidence, which would have posted exactly the junk #305 removed.
+@pytest.mark.parametrize(
+    "item",
+    [
+        walmart_item(7001, "Brilliance Fine Jewelry Sterling Silver Cubic Zirconia Hoop Earrings", 9.97,
+                     msrp=79.00, category="Jewelry/Earrings/Hoop Earrings"),
+        walmart_item(7002, "Time and Tru Women's Faux Leather Jacket", 8.00, msrp=60.00,
+                     category="Clothing/Women/Womens Coats & Jackets"),
+        walmart_item(7003, "Hanes Men's ComfortSoft T-Shirts 6-Pack", 5.00, msrp=50.00,
+                     category="Clothing/Men/Mens Shirts"),
+        walmart_item(7005, "Better Homes & Gardens 8x10 Area Rug", 19.00, msrp=129.00,
+                     category="Home/Decor/Rugs"),
+        walmart_item(7006, "Avia Women's Running Shoes", 9.00, msrp=59.00,
+                     category="Clothing/Shoes/Womens Shoes"),
+        walmart_item(7007, "Paris Hilton Eau de Parfum 3.4 oz", 9.00, msrp=65.00,
+                     category="Beauty/Fragrance/Womens Fragrance"),
+        walmart_item(7010, "Wonder Nation Kids Graphic Hoodie", 3.00, msrp=50.00,
+                     category="Clothing/Kids/Boys Clothing"),
+        walmart_item(7011, "Mainstays 12-Piece Dinnerware Set", 7.00, msrp=59.00,
+                     category="Home/Kitchen & Dining/Dinnerware"),
+        walmart_item(7013, "14K Gold Plated Diamond Accent Wedding Ring", 19.00, msrp=299.00,
+                     category="Jewelry/Rings"),
+    ],
+    ids=lambda item: str(item["itemId"]),
+)
+@pytest.mark.asyncio
+async def test_walmart_sold_msrp_inflated_goods_never_post(tmp_path, monkeypatch, item):
+    p = await _pipeline(tmp_path, monkeypatch)
+    try:
+        await p.enroll(p.guilds[0], threshold=40, extreme=True)
+        p.api.add(item, queries=("msrp junk",))
+        await p.discover("msrp junk")
+        await p.cycle()
+        assert p.posts() == []
+    finally:
+        await p.close()
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        walmart_item(7004, "Mainstays 5-Piece Wood Dining Set", 49.00, msrp=299.00,
+                     category="Home/Furniture/Kitchen & Dining Furniture"),
+        walmart_item(7008, "Ozark Trail 6-Person Instant Cabin Tent", 25.00, msrp=199.00,
+                     category="Sports & Outdoors/Camping/Tents"),
+        walmart_item(7009, 'onn. 32" Class HD LED Roku Smart TV', 19.00, msrp=118.00,
+                     category="Electronics/TV & Video/Televisions"),
+        walmart_item(7014, "Ring Video Doorbell 4", 19.00, msrp=199.99,
+                     category="Electronics/Smart Home/Video Doorbells"),
+    ],
+    ids=lambda item: str(item["itemId"]),
+)
+@pytest.mark.asyncio
+async def test_substantial_listed_price_errors_still_post(tmp_path, monkeypatch, item):
+    p = await _pipeline(tmp_path, monkeypatch)
+    try:
+        await p.enroll(p.guilds[0], threshold=40, extreme=True)
+        p.api.add(item, queries=("real errors",))
+        await p.discover("real errors")
+        await p.cycle()
+        assert len(p.posts()) == 1
+    finally:
+        await p.close()
+
+
+# ------------------------------------------------- out-of-stock markdowns
+# Harsh-audit regression: Walmart's Affiliate API reports out-of-stock as
+# stock="Not available", which the authoritative classifier did not recognize,
+# so sold-out items were posted as live verified markdowns.
+@pytest.mark.parametrize("stock, posts", [
+    ("Not available", 0), ("Not Available", 0), ("Out of stock", 0),
+    ("Available", 1), ("Limited Supply", 1), ("Last few items", 1),
+])
+@pytest.mark.asyncio
+async def test_markdown_lane_respects_walmart_stock_values(tmp_path, monkeypatch, stock, posts):
+    p = await _pipeline(tmp_path, monkeypatch)
+    try:
+        await p.enroll(p.guilds[0], threshold=40)
+        p.api.add(walmart_item(7101, "Apple iPad 10th Gen 64GB", 49.00, was_price=349.00,
+                               stock=stock, category="Electronics/Tablets"), queries=("stock values",))
+        await p.discover("stock values")
+        await p.cycle()
+        assert len(p.posts()) == posts
+        if not posts:
+            assert (await p.queue_row(7101))["status"] == "not_buyable"
+    finally:
+        await p.close()

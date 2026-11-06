@@ -10,6 +10,7 @@ from sniperplug.services.walmart_recheck_guard import (
     WALMART_RECHECK_PROVIDER_TIMEOUT_SECONDS,
     guarded_walmart_recheck,
 )
+from sniperplug.services.stock_status import is_unavailable_stock
 
 
 _WALMART_ITEM_PATTERNS = (
@@ -160,7 +161,7 @@ async def _perform_walmart_recheck(provider: Any, row: dict[str, Any]) -> Walmar
 
     stock_status = str(getattr(candidate, "stock_status", None) or "").strip().lower()
     can_add = getattr(candidate, "can_add_to_cart", None)
-    unavailable = can_add is False or any(token in stock_status for token in ("out of stock", "unavailable", "sold out"))
+    unavailable = can_add is False or is_unavailable_stock(stock_status)
     if unavailable:
         return WalmartRecheckResult(
             status="unavailable",

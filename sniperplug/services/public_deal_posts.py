@@ -271,6 +271,25 @@ async def maybe_post_public_deal_cards(
             allow_review_scout=(allow_review_scout or allow_verified_extreme),
         )
         notes.extend(finalize_notes)
+        if normalize_retailer_key(retailer) == "walmart":
+            try:
+                from sniperplug.services.walmart_posted_deal_expiry import (
+                    record_posted_walmart_message,
+                )
+
+                await record_posted_walmart_message(
+                    db,
+                    guild_id=guild_id,
+                    channel_id=getattr(channel, "id", config["channel_id"]),
+                    message_id=getattr(message, "id", None),
+                    card=card,
+                    product_key=product_key,
+                    lane="extreme" if allow_verified_extreme else "markdown",
+                    deal_key=deal_key,
+                    alert_key=alert_key,
+                )
+            except Exception as exc:  # noqa: BLE001 - never blocks delivery.
+                notes.append(f"posted-deal expiry tracking failed: {clean_error_text(exc)}")
         if not finalized:
             notes.append(
                 f"CRITICAL: public post for {retailer} was sent but no durable duplicate guard could be confirmed; "

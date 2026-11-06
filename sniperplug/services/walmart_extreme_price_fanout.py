@@ -23,6 +23,7 @@ from sniperplug.services.walmart_extreme_price_signals import (
     listed_price_anomaly,
     primary_product_evidence,
 )
+from sniperplug.services.stock_status import is_unavailable_stock
 
 # Sub-$10 leads may qualify on substantial product type alone. Above this price
 # only a listed-price anomaly (<=20% of Walmart's own list/MSRP price) qualifies.
@@ -63,14 +64,7 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
         return "unavailable_online"
     if candidate.is_member_only or candidate.is_checkout_price:
         return "restricted_checkout_price"
-    stock = str(candidate.stock_status or "").strip().lower()
-    if any(
-        blocked in stock
-        for blocked in (
-            "sold out", "out of stock", "out-of-stock", "unavailable",
-            "not available", "not in stock",
-        )
-    ):
+    if is_unavailable_stock(candidate.stock_status):
         return "unavailable_stock"
     title = " ".join(
         str(value or "")

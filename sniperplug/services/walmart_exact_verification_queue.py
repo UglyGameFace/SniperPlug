@@ -25,6 +25,7 @@ from sniperplug.services.walmart_global_offer_memory import (
     maybe_prune_global_offer_memory,
     observe_exact_offer,
 )
+from sniperplug.services.stock_status import is_unavailable_stock
 
 
 QUEUE_TABLE = "walmart_exact_detail_queue"
@@ -767,9 +768,8 @@ def _classify_exact_candidate(
     *,
     min_discount: int,
 ) -> str:
-    stock = str(getattr(candidate, "stock_status", None) or "").strip().lower()
-    if getattr(candidate, "can_add_to_cart", None) is False or any(
-        token in stock for token in ("out of stock", "unavailable", "sold out")
+    if getattr(candidate, "can_add_to_cart", None) is False or is_unavailable_stock(
+        getattr(candidate, "stock_status", None)
     ):
         return "not_buyable"
 

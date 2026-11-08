@@ -49,6 +49,13 @@ PAGE_RETRY_PRICE_MISMATCH_SECONDS = 10 * 60
 # it; the per-server public threshold still applies at posting time.
 MANUAL_INTAKE_MIN_DISCOUNT = 10
 
+# Phase A1 page-price lane. A product-page price is observed evidence only,
+# never API price proof. Rows classified with this status carry the page
+# price in the candidate snapshot (pageIdentityRecoveryPrice) and never an
+# exact_current_cents value, so no markdown or discount logic can read them
+# as verified.
+VERIFIED_PAGE_PRICE_STATUS = "verified_page_price"
+
 _last_cleanup_monotonic = 0.0
 
 
@@ -72,6 +79,7 @@ class VerificationQueueBatchResult:
     verified: int = 0
     official_references: int = 0
     markdowns: int = 0
+    page_price: int = 0
     no_reference: int = 0
     under_threshold: int = 0
     unavailable: int = 0
@@ -84,6 +92,7 @@ class VerificationQueueBatchResult:
             "Walmart background exact verification: "
             f"claimed **{self.claimed}** • verified **{self.verified}** • "
             f"official was prices **{self.official_references}** • markdowns **{self.markdowns}** • "
+            f"page-price **{self.page_price}** • "
             f"no reference **{self.no_reference}** • under threshold **{self.under_threshold}** • "
             f"unavailable **{self.unavailable}** • identity blocked **{self.identity_blocked}** • "
             f"failed/retrying **{self.failed}** • due/pending **{self.pending_total}**"
@@ -318,6 +327,7 @@ async def process_walmart_exact_verification_queue_batch(
         "verified": 0,
         "official_references": 0,
         "markdowns": 0,
+        "page_price": 0,
         "no_reference": 0,
         "under_threshold": 0,
         "unavailable": 0,
@@ -355,6 +365,8 @@ async def process_walmart_exact_verification_queue_batch(
         classification = _classify_exact_candidate(candidate, min_discount=min_discount)
         if classification == "verified_markdown":
             counts["markdowns"] += 1
+        elif classification == VERIFIED_PAGE_PRICE_STATUS:
+            counts["page_price"] += 1
         elif classification == "verified_no_reference":
             counts["no_reference"] += 1
         elif classification == "verified_under_threshold":
@@ -706,6 +718,13 @@ async def _fetch_exact_candidate(
         getattr(merged, "api_current_price", None)
         or getattr(merged, "current_price", None)
     ) is None:
+        if page_observed_price(merged) is not None:
+            # The official API returned no numeric price, but the product
+            # page confirmed seller/offer/item identity and exposed a price.
+            # Keep the candidate as a page-price lead instead of parking it
+            # as an api_price_missing retry; classification routes it to the
+            # page-price lane and never to a markdown.
+            return merged, "verified", ""
         return None, "retry", "exact detail did not provide a numeric current price"
     return merged, "verified", ""
 
@@ -921,6 +940,26 @@ async def _store_failure(
     )
 
 
+def page_observed_price(candidate: Any) -> float | None:
+    """Return the verified product-page price, or None.
+
+    Only a page-recovery merge that confirmed seller/offer/item identity
+    (``verified_identity``) may supply a price. The page price is recorded
+    as observed evidence only; it never becomes an API current price and
+    never proves a discount. Any other recovery status (mismatch, conflict,
+    missing price) yields None, so those items keep their existing
+    retry/backoff behaviour.
+    """
+
+    attrs = dict(getattr(candidate, "variant_attributes", None) or {})
+    if (
+        str(attrs.get("pageIdentityRecoveryStatus") or "").strip()
+        != "verified_identity"
+    ):
+        return None
+    return _positive_number(attrs.get("pageIdentityRecoveryPrice"))
+
+
 def _classify_exact_candidate(
     candidate: SourceCandidate,
     *,
@@ -935,6 +974,12 @@ def _classify_exact_candidate(
         getattr(candidate, "api_current_price", None)
         or getattr(candidate, "current_price", None)
     )
+    if current is None:
+        # No API price, but a verified page price exists. This is a
+        # page-observed lead only: no reference, discount, or markdown is
+        # ever computed from it.
+        if page_observed_price(candidate) is not None:
+            return VERIFIED_PAGE_PRICE_STATUS
     reference = _trusted_reference(candidate)
     if reference is None:
         return "verified_no_reference"
@@ -950,6 +995,10 @@ def _recheck_delay(status: str) -> timedelta:
     if status == "verified_markdown":
         return timedelta(hours=1)
     if status == "verified_no_reference":
+        return timedelta(hours=6)
+    if status == VERIFIED_PAGE_PRICE_STATUS:
+        # Same cadence as verified_no_reference: a page price exists, so
+        # re-probe reasonably often to catch the API price appearing.
         return timedelta(hours=6)
     if status == "verified_under_threshold":
         return timedelta(hours=12)

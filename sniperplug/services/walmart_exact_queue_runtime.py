@@ -31,6 +31,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
     _store_failure,
     ensure_walmart_exact_verification_queue,
     maybe_prune_walmart_exact_verification_queue,
+    page_observed_price,
 )
 from sniperplug.services.walmart_global_offer_memory import (
     ensure_global_offer_memory_table,
@@ -77,6 +78,7 @@ class ExactQueueRuntimeResult:
     fresh_snapshot_rejections: tuple[tuple[str, int], ...] = ()
     official_references: int = 0
     markdowns: int = 0
+    page_price: int = 0
     no_reference: int = 0
     under_threshold: int = 0
     unavailable: int = 0
@@ -148,7 +150,7 @@ class ExactQueueRuntimeResult:
             f"claimed **{self.claimed}** • verified **{self.verified}** • "
             f"fresh catalog proof **{self.fresh_catalog_verified}**/{self.fresh_snapshot_inputs} • "
             f"official was prices **{self.official_references}** • "
-            f"markdowns **{self.markdowns}** • no reference **{self.no_reference}** • "
+            f"markdowns **{self.markdowns}** • page-price **{self.page_price}** • no reference **{self.no_reference}** • "
             f"under threshold **{self.under_threshold}** • unavailable **{self.unavailable}** • "
             f"identity unavailable / safely blocked **{self.identity_blocked}** "
             f"({identity_detail}) • transient failures **{self.failed}** ({retry_detail})"
@@ -538,6 +540,13 @@ async def _fetch_exact_candidate_off_loop(
         getattr(merged, "api_current_price", None)
         or getattr(merged, "current_price", None)
     ) is None:
+        if page_observed_price(merged) is not None:
+            # The official API returned no numeric price, but the product
+            # page confirmed seller/offer/item identity and exposed a price.
+            # Keep the candidate as a page-price lead instead of parking it
+            # as an api_price_missing retry; classification routes it to the
+            # page-price lane and never to a markdown.
+            return merged, "verified", ""
         return None, "retry", "retry_kind=api_price_missing exact detail did not provide a numeric current price"
     return merged, "verified", ""
 

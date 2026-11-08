@@ -158,11 +158,19 @@ async def maybe_post_public_deal_cards(
 
         if allow_verified_extreme:
             # Separate, exact-price-only opt-in lane; not a markdown or generic scout.
-            from sniperplug.services.walmart_extreme_price_fanout import valid_extreme_price_card
+            # Page-observed prices ride the same opt-in lane under their own
+            # proof check; they never pass the exact-price check.
+            from sniperplug.services.walmart_extreme_price_fanout import (
+                valid_extreme_price_card,
+                valid_page_price_extreme_card,
+            )
 
-            public_ready = valid_extreme_price_card(card)
+            public_ready = valid_extreme_price_card(card) or valid_page_price_extreme_card(card)
             if not public_ready:
-                not_alertable_reasons.append("extreme_exact_price_proof_rejected")
+                if getattr(card, "page_price_lead", False):
+                    not_alertable_reasons.append("page_price_proof_rejected")
+                else:
+                    not_alertable_reasons.append("extreme_exact_price_proof_rejected")
         elif allow_review_scout:
             public_ready = prepare_public_scout_candidate(card, source_label=source_label)
             if not public_ready:

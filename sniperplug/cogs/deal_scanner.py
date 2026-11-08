@@ -30,6 +30,8 @@ from sniperplug.services.walmart_cash_pipeline import (
 )
 from sniperplug.services.walmart_exact_verification_queue import (
     MANUAL_INTAKE_MIN_DISCOUNT,
+    VERIFIED_PAGE_PRICE_STATUS,
+    page_observed_price,
     parse_walmart_item_id,
     verify_single_exact_item,
 )
@@ -223,6 +225,23 @@ class DealScannerCog(commands.Cog):
             return
 
         candidate = result.candidate
+        if result.classification == VERIFIED_PAGE_PRICE_STATUS:
+            # A page-observed price has no API price, so the review-card
+            # builder below would drop it as missing_current. Surface it
+            # with its own labelled embed instead; never a markdown card.
+            page_price = page_observed_price(candidate)
+            if page_price is not None:
+                summary = build_page_price_direct_check_embed(
+                    candidate,
+                    item_id=item_id,
+                    page_price=page_price,
+                    enqueued=result.enqueued,
+                )
+                await interaction.followup.send(embed=summary, ephemeral=True)
+                return
+            # A verified_page_price without a readable page price breaks the
+            # lane invariant: fall through to the review path rather than
+            # claiming a lead.
         cards: list[DealCard] = []
         if result.classification == "verified_markdown":
             scan_result = ProviderScanResult(
@@ -1062,6 +1081,58 @@ def money(value: float | None) -> str:
     if value is None:
         return "N/A"
     return f"${value:,.2f}"
+
+
+def build_page_price_direct_check_embed(
+    candidate: SourceCandidate,
+    *,
+    item_id: str,
+    page_price: float,
+    enqueued: bool,
+) -> discord.Embed:
+    """Explain a page-observed /check_deal result without claiming a markdown.
+
+    The official API returned no usable price for the item, but product-page
+    recovery confirmed seller/offer/item identity and exposed a price. The
+    embed states that plainly: page evidence only, not a verified markdown,
+    no discount percentage.
+    """
+
+    seller = str(getattr(candidate, "seller_name", None) or "").strip() or str(
+        dict(getattr(candidate, "variant_attributes", None) or {}).get("seller")
+        or ""
+    ).strip()
+    product_url = f"https://www.walmart.com/ip/{item_id}"
+    embed = discord.Embed(
+        title=f"🔌 Direct Deal Check • item {item_id}",
+        color=discord.Color.orange(),
+    )
+    embed.description = (
+        f"**{candidate.title}**\n"
+        f"Page-observed price: **${page_price:,.2f}**"
+        + (f" • Seller: **{seller}**" if seller else "")
+        + "\nExact check: **verified_page_price**"
+        + (
+            " • queued for the normal exact worker and its lanes"
+            if enqueued
+            else " • not queued (no database available)"
+        )
+    )
+    embed.add_field(
+        name="Page-observed price, NOT API-verified",
+        value=(
+            "Walmart's product page showed $"
+            + f"{page_price:,.2f}"
+            + " for this seller/offer/variant, but the official exact-item API "
+            "returned no usable price. This is page evidence only: not a verified "
+            "markdown, and no discount percentage is claimed. The exact worker "
+            "will still consider it for the opt-in extreme-price lane."
+        ),
+        inline=False,
+    )
+    embed.add_field(name="🔗 Open product", value=f"[App/Web]({product_url})", inline=False)
+    embed.set_footer(text="Prices can revert. Recheck before posting or buying.")
+    return embed
 
 
 def price_block(current_price: float | None, typical_price: float | None) -> str:

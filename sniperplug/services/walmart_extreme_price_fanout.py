@@ -12,10 +12,18 @@ from sniperplug.services.autoscan_live_guild_reconciliation import list_live_pub
 from sniperplug.services.discord_snowflake import snowflake_text
 from sniperplug.services.low_price_scout import ScoutLead, build_scout_card
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
-from sniperplug.services.walmart_exact_verification_queue import QUEUE_TABLE, _candidate_from_snapshot
+from sniperplug.services.walmart_exact_verification_queue import (
+    QUEUE_TABLE,
+    VERIFIED_PAGE_PRICE_STATUS,
+    _candidate_from_snapshot,
+    page_observed_price,
+)
 from sniperplug.services.public_deal_quality import walmart_item_id_from_url
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
-from sniperplug.services.walmart_exact_price_enrichment import _trusted_reference
+from sniperplug.services.walmart_exact_price_enrichment import (
+    _positive_number,
+    _trusted_reference,
+)
 from sniperplug.services.walmart_extreme_price_signals import (
     ABSOLUTE_EXTREME_MAX_PRICE,
     ACCESSORY,
@@ -92,6 +100,64 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
 def eligible_exact_extreme_candidate(candidate: Any) -> bool:
     """Allow a proved exact price without inventing an original price."""
     return extreme_rejection_reason(candidate) is None
+
+
+def page_price_rejection_reason(candidate: Any) -> str | None:
+    """Explain why a page-observed price is not an extreme-lane lead.
+
+    Mirrors extreme_rejection_reason, but the price proof is the verified
+    product-page buy box instead of the official API. No API price is ever
+    required or consulted here: a candidate that has one belongs to the
+    exact-price lane, never to this one.
+    """
+    if candidate is None:
+        return "missing_snapshot"
+    if _positive_number(
+        getattr(candidate, "api_current_price", None)
+        or getattr(candidate, "current_price", None)
+    ) is not None:
+        return "api_price_present"
+    page_price = page_observed_price(candidate)
+    if page_price is None:
+        return "page_identity_not_verified"
+    if page_price > MAX_PRICE_CENTS / 100:
+        return "page_price_over_extreme_limit"
+    attrs = getattr(candidate, "variant_attributes", None) or {}
+    item_id = str(attrs.get("exactDetailItemId") or "")
+    url = getattr(candidate, "direct_product_url", None) or getattr(candidate, "product_url", "")
+    if not item_id.isdigit() or walmart_item_id_from_url(url) != item_id:
+        return "item_url_mismatch"
+    if str(getattr(candidate, "retailer", "") or "").strip().lower() != "walmart":
+        return "wrong_retailer"
+    if exact_offer_identity(candidate) is None:
+        return "offer_or_seller_proof_missing"
+    if candidate.can_add_to_cart is not True:
+        return "not_cart_buyable"
+    # Nonempty "false" from source metadata must not be treated as bool True.
+    online = str(attrs.get("availableOnline") or "").strip().lower()
+    if online in {"no", "false", "0", "off"}:
+        return "unavailable_online"
+    if candidate.is_member_only or candidate.is_checkout_price:
+        return "restricted_checkout_price"
+    if is_unavailable_stock(candidate.stock_status):
+        return "unavailable_stock"
+    title = " ".join(
+        str(value or "")
+        for value in (candidate.title, candidate.parent_title)
+    )
+    if ACCESSORY.search(title):
+        return "accessory_or_parts"
+    # A listed-price anomaly cannot be established from a page price alone
+    # (the page carries no trusted list price), so only the substantial
+    # primary-product signal qualifies, exactly as for sub-$10 API prices.
+    if primary_product_evidence(candidate, trusted_reference=None) is None:
+        return "not_recognized_primary_product"
+    return None
+
+
+def eligible_page_price_extreme_candidate(candidate: Any) -> bool:
+    """Allow a verified page-observed price as an extreme-lane lead only."""
+    return page_price_rejection_reason(candidate) is None
 
 BATCH_LIMIT = 40
 FRESHNESS_MINUTES = 15
@@ -188,6 +254,84 @@ def valid_extreme_price_card(card: Any) -> bool:
         return (
             str(card.selected_offer_id or "") == str(candidate.selected_offer_id or "")
             and abs(float(card.current_price) - float(candidate.api_current_price)) < 0.01
+            and walmart_item_id_from_url(card.url)
+            == str(candidate.variant_attributes.get("exactDetailItemId") or "")
+        )
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def build_page_price_extreme_card(candidate: Any) -> Any | None:
+    """Build the opt-in extreme-lane card for a verified page-observed price.
+
+    The card carries the page price as the observed price and labels it
+    prominently as page-observed, not API-verified. No discount percentage
+    is ever claimed and the card is never a verified markdown.
+    """
+    if not eligible_page_price_extreme_candidate(candidate):
+        return None
+    page_price = page_observed_price(candidate)
+    if page_price is None:
+        return None
+    lead = ScoutLead(
+        candidate=candidate,
+        score=70,
+        reasons=("page-observed price, not API-verified", "high-value product type"),
+    )
+    card = build_scout_card(lead)
+    card.url = candidate.direct_product_url or candidate.product_url
+    card.embed.url = card.url
+    card.embed.title = "Page-observed price find: " + str(candidate.title or "")[:155]
+    price_text = (
+        f"Page-observed price: **${page_price:,.2f}**. Walmart's product page "
+        "showed this price for this seller/offer/variant, but the official "
+        "API returned no price for the item. That page price is not a verified "
+        "was-price and not an API-verified price, so no discount percentage "
+        "is claimed and this is not a verified markdown."
+    )
+    for index, field in enumerate(card.embed.fields):
+        if str(field.name) == "💰 Scout price":
+            card.embed.set_field_at(
+                index,
+                name="Walmart page-observed price",
+                value=price_text,
+                inline=False,
+            )
+            break
+    card.embed.add_field(
+        name="Page-observed price, NOT API-verified",
+        value=(
+            "Walmart's product page showed $"
+            + f"{page_price:,.2f}"
+            + " for this seller/offer/variant. The official exact-item API "
+            "returned no usable price, so this lead is page evidence only. "
+            "Recheck condition, local availability, shipping and checkout price."
+        ),
+        inline=False,
+    )
+    card.embed.set_footer(text="Page-observed price lead; API price unverified; verify checkout")
+    card.page_price_candidate = candidate
+    # Durable lane marker: survives even if the candidate proof is stripped,
+    # so the sender reports the right rejection reason for a forged card.
+    card.page_price_lead = True
+    # The observed price, so delivery dedupe and expiry tracking key on what
+    # was actually shown. It is never presented as an API price.
+    card.current_price = page_price
+    card.should_alert = True
+    return card
+
+
+def valid_page_price_extreme_card(card: Any) -> bool:
+    """Recheck the page-price provenance at the shared public-send boundary."""
+    candidate = getattr(card, "page_price_candidate", None)
+    if not eligible_page_price_extreme_candidate(candidate):
+        return False
+    try:
+        page_price = page_observed_price(candidate)
+        return (
+            str(card.selected_offer_id or "") == str(candidate.selected_offer_id or "")
+            and page_price is not None
+            and abs(float(card.current_price) - page_price) < 0.01
             and walmart_item_id_from_url(card.url)
             == str(candidate.variant_attributes.get("exactDetailItemId") or "")
         )
@@ -471,12 +615,17 @@ async def _replay_missing_guild_deliveries(
                 and str(_row_get(current, "snapshot_json", 1)) == snapshot
                 and str(_row_get(current, "status", 2)) in (
                     "verified_no_reference", "verified_under_threshold",
-                    "verified_reference",
+                    "verified_reference", VERIFIED_PAGE_PRICE_STATUS,
                 )
             )
-            card = build_extreme_price_card(
-                _candidate_from_snapshot(snapshot)
-            ) if same_proof else None
+            if same_proof:
+                replay_candidate = _candidate_from_snapshot(snapshot)
+                if str(_row_get(current, "status", 2)) == VERIFIED_PAGE_PRICE_STATUS:
+                    card = build_page_price_extreme_card(replay_candidate)
+                else:
+                    card = build_extreme_price_card(replay_candidate)
+            else:
+                card = None
             if card is not None:
                 try:
                     result = await maybe_post_public_deal_cards(
@@ -516,6 +665,12 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
 
     This uses its own cursor and existing public-send dedupe/reservations.
     It never advances or changes the verified-markdown/DM fanout cursor.
+
+    Page-price rows (``verified_page_price``) ride the same opt-in lane with
+    their own card: the official API returned no price, so the row carries
+    no ``exact_current_cents`` value and is selected on status alone. The
+    card labels the price as page-observed, not API-verified, and never
+    claims a discount.
     """
     db = getattr(bot, "db", None)
     if db is None or _LOCK.locked():
@@ -543,9 +698,12 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
             bot, conn, opted_ids, cutoff,
         )
         cursor = await conn.execute(
-            f"SELECT item_id, verified_at, snapshot_json FROM {QUEUE_TABLE} "
-            "WHERE status IN ('verified_no_reference', 'verified_under_threshold', 'verified_reference') "
-            "AND exact_current_cents >= 1 "
+            f"SELECT item_id, verified_at, snapshot_json, status FROM {QUEUE_TABLE} "
+            "WHERE ("
+            "  (status IN ('verified_no_reference', 'verified_under_threshold', 'verified_reference') "
+            "   AND exact_current_cents >= 1) "
+            f"  OR status = '{VERIFIED_PAGE_PRICE_STATUS}'"
+            ") "
             "AND verified_at >= ? AND snapshot_json <> '' "
             "AND (verified_at, item_id) > (?, ?) "
             "ORDER BY verified_at ASC, item_id ASC LIMIT ?",
@@ -564,14 +722,18 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
             if replay_live is not None else None
         )
         for row in rows:
-            item_id, verified_at, snapshot = (
+            item_id, verified_at, snapshot, status = (
                 str(_row_get(row, "item_id", 0)),
                 str(_row_get(row, "verified_at", 1)),
                 str(_row_get(row, "snapshot_json", 2)),
+                str(_row_get(row, "status", 3)),
             )
             examined += 1
             candidate = _candidate_from_snapshot(snapshot)
-            card = build_extreme_price_card(candidate)
+            if status == VERIFIED_PAGE_PRICE_STATUS:
+                card = build_page_price_extreme_card(candidate)
+            else:
+                card = build_extreme_price_card(candidate)
             if card is not None:
                 eligible += 1
                 if enabled is None:

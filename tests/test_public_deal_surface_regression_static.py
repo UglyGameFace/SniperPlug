@@ -8,10 +8,12 @@ def read(path: str) -> str:
 
 
 def test_open_box_routes_and_structured_card_builder_remain_available():
-    source = read("sniperplug/cogs/open_box_deals.py")
+    # NOTE (C6): the retired /open_box_deals cog (sniperplug/cogs/open_box_deals.py)
+    # was deleted — it was never loaded and its build_open_box_cards builder
+    # died with it. Open-box coverage lives natively in
+    # services/open_box_autoscan_routes.py, which is what this test now pins.
     routes = read("sniperplug/services/open_box_autoscan_routes.py")
-    assert "build_open_box_cards" in source
-    assert "OPEN_BOX_AUTOSCAN_QUERIES" in source
+    assert "OPEN_BOX_AUTOSCAN_QUERIES" in routes
     for query in (
         "open box vacuum",
         "open box electronics",
@@ -31,15 +33,23 @@ def test_open_box_routes_and_structured_card_builder_remain_available():
 def test_open_box_coverage_is_native_without_a_duplicate_loaded_cog():
     bot = read("sniperplug/bot.py")
     routes = read("sniperplug/services/open_box_autoscan_routes.py")
-    policy = read("sniperplug/services/autoscan_route_policy.py")
     surface = read("sniperplug/services/command_surface.py")
 
     assert "from sniperplug.cogs.open_box_deals import OpenBoxDealsCog" not in bot
     assert "await self.add_cog(OpenBoxDealsCog(self))" not in bot
     assert '"open_box_deals"' in surface
     assert "open_box_autoscan_preset" in routes
-    assert "public_autoscan_hunt_presets" in policy
-    assert "OPEN_BOX_AUTOSCAN_KEY" in policy
+    assert "OPEN_BOX_AUTOSCAN_KEY" in routes
+
+
+def test_best_buy_stub_provider_stays_deregistered():
+    # NOTE (C6): BestBuyProvider.scan() returns zero candidates by design
+    # (staged skeleton, sniperplug/providers/bestbuy.py) — the provider file
+    # stays, but it must not be registered in bot.py.
+    bot = read("sniperplug/bot.py")
+
+    assert "from sniperplug.providers.bestbuy import BestBuyProvider" not in bot
+    assert "BestBuyProvider(" not in bot
 
 
 def test_canonical_deal_and_autoscan_commands_still_exist():

@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import discord
 
 from sniperplug.cogs.deal_scanner import DealCard, build_walmart_cards
-from sniperplug.cogs.open_box_deals import build_open_box_cards
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
 
@@ -202,37 +201,7 @@ def test_build_walmart_cards_populates_native_structured_proof_fields():
     assert c.api_price_path == "salePrice"
     assert c.direct_product_url == "https://www.walmart.com/ip/123"
 
-
-def test_open_box_builder_uses_native_dealcard_fields():
-    candidate = SourceCandidate(
-        source_key="walmart",
-        retailer="Walmart",
-        title="Restored Vacuum",
-        product_url="https://www.walmart.com/ip/456",
-        current_price=39.00,
-        typical_price=120.00,
-        deal_lane=LANE_RESTORED_REFURBISHED,
-        api_current_price=39.00,
-        api_reference_price=120.00,
-        api_discount_percent=67.5,
-        api_condition="Refurbished",
-        api_condition_path="condition.type",
-        api_reference_path="wasPrice",
-        api_price_path="salePrice",
-        direct_product_url="https://www.walmart.com/ip/456",
-        product_id="456",
-        sku="456",
-        condition="Refurbished",
-        variant_attributes={"trustedReferenceSource": "wasPrice", "currentPriceSource": "salePrice"},
-    )
-    result = ProviderScanResult(provider_key="walmart", candidates=(candidate,))
-
-    cards = build_open_box_cards(result, min_discount=50)
-
-    assert len(cards) == 1
-    c = cards[0]
-    assert c.deal_lane == LANE_RESTORED_REFURBISHED
-    assert c.api_current_price == 39.00
-    assert c.api_reference_price == 120.00
-    assert c.api_condition == "refurbished"
-    assert c.direct_product_url == "https://www.walmart.com/ip/456"
+# NOTE (C6): test_open_box_builder_uses_native_dealcard_fields was deleted
+# with the retired /open_box_deals cog and its build_open_box_cards builder
+# (sniperplug/cogs/open_box_deals.py, never loaded). Open-box lane gating
+# is still covered above via the live public_deal_quality module.

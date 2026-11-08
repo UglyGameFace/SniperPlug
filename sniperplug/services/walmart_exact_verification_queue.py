@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -41,6 +42,12 @@ PAGE_RETRY_STATUS = "page_retry"
 PAGE_RETRY_BASE_SECONDS = 30 * 60
 PAGE_RETRY_RATE_LIMIT_SECONDS = 60 * 60
 PAGE_RETRY_PRICE_MISMATCH_SECONDS = 10 * 60
+
+# Classification floor for direct-intake verifications. Matches
+# GLOBAL_DISCOVERY_MIN_DISCOUNT used by the production exact worker, so a
+# manually submitted item is classified exactly as the worker would classify
+# it; the per-server public threshold still applies at posting time.
+MANUAL_INTAKE_MIN_DISCOUNT = 10
 
 _last_cleanup_monotonic = 0.0
 
@@ -375,6 +382,157 @@ async def process_walmart_exact_verification_queue_batch(
         claimed=len(claims),
         pending_total=pending_total,
         **counts,
+    )
+
+
+_WALMART_ITEM_URL_PATTERN = re.compile(
+    r"walmart\.com/ip/(?:[^/?#]+/)?(\d{1,20})(?:[/?#]|$)",
+    re.IGNORECASE,
+)
+
+
+def parse_walmart_item_id(value: Any) -> str | None:
+    """Extract a Walmart numeric item ID from a product link or a bare ID.
+
+    Accepts ``https://www.walmart.com/ip/<slug>/<id>`` (the slug is optional and
+    query strings are tolerated) and a bare digit-only ID. Anything else
+    returns None so callers reject it with a clear message instead of
+    guessing an item.
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit() and len(text) <= 20:
+        return text
+    match = _WALMART_ITEM_URL_PATTERN.search(text)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+@dataclass(frozen=True)
+class SingleExactVerification:
+    """Outcome of a one-item direct exact verification (see /check_deal)."""
+
+    item_id: str
+    candidate: SourceCandidate | None = None
+    classification: str | None = None
+    status: str = "retry"
+    error: str = ""
+    enqueued: bool = False
+    queued_unique: int = 0
+
+
+async def verify_single_exact_item(
+    db: Any,
+    provider: Any,
+    item_id: str,
+    *,
+    min_discount: int = MANUAL_INTAKE_MIN_DISCOUNT,
+    timeout_seconds: float = 8.0,
+) -> SingleExactVerification:
+    """Verify one known Walmart item ID through the existing exact path.
+
+    This is the direct-intake counterpart to the catalog-driven exact worker:
+    the item never has to appear in Affiliate search results. It reuses the
+    worker's own fetch, classify, and store steps (Product Lookup, exact-search
+    fallback, and the page-recovery provider's product-page identity probe when
+    the API payload needs it), and it enqueues the item with source
+    ``manual_link`` so the normal exact worker and its lanes can pick the
+    stored row up afterwards. One item, one fetch, existing timeouts; no new
+    sender, lane, worker, table, or schema.
+    """
+
+    clean_id = str(item_id or "").strip()
+    if not clean_id.isdigit():
+        return SingleExactVerification(
+            item_id=clean_id,
+            status="invalid_item_id",
+            error="item ID must be digits only",
+        )
+    if provider is None:
+        return SingleExactVerification(
+            item_id=clean_id,
+            status="provider_unavailable",
+            error="exact Walmart detail provider unavailable",
+        )
+
+    claim = _QueueClaim(
+        item_id=clean_id,
+        title="",
+        product_url=f"https://www.walmart.com/ip/{clean_id}",
+        image_url="",
+        apparent_current_cents=None,
+        apparent_reference_cents=None,
+        route_hint="manual_link",
+        lease_token="",
+        attempt_count=0,
+    )
+    enqueued = False
+    queued_unique = 0
+    conn = None
+    now = datetime.now(timezone.utc)
+    if db is not None:
+        await ensure_walmart_exact_verification_queue(db)
+        await ensure_global_offer_memory_table(db)
+        conn = db.require_conn()
+        seed = _seed_candidate(claim)
+        enqueue_result = await enqueue_walmart_exact_verification_candidates(
+            db,
+            [seed],
+            min_discount=min_discount,
+            source_label="manual_link",
+        )
+        enqueued = True
+        queued_unique = enqueue_result.queued_unique
+
+    candidate, status, error = await _fetch_exact_candidate(
+        provider,
+        claim,
+        timeout_seconds=timeout_seconds,
+    )
+    if candidate is None:
+        if conn is not None:
+            await _store_failure(
+                conn, claim=claim, status=status, error=error, now=now
+            )
+            await conn.commit()
+        return SingleExactVerification(
+            item_id=clean_id,
+            status=status,
+            error=error,
+            enqueued=enqueued,
+            queued_unique=queued_unique,
+        )
+
+    classification = _classify_exact_candidate(candidate, min_discount=min_discount)
+    if conn is not None:
+        await _store_exact_candidate(
+            conn,
+            item_id=clean_id,
+            candidate=candidate,
+            min_discount=min_discount,
+            now=now,
+            lease_token="",
+        )
+        identity = exact_offer_identity(candidate)
+        if identity is not None:
+            await observe_exact_offer(
+                conn,
+                candidate=candidate,
+                identity=identity,
+                now=now,
+                min_discount=min_discount,
+            )
+        await conn.commit()
+    return SingleExactVerification(
+        item_id=clean_id,
+        candidate=candidate,
+        classification=classification,
+        status="verified",
+        enqueued=enqueued,
+        queued_unique=queued_unique,
     )
 
 

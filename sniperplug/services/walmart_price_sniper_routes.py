@@ -27,6 +27,8 @@ PRICE_SNIPER_QUERIES: tuple[str, ...] = (
     "apple ipad",
     "samsung galaxy tab",
     "unlocked smartphone",
+    "iphone",
+    "apple iphone",
     "playstation 5 console",
     "xbox series x console",
     "nintendo switch console",

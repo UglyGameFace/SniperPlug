@@ -11,6 +11,7 @@ from sniperplug.models.deal import NormalizedDeal
 from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.candidate_pipeline import evaluate_candidate
+from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
 from sniperplug.services.embed_delivery import send_summary_and_card_batches
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.public_deal_quality import select_public_deal_candidates
@@ -26,6 +27,11 @@ from sniperplug.services.walmart_cash_offers import (
 from sniperplug.services.walmart_cash_pipeline import (
     run_walmart_api_probe,
     run_walmart_cash_discovery,
+)
+from sniperplug.services.walmart_exact_verification_queue import (
+    MANUAL_INTAKE_MIN_DISCOUNT,
+    parse_walmart_item_id,
+    verify_single_exact_item,
 )
 
 
@@ -159,6 +165,116 @@ class DealScannerCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         sort_value, order_value = parse_sort_choice(sort.value if sort else None)
         await self._send_walmart_scan(interaction, query, min_discount, page, max_results, sort_value, order_value, alerts_only, False)
+
+    @app_commands.command(name="check_deal", description="Check one Walmart product link or item ID directly, even when search never surfaces it.")
+    @app_commands.describe(link="Walmart product link or bare item ID. Example: https://www.walmart.com/ip/AT-T-Apple-iPhone-11-64GB-Green/425031866 or 425031866")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def check_deal(self, interaction: discord.Interaction, link: str) -> None:
+        if not await safe_defer(interaction, ephemeral=True, thinking=True):
+            return
+        await self._send_check_deal(interaction, link)
+
+    async def _send_check_deal(self, interaction: discord.Interaction, link: str) -> None:
+        item_id = parse_walmart_item_id(link)
+        if item_id is None:
+            await safe_send_interaction(interaction, "That doesn't look like a Walmart product link or item ID. Paste a `walmart.com/ip/...` link or a numeric item ID like `425031866`.", ephemeral=True)
+            return
+        provider = provider_registry.get("walmart")
+        if provider is None:
+            await safe_send_interaction(interaction, "Walmart search is not connected yet.", ephemeral=True)
+            return
+        health = await provider.healthcheck()
+        if health.status != ProviderStatus.READY:
+            await interaction.followup.send("Deal search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
+            return
+        db = getattr(self.bot, "db", None)
+        min_discount = await get_starting_deal_percent(db, interaction.guild_id)
+        try:
+            result = await verify_single_exact_item(
+                db,
+                provider,
+                item_id,
+                min_discount=MANUAL_INTAKE_MIN_DISCOUNT,
+            )
+        except Exception as error:  # noqa: BLE001 - surface the failure instead of dropping the interaction.
+            await interaction.followup.send(f"Direct check hit an error for item `{item_id}`: `{error}`", ephemeral=True)
+            return
+
+        product_url = f"https://www.walmart.com/ip/{item_id}"
+        summary = discord.Embed(
+            title=f"🔌 Direct Deal Check • item {item_id}",
+            color=discord.Color.orange(),
+        )
+        if result.candidate is None:
+            summary.description = (
+                "Could not verify this item.\n"
+                f"**Exact check:** `{result.status}`"
+                + (f" — {result.error}" if result.error else "")
+                + "\n"
+                + (
+                    "It is queued for the normal exact worker to retry."
+                    if result.enqueued
+                    else "It could not be queued (no database available)."
+                )
+            )
+            summary.add_field(name="🔗 Open product", value=f"[App/Web]({product_url})", inline=False)
+            summary.set_footer(text="Prices can revert. Recheck before posting or buying.")
+            await interaction.followup.send(embed=summary, ephemeral=True)
+            return
+
+        candidate = result.candidate
+        cards: list[DealCard] = []
+        if result.classification == "verified_markdown":
+            scan_result = ProviderScanResult(
+                provider_key="walmart",
+                candidates=(candidate,),
+                warnings=(),
+                total_results=1,
+                page=1,
+                page_size=1,
+                start_index=1,
+                has_next_page=False,
+            )
+            cards = build_walmart_cards(scan_result, min_discount=min_discount, alerts_only=False)
+        if not cards:
+            # Local import: walmart_review_candidates imports this cog module,
+            # so a top-level import would be circular.
+            from sniperplug.services.walmart_review_candidates import (
+                build_review_candidate_cards,
+            )
+
+            review = build_review_candidate_cards([candidate], query=item_id)
+            cards = list(review.cards)
+
+        current = getattr(candidate, "api_current_price", None) or getattr(candidate, "current_price", None)
+        reference = getattr(candidate, "api_reference_price", None) or getattr(candidate, "typical_price", None)
+        summary.description = (
+            f"**{candidate.title}**\n"
+            f"Current price: **{money(current)}**"
+            + (f" • Was/typical: ~~{money(reference)}~~" if reference else "")
+            + f"\nExact check: **{result.classification or result.status}**"
+            + (
+                " • queued for the normal exact worker and its lanes"
+                if result.enqueued
+                else " • not queued (no database available)"
+            )
+        )
+        if cards:
+            await send_summary_and_card_batches(interaction, summary=summary, cards=cards[:1], ephemeral=True)
+            return
+        summary.add_field(
+            name="Why no card",
+            value=(
+                "Walmart verified the item and price, but it is not a proven markdown at your threshold and has no other review value signal. "
+                "The exact worker will still consider it for the opt-in extreme-price lane."
+                if result.classification == "verified_no_reference"
+                else "Walmart verified the item, but it does not clear your markdown threshold."
+            ),
+            inline=False,
+        )
+        summary.add_field(name="🔗 Open product", value=f"[App/Web]({product_url})", inline=False)
+        summary.set_footer(text="Prices can revert. Recheck before posting or buying.")
+        await interaction.followup.send(embed=summary, ephemeral=True)
 
     async def _send_walmart_cash_search(self, interaction: discord.Interaction, search: str, max_results: int = 8) -> None:
         provider = provider_registry.get("walmart")
@@ -325,6 +441,10 @@ class DealScannerCog(commands.Cog):
     @walmart_scan.error
     async def walmart_scan_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await send_command_error(interaction, "You need **Manage Server** permission to run advanced Walmart scans. Use `/deals` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Walmart scan hit an error: `{error}`")
+
+    @check_deal.error
+    async def check_deal_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        await send_command_error(interaction, "You need **Manage Server** permission to run direct deal checks. Use `/deals` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Direct deal check hit an error: `{error}`")
 
 
 async def send_command_error(interaction: discord.Interaction, message: str) -> None:

@@ -33,7 +33,6 @@ from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.cogs.storage_admin import StorageAdminCog
 from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
-from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
@@ -127,7 +126,11 @@ class SniperPlugBot(commands.Bot):
         log.info("Persistent public panel views registered: %s", public_panel_views)
 
         provider_registry.clear()
-        provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
+        # NOTE (C6): BestBuyProvider deliberately NOT registered. Its scan()
+        # returns zero candidates by design (staged skeleton, see
+        # sniperplug/providers/bestbuy.py) so registering it only adds a
+        # dead provider to the registry. Do not re-register without a real
+        # live Best Buy implementation.
         walmart_provider = WalmartPageRecoveryProvider(
             walmart_affiliate_config(self.settings)
         )

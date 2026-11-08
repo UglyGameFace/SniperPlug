@@ -20,13 +20,27 @@ from sniperplug.services.walmart_global_catalog_autoscan import (
 )
 from sniperplug.services.walmart_price_sniper_routes import (
     PRICE_SNIPER_ORDER,
+    PRICE_SNIPER_QUERIES,
     PRICE_SNIPER_SORT,
     price_sniper_query_for_batch,
+    priority_sniper_query_for_batch,
+    priority_snipers_before_batch,
 )
 
 
 CATALOG_SEARCH_CONCURRENCY = 3
 GLOBAL_CATALOG_REQUEST_BUDGET = 4
+# Sniper-first split of the unchanged 4-searches/minute budget: 2 broad page-1
+# routes + 2 price-sorted sniper searches. The real Walmart quota is unknown,
+# so the total rate never rises; the trade-off is explicit and deliberate:
+# sniper revisit 29 min -> ~16 min (29 rotation queries, ~9 rotation slots
+# per 5 batches once the priority slot displaces one), broad rotation
+# 89 min -> ~133 min (265 routes / 2 per batch). Money first: a $1 error on a
+# phone/console/GPU is worth far more than re-sweeping a department page an
+# hour sooner, and broad still advances every batch — it is slower, never
+# starved.
+BROAD_ROUTES_PER_BATCH = 2
+SNIPER_SEARCHES_PER_BATCH = 2
 CATALOG_PAGES_PER_QUERY = 2
 CATALOG_PROVIDER_RESULT_LIMIT = 1000
 CATALOG_MAX_PAGE = max(1, CATALOG_PROVIDER_RESULT_LIMIT // hunt.RESULTS_PER_PAGE)
@@ -74,17 +88,25 @@ CatalogRequest = tuple[str, int, "str | None", "str | None"]
 def catalog_request_plan_for_claim(
     claim: GlobalCatalogClaim,
 ) -> tuple[CatalogRequest, ...]:
-    """Four bounded API searches: three fresh routes plus one price sniper.
+    """Four bounded API searches: two fresh routes plus two price snipers.
 
     Page one of each claimed catalog route (relevance order) keeps broad
-    coverage. The fourth request searches a specific high-value product
-    sorted by price, lowest first, where a price error appears at the top.
-    It replaces the former rotating deep relevance page (pages 2-40 of broad
-    department searches), which rarely surfaced price errors.
+    coverage, now at 2 routes/batch (~133 min for the 265-route pool instead
+    of ~89). The other two requests are price-sorted (lowest first) searches
+    for specific high-value products, where a price error appears at the top.
 
-    The sniper query derives from the durable claim cursor only, so a
+    The first sniper slot always runs the general rotation (29 queries,
+    ~16 min revisit once the priority slot displaces one slot per 5 batches).
+    The second sniper slot is the priority hot list (phones, consoles, GPUs)
+    on every 5th batch, and the general rotation otherwise. The priority
+    slot only ever replaces a sniper search, never a broad route, and is
+    capped at 12/hour by construction.
+
+    Both sniper queries derive from the durable claim cursor only, so a
     retried or replayed claim repeats exactly the same four requests and no
-    new persistent state is needed.
+    new persistent state is needed. The rotation advances only by rotation
+    slots actually spent, so a query displaced by a priority search is
+    deferred to the next rotation slot, never skipped.
     """
     routes = tuple(claim.queries)
     if not routes:
@@ -94,11 +116,26 @@ def catalog_request_plan_for_claim(
         for query in routes
         for sort_value, order_value in CATALOG_SORT_PASSES
     ]
-    if len(routes) != 3 or claim.total_routes < 3:
+    if len(routes) != BROAD_ROUTES_PER_BATCH or claim.total_routes < BROAD_ROUTES_PER_BATCH:
         return tuple(plan)
-    batch_number = max(0, claim.completed_routes_before) // 3
+    batch_number = max(0, claim.completed_routes_before) // BROAD_ROUTES_PER_BATCH
+    rotation_slots_before = (
+        SNIPER_SEARCHES_PER_BATCH * batch_number
+        - priority_snipers_before_batch(batch_number)
+    )
     plan.append((
-        price_sniper_query_for_batch(batch_number), 1,
+        price_sniper_query_for_batch(rotation_slots_before), 1,
+        PRICE_SNIPER_SORT, PRICE_SNIPER_ORDER,
+    ))
+    priority_query = priority_sniper_query_for_batch(
+        batch_number, avoid=plan[-1][0],
+    )
+    if priority_query is not None:
+        second_sniper = priority_query
+    else:
+        second_sniper = price_sniper_query_for_batch(rotation_slots_before + 1)
+    plan.append((
+        second_sniper, 1,
         PRICE_SNIPER_SORT, PRICE_SNIPER_ORDER,
     ))
     return tuple(plan)
@@ -135,10 +172,12 @@ async def discover_walmart_catalog_candidates(
     selected offer, seller, variant, fulfillment, current-price, and trusted
     reference-price verification.
 
-    The global scan uses a four-request budget: page 1 for each of three
-    freshly claimed routes plus one price-sorted (lowest first) search for a
-    rotating high-value product, where price errors surface. Manual
-    callers without a durable claim preserve the legacy two-page behavior.
+    The global scan uses a four-request budget: page 1 for each of two
+    freshly claimed routes plus two price-sorted (lowest first) searches for
+    rotating high-value products, where price errors surface. The second
+    sniper slot is the priority hot list (phones, consoles, GPUs) every 5th
+    batch. Manual callers without a durable claim preserve the legacy
+    two-page behavior.
     All scans stay global, independent of Discord server count.
 
     Keeping exact verification out of the catalog pass prevents the catalog

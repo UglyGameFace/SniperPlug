@@ -577,6 +577,9 @@ async def verified_hunt_button_callback(self, interaction: discord.Interaction) 
             cards=posted_cards,
             source_label=f"hunt:{preset.key}:verified_{result.min_discount}_plus",
             fallback_retailer="walmart",
+            # The hunt already resolved the guild threshold into
+            # result.min_discount; gate the public post on that, not the default.
+            min_public_discount=result.min_discount,
         )
         deal_scanner.add_public_posting_field(summary, public_result)
         await send_card_batches(interaction, summary=summary, cards=posted_cards, review_cards=result.review_candidates.cards if result.review_candidates else [])

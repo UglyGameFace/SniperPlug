@@ -28,32 +28,40 @@ def fake_claim(
     return GlobalCatalogClaim(
         token="lease-token",
         start_index=start_index,
-        queries=tuple(f"query-{(start_index + index) % total_routes}" for index in range(3)),
+        queries=tuple(f"query-{(start_index + index) % total_routes}" for index in range(2)),
         total_routes=total_routes,
         completed_routes_before=completed_routes,
         completed_passes_before=completed_passes,
     )
 
 
-def test_catalog_plan_keeps_original_api_budget_but_checks_three_fresh_routes() -> None:
+def test_catalog_plan_keeps_original_api_budget_but_checks_two_fresh_routes() -> None:
     claim = fake_claim()
     plan = catalog.catalog_request_plan_for_claim(claim)
     assert len(plan) == 4
-    assert plan[:3] == tuple((query, 1, None, None) for query in claim.queries)
-    assert plan[3] == (PRICE_SNIPER_QUERIES[0], 1, "price", "ascending")
+    assert plan[:2] == tuple((query, 1, None, None) for query in claim.queries)
+    assert plan[2] == (PRICE_SNIPER_QUERIES[0], 1, "price", "ascending")
+    # Batch 0 is a priority batch: the second sniper slot is the hot list.
+    assert plan[3] == ("iphone", 1, "price", "ascending")
     assert catalog.catalog_request_plan_for_claim(claim) == plan
 
 
 @pytest.mark.parametrize("route_count", [3, 4, 5, 6, 7, 8, 265])
 def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> None:
-    """Exactly 4 searches/batch; every sniper query recurs once per rotation."""
+    """Exactly 4 searches/batch; 2 sniper slots, priority displaces one per 5.
+
+    Over 145 batches there are 29 priority firings and 261 rotation slots,
+    so every rotation query is visited exactly 9 times (~16 min revisit at
+    1 batch/minute) and no rotation query is ever skipped by a priority
+    search.
+    """
     counts: dict[str, int] = defaultdict(int)
+    priority_counts: dict[str, int] = defaultdict(int)
     fresh_counts: dict[str, int] = defaultdict(int)
     start = 0
     completed = 0
     passes = 0
-    rotations = 2
-    batches = len(PRICE_SNIPER_QUERIES) * rotations
+    batches = 145
     for _ in range(batches):
         claim = fake_claim(
             total_routes=route_count, start_index=start,
@@ -61,18 +69,30 @@ def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> No
         )
         plan = catalog.catalog_request_plan_for_claim(claim)
         assert len(plan) == 4
-        assert plan[:3] == tuple((query, 1, None, None) for query in claim.queries)
-        query, page, sort_value, order_value = plan[3]
-        assert (page, sort_value, order_value) == (1, "price", "ascending")
-        counts[query] += 1
+        assert plan[:2] == tuple((query, 1, None, None) for query in claim.queries)
+        for query, page, sort_value, order_value in plan[2:]:
+            assert (page, sort_value, order_value) == (1, "price", "ascending")
+        # First sniper slot is always the general rotation; the second is
+        # the priority hot list on every 5th batch, rotation otherwise.
+        batch_number = completed // 2
+        counts[plan[2][0]] += 1
+        expected_priority = catalog.priority_sniper_query_for_batch(
+            batch_number, avoid=plan[2][0],
+        )
+        if expected_priority is not None:
+            assert plan[3][0] == expected_priority
+            priority_counts[plan[3][0]] += 1
+        else:
+            counts[plan[3][0]] += 1
         for fresh_query in claim.queries:
             fresh_counts[fresh_query] += 1
         passes += int(claim.wraps_catalog)
-        completed += 3
+        completed += 2
         start = claim.next_index
 
-    assert counts == {query: rotations for query in PRICE_SNIPER_QUERIES}
-    assert sum(fresh_counts.values()) == 3 * batches
+    assert counts == {query: 9 for query in PRICE_SNIPER_QUERIES}
+    assert sum(priority_counts.values()) == 29
+    assert sum(fresh_counts.values()) == 2 * batches
 
 
 def test_claim_replay_preserves_same_searches_and_cursor(monkeypatch) -> None:
@@ -87,20 +107,20 @@ def test_claim_replay_preserves_same_searches_and_cursor(monkeypatch) -> None:
             monkeypatch.setattr(state, "catalog_route_pool", lambda: tuple(
                 f"query-{index}" for index in range(7)
             ))
-            first = await claim_next_catalog_routes(db, route_count=3, now=started)
+            first = await claim_next_catalog_routes(db, route_count=2, now=started)
             assert first is not None
             expected = catalog.catalog_request_plan_for_claim(first)
             await release_catalog_claim(db, first, error="transient source outage", now=started)
-            replay = await claim_next_catalog_routes(db, route_count=3, now=started)
+            replay = await claim_next_catalog_routes(db, route_count=2, now=started)
             assert replay is not None
             assert replay.start_index == first.start_index
             assert replay.queries == first.queries
             assert catalog.catalog_request_plan_for_claim(replay) == expected
 
             assert await complete_catalog_claim(db, replay, now=started)
-            following = await claim_next_catalog_routes(db, route_count=3, now=started)
+            following = await claim_next_catalog_routes(db, route_count=2, now=started)
             assert following is not None
-            assert following.start_index == 3
+            assert following.start_index == 2
             assert len(catalog.catalog_request_plan_for_claim(following)) == 4
         finally:
             await conn.close()
@@ -149,8 +169,8 @@ def test_catalog_scan_executes_exact_plan_not_unbounded_cartesian_product(monkey
         assert output.pages_checked == 4
         assert len(enqueued) == 4
         assert any(
-            "fresh routes **3**" in note
-            and "price-sorted sniper searches **1**" in note
+            "fresh routes **2**" in note
+            and "price-sorted sniper searches **2**" in note
             and "planned searches **4**" in note
             for note in output.warnings
         )

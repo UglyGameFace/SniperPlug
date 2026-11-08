@@ -33,7 +33,6 @@ from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.cogs.storage_admin import StorageAdminCog
 from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
-from sniperplug.providers.bestbuy import BestBuyProvider
 from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
@@ -53,6 +52,11 @@ from sniperplug.services.command_surface import (
     command_surface_issues,
     command_surface_summary,
     prune_retired_commands,
+)
+from sniperplug.services.command_surface_hash import (
+    CommandSurfaceHashStore,
+    command_surface_fingerprint,
+    default_hash_store_path,
 )
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
@@ -80,6 +84,9 @@ class SniperPlugBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
         self.settings = settings
         self.db = Database(settings.database_path)
+        self.command_surface_hash_store = CommandSurfaceHashStore(
+            default_hash_store_path(settings.database_path)
+        )
         self._command_surface_issues: tuple[str, ...] = ()
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
@@ -119,7 +126,11 @@ class SniperPlugBot(commands.Bot):
         log.info("Persistent public panel views registered: %s", public_panel_views)
 
         provider_registry.clear()
-        provider_registry.register(BestBuyProvider(self.settings.bestbuy_api_key))
+        # NOTE (C6): BestBuyProvider deliberately NOT registered. Its scan()
+        # returns zero candidates by design (staged skeleton, see
+        # sniperplug/providers/bestbuy.py) so registering it only adds a
+        # dead provider to the registry. Do not re-register without a real
+        # live Best Buy implementation.
         walmart_provider = WalmartPageRecoveryProvider(
             walmart_affiliate_config(self.settings)
         )
@@ -187,10 +198,22 @@ class SniperPlugBot(commands.Bot):
         await self._sync_commands()
 
     async def _sync_commands(self) -> None:
+        store = getattr(self, "command_surface_hash_store", None)
+        current_hash = command_surface_fingerprint(self.tree.get_commands())
+        stored_hash = store.read() if store is not None else None
+
         if env_enabled("CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT"):
             self.tree.clear_commands(guild=None)
             synced = await self._sync_tree_safely(scope="global stale-command cleanup")
             if synced is not None:
+                if store is not None:
+                    # Persist the post-clear (empty) surface, not the
+                    # pre-clear hash: Discord now has no global commands, so
+                    # the next boot must re-sync the full surface.
+                    self._persist_surface_hash(
+                        store,
+                        command_surface_fingerprint(self.tree.get_commands()),
+                    )
                 log.warning(
                     "Cleared stale global slash commands. Synced %s global commands. "
                     "Turn CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT off now.",
@@ -198,11 +221,21 @@ class SniperPlugBot(commands.Bot):
                 )
             return
 
-        if not self.settings.sync_commands_on_boot:
+        forced = bool(self.settings.sync_commands_on_boot)
+        if not forced and stored_hash is not None and stored_hash == current_hash:
             log.info(
-                "Skipped slash command sync on boot. Set SYNC_COMMANDS_ON_BOOT=true only when command definitions changed."
+                "Skipped slash command sync on boot: command surface unchanged "
+                "(hash=%s). Set SYNC_COMMANDS_ON_BOOT=true to force a sync.",
+                current_hash[:12],
             )
             return
+        if not forced:
+            log.info(
+                "Command surface changed since last sync "
+                "(stored=%s current=%s); syncing slash commands.",
+                (stored_hash or "none")[:12],
+                current_hash[:12],
+            )
 
         schema_issues = (
             *app_command_schema_issues(self.tree.get_commands()),
@@ -216,13 +249,14 @@ class SniperPlugBot(commands.Bot):
             )
             return
 
+        synced_ok = False
         if self.settings.sync_global_commands:
             synced = await self._sync_tree_safely(scope="global commands")
             if synced is not None:
                 log.info("Synced %s canonical global slash commands", len(synced))
-            return
-
-        if self.settings.dev_guild_ids:
+                synced_ok = True
+        elif self.settings.dev_guild_ids:
+            synced_ok = True
             for guild_id in self.settings.dev_guild_ids:
                 guild = discord.Object(id=guild_id)
                 # Rebuild the guild tree from the canonical global tree so
@@ -240,6 +274,7 @@ class SniperPlugBot(commands.Bot):
                         guild_id,
                         " | ".join(guild_issues[:20]),
                     )
+                    synced_ok = False
                     continue
                 synced = await self._sync_tree_safely(
                     guild=guild,
@@ -247,9 +282,31 @@ class SniperPlugBot(commands.Bot):
                 )
                 if synced is not None:
                     log.info("Synced %s canonical guild slash commands to %s", len(synced), guild_id)
+                else:
+                    synced_ok = False
+        else:
+            log.info("No DEV_GUILD_IDS configured and global sync is off; skipped slash command sync.")
             return
 
-        log.info("No DEV_GUILD_IDS configured and global sync is off; skipped slash command sync.")
+        if synced_ok:
+            if store is not None:
+                self._persist_surface_hash(store, current_hash)
+        else:
+            log.warning(
+                "Slash command sync did not complete; command surface hash NOT "
+                "persisted, so the next boot will retry the sync."
+            )
+
+    @staticmethod
+    def _persist_surface_hash(store: CommandSurfaceHashStore, fingerprint: str) -> None:
+        try:
+            store.write(fingerprint)
+        except OSError:
+            log.exception(
+                "Failed to persist command surface hash; next boot will retry the sync."
+            )
+        else:
+            log.info("Command surface hash persisted (hash=%s).", fingerprint[:12])
 
     async def _sync_tree_safely(
         self,

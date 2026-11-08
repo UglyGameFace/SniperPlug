@@ -11,6 +11,7 @@ from sniperplug.models.deal import NormalizedDeal
 from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.candidate_pipeline import evaluate_candidate
+from sniperplug.services.deal_threshold_settings import resolve_min_discount
 from sniperplug.services.embed_delivery import send_summary_and_card_batches
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.public_deal_quality import select_public_deal_candidates
@@ -27,6 +28,13 @@ from sniperplug.services.walmart_cash_pipeline import (
     run_walmart_api_probe,
     run_walmart_cash_discovery,
 )
+from sniperplug.services.walmart_exact_verification_queue import (
+    MANUAL_INTAKE_MIN_DISCOUNT,
+    VERIFIED_PAGE_PRICE_STATUS,
+    page_observed_price,
+    parse_walmart_item_id,
+    verify_single_exact_item,
+)
 
 
 SORT_CHOICES = [
@@ -38,7 +46,11 @@ SORT_CHOICES = [
     app_commands.Choice(name="New", value="new"),
 ]
 
-BEGINNER_FALLBACK_DISCOUNTS = (50, 30, 10, 0)
+# Rungs below the resolved starting threshold for /deals. The starting value
+# itself comes from resolve_min_discount (guild setting, else 40) and is
+# prepended by cards_with_fallback; these are only the relax steps, so the
+# old hardcoded 50 start is gone.
+BEGINNER_FALLBACK_DISCOUNTS = (30, 10, 0)
 PRESET_FALLBACK_DISCOUNTS = (60, 40, 25, 10)
 DUPLICATE_SCAN_MESSAGE = "That scan is already running. I blocked the duplicate click so SniperPlug cannot double-post results."
 
@@ -122,13 +134,27 @@ class DealScannerCog(commands.Cog):
 
     @app_commands.command(name="hunt", description="Tap a category and let SniperPlug hunt deals for you.")
     async def hunt(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(embed=build_hunt_menu_embed(), view=HuntPresetMenuView(), ephemeral=True)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hunt")
+        if not await acquire_command_scan_lock(interaction, lock_key):
+            return
+        try:
+            await interaction.response.send_message(embed=build_hunt_menu_embed(), view=HuntPresetMenuView(), ephemeral=True)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
     @app_commands.command(name="deals", description="Find deals the easy way. Just type what you want.")
     @app_commands.describe(search="What are you shopping for? Example: monitor, lego, tide, patio set, air fryer.")
     async def deals(self, interaction: discord.Interaction, search: str) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self._send_walmart_scan(interaction, search, 50, 1, 10, None, None, False, True)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="deals", query=search)
+        if not await acquire_command_scan_lock(interaction, lock_key):
+            return
+        try:
+            db = getattr(self.bot, "db", None)
+            min_discount = await resolve_min_discount(db, interaction.guild_id)
+            await interaction.response.defer(ephemeral=True)
+            await self._send_walmart_scan(interaction, search, min_discount, 1, 10, None, None, False, True)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
     @app_commands.command(name="walmart_cash", description="Find API-proven Walmart Cash offers only. No guesses, no OnePay, no cart promos.")
     @app_commands.describe(
@@ -155,10 +181,157 @@ class DealScannerCog(commands.Cog):
     @app_commands.describe(query="Product search, like gaming monitor, tide detergent, lego, patio set.", min_discount="Only show deals at or above this percent off. Try 50 or 80.", page="Walmart result page to scan. Use page 2/3 if page 1 repeats weak deals.", max_results="How many Walmart results to inspect on this page. Max 25.", sort="Optional Walmart sorting mode.", alerts_only="Only show candidates SniperPlug would alert on.")
     @app_commands.choices(sort=SORT_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: app_commands.Range[int, 0, 95] = 30, page: app_commands.Range[int, 1, 40] = 1, max_results: app_commands.Range[int, 1, 25] = 10, sort: app_commands.Choice[str] | None = None, alerts_only: bool = False) -> None:
-        await interaction.response.defer(ephemeral=True)
-        sort_value, order_value = parse_sort_choice(sort.value if sort else None)
-        await self._send_walmart_scan(interaction, query, min_discount, page, max_results, sort_value, order_value, alerts_only, False)
+    async def walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: app_commands.Range[int, 0, 95] | None = None, page: app_commands.Range[int, 1, 40] = 1, max_results: app_commands.Range[int, 1, 25] = 10, sort: app_commands.Choice[str] | None = None, alerts_only: bool = False) -> None:
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="walmart_scan", query=query, page=page, min_discount=min_discount)
+        if not await acquire_command_scan_lock(interaction, lock_key):
+            return
+        try:
+            db = getattr(self.bot, "db", None)
+            # No explicit min_discount: the single authority resolves the guild
+            # setting (else 40). An explicit value is a deliberate override.
+            resolved_discount = await resolve_min_discount(db, interaction.guild_id, explicit=min_discount)
+            await interaction.response.defer(ephemeral=True)
+            sort_value, order_value = parse_sort_choice(sort.value if sort else None)
+            await self._send_walmart_scan(interaction, query, resolved_discount, page, max_results, sort_value, order_value, alerts_only, False)
+        finally:
+            await scan_operation_locks.release(lock_key)
+
+    @app_commands.command(name="check_deal", description="Check one Walmart product link or item ID directly, even when search never surfaces it.")
+    @app_commands.describe(link="Walmart product link or bare item ID. Example: https://www.walmart.com/ip/AT-T-Apple-iPhone-11-64GB-Green/425031866 or 425031866")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def check_deal(self, interaction: discord.Interaction, link: str) -> None:
+        item_id = parse_walmart_item_id(link)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="check_deal", query=item_id or link)
+        if not await acquire_command_scan_lock(interaction, lock_key):
+            return
+        try:
+            if not await safe_defer(interaction, ephemeral=True, thinking=True):
+                return
+            await self._send_check_deal(interaction, link)
+        finally:
+            await scan_operation_locks.release(lock_key)
+
+    async def _send_check_deal(self, interaction: discord.Interaction, link: str) -> None:
+        item_id = parse_walmart_item_id(link)
+        if item_id is None:
+            await safe_send_interaction(interaction, "That doesn't look like a Walmart product link or item ID. Paste a `walmart.com/ip/...` link or a numeric item ID like `425031866`.", ephemeral=True)
+            return
+        provider = provider_registry.get("walmart")
+        if provider is None:
+            await safe_send_interaction(interaction, "Walmart search is not connected yet.", ephemeral=True)
+            return
+        health = await provider.healthcheck()
+        if health.status != ProviderStatus.READY:
+            await interaction.followup.send("Deal search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
+            return
+        db = getattr(self.bot, "db", None)
+        # Display threshold only, via the single authority (guild setting,
+        # else 40). The verification gate stays MANUAL_INTAKE_MIN_DISCOUNT
+        # (10%) below; this value never feeds it.
+        min_discount = await resolve_min_discount(db, interaction.guild_id)
+        try:
+            result = await verify_single_exact_item(
+                db,
+                provider,
+                item_id,
+                min_discount=MANUAL_INTAKE_MIN_DISCOUNT,
+            )
+        except Exception as error:  # noqa: BLE001 - surface the failure instead of dropping the interaction.
+            await interaction.followup.send(f"Direct check hit an error for item `{item_id}`: `{error}`", ephemeral=True)
+            return
+
+        product_url = f"https://www.walmart.com/ip/{item_id}"
+        summary = discord.Embed(
+            title=f"🔌 Direct Deal Check • item {item_id}",
+            color=discord.Color.orange(),
+        )
+        if result.candidate is None:
+            summary.description = (
+                "Could not verify this item.\n"
+                f"**Exact check:** `{result.status}`"
+                + (f" — {result.error}" if result.error else "")
+                + "\n"
+                + (
+                    "It is queued for the normal exact worker to retry."
+                    if result.enqueued
+                    else "It could not be queued (no database available)."
+                )
+            )
+            summary.add_field(name="🔗 Open product", value=f"[App/Web]({product_url})", inline=False)
+            summary.set_footer(text="Prices can revert. Recheck before posting or buying.")
+            await interaction.followup.send(embed=summary, ephemeral=True)
+            return
+
+        candidate = result.candidate
+        if result.classification == VERIFIED_PAGE_PRICE_STATUS:
+            # A page-observed price has no API price, so the review-card
+            # builder below would drop it as missing_current. Surface it
+            # with its own labelled embed instead; never a markdown card.
+            page_price = page_observed_price(candidate)
+            if page_price is not None:
+                summary = build_page_price_direct_check_embed(
+                    candidate,
+                    item_id=item_id,
+                    page_price=page_price,
+                    enqueued=result.enqueued,
+                )
+                await interaction.followup.send(embed=summary, ephemeral=True)
+                return
+            # A verified_page_price without a readable page price breaks the
+            # lane invariant: fall through to the review path rather than
+            # claiming a lead.
+        cards: list[DealCard] = []
+        if result.classification == "verified_markdown":
+            scan_result = ProviderScanResult(
+                provider_key="walmart",
+                candidates=(candidate,),
+                warnings=(),
+                total_results=1,
+                page=1,
+                page_size=1,
+                start_index=1,
+                has_next_page=False,
+            )
+            cards = build_walmart_cards(scan_result, min_discount=min_discount, alerts_only=False)
+        if not cards:
+            # Local import: walmart_review_candidates imports this cog module,
+            # so a top-level import would be circular.
+            from sniperplug.services.walmart_review_candidates import (
+                build_review_candidate_cards,
+            )
+
+            review = build_review_candidate_cards([candidate], query=item_id)
+            cards = list(review.cards)
+
+        current = getattr(candidate, "api_current_price", None) or getattr(candidate, "current_price", None)
+        reference = getattr(candidate, "api_reference_price", None) or getattr(candidate, "typical_price", None)
+        summary.description = (
+            f"**{candidate.title}**\n"
+            f"Current price: **{money(current)}**"
+            + (f" • Was/typical: ~~{money(reference)}~~" if reference else "")
+            + f"\nExact check: **{result.classification or result.status}**"
+            + (
+                " • queued for the normal exact worker and its lanes"
+                if result.enqueued
+                else " • not queued (no database available)"
+            )
+        )
+        if cards:
+            await send_summary_and_card_batches(interaction, summary=summary, cards=cards[:1], ephemeral=True)
+            return
+        summary.add_field(
+            name="Why no card",
+            value=(
+                "Walmart verified the item and price, but it is not a proven markdown at your threshold and has no other review value signal. "
+                "The exact worker will still consider it for the opt-in extreme-price lane."
+                if result.classification == "verified_no_reference"
+                else "Walmart verified the item, but it does not clear your markdown threshold."
+            ),
+            inline=False,
+        )
+        summary.add_field(name="🔗 Open product", value=f"[App/Web]({product_url})", inline=False)
+        summary.set_footer(text="Prices can revert. Recheck before posting or buying.")
+        await interaction.followup.send(embed=summary, ephemeral=True)
 
     async def _send_walmart_cash_search(self, interaction: discord.Interaction, search: str, max_results: int = 8) -> None:
         provider = provider_registry.get("walmart")
@@ -325,6 +498,10 @@ class DealScannerCog(commands.Cog):
     @walmart_scan.error
     async def walmart_scan_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await send_command_error(interaction, "You need **Manage Server** permission to run advanced Walmart scans. Use `/deals` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Walmart scan hit an error: `{error}`")
+
+    @check_deal.error
+    async def check_deal_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        await send_command_error(interaction, "You need **Manage Server** permission to run direct deal checks. Use `/deals` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Direct deal check hit an error: `{error}`")
 
 
 async def send_command_error(interaction: discord.Interaction, message: str) -> None:
@@ -944,6 +1121,58 @@ def money(value: float | None) -> str:
     return f"${value:,.2f}"
 
 
+def build_page_price_direct_check_embed(
+    candidate: SourceCandidate,
+    *,
+    item_id: str,
+    page_price: float,
+    enqueued: bool,
+) -> discord.Embed:
+    """Explain a page-observed /check_deal result without claiming a markdown.
+
+    The official API returned no usable price for the item, but product-page
+    recovery confirmed seller/offer/item identity and exposed a price. The
+    embed states that plainly: page evidence only, not a verified markdown,
+    no discount percentage.
+    """
+
+    seller = str(getattr(candidate, "seller_name", None) or "").strip() or str(
+        dict(getattr(candidate, "variant_attributes", None) or {}).get("seller")
+        or ""
+    ).strip()
+    product_url = f"https://www.walmart.com/ip/{item_id}"
+    embed = discord.Embed(
+        title=f"🔌 Direct Deal Check • item {item_id}",
+        color=discord.Color.orange(),
+    )
+    embed.description = (
+        f"**{candidate.title}**\n"
+        f"Page-observed price: **${page_price:,.2f}**"
+        + (f" • Seller: **{seller}**" if seller else "")
+        + "\nExact check: **verified_page_price**"
+        + (
+            " • queued for the normal exact worker and its lanes"
+            if enqueued
+            else " • not queued (no database available)"
+        )
+    )
+    embed.add_field(
+        name="Page-observed price, NOT API-verified",
+        value=(
+            "Walmart's product page showed $"
+            + f"{page_price:,.2f}"
+            + " for this seller/offer/variant, but the official exact-item API "
+            "returned no usable price. This is page evidence only: not a verified "
+            "markdown, and no discount percentage is claimed. The exact worker "
+            "will still consider it for the opt-in extreme-price lane."
+        ),
+        inline=False,
+    )
+    embed.add_field(name="🔗 Open product", value=f"[App/Web]({product_url})", inline=False)
+    embed.set_footer(text="Prices can revert. Recheck before posting or buying.")
+    return embed
+
+
 def price_block(current_price: float | None, typical_price: float | None) -> str:
     if current_price is None:
         return "Current price unavailable"
@@ -1050,6 +1279,20 @@ async def acquire_scan_lock(interaction: discord.Interaction, lock_key: ScanLock
         await scan_operation_locks.release(lock_key)
         raise
     return True
+
+
+async def acquire_command_scan_lock(interaction: discord.Interaction, lock_key: ScanLockKey) -> bool:
+    """Slash-command scan lock: refuse politely, never queue, never double-run.
+
+    Button callbacks use acquire_scan_lock, which also posts a working message
+    and disables the view. Slash commands defer for themselves, so this only
+    takes the lock and, on contention, answers with the same refused message.
+    The caller must release the lock in a finally block.
+    """
+    if await scan_operation_locks.acquire(lock_key):
+        return True
+    await safe_send_interaction(interaction, DUPLICATE_SCAN_MESSAGE, ephemeral=True)
+    return False
 
 
 async def mark_interaction_working(interaction: discord.Interaction, active_view: discord.ui.View | None, working_message: str) -> None:

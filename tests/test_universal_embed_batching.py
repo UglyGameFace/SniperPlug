@@ -34,15 +34,15 @@ def test_oversized_single_embed_is_sanitized_before_batching():
     assert len(safe.description or "") <= 4096
 
 
-def test_all_rich_scan_routes_use_shared_batch_delivery():
+# NOTE (C6): the open-box leg of this test was deleted with the retired
+# /open_box_deals cog (sniperplug/cogs/open_box_deals.py, never loaded).
+# The live rich-scan routes are deal_scanner + home_depot_search.
+def test_live_rich_scan_routes_use_shared_batch_delivery():
     deal_scanner = Path("sniperplug/cogs/deal_scanner.py").read_text()
     home_depot = Path("sniperplug/cogs/home_depot_search.py").read_text()
-    open_box = Path("sniperplug/cogs/open_box_deals.py").read_text()
 
     assert "send_summary_and_card_batches" in deal_scanner
     assert deal_scanner.count("send_summary_and_card_batches(") >= 6
     assert "embeds=[summary] + [card.embed for card in shown_cards]" not in deal_scanner
     assert "embeds=[summary] + batch.embeds[:5]" not in home_depot
     assert "send_summary_and_embeds(" in home_depot
-    assert "embeds=[summary] + [card.embed for card in cards[:5]]" not in open_box
-    assert "send_summary_and_card_batches(" in open_box

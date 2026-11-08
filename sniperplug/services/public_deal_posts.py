@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sniperplug.services.deal_feedback import build_deal_feedback_view, build_feedback_target
+from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_channel_id
 from sniperplug.services.public_posting import normalize_retailer_key
@@ -68,7 +69,7 @@ async def maybe_post_public_deal_cards(
     source_label: str,
     fallback_retailer: str | None = None,
     min_alert_score: int = 90,
-    min_public_discount: int = 50,
+    min_public_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
     allow_review_scout: bool = False,
     allow_verified_extreme: bool = False,
 ) -> PublicPostResult:
@@ -158,11 +159,19 @@ async def maybe_post_public_deal_cards(
 
         if allow_verified_extreme:
             # Separate, exact-price-only opt-in lane; not a markdown or generic scout.
-            from sniperplug.services.walmart_extreme_price_fanout import valid_extreme_price_card
+            # Page-observed prices ride the same opt-in lane under their own
+            # proof check; they never pass the exact-price check.
+            from sniperplug.services.walmart_extreme_price_fanout import (
+                valid_extreme_price_card,
+                valid_page_price_extreme_card,
+            )
 
-            public_ready = valid_extreme_price_card(card)
+            public_ready = valid_extreme_price_card(card) or valid_page_price_extreme_card(card)
             if not public_ready:
-                not_alertable_reasons.append("extreme_exact_price_proof_rejected")
+                if getattr(card, "page_price_lead", False):
+                    not_alertable_reasons.append("page_price_proof_rejected")
+                else:
+                    not_alertable_reasons.append("extreme_exact_price_proof_rejected")
         elif allow_review_scout:
             public_ready = prepare_public_scout_candidate(card, source_label=source_label)
             if not public_ready:
@@ -561,7 +570,7 @@ async def cache_active_deal_cards(
     cards: list[Any],
     source_label: str,
     fallback_retailer: str | None = None,
-    min_discount: int = 50,
+    min_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
 ) -> int:
     await ensure_public_post_tables(db)
     conn = db.require_conn()

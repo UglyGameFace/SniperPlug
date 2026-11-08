@@ -47,6 +47,7 @@ from sniperplug.services.walmart_exact_runtime_schema import (
     maintain_terminal_identity_rows_bounded,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
+    VERIFIED_PAGE_PRICE_STATUS,
     _classify_exact_candidate,
 )
 from sniperplug.services.walmart_fresh_work_policy import should_use_drain_mode
@@ -253,6 +254,7 @@ async def process_actionable_walmart_exact_queue_batch(
         "fresh_catalog_verified": 0,
         "official_references": 0,
         "markdowns": 0,
+        "page_price": 0,
         "no_reference": 0,
         "under_threshold": 0,
         "unavailable": 0,
@@ -269,6 +271,7 @@ async def process_actionable_walmart_exact_queue_batch(
         "retry_price_change": 0,
         "retry_candidate": 0,
         "retry_other": 0,
+        "api_price_missing": 0,
     }
 
     persistence_outcomes: list[ExactQueuePersistenceOutcome] = []
@@ -311,6 +314,8 @@ async def process_actionable_walmart_exact_queue_batch(
             else:
                 counts["failed"] += 1
                 counts[_retry_error_bucket(status=status, error=error)] += 1
+                if _retry_kind_from_error(error) == "api_price_missing":
+                    counts["api_price_missing"] += 1
                 retry_reason = _retry_reason_label(error)
                 retry_reason_counts[retry_reason] = retry_reason_counts.get(retry_reason, 0) + 1
             continue
@@ -326,6 +331,8 @@ async def process_actionable_walmart_exact_queue_batch(
         )
         if classification == "verified_markdown":
             counts["markdowns"] += 1
+        elif classification == VERIFIED_PAGE_PRICE_STATUS:
+            counts["page_price"] += 1
         elif classification == "verified_no_reference":
             counts["no_reference"] += 1
         elif classification == "verified_under_threshold":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import platform
 import sys
 import time
@@ -11,6 +12,7 @@ from sniperplug.cogs import auto_scan_runner as legacy
 from sniperplug.cogs import resilient_auto_scan_runner as resilient
 from sniperplug.providers.registry import provider_registry
 from sniperplug.providers.walmart_lookup_batch_cache import BATCH_LOOKUP_MAX_IDS
+from sniperplug.services.walmart_exact_queue_runtime import ExactQueueRuntimeResult
 from sniperplug.services.walmart_posted_deal_expiry import sweep_posted_walmart_deals
 from sniperplug.services.autoscan_live_guild_reconciliation import (
     list_live_public_alert_guilds,
@@ -43,12 +45,19 @@ from sniperplug.services.walmart_exact_queue_pressure import (
     bounded_pressure_summary,
     load_walmart_exact_queue_pressure,
 )
+from sniperplug.services.walmart_exact_runtime_schema import (
+    ensure_exact_runtime_schema_once,
+)
 from sniperplug.services.walmart_exact_queue_bulk_runtime import (
     process_actionable_walmart_exact_queue_batch,
 )
 from sniperplug.services.walmart_extreme_price_fanout import fanout_recent_extreme_walmart_prices
 from sniperplug.services.walmart_request_coordinator import (
+    walmart_quota_snapshot,
     walmart_request_coordinator,
+)
+from sniperplug.services.walmart_worker_cycle_health import (
+    record_worker_cycle_outcome,
 )
 
 
@@ -57,7 +66,10 @@ GLOBAL_DISCOVERY_INITIAL_DELAY_SECONDS = 45
 GLOBAL_DISCOVERY_INTERVAL_SECONDS = 60
 GLOBAL_DISCOVERY_BUSY_RETRY_SECONDS = 15
 GLOBAL_DISCOVERY_MIN_DISCOUNT = 10
-GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 3
+# Sniper-first (Phase A2): 2 broad routes + 2 price-sorted sniper searches
+# per 60s batch, inside the unchanged 4-searches/minute budget. Broad
+# rotation is ~133 min for the 265-route pool; sniper revisit is ~16 min.
+GLOBAL_DISCOVERY_ROUTES_PER_BATCH = 2
 GLOBAL_BACKPRESSURE_LOG_INTERVAL_SECONDS = 5 * 60
 GLOBAL_CLAIM_BUSY_LOG_INTERVAL_SECONDS = 60
 GLOBAL_FANOUT_EVENT_LIMIT = 20
@@ -69,6 +81,34 @@ GLOBAL_EXACT_QUEUE_BATCH_SIZE = BATCH_LOOKUP_MAX_IDS
 GLOBAL_EXACT_QUEUE_CONCURRENCY = 2
 GLOBAL_EXACT_QUEUE_INTERVAL_SECONDS = 20
 MIN_WORKER_YIELD_SECONDS = 1.0
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return default
+
+
+# Cycle deadlines (Phase A3). A timeout aborts one cycle, never the worker
+# task: the worker loop catches the raised TimeoutError, logs, and runs the
+# next scheduled cycle. Queued rows stay queued (claims keep their lease
+# until it expires, then become claimable again); nothing is marked
+# failed/expired by a timeout alone.
+#
+# Exact 600s: worst-case legitimate drain batch is 24 items / 4 lanes at the
+# 50s per-item hard timeout = 300s of fetch, plus prefetch/persistence/
+# fanout, so 600s cannot false-fire on a slow-but-live batch. Catalog 300s:
+# a batch is 4 provider searches, each bounded by its own provider timeout.
+EXACT_WORKER_CYCLE_TIMEOUT_SECONDS = _env_float(
+    "WALMART_EXACT_WORKER_CYCLE_TIMEOUT_SECONDS", 600.0
+)
+CATALOG_DISCOVERY_TIMEOUT_SECONDS = _env_float(
+    "WALMART_CATALOG_DISCOVERY_TIMEOUT_SECONDS", 300.0
+)
 
 
 class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
@@ -88,6 +128,10 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
         self._catalog_active = False
         self._exact_active = False
         self._reconciliation_active = False
+        # Instance attributes (not module constants) so tests can shrink
+        # the deadlines without touching process env.
+        self._exact_cycle_timeout_seconds = EXACT_WORKER_CYCLE_TIMEOUT_SECONDS
+        self._catalog_discovery_timeout_seconds = CATALOG_DISCOVERY_TIMEOUT_SECONDS
 
     async def cog_load(self) -> None:
         # The inherited per-guild scheduled route loop is intentionally not
@@ -242,7 +286,26 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     await asyncio.sleep(5 * 60)
                     continue
 
-                queue_pressure = await load_walmart_exact_queue_pressure(self.bot.db)
+                # The exact worker and catalog worker start independently. Pressure
+                # uses INDEXED BY on runtime indexes that may not exist yet when
+                # catalog starts first (or when the DB connection is replaced).
+                # Reuse the per-connection, locked schema initializer before read.
+                try:
+                    await ensure_exact_runtime_schema_once(self.bot.db)
+                    queue_pressure = await load_walmart_exact_queue_pressure(self.bot.db)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # A transient schema/database failure must pause discovery,
+                    # not permanently kill the task or advance its durable cursor.
+                    legacy.log.exception(
+                        "Global Walmart catalog pressure readiness failed; "
+                        "retrying next cycle without advancing the catalog claim"
+                    )
+                    await _sleep_fixed_rate(
+                        cycle_started, GLOBAL_DISCOVERY_INTERVAL_SECONDS
+                    )
+                    continue
                 backpressure = catalog_backpressure_reason(queue_pressure)
                 if backpressure:
                     now = time.monotonic()
@@ -255,6 +318,21 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                             backpressure,
                         )
                         self._last_backpressure_log_monotonic = now
+                    await asyncio.sleep(GLOBAL_DISCOVERY_INTERVAL_SECONDS)
+                    continue
+
+                # Quota pause (Phase A3): defer the whole batch, drop
+                # nothing, crash nothing. The durable claim is never taken
+                # while paused, so the cursor simply does not advance.
+                try:
+                    quota = walmart_quota_snapshot()
+                except Exception:
+                    quota = None
+                if quota is not None and not quota.allowed:
+                    legacy.log.info(
+                        "Global Walmart catalog discovery paused by quota: %s",
+                        quota.reason,
+                    )
                     await asyncio.sleep(GLOBAL_DISCOVERY_INTERVAL_SECONDS)
                     continue
 
@@ -302,13 +380,21 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                         min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
                     )
                     started = time.monotonic()
-                    result = await discover_walmart_catalog_candidates(
-                        requested_by="global_catalog_autoscan",
-                        preset=preset,
-                        db=self.bot.db,
-                        min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
-                        catalog_claim=claim,
-                    )
+                    # Cycle deadline (Phase A3): a hung provider call aborts
+                    # this discovery batch via TimeoutError. The except
+                    # handler below releases the claim, so the durable
+                    # cursor is not advanced and the routes are rediscovered
+                    # on the next cycle.
+                    async with asyncio.timeout(
+                        self._catalog_discovery_timeout_seconds
+                    ):
+                        result = await discover_walmart_catalog_candidates(
+                            requested_by="global_catalog_autoscan",
+                            preset=preset,
+                            db=self.bot.db,
+                            min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
+                            catalog_claim=claim,
+                        )
 
                     completed = await complete_catalog_claim(self.bot.db, claim)
                     if not completed:
@@ -316,6 +402,12 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                             "global catalog claim could not be confirmed complete"
                         )
                     claim_completed = True
+                    await record_worker_cycle_outcome(
+                        self.bot.db,
+                        "catalog",
+                        ok=True,
+                        claimed=len(claim.queries),
+                    )
                     state = await load_global_catalog_state(self.bot.db)
                     elapsed = max(0.0, time.monotonic() - started)
                     legacy.log.info(
@@ -360,6 +452,18 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                             )
                     raise
                 except Exception as error:
+                    # Only a failure before the claim completed is a failed
+                    # catalog cycle. Post-completion fanout failures leave
+                    # the durable cursor already advanced and are logged
+                    # below, not counted against the worker.
+                    if not claim_completed:
+                        await record_worker_cycle_outcome(
+                            self.bot.db,
+                            "catalog",
+                            ok=False,
+                            error=f"{type(error).__name__}: {error}",
+                            timed_out=isinstance(error, TimeoutError),
+                        )
                     if claim is not None and not claim_completed:
                         try:
                             await release_catalog_claim(
@@ -425,12 +529,49 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
         try:
             self._exact_active = True
             self._runtime_phase = "exact_verification_queue"
-            result = await process_actionable_walmart_exact_queue_batch(
+            # Quota pause (Phase A3): defer the batch, drop no rows, crash
+            # nothing. Claimed rows stay queued; the next cycle retries them
+            # once the quota window rolls over. A pause is deliberately not
+            # recorded as a cycle failure.
+            try:
+                quota = walmart_quota_snapshot()
+            except Exception:
+                quota = None
+            if quota is not None and not quota.allowed:
+                legacy.log.info(
+                    "Walmart exact worker paused by quota: %s",
+                    quota.reason,
+                )
+                return ExactQueueRuntimeResult()
+            try:
+                # Cycle deadline (Phase A3): a hung provider call aborts
+                # this batch via TimeoutError. The caller (the worker loop)
+                # catches it, logs, and runs the next scheduled cycle; the
+                # worker task itself survives. Leased rows keep their lease
+                # until it expires and are then claimable again.
+                async with asyncio.timeout(self._exact_cycle_timeout_seconds):
+                    result = await process_actionable_walmart_exact_queue_batch(
+                        self.bot.db,
+                        provider=provider_registry.get("walmart"),
+                        limit=GLOBAL_EXACT_QUEUE_BATCH_SIZE,
+                        concurrency=GLOBAL_EXACT_QUEUE_CONCURRENCY,
+                        min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
+                    )
+            except Exception as error:
+                await record_worker_cycle_outcome(
+                    self.bot.db,
+                    "exact",
+                    ok=False,
+                    error=f"{type(error).__name__}: {error}",
+                    timed_out=isinstance(error, TimeoutError),
+                )
+                raise
+            await record_worker_cycle_outcome(
                 self.bot.db,
-                provider=provider_registry.get("walmart"),
-                limit=GLOBAL_EXACT_QUEUE_BATCH_SIZE,
-                concurrency=GLOBAL_EXACT_QUEUE_CONCURRENCY,
-                min_discount=GLOBAL_DISCOVERY_MIN_DISCOUNT,
+                "exact",
+                ok=True,
+                api_price_missing=result.api_price_missing,
+                claimed=result.claimed,
             )
             now = time.monotonic()
             health_due = (

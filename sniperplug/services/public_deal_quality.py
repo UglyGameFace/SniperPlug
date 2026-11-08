@@ -7,6 +7,8 @@ from typing import Any
 
 import discord
 
+from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT
+
 
 PUBLIC_DEAL_LANE_FIELD = "✅ Public deal lane"
 PUBLIC_SCOUT_LANE_FIELD = "🧪 Public scout lane"
@@ -332,7 +334,7 @@ def public_deal_rejection_reason(
     card: Any,
     *,
     source_label: str = "",
-    min_discount: int = 50,
+    min_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
 ) -> str | None:
     if is_review_or_watchlist(card, source_label=source_label):
         return "review_or_watchlist"
@@ -369,7 +371,7 @@ def public_deal_rejection_reason(
     return None
 
 
-def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
+def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", min_discount: int = DEFAULT_STARTING_DEAL_PERCENT) -> bool:
     return public_deal_rejection_reason(
         card,
         source_label=source_label,
@@ -377,11 +379,11 @@ def has_verified_api_threshold_discount(card: Any, *, source_label: str = "", mi
     ) is None
 
 
-def is_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
+def is_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = DEFAULT_STARTING_DEAL_PERCENT) -> bool:
     return has_verified_api_threshold_discount(card, source_label=source_label, min_discount=min_discount)
 
 
-def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = 50) -> bool:
+def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_discount: int = DEFAULT_STARTING_DEAL_PERCENT) -> bool:
     if not is_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):
         return False
     discount = structured_discount(card) or 0.0
@@ -497,7 +499,7 @@ def prepare_public_scout_candidate(card: Any, *, source_label: str = "", min_sco
     return True
 
 
-def select_public_deal_candidates(cards: list[Any], *, source_label: str = "", min_discount: int = 50, limit: int = 5) -> list[Any]:
+def select_public_deal_candidates(cards: list[Any], *, source_label: str = "", min_discount: int = DEFAULT_STARTING_DEAL_PERCENT, limit: int = 5) -> list[Any]:
     selected: list[Any] = []
     for card in cards:
         if prepare_public_deal_candidate(card, source_label=source_label, min_discount=min_discount):

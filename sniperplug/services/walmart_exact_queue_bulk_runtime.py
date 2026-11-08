@@ -271,6 +271,7 @@ async def process_actionable_walmart_exact_queue_batch(
         "retry_price_change": 0,
         "retry_candidate": 0,
         "retry_other": 0,
+        "api_price_missing": 0,
     }
 
     persistence_outcomes: list[ExactQueuePersistenceOutcome] = []
@@ -313,6 +314,8 @@ async def process_actionable_walmart_exact_queue_batch(
             else:
                 counts["failed"] += 1
                 counts[_retry_error_bucket(status=status, error=error)] += 1
+                if _retry_kind_from_error(error) == "api_price_missing":
+                    counts["api_price_missing"] += 1
                 retry_reason = _retry_reason_label(error)
                 retry_reason_counts[retry_reason] = retry_reason_counts.get(retry_reason, 0) + 1
             continue

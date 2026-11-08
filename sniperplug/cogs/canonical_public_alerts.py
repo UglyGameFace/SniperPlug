@@ -33,6 +33,11 @@ from sniperplug.services.walmart_delivery_recovery import (
     share_walmart_manual_lead,
 )
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
+from sniperplug.services.walmart_request_coordinator import walmart_quota_snapshot
+from sniperplug.services.walmart_worker_cycle_health import (
+    FAILURE_ALERT_THRESHOLD,
+    load_worker_cycle_health,
+)
 from sniperplug.services.walmart_extreme_price_fanout import (
     extreme_alerts_enabled,
     extreme_price_health_summary,
@@ -633,6 +638,8 @@ async def build_global_autoscan_health_embed(
     )
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
+    worker_health = await load_worker_cycle_health(db)
+    quota_snapshot = walmart_quota_snapshot()
     extreme_enabled = await extreme_alerts_enabled(db, guild_id)
     extreme_summary = await extreme_price_health_summary(db, guild_id=guild_id)
     hp_health = await load_hp_watcher_health(db)
@@ -695,6 +702,10 @@ async def build_global_autoscan_health_embed(
         color = discord.Color.orange()
     else:
         color = discord.Color.red()
+    # A worker that keeps failing its cycles is not a green system even
+    # when delivery routes are configured: surface it as degraded.
+    if worker_health.needs_attention() and color == discord.Color.green():
+        color = discord.Color.orange()
 
     embed = discord.Embed(
         title="🩺 Global Autoscan Health",
@@ -784,6 +795,16 @@ async def build_global_autoscan_health_embed(
         value=queue_health.summary_line(),
         inline=False,
     )
+    embed.add_field(
+        name="Walmart worker cycle deadlines & quota",
+        value=trim_field(
+            worker_health.summary_line()
+            + "\n"
+            + _quota_health_line(quota_snapshot),
+            1024,
+        ),
+        inline=False,
+    )
 
     hp_health_detail = hp_health.summary_line()
     if hp_health.last_successful_cycle_at:
@@ -831,11 +852,36 @@ async def build_global_autoscan_health_embed(
         target_delivery_ready=target_delivery_ready,
         target_location_ready=target_location_ready,
         delivery_health=delivery_health,
+        worker_health=worker_health,
+        quota_snapshot=quota_snapshot,
         threshold=int(threshold),
     )
     if next_action:
         embed.add_field(name="Next action", value=next_action, inline=False)
     return embed
+
+
+def _quota_window(used: int, limit: int) -> str:
+    if limit > 0:
+        return f"**{used}/{limit}**"
+    return f"{used} (no cap)"
+
+
+def _quota_health_line(snapshot) -> str:
+    if not snapshot.configured:
+        return (
+            "Walmart quota guard: **not configured** — fail-open, no cap "
+            "enforced. Set WALMART_DAILY_LIMIT / WALMART_HOURLY_LIMIT / "
+            "WALMART_MONTHLY_LIMIT to cap Affiliate API usage."
+        )
+    usage = (
+        f"daily {_quota_window(snapshot.daily_used, snapshot.daily_limit)} • "
+        f"hourly {_quota_window(snapshot.hourly_used, snapshot.hourly_limit)} • "
+        f"monthly {_quota_window(snapshot.monthly_used, snapshot.monthly_limit)}"
+    )
+    if not snapshot.allowed:
+        return f"⏸️ Walmart quota **PAUSED**: {snapshot.reason} {usage}"
+    return f"Walmart quota: {usage}"
 
 
 def _retailer_status(
@@ -857,12 +903,33 @@ def _next_action(
     target_delivery_ready: bool,
     target_location_ready: bool,
     delivery_health,
+    worker_health=None,
+    quota_snapshot=None,
     threshold: int,
 ) -> str | None:
     if not public_route_ready or not selected_retailers:
         return (
             "Run `/setup_sniperplug_here` in the exact channel that should receive "
             "deals, then reopen this panel."
+        )
+    if quota_snapshot is not None and not quota_snapshot.allowed:
+        return (
+            "Walmart background work is paused by the quota guard: "
+            f"{quota_snapshot.reason} Queued rows are kept and resume when "
+            "the window rolls over; no action is needed unless the cap itself "
+            "should change."
+        )
+    if worker_health is not None and worker_health.needs_attention():
+        failing = [
+            f"{row.worker} ({row.consecutive_failures} consecutive)"
+            for row in (worker_health.exact, worker_health.catalog)
+            if int(row.consecutive_failures or 0) >= FAILURE_ALERT_THRESHOLD
+        ]
+        return (
+            "Walmart worker cycles keep failing: "
+            + ", ".join(failing)
+            + ". Check the bot logs for the last recorded error; queued rows "
+            "are preserved and the next cycle retries automatically."
         )
     if "walmart" in selected_retailers and not walmart_delivery_ready:
         return (

@@ -95,6 +95,7 @@ class ExactQueueRuntimeResult:
     retry_price_change: int = 0
     retry_candidate: int = 0
     retry_other: int = 0
+    api_price_missing: int = 0
     retry_reasons: tuple[tuple[str, int], ...] = ()
     page_circuit_open: bool = False
     page_circuit_suppressed: int = 0
@@ -318,6 +319,7 @@ async def process_actionable_walmart_exact_queue_batch(
         "retry_price_change": 0,
         "retry_candidate": 0,
         "retry_other": 0,
+        "api_price_missing": 0,
     }
     fresh_snapshot_inputs = sum(
         1 for claim in claims if str(getattr(claim, "discovery_snapshot_json", "") or "")
@@ -351,6 +353,8 @@ async def process_actionable_walmart_exact_queue_batch(
             else:
                 counts["failed"] += 1
                 counts[_retry_error_bucket(status=status, error=error)] += 1
+                if _retry_kind_from_error(error) == "api_price_missing":
+                    counts["api_price_missing"] += 1
             continue
 
         await store_exact_candidate_with_tiered_recheck(

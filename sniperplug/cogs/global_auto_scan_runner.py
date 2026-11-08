@@ -43,6 +43,9 @@ from sniperplug.services.walmart_exact_queue_pressure import (
     bounded_pressure_summary,
     load_walmart_exact_queue_pressure,
 )
+from sniperplug.services.walmart_exact_runtime_schema import (
+    ensure_exact_runtime_schema_once,
+)
 from sniperplug.services.walmart_exact_queue_bulk_runtime import (
     process_actionable_walmart_exact_queue_batch,
 )
@@ -242,7 +245,26 @@ class AutoScanRunnerCog(resilient.AutoScanRunnerCog):
                     await asyncio.sleep(5 * 60)
                     continue
 
-                queue_pressure = await load_walmart_exact_queue_pressure(self.bot.db)
+                # The exact worker and catalog worker start independently. Pressure
+                # uses INDEXED BY on runtime indexes that may not exist yet when
+                # catalog starts first (or when the DB connection is replaced).
+                # Reuse the per-connection, locked schema initializer before read.
+                try:
+                    await ensure_exact_runtime_schema_once(self.bot.db)
+                    queue_pressure = await load_walmart_exact_queue_pressure(self.bot.db)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # A transient schema/database failure must pause discovery,
+                    # not permanently kill the task or advance its durable cursor.
+                    legacy.log.exception(
+                        "Global Walmart catalog pressure readiness failed; "
+                        "retrying next cycle without advancing the catalog claim"
+                    )
+                    await _sleep_fixed_rate(
+                        cycle_started, GLOBAL_DISCOVERY_INTERVAL_SECONDS
+                    )
+                    continue
                 backpressure = catalog_backpressure_reason(queue_pressure)
                 if backpressure:
                     now = time.monotonic()

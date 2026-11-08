@@ -125,6 +125,8 @@ class ResaleHuntButton(deal_scanner.HuntPresetButton):
                 cards=shown_cards,
                 source_label="hunt:resale",
                 fallback_retailer="walmart",
+                # Same shown threshold the base hunt buttons post against.
+                min_public_discount=shown_discount,
             )
             deal_scanner.add_public_posting_field(summary, public_result)
             await send_resale_results(interaction, summary=summary, cards=shown_cards)

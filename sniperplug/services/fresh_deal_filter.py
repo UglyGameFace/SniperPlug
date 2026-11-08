@@ -13,6 +13,7 @@ from sniperplug.services.public_deal_posts import (
     safe_find_recent_alert,
     should_suppress_recent_alert,
 )
+from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT
 from sniperplug.services.public_posting import normalize_retailer_key
 from sniperplug.services.public_deal_quality import is_public_deal_candidate, prepare_public_deal_candidate
 from sniperplug.services.public_quality_diagnostics import public_quality_block_reason
@@ -65,7 +66,7 @@ async def select_fresh_deal_cards(
     allow_lower_price_repeat: bool = True,
     min_alert_score: int = 90,
     hide_active_cache_repeats: bool = True,
-    min_public_discount: int = 50,
+    min_public_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
     source_label: str = "",
 ) -> FreshDealSelection:
     """Return cards that the public post guard is likely to actually post.
@@ -262,7 +263,7 @@ def card_is_public_alertable(card: Any, *, min_alert_score: int = 90) -> bool:
     should_alert = getattr(card, "should_alert", None)
     if should_alert is not None:
         return bool(should_alert)
-    return is_public_deal_candidate(card, min_discount=50) or int(getattr(card, "score", 0) or 0) >= min_alert_score
+    return is_public_deal_candidate(card, min_discount=DEFAULT_STARTING_DEAL_PERCENT) or int(getattr(card, "score", 0) or 0) >= min_alert_score
 
 
 def public_post_row_should_block(row: Any) -> bool:

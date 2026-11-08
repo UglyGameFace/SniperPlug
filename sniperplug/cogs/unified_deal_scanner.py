@@ -168,6 +168,7 @@ class UnifiedDealScannerCog(DealScannerCog):
                 cards=ranked.verified,
                 source_label=f"deals:unified_finder:{ranked.mode.key}",
                 fallback_retailer="walmart",
+                min_public_discount=starting_discount,
             )
             deal_scanner.add_public_posting_field(summary, public_result)
             summary.add_field(name="Product links", value="Each verified card includes its own **App/Web** and **Browser Search** links.", inline=False)

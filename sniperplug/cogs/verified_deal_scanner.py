@@ -4,7 +4,8 @@ import discord
 from discord import app_commands
 
 from sniperplug.cogs.unified_deal_scanner import UnifiedDealScannerCog
-from sniperplug.cogs.deal_scanner import WalmartCashOffersButton
+from sniperplug.cogs.deal_scanner import WalmartCashOffersButton, acquire_command_scan_lock
+from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
 from sniperplug.services.verified_discount_hunt import (
     HUNT_PRESETS,
     build_verified_hunt_menu_embed,
@@ -17,11 +18,20 @@ class VerifiedDealScannerCog(UnifiedDealScannerCog):
 
     @app_commands.command(name="hunt", description="Pick a Walmart category and let SniperPlug hunt verified deals.")
     async def hunt(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(
-            embed=build_verified_hunt_menu_embed(),
-            view=VerifiedHuntPresetMenuView(),
-            ephemeral=True,
-        )
+        # Live /hunt: this override (not DealScannerCog.hunt) is the command
+        # Discord serves, so the scan lock lives here. The preset buttons
+        # lock their own runs separately.
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hunt")
+        if not await acquire_command_scan_lock(interaction, lock_key):
+            return
+        try:
+            await interaction.response.send_message(
+                embed=build_verified_hunt_menu_embed(),
+                view=VerifiedHuntPresetMenuView(),
+                ephemeral=True,
+            )
+        finally:
+            await scan_operation_locks.release(lock_key)
 
 
 class VerifiedHuntPresetMenuView(discord.ui.View):

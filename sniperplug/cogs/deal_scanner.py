@@ -11,7 +11,7 @@ from sniperplug.models.deal import NormalizedDeal
 from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.candidate_pipeline import evaluate_candidate
-from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
+from sniperplug.services.deal_threshold_settings import resolve_min_discount
 from sniperplug.services.embed_delivery import send_summary_and_card_batches
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
 from sniperplug.services.public_deal_quality import select_public_deal_candidates
@@ -46,7 +46,11 @@ SORT_CHOICES = [
     app_commands.Choice(name="New", value="new"),
 ]
 
-BEGINNER_FALLBACK_DISCOUNTS = (50, 30, 10, 0)
+# Rungs below the resolved starting threshold for /deals. The starting value
+# itself comes from resolve_min_discount (guild setting, else 40) and is
+# prepended by cards_with_fallback; these are only the relax steps, so the
+# old hardcoded 50 start is gone.
+BEGINNER_FALLBACK_DISCOUNTS = (30, 10, 0)
 PRESET_FALLBACK_DISCOUNTS = (60, 40, 25, 10)
 DUPLICATE_SCAN_MESSAGE = "That scan is already running. I blocked the duplicate click so SniperPlug cannot double-post results."
 
@@ -130,13 +134,27 @@ class DealScannerCog(commands.Cog):
 
     @app_commands.command(name="hunt", description="Tap a category and let SniperPlug hunt deals for you.")
     async def hunt(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(embed=build_hunt_menu_embed(), view=HuntPresetMenuView(), ephemeral=True)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hunt")
+        if not await acquire_command_scan_lock(interaction, lock_key):
+            return
+        try:
+            await interaction.response.send_message(embed=build_hunt_menu_embed(), view=HuntPresetMenuView(), ephemeral=True)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
     @app_commands.command(name="deals", description="Find deals the easy way. Just type what you want.")
     @app_commands.describe(search="What are you shopping for? Example: monitor, lego, tide, patio set, air fryer.")
     async def deals(self, interaction: discord.Interaction, search: str) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self._send_walmart_scan(interaction, search, 50, 1, 10, None, None, False, True)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="deals", query=search)
+        if not await acquire_command_scan_lock(interaction, lock_key):
+            return
+        try:
+            db = getattr(self.bot, "db", None)
+            min_discount = await resolve_min_discount(db, interaction.guild_id)
+            await interaction.response.defer(ephemeral=True)
+            await self._send_walmart_scan(interaction, search, min_discount, 1, 10, None, None, False, True)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
     @app_commands.command(name="walmart_cash", description="Find API-proven Walmart Cash offers only. No guesses, no OnePay, no cart promos.")
     @app_commands.describe(
@@ -163,18 +181,35 @@ class DealScannerCog(commands.Cog):
     @app_commands.describe(query="Product search, like gaming monitor, tide detergent, lego, patio set.", min_discount="Only show deals at or above this percent off. Try 50 or 80.", page="Walmart result page to scan. Use page 2/3 if page 1 repeats weak deals.", max_results="How many Walmart results to inspect on this page. Max 25.", sort="Optional Walmart sorting mode.", alerts_only="Only show candidates SniperPlug would alert on.")
     @app_commands.choices(sort=SORT_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: app_commands.Range[int, 0, 95] = 30, page: app_commands.Range[int, 1, 40] = 1, max_results: app_commands.Range[int, 1, 25] = 10, sort: app_commands.Choice[str] | None = None, alerts_only: bool = False) -> None:
-        await interaction.response.defer(ephemeral=True)
-        sort_value, order_value = parse_sort_choice(sort.value if sort else None)
-        await self._send_walmart_scan(interaction, query, min_discount, page, max_results, sort_value, order_value, alerts_only, False)
+    async def walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: app_commands.Range[int, 0, 95] | None = None, page: app_commands.Range[int, 1, 40] = 1, max_results: app_commands.Range[int, 1, 25] = 10, sort: app_commands.Choice[str] | None = None, alerts_only: bool = False) -> None:
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="walmart_scan", query=query, page=page, min_discount=min_discount)
+        if not await acquire_command_scan_lock(interaction, lock_key):
+            return
+        try:
+            db = getattr(self.bot, "db", None)
+            # No explicit min_discount: the single authority resolves the guild
+            # setting (else 40). An explicit value is a deliberate override.
+            resolved_discount = await resolve_min_discount(db, interaction.guild_id, explicit=min_discount)
+            await interaction.response.defer(ephemeral=True)
+            sort_value, order_value = parse_sort_choice(sort.value if sort else None)
+            await self._send_walmart_scan(interaction, query, resolved_discount, page, max_results, sort_value, order_value, alerts_only, False)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
     @app_commands.command(name="check_deal", description="Check one Walmart product link or item ID directly, even when search never surfaces it.")
     @app_commands.describe(link="Walmart product link or bare item ID. Example: https://www.walmart.com/ip/AT-T-Apple-iPhone-11-64GB-Green/425031866 or 425031866")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def check_deal(self, interaction: discord.Interaction, link: str) -> None:
-        if not await safe_defer(interaction, ephemeral=True, thinking=True):
+        item_id = parse_walmart_item_id(link)
+        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="check_deal", query=item_id or link)
+        if not await acquire_command_scan_lock(interaction, lock_key):
             return
-        await self._send_check_deal(interaction, link)
+        try:
+            if not await safe_defer(interaction, ephemeral=True, thinking=True):
+                return
+            await self._send_check_deal(interaction, link)
+        finally:
+            await scan_operation_locks.release(lock_key)
 
     async def _send_check_deal(self, interaction: discord.Interaction, link: str) -> None:
         item_id = parse_walmart_item_id(link)
@@ -190,7 +225,10 @@ class DealScannerCog(commands.Cog):
             await interaction.followup.send("Deal search is not ready yet. Staff needs to finish the Walmart connection first.", ephemeral=True)
             return
         db = getattr(self.bot, "db", None)
-        min_discount = await get_starting_deal_percent(db, interaction.guild_id)
+        # Display threshold only, via the single authority (guild setting,
+        # else 40). The verification gate stays MANUAL_INTAKE_MIN_DISCOUNT
+        # (10%) below; this value never feeds it.
+        min_discount = await resolve_min_discount(db, interaction.guild_id)
         try:
             result = await verify_single_exact_item(
                 db,
@@ -1241,6 +1279,20 @@ async def acquire_scan_lock(interaction: discord.Interaction, lock_key: ScanLock
         await scan_operation_locks.release(lock_key)
         raise
     return True
+
+
+async def acquire_command_scan_lock(interaction: discord.Interaction, lock_key: ScanLockKey) -> bool:
+    """Slash-command scan lock: refuse politely, never queue, never double-run.
+
+    Button callbacks use acquire_scan_lock, which also posts a working message
+    and disables the view. Slash commands defer for themselves, so this only
+    takes the lock and, on contention, answers with the same refused message.
+    The caller must release the lock in a finally block.
+    """
+    if await scan_operation_locks.acquire(lock_key):
+        return True
+    await safe_send_interaction(interaction, DUPLICATE_SCAN_MESSAGE, ephemeral=True)
+    return False
 
 
 async def mark_interaction_working(interaction: discord.Interaction, active_view: discord.ui.View | None, working_message: str) -> None:

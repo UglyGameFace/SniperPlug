@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sniperplug.services.deal_feedback import build_deal_feedback_view, build_feedback_target
+from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_channel_id
 from sniperplug.services.public_posting import normalize_retailer_key
@@ -68,7 +69,7 @@ async def maybe_post_public_deal_cards(
     source_label: str,
     fallback_retailer: str | None = None,
     min_alert_score: int = 90,
-    min_public_discount: int = 50,
+    min_public_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
     allow_review_scout: bool = False,
     allow_verified_extreme: bool = False,
 ) -> PublicPostResult:
@@ -569,7 +570,7 @@ async def cache_active_deal_cards(
     cards: list[Any],
     source_label: str,
     fallback_retailer: str | None = None,
-    min_discount: int = 50,
+    min_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
 ) -> int:
     await ensure_public_post_tables(db)
     conn = db.require_conn()

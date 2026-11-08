@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 from sniperplug.services import public_deal_quality as quality
+from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT
 
 
 def public_quality_block_reason(
     card: Any,
     *,
     source_label: str = "",
-    min_discount: int = 50,
+    min_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
 ) -> str:
     """Return the first concrete reason a card cannot enter the public lane."""
 

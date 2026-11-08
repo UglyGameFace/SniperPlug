@@ -9,6 +9,7 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
+from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT
 from sniperplug.services.deal_route_memory import RETAILER_WALMART, memory_boost_queries, record_route_memory, top_route_memory, update_from_route_stats
 from sniperplug.services.direct_search_rescue import direct_match_score, meaningful_tokens, normalize_text
 from sniperplug.services.low_price_scout import scout_low_price_leads
@@ -96,7 +97,7 @@ async def find_walmart_deals_for_query(
     *,
     query: str,
     requested_by: str,
-    min_discount: int = 50,
+    min_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
     max_queries: int = INTERACTIVE_MAX_QUERIES,
     pages_per_query: int = QUERY_PAGES,
     db=None,

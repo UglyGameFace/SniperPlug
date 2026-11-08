@@ -1,17 +1,13 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICY = (ROOT / "sniperplug/services/autoscan_route_policy.py").read_text(encoding="utf-8")
 OBSERVED = (ROOT / "sniperplug/services/autoscan_observed_price_memory.py").read_text(encoding="utf-8")
 GLOBAL_MEMORY = (ROOT / "sniperplug/services/walmart_global_offer_memory.py").read_text(encoding="utf-8")
-BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 PUBLIC_QUALITY = (ROOT / "sniperplug/services/public_deal_quality.py").read_text(encoding="utf-8")
 
 
-def test_autoscan_route_policy_is_native_not_installed():
-    assert "public_autoscan_hunt_presets" in POLICY
-    assert "install_public_autoscan_route_policy" not in POLICY
-    assert "install_public_autoscan_route_policy" not in BOT
+# NOTE (C6): test_autoscan_route_policy_is_native_not_installed was deleted
+# with sniperplug/services/autoscan_route_policy.py (zero runtime importers).
 
 
 def test_autoscan_collection_uses_observed_memory_from_exact_detail_candidates():

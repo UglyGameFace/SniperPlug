@@ -71,9 +71,11 @@ def test_budget_still_exactly_four_searches_per_batch() -> None:
     assert catalog.SNIPER_SEARCHES_PER_BATCH == 2
     for plan in simulate_batches(30):
         assert len(plan) == 4
-        # Page size 25 is enforced downstream by RESULTS_PER_PAGE; the plan
-        # itself never asks for more than page 1 per query.
-        assert all(page == 1 for _query, page, _sort, _order in plan)
+        # Both broad routes, the first sniper, and any hot priority sniper
+        # always reach page one. A bounded fraction of ordinary second
+        # sniper slots probe page two to bypass page-one accessory clutter.
+        assert all(page == 1 for _query, page, _sort, _order in plan[:3])
+        assert plan[3][1] in (1, 2)
 
 
 def test_sniper_share_is_two_of_four_with_pinned_revisit_math() -> None:
@@ -283,3 +285,23 @@ def test_bestseller_canary_reuses_one_broad_slot_not_a_fifth_call() -> None:
     assert all(plan[2][2:] == ("price", "ascending") for plan in plans)
     assert all(plan[3][2:] == ("price", "ascending") for plan in plans)
     assert all(plan[0][2:] == (None, None) for plan in plans)
+
+
+def test_page_two_probe_never_adds_calls_or_displaces_page_one_safety(monkeypatch):
+    plans = simulate_batches(145)
+    second_page = [
+        (batch, plan) for batch, plan in enumerate(plans)
+        if plan[3][1] == 2
+    ]
+    assert second_page
+    assert all(batch % 4 == 2 for batch, _ in second_page)
+    assert all(len(plan) == 4 for plan in plans)
+    assert all(plan[2][1] == 1 for plan in plans)
+    assert all(plan[0][1] == plan[1][1] == 1 for plan in plans)
+    assert all(
+        priority_sniper_query_for_batch(batch, avoid=plan[2][0]) is None
+        for batch, plan in second_page
+    )
+    assert all(plan[3][2:] == ("price", "ascending") for _, plan in second_page)
+    monkeypatch.setenv("SNIPERPLUG_PRICE_SNIPER_PAGE2_ENABLED", "false")
+    assert all(plan[3][1] == 1 for plan in simulate_batches(145))

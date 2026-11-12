@@ -101,6 +101,58 @@ class _BoundedVerificationQueueEnqueueResult(VerificationQueueEnqueueResult):
         )
 
 
+
+
+def prefer_discovery_offer(
+    proposed: SourceCandidate,
+    selected: SourceCandidate,
+    *,
+    min_discount: int,
+) -> bool:
+    """Choose a promising *observation* for one item without losing price glitches.
+
+    One durable queue row exists per Walmart item ID. For different observed
+    offers/variants, prioritize non-confirmed-unbuyable inventory, then the
+    cheaper payable price. If tied, retain the stronger existing discovery
+    priority. Neither catalog observation qualifies for a public alert until
+    exact offer/seller/stock and price proof succeeds.
+    """
+    from sniperplug.services.stock_status import is_unavailable_stock
+
+    def known_unbuyable(candidate: SourceCandidate) -> bool:
+        attrs = getattr(candidate, "variant_attributes", None) or {}
+        online = str(attrs.get("availableOnline") or "").strip().lower()
+        return (
+            getattr(candidate, "can_add_to_cart", None) is False
+            or is_unavailable_stock(getattr(candidate, "stock_status", None))
+            or online in {"no", "false", "0", "off"}
+        )
+
+    proposed_bad = known_unbuyable(proposed)
+    selected_bad = known_unbuyable(selected)
+    if proposed_bad != selected_bad:
+        return not proposed_bad
+
+    def price(candidate: SourceCandidate) -> float | None:
+        return _positive_number(
+            getattr(candidate, "api_current_price", None)
+            or getattr(candidate, "current_price", None)
+        )
+
+    new_price, old_price = price(proposed), price(selected)
+    if new_price is not None and old_price is None:
+        return True
+    if old_price is not None and new_price is None:
+        return False
+    if new_price is not None and old_price is not None and round(new_price * 100) != round(old_price * 100):
+        return new_price < old_price
+
+    # The exact queue's stable priority is still the tie-break. Preserve the
+    # first observation for equal price/priority to avoid needless writes.
+    return _priority(proposed, min_discount=min_discount) > _priority(
+        selected, min_discount=min_discount
+    )
+
 async def enqueue_walmart_exact_verification_candidates_bulk(
     db: Any,
     candidates: Iterable[SourceCandidate],
@@ -177,9 +229,8 @@ async def enqueue_walmart_exact_verification_candidates_bulk(
         if not item_id:
             continue
         previous = unique.get(item_id)
-        if previous is None or _priority(candidate, min_discount=min_discount) > _priority(
-            previous,
-            min_discount=min_discount,
+        if previous is None or prefer_discovery_offer(
+            candidate, previous, min_discount=min_discount,
         ):
             unique[item_id] = candidate
 

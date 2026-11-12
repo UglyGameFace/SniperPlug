@@ -73,8 +73,14 @@ def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> No
         if catalog.is_bestseller_probe_batch(completed // 2):
             expected_broad = (expected_broad[0], (claim.queries[1], 1, "bestseller", None))
         assert plan[:2] == expected_broad
-        for query, page, sort_value, order_value in plan[2:]:
-            assert (page, sort_value, order_value) == (1, "price", "ascending")
+        for slot, (query, page, sort_value, order_value) in enumerate(plan[2:], start=2):
+            expected_page = (
+                2 if slot == 3
+                and catalog.priority_sniper_query_for_batch(completed // 2, avoid=plan[2][0]) is None
+                and catalog.is_price_sniper_page2_batch(completed // 2)
+                else 1
+            )
+            assert (page, sort_value, order_value) == (expected_page, "price", "ascending")
         # First sniper slot is always the general rotation; the second is
         # the priority hot list on every 5th batch, rotation otherwise.
         batch_number = completed // 2
@@ -251,4 +257,66 @@ def test_catalog_provider_overreturn_cannot_amplify_database_ingress(monkeypatch
         assert result.pages_checked == 4
         assert any("capped 90 to" in warning for warning in result.warnings)
 
+    asyncio.run(run())
+
+
+def test_distinct_catalog_offers_keep_different_items_and_changed_prices() -> None:
+    def item(item_id: str, offer: str, price: float) -> SourceCandidate:
+        return SourceCandidate(
+            source_key="walmart", retailer="Walmart", title="Premium resale item",
+            product_url=f"https://www.walmart.com/ip/{item_id}",
+            product_id=item_id, selected_offer_id=offer,
+            current_price=price, api_current_price=price,
+            seller_name="Walmart", can_add_to_cart=True,
+        )
+    items = [
+        item("900001", "seller-shared", 149.00),
+        item("900002", "seller-shared", 4.00),
+        item("900001", "seller-shared", 19.00),
+        item("900001", "seller-shared", 149.00),
+    ]
+    distinct = catalog.distinct_catalog_offer_candidates(items)
+    assert len(distinct) == 3
+    assert [(c.product_id, c.current_price) for c in distinct] == [
+        ("900001", 149.00), ("900002", 4.00), ("900001", 19.00),
+    ]
+
+
+def test_catalog_integration_retains_price_variants_until_exact_enqueue(monkeypatch):
+    async def run():
+        claim = fake_claim()
+        variants: list[SourceCandidate] = []
+        def candidate(item_id, price):
+            return SourceCandidate(
+                source_key="walmart", retailer="Walmart",
+                title="Unusual resale item",
+                product_url=f"https://www.walmart.com/ip/{item_id}",
+                product_id=item_id, selected_offer_id="same-seller-offer",
+                current_price=price, api_current_price=price,
+                can_add_to_cart=True,
+            )
+        async def scan(*args):
+            return ProviderScanResult(
+                provider_key="walmart",
+                candidates=(candidate("900001", 100.0), candidate("900001", 14.0),
+                            candidate("900002", 6.0)),
+            )
+        async def enqueue(_db, candidates, **kwargs):
+            variants.extend(candidates)
+            return SimpleNamespace(summary_line=lambda: "no additional writes")
+        monkeypatch.setattr(catalog, "run_walmart_autoscan_scan_off_event_loop", scan)
+        monkeypatch.setattr(catalog, "enqueue_walmart_exact_verification_candidates_bulk", enqueue)
+        result = await catalog.discover_walmart_catalog_candidates(
+            requested_by="global_catalog_autoscan",
+            preset=HuntPreset("global_catalog_autoscan", "Walmart", "x", "test", claim.queries, 10),
+            db=object(), min_discount=10, catalog_claim=claim,
+        )
+        assert len(variants) == 3
+        assert result.products_checked == 12
+        assert result.unique_candidates == 3
+        assert result.duplicate_offer_rows_removed == 9
+        assert result.multi_price_item_ids == 1
+        assert sorted((c.product_id, c.current_price) for c in variants) == [
+            ("900001", 14.0), ("900001", 100.0), ("900002", 6.0),
+        ]
     asyncio.run(run())

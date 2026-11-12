@@ -49,11 +49,25 @@ def test_complete_products_get_curated_interest_only(title, family):
     "iPhone 16 Pro Max Silicone Case",
     "Apple iPad Pro Screen Protector",
     "Meta Quest 3 Carry Bag",
+    "Nintendo Switch 2 Mario Kart Digital Code",
+    "Nintendo Switch Mario Kart 8 Deluxe Video Game",
+    "Xbox Series X Game Pass Subscription",
+    "RTX 5090 Graphics Card Waterblock Cooling Kit",
+    "LG 65 inch OLED TV Service Remote",
+    "PS5 Console Case Bundle with Charging Cable",
 ])
 def test_premium_product_name_does_not_make_accessory_sought_after_hardware(title):
     fit = assess_product_target_fit(SimpleNamespace(title=title))
     assert fit.tier == "accessory"
     assert fit.rank_points < 0
+
+
+def test_real_console_bundle_with_a_case_retains_target_status():
+    fit = assess_product_target_fit(SimpleNamespace(
+        title="PS5 Console Bundle with Extra Controller and Case"
+    ))
+    assert fit.tier == "curated_target"
+    assert fit.family == "game_console"
 
 
 def test_unknown_title_remains_unknown_instead_of_fake_sales_demand():

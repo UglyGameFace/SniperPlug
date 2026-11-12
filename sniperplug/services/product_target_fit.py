@@ -37,12 +37,23 @@ _ACCESSORY = re.compile(
     r"charging\s*(?:dock|stand|cable)|charge\s*cable|cable|"
     r"protective\s*sleeve|carrying\s*bag|carry\s*bag|storage\s*bag|"
     r"cooling\s*(?:pad|fan)|dust\s*cover|stickers?|decals?|"
-    r"thumb\s*grips?|display\s*screen\s*only)\b",
+    r"thumb\s*grips?|display\s*screen\s*only|water\s*block|"
+    r"waterblock|heatsink|thermal\s*pad|cooling\s*kit|"
+    r"service\s*remote|remote\s*control)\b",
     flags=re.IGNORECASE,
 )
 
 # Bundle safeguards: console + supplied charger/case is still a console,
 # but "console case bundle" without a console item is an accessory.
+_NON_HARDWARE_SOFTWARE = re.compile(
+    r"\b(?:video\s*game|game\s*(?:card|cartridge|disc|download|code)|"
+    r"digital\s*(?:code|download|game|gift|edition)|"
+    r"software\s*(?:key|license)|game\s*pass|subscription|"
+    r"gift\s*card|download\s*card|season\s*pass|"
+    r"dlc|game\s*only|replacement\s*shell)\b",
+    flags=re.IGNORECASE,
+)
+
 _DEVICE_EXPLICIT = re.compile(
     r"\b(?:console|system|handheld\s*(?:gaming\s*)?pc|"
     r"gaming\s*laptop|graphics\s*card|gpu|monitor|television|"
@@ -86,14 +97,25 @@ def assess_product_target_fit(record: Any) -> ProductTargetFit:
     if not family:
         return ProductTargetFit()
 
-    if _ACCESSORY.search(title):
-        # Explicitly bundled *complete hardware* is not disqualified because
-        # a carrying case or cable is included in the box.
-        complete_bundle = (
-            "bundle" in title
-            and bool(_DEVICE_EXPLICIT.search(title))
-            and bool(re.search(r"\b(?:with|includes?|plus|and)\b", title))
+    # Digital software and game discs are not game consoles simply because
+    # their titles say PS5/Switch/Xbox. A retail console with an included game
+    # must explicitly say "console bundle with" or "system bundle with".
+    explicit_console_bundle = bool(
+        re.search(
+            r"\b(?:console|system)\s+bundle\s+(?:with|including)\b",
+            title,
         )
+    )
+    if _NON_HARDWARE_SOFTWARE.search(title) and not explicit_console_bundle:
+        return ProductTargetFit(
+            family, "accessory", -70,
+            "Game/software/digital listing is not the physical target device",
+        )
+
+    if _ACCESSORY.search(title):
+        # Cases/chargers bundled with an explicitly described console are
+        # acceptable; "console case bundle with cables" is not.
+        complete_bundle = family == "game_console" and explicit_console_bundle
         if not complete_bundle:
             return ProductTargetFit(
                 family, "accessory", -70,

@@ -77,3 +77,20 @@ Cleanup rule: consolidate the **active** call graph before deleting base classes
 Exact-head Python suite + import smoke + CI check, no regressions against the four-call constraint, current Discloud commit and bot menu sync, Walmart Affiliate API bestseller behavior, actual item-price/stock/offer data, guild receipts and labeled precision@10/recall. This document is a repository audit, not a live retailer or Discloud acceptance report.
 
 - Query efficiency: exact queue uses the item-ID primary key, fanout samples newest inserted events by SQLite rowid (not a full-table timestamp sort), and guild receipt lookup uses the composite (guild_id, deal_key) key; reads remain bounded to the admin's selected item.
+
+
+## 2026-11-12 buyer-intent ranking and production constraints
+
+- The ranked Best Picks/Popular Brands pipeline now categorizes **physical target hardware** separately from accessories, mounts, cases, game discs, gift cards and game codes. The bounded target-fit score influences ordering and exact queue priority; it **never** skips identity, buyable offer, available stock, trusted discount or public subscriber policy.
+- Curated targets currently recognize console systems, genuine controllers, GPUs, gaming monitors, smart TVs, laptops, popular phones/tablets and VR headsets from the item title alone. A title with a bare brand or expensive product-family reference is insufficient. Unsupported/ambiguous items keep an unknown designation rather than a fabricated popularity ranking.
+- Added golden positive and negative product-title tests and controller/console-bundle distinctions, including accessory names containing expensive models. The existing extreme-price emergency verification bonus remains dominant for actual devices; accessories do not inherit the emergency bonus from the protected brand alone.
+- Removed rating/review **quality** boosts based on regexing Discord embed prose. Only official structured Walmart item rating/review metadata can earn interest-ranking points. Brand, category and hot-word lookups use the product-title text rather than promotional descriptions. Product interest can still be a retailer review proxy, *not current sales*.
+- The existing 265 broad routes, exactly four catalog requests per batch, two low-price sniper slots and seller/offer gates remain unchanged. New ranked target families expand without crawling additional retail pages or consuming more API quota.
+
+### External demand and completed-sales authority
+
+eBay's current Buy Marketing API includes best-selling product and most-watched-item endpoints. These are legitimate buyer-interest indicators but **production Buy API access is restricted**, and credentials/scopes for this project were not established. The distinct eBay Marketplace Insights sold-record endpoint remains limited-release (up to 90 days and category approval), so a sold-comps feed cannot be labeled live. The old draft eBay watcher #200 is based on active listing offers, not reliable completed-sale prices. Keep that work preserved and unmerged until rights, exact product matching, rate budgets and failure paths are established.
+
+### Deployment blockers that code cannot safely bypass
+
+`docs/DISCLOUD_DEPLOY.md` states that the canonical production SniperPlug stores its database on **local SQLite inside the Discloud application filesystem**. A GitHub merge is **not** a verified Discloud deployment. A blind redeploy without an external Discloud backup could destroy guild preferences, exact queues and posting history. Back up first, verify a working pre-existing database, then deploy and inspect the live runtime. No Discloud access, local DB snapshot, real Walmart Affiliate sample or Discord event receipts were accessible for this audit. The merged SHA and live deployed SHA must be compared explicitly.

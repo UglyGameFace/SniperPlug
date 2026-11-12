@@ -284,7 +284,11 @@ async def test_exact_worker_loop_survives_hung_cycle_and_runs_next_cycle(
 
         real_batch = runner.process_actionable_walmart_exact_queue_batch
         calls = {"n": 0}
-        p.cog._exact_cycle_timeout_seconds = 0.05
+        # This test needs the injected 3,600-second hang to time out, not
+        # ordinary aiosqlite schema/claim/commit steps under loaded CI. A
+        # 50ms deadline made healthy retries repeatedly time out on runner
+        # scheduling jitter; production uses a much longer budget.
+        p.cog._exact_cycle_timeout_seconds = 0.5
         monkeypatch.setattr(
             resilient, "WALMART_QUEUE_INITIAL_DELAY_SECONDS", 0
         )

@@ -70,7 +70,7 @@ class ProductTargetFit:
     reason: str = "Title insufficient for curated product target; buyer demand unknown"
 
 
-def _item_title(record: Any) -> str:
+def product_title(record: Any) -> str:
     # Never scan embed text as a proxy for the actual product title.
     for obj in (
         getattr(record, "deal", None),
@@ -87,7 +87,7 @@ def _item_title(record: Any) -> str:
 
 
 def assess_product_target_fit(record: Any) -> ProductTargetFit:
-    title = _item_title(record)
+    title = product_title(record)
     if not title:
         return ProductTargetFit()
     family = next(

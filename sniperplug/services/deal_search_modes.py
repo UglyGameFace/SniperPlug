@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.services.product_demand_evidence import assess_product_demand
-from sniperplug.services.product_target_fit import assess_product_target_fit
+from sniperplug.services.product_target_fit import assess_product_target_fit, product_title
 
 
 MODE_BEST = "best"
@@ -299,7 +299,7 @@ def product_quality_score(card: DealCard) -> float:
 
 def category_demand_score(card: DealCard) -> float:
     """Historical name: category-brand relevance only, not actual sold volume."""
-    text = card_text(card)
+    text = product_title(card)
     profile = infer_category_profile(card)
     if profile is None:
         return global_demand_score(card)
@@ -318,7 +318,7 @@ def category_demand_score(card: DealCard) -> float:
 
 
 def global_demand_score(card: DealCard) -> float:
-    text = card_text(card)
+    text = product_title(card)
     score = 0.0
     global_hot_terms = (
         "clearance", "rollback", "special buy", "limited", "bundle", "gift set", "starter kit", "pro", "max", "ultra", "oled", "4k", "lego", "pokemon", "dyson", "shark", "ninja", "milwaukee", "dewalt", "apple", "samsung",
@@ -330,7 +330,7 @@ def global_demand_score(card: DealCard) -> float:
 
 
 def category_brand_score(card: DealCard) -> float:
-    text = card_text(card)
+    text = product_title(card)
     profile = infer_category_profile(card)
     if profile is None:
         return 0.0
@@ -345,7 +345,7 @@ def category_brand_score(card: DealCard) -> float:
 
 
 def infer_category_profile(card: DealCard) -> DemandProfile | None:
-    text = card_text(card)
+    text = product_title(card)
     best_profile: DemandProfile | None = None
     best_hits = 0
     for profile in CATEGORY_PROFILES:
@@ -357,7 +357,7 @@ def infer_category_profile(card: DealCard) -> DemandProfile | None:
 
 
 def brand_score(card: DealCard) -> float:
-    text = card_text(card)
+    text = product_title(card)
     score = 0.0
     for brand in POPULAR_BRAND_TERMS:
         if has_whole_phrase(text, brand):

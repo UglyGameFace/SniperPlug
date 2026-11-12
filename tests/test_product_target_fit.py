@@ -126,3 +126,20 @@ def test_watch_categories_match_whole_terms_not_accidental_fragments():
     assert category_for_title("Algae Aquarium Decorations").key == "pet_supplies"
     assert category_for_title("Apple iPhone 16") is not None
     assert category_for_title("Laptop Sleeve") is None or category_for_title("Laptop Sleeve").key != "apple"
+
+
+
+def test_embed_marketing_keywords_cannot_fake_valuable_product_family_or_brand():
+    from sniperplug.services.deal_search_modes import (
+        brand_score, category_brand_score, category_demand_score,
+    )
+    ordinary = _card("Generic Storage Box", body="Generic product")
+    misleading = _card(
+        "Generic Storage Box",
+        body="Affiliate copy: PS5 Console, NVIDIA RTX 5090, Apple iPhone 16, "
+             "Samsung OLED TV, Sony, LG, high demand, most watched!",
+    )
+    assert brand_score(misleading) == brand_score(ordinary)
+    assert category_brand_score(misleading) == category_brand_score(ordinary)
+    assert category_demand_score(misleading) == category_demand_score(ordinary)
+    assert assess_product_target_fit(misleading).rank_points == 0

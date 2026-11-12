@@ -1,3 +1,5 @@
+- Buyer-intent continuation (Nov 12): exact hardware target-family classification now separates consoles/controllers/GPUs/monitors/TVs/phones/tablets/VR headsets from lookalike cases, stands, repairs, game discs and download codes; this is a ranking signal, not sales proof. Strong existing $1-$10 hardware verification priority retained. Brand/category keywords and rating quality must come from actual product title / retailer structured attrs, never Discord embed marketing copy.
+- Release safety: production uses local SQLite under Discloud's app filesystem (see docs/DISCLOUD_DEPLOY.md). Never assume a code merge safely deploys or preserves DB; take verified Discloud off-host backup before any production release, and compare live Git SHA/DB state. Connected Discloud access not established.
 # Active Task
 
 ## 2026-11-12: Demand-first value audit and evidence-aware ranking

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from types import SimpleNamespace
 
 import discord
@@ -25,6 +27,8 @@ def _card(
 ):
     return SimpleNamespace(
         label=title,
+        upc=(attrs or {}).get("walmartUPC"),
+        api_condition=(attrs or {}).get("condition"),
         url="https://www.walmart.com/ip/123",
         embed=discord.Embed(title=f"🔥 {discount:.0f}% OFF • {title}"),
         api_current_price=current,
@@ -186,6 +190,12 @@ def test_exact_recent_ebay_sold_comps_can_confirm_any_category() -> None:
             score=100,
             attrs={
                 "department": "Baby Gear",
+                "walmartUPC": "036000291452",
+                "condition": "New",
+                "ebayCompGTIN": "0036000291452",
+                "ebayCompCondition": "New",
+                "ebaySoldCompSource": "ebay_marketplace_insights",
+                "ebaySoldCompFetchedAt": datetime.now(timezone.utc).isoformat(),
                 "ebayCompIdentityMatched": "yes",
                 "ebayCompConditionMatched": "yes",
                 "ebayRecentSoldCount": 7,

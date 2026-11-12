@@ -3,6 +3,7 @@ from __future__ import annotations
 """Source-backed product engagement is a proxy, never evidence of sold volume."""
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import math
 from typing import Any
 
@@ -101,7 +102,15 @@ def _bestseller_position(attrs: dict[str, Any]) -> int | None:
         return None
     if not str(attrs.get("walmartBestsellerSearchQuery") or "").strip():
         return None
-    if not str(attrs.get("walmartBestsellerObservedAt") or "").strip():
+    observed_at = str(attrs.get("walmartBestsellerObservedAt") or "").strip()
+    try:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if observed.tzinfo is None:
+        return None
+    age = datetime.now(timezone.utc) - observed.astimezone(timezone.utc)
+    if not timedelta(minutes=-5) <= age <= timedelta(hours=48):
         return None
     raw = str(attrs.get("walmartBestsellerSearchPosition") or "").strip()
     if not raw.isdecimal():

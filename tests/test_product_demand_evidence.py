@@ -155,3 +155,23 @@ def test_bestseller_sort_provenance_cannot_be_invented_by_unsorted_search():
     sampled = provider._candidates_from_payload(payload, ProviderScanRequest(source_key="walmart", query="console", sort="bestseller"))
     assert [c.variant_attributes.get("walmartBestsellerSearchPosition") for c in sampled] == ["1", "2"]
     assert all(c.variant_attributes.get("walmartBestsellerSortRequested") == "yes" for c in sampled)
+
+
+
+def test_stale_bestseller_sort_cannot_add_demand_score():
+    from datetime import datetime, timedelta, timezone
+    sample = _record()
+    sample.variant_attributes.update({
+        "walmartBestsellerSortRequested": "yes",
+        "walmartBestsellerSearchPosition": "1",
+        "walmartBestsellerSearchQuery": "console",
+        "walmartBestsellerObservedAt": (datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),
+    })
+    assert assess_product_demand(sample).rank_points == assess_product_demand(_record()).rank_points
+
+
+def test_bestseller_probe_can_be_switched_off_without_more_api_calls(monkeypatch):
+    from sniperplug.services.walmart_catalog_discovery_only import is_bestseller_probe_batch
+    assert is_bestseller_probe_batch(7)
+    monkeypatch.setenv("SNIPERPLUG_BESTSELLER_CANARY_ENABLED", "false")
+    assert not is_bestseller_probe_batch(7)

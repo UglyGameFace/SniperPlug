@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 
 from sniperplug.cogs import deal_scanner
@@ -53,6 +54,9 @@ BESTSELLER_PROBE_BATCH_OFFSET = 7
 
 
 def is_bestseller_probe_batch(batch_number: int) -> bool:
+    enabled = str(os.getenv("SNIPERPLUG_BESTSELLER_CANARY_ENABLED", "true")).strip().lower()
+    if enabled in {"0", "false", "off", "no"}:
+        return False
     return (
         max(0, int(batch_number)) % BESTSELLER_PROBE_EVERY_N_BATCHES
         == BESTSELLER_PROBE_BATCH_OFFSET

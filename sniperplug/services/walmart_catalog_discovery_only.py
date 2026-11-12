@@ -50,6 +50,20 @@ CATALOG_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = ((None, None),)
 # The provider labels this as *sort requested*, not confirmed recent purchases.
 BESTSELLER_PROBE_EVERY_N_BATCHES = 12
 BESTSELLER_PROBE_BATCH_OFFSET = 7
+# A fraction of the existing *second* price-sorted requests sample page two.
+# The first rotation slot and every urgent/hot query always retain page one,
+# so no family becomes page-two-only and the 4-request budget never changes.
+PRICE_SNIPER_PAGE2_EVERY_N_BATCHES = 4
+PRICE_SNIPER_PAGE2_BATCH_OFFSET = 2
+
+
+def is_price_sniper_page2_batch(batch_number: int) -> bool:
+    enabled = str(os.getenv("SNIPERPLUG_PRICE_SNIPER_PAGE2_ENABLED", "true")).strip().lower()
+    return (
+        enabled not in {"0", "false", "off", "no"}
+        and max(0, int(batch_number)) % PRICE_SNIPER_PAGE2_EVERY_N_BATCHES
+        == PRICE_SNIPER_PAGE2_BATCH_OFFSET
+    )
 
 
 def is_bestseller_probe_batch(batch_number: int) -> bool:
@@ -62,6 +76,46 @@ def is_bestseller_probe_batch(batch_number: int) -> bool:
     )
 
 
+
+
+def _candidate_price_cents(candidate) -> int | None:
+    from sniperplug.services.walmart_exact_price_enrichment import _positive_number
+    value = _positive_number(
+        getattr(candidate, "api_current_price", None)
+        or getattr(candidate, "current_price", None)
+    )
+    return int(round(value * 100)) if value is not None else None
+
+
+def distinct_catalog_offer_candidates(candidates) -> list:
+    """Keep distinct retailer items and changed payable prices for verification.
+
+    The bulk exact queue remains the sole durable item-ID owner; this just
+    avoids discarding a better observation because a separate query returned
+    the same seller/offer ID first. Never infer a discount or sale from these
+    unverified catalog hints.
+    """
+    seen: set[tuple] = set()
+    distinct: list = []
+    for candidate in candidates:
+        attrs = dict(getattr(candidate, "variant_attributes", None) or {})
+        item_id = _walmart_item_id(candidate)
+        identity = (
+            item_id or str(getattr(candidate, "product_url", None) or ""),
+            str(getattr(candidate, "selected_offer_id", None) or ""),
+            str(getattr(candidate, "seller_name", None) or "").strip().lower(),
+            str(getattr(candidate, "variant_label", None) or "").strip().lower(),
+            str(getattr(candidate, "condition", None) or "").strip().lower(),
+            str(getattr(candidate, "pack_size", None) or "").strip().lower(),
+            str(attrs.get("selectedOfferMarketplace") or "").strip().lower(),
+            _candidate_price_cents(candidate),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        distinct.append(candidate)
+    return distinct
+
 @dataclass(frozen=True)
 class WalmartCatalogDiscoveryResult:
     pages_checked: int = 0
@@ -72,6 +126,9 @@ class WalmartCatalogDiscoveryResult:
     warnings: tuple[str, ...] = ()
     bestseller_searches: int = 0
     bestseller_search_candidates: int = 0
+    price_sniper_page2_searches: int = 0
+    duplicate_offer_rows_removed: int = 0
+    multi_price_item_ids: int = 0
 
 
 def _walmart_item_id(candidate) -> str:
@@ -155,8 +212,16 @@ def catalog_request_plan_for_claim(
         second_sniper = priority_query
     else:
         second_sniper = price_sniper_query_for_batch(rotation_slots_before + 1)
+    # A second-page probe catches $30-$100+ products buried below 25
+    # cheaper cases and cables in page-one ascending-price search results.
+    # First rotation slot (plan[2]) always reaches page one. Hot priority
+    # queries likewise always get page one.
+    second_page = (
+        2 if priority_query is None and is_price_sniper_page2_batch(batch_number)
+        else 1
+    )
     plan.append((
-        second_sniper, 1,
+        second_sniper, second_page,
         PRICE_SNIPER_SORT, PRICE_SNIPER_ORDER,
     ))
     return tuple(plan)
@@ -293,7 +358,22 @@ async def discover_walmart_catalog_candidates(
             if warning not in warnings:
                 warnings.append(warning)
 
-    deduped = deal_scanner.dedupe_candidates(all_candidates)
+    # Generic first-hit dedupe keys on selected_offer_id alone. That can
+    # silently discard a cheaper later observation of the *same* item or,
+    # worse, a separate item sharing a seller-scoped offer ID. Preserve
+    # distinct item/offer/variant/price observations until the authoritative
+    # per-item exact queue chooses which to verify.
+    deduped = distinct_catalog_offer_candidates(all_candidates)
+    duplicate_rows_removed = len(all_candidates) - len(deduped)
+    prices_by_item: dict[str, set[int]] = {}
+    for candidate in deduped:
+        item_id = _walmart_item_id(candidate)
+        if not item_id:
+            continue
+        current = _candidate_price_cents(candidate)
+        if current is not None:
+            prices_by_item.setdefault(item_id, set()).add(current)
+    multi_price_item_ids = sum(len(prices) > 1 for prices in prices_by_item.values())
     item_id_count = sum(1 for candidate in deduped if _walmart_item_id(candidate))
 
     if db is not None and deduped:
@@ -324,6 +404,10 @@ async def discover_walmart_catalog_candidates(
     sniper_requests = sum(
         sort_value == PRICE_SNIPER_SORT for _query, _page, sort_value, _order in request_plan
     )
+    sniper_page2 = sum(
+        page == 2 and sort_value == PRICE_SNIPER_SORT
+        for _query, page, sort_value, _order in request_plan
+    )
     fresh_pages = sum(
         page == 1 and sort_value != PRICE_SNIPER_SORT
         for _query, page, sort_value, _order in request_plan
@@ -333,7 +417,8 @@ async def discover_walmart_catalog_candidates(
         "Walmart catalog page window: "
         f"pages **{page_label}**/**{CATALOG_MAX_PAGE}** • "
         f"fresh routes **{fresh_pages}** • rotating deep requests **{deep_pages}** • "
-        f"price-sorted sniper searches **{sniper_requests}** • "
+        f"price-sorted sniper searches **{sniper_requests}** "
+        f"(page-two probes **{sniper_page2}**) • "
         f"planned searches **{len(request_plan)}** • "
         f"completed full passes before this batch **{completed_passes}**."
     )
@@ -347,7 +432,9 @@ async def discover_walmart_catalog_candidates(
         "Walmart catalog discovery-only pass: "
         f"page window **{page_label}**/**{CATALOG_MAX_PAGE}** • "
         f"completed full passes before this batch **{completed_passes}** • "
-        f"returned **{len(all_candidates)}** • unique **{len(deduped)}** • "
+        f"returned **{len(all_candidates)}** • distinct offer-price observations **{len(deduped)}** • "
+        f"exact duplicate rows suppressed **{duplicate_rows_removed}** • "
+        f"items with multiple observed prices **{multi_price_item_ids}** • "
         f"usable item IDs **{item_id_count}** • foreground exact checks **0**."
     )
     return WalmartCatalogDiscoveryResult(
@@ -359,4 +446,7 @@ async def discover_walmart_catalog_candidates(
         warnings=tuple(warnings),
         bestseller_searches=bestseller_searches,
         bestseller_search_candidates=bestseller_search_candidates,
+        price_sniper_page2_searches=sniper_page2,
+        duplicate_offer_rows_removed=duplicate_rows_removed,
+        multi_price_item_ids=multi_price_item_ids,
     )

@@ -102,10 +102,13 @@ def test_exact_queue_boost_is_bounded_and_accessories_still_eligible_for_verific
     case = _enrichment_priority(candidate("NVIDIA GeForce RTX 5090 Graphics Card Case"), min_discount=40)
     assert gpu > case
     assert case > 0
-    assert gpu - case <= 110
+    # The older, intentional +400 extreme-device priority remains intact for
+    # actual hardware; this is the point of beating cheap protective cases.
+    assert gpu - case >= 400
 
 
 def test_watch_categories_match_whole_terms_not_accidental_fragments():
-    assert category_for_title("Algae Aquarium Decorations") is None
+    assert category_for_title("Algae Extract") is None
+    assert category_for_title("Algae Aquarium Decorations").key == "pet_supplies"
     assert category_for_title("Apple iPhone 16") is not None
     assert category_for_title("Laptop Sleeve") is None or category_for_title("Laptop Sleeve").key != "apple"

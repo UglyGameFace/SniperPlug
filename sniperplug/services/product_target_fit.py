@@ -17,8 +17,8 @@ from typing import Any
 # cannot masquerade as a sought-after device. More categories can be added
 # with labeled positive/negative examples, not a broad "expensive brand" guess.
 _FAMILY_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("game_console", r"\b(?:playstation\s*5|ps5|xbox\s*series\s*[xs]|nintendo\s*switch(?:\s*2)?|steam\s*deck)\b"),
     ("game_controller", r"\b(?:dualsense|dual\s*sense|joy[\s-]?con|xbox\s*(?:wireless\s*)?controller|(?:ps5|playstation\s*5|nintendo\s*switch)\s*(?:wireless\s*)?controller)\b"),
+    ("game_console", r"\b(?:playstation\s*5|ps5|xbox\s*series\s*[xs]|nintendo\s*switch(?:\s*2)?|steam\s*deck)\b"),
     ("graphics_card", r"\b(?:geforce\s*(?:rtx|gtx)|rtx\s*[2345]\d{3}|radeon\s*rx\s*[5679]\d{3}|graphics\s*card|\bgpu\b)"),
     ("gaming_monitor", r"\b(?:gaming\s*monitor|(?:oled|qled|4k|144hz|165hz|240hz|360hz|\d{2}\s*(?:inch|in))\s*(?:gaming\s*)?monitor|monitor\s*(?:oled|qled|4k|144hz|240hz))\b"),
     ("television", r"\b(?:oled\s*tv|qled\s*tv|\d{2}\s*(?:inch|in)\s*(?:4k\s*)?(?:smart\s*)?tv|smart\s*tv|4k\s*television)\b"),

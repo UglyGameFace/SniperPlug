@@ -6,6 +6,7 @@ from sniperplug.models.deal import NormalizedDeal
 from sniperplug.services.deal_intent import assess_deal_intent
 from sniperplug.services.opportunity_watchlist import category_for_title
 from sniperplug.services.product_demand_evidence import assess_product_demand
+from sniperplug.services.product_target_fit import assess_product_target_fit
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,14 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
             if deal.current_price <= category.absolute_price_floor:
                 score += 35
                 reasons.append(f"Price is below watched floor for {category.label}")
+
+    fit = assess_product_target_fit(deal)
+    if fit.tier == "curated_target":
+        score += 30
+        reasons.append(fit.reason)
+    elif fit.tier == "accessory":
+        score = max(0, score - 30)
+        reasons.append("Device-family keyword belongs to accessory, not hardware")
 
     interest = assess_product_demand(deal)
     if interest.has_engagement_proxy:

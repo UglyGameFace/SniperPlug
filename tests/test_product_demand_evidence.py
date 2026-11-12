@@ -68,7 +68,7 @@ def test_best_picks_prefers_item_engagement_when_offers_are_equal():
     engagement = card("item-level engagement", {"rating": "4.8", "reviews": "2500"})
     result = rank_for_search_mode([unknown, engagement], [], MODE_BEST)
     assert result.verified[0] is engagement
-    assert "not verified sales demand" in result.note
+    assert "not verified sales" in result.note
 
 
 def test_exact_queue_prioritizes_source_backed_interest_without_extra_fetches():

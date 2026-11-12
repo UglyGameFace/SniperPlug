@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from sniperplug.cogs.deal_scanner import DealCard
 from sniperplug.services.product_demand_evidence import assess_product_demand
+from sniperplug.services.product_target_fit import assess_product_target_fit
 
 
 MODE_BEST = "best"
@@ -217,7 +218,7 @@ def rank_for_search_mode(verified_cards: list[DealCard], review_cards: list[Deal
 
     ranked_verified = sorted(verified, key=best_pick_card_score, reverse=True)
     ranked_review = sorted(review, key=best_pick_card_score, reverse=True)
-    return ModeRankedCards(mode_info, ranked_verified[:limit], ranked_review[:limit], "Best Picks considers verified value and retailer item reviews. Category and brand matches are heuristics, not verified sales demand.")
+    return ModeRankedCards(mode_info, ranked_verified[:limit], ranked_review[:limit], "Best Picks favors complete sought-after hardware over accessories, using structured retailer reviews when present. Curation and reviews are not verified sales.")
 
 
 def mode_select_options() -> list[tuple[str, str, str, str]]:
@@ -234,7 +235,11 @@ def best_pick_card_score(card: DealCard) -> tuple[float, float, float, float, fl
     discount = float(getattr(card, "discount", 0.0) or 0.0)
     score = float(getattr(card, "score", 0.0) or 0.0)
     price = current_price(card)
-    final = relevance + quality + trust + discount * 0.75 + min(score, 250.0) * 0.08 + interest * 2.5
+    # Distinguish actual sought-after hardware from a case, mount or cable
+    # that merely mentions a premium product family in its title. This is
+    # curation only: exact seller/stock/discount proof remains independent.
+    target = assess_product_target_fit(card).rank_points
+    final = relevance + quality + trust + discount * 0.75 + min(score, 250.0) * 0.08 + interest * 2.5 + target * 2
     return (final, interest, discount, trust, -price)
 
 
@@ -242,7 +247,8 @@ def popular_card_score(card: DealCard) -> tuple[float, float, float]:
     brand = brand_score(card) + category_brand_score(card)
     trust = seller_trust_score(card)
     discount = float(getattr(card, "discount", 0.0) or 0.0)
-    return (brand * 2.4 + trust + product_quality_score(card), discount, -current_price(card))
+    target = assess_product_target_fit(card).rank_points
+    return (brand * 2.4 + trust + product_quality_score(card) + target, discount, -current_price(card))
 
 
 def cheapest_card_score(card: DealCard) -> tuple[float, float, float]:
@@ -271,15 +277,13 @@ def markdown_card_score(card: DealCard) -> tuple[float, float, float]:
 def product_quality_score(card: DealCard) -> float:
     text = card_text(card)
     score = brand_score(card) + category_brand_score(card) * 0.65
-    rating = first_float_match(text, r"rating[^0-9]*(\d+(?:\.\d+)?)")
-    reviews = first_float_match(text, r"reviews[^0-9]*(\d+(?:,\d{3})*|\d+)")
+    # Rendered embed text can be user-provided or include marketing claims.
+    # Only the verified structured Walmart product metadata may influence
+    # rating/review-based interest ranking, never regexes on Discord prose.
+    evidence = assess_product_demand(card)
+    if evidence.has_engagement_proxy:
+        score += min(24.0, evidence.rank_points * 0.6)
     profile = infer_category_profile(card)
-    if rating:
-        min_rating = profile.min_good_rating if profile else 4.0
-        score += min(30.0, max(-8.0, (rating - min_rating) * 14.0 + 10.0))
-    if reviews:
-        min_reviews = profile.min_good_reviews if profile else 75
-        score += min(30.0, reviews / max(20.0, min_reviews / 2.0))
     if "selected option" in text or "exact product match" in text:
         score += 8.0
     if "product links" in text:

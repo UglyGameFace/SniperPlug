@@ -10,6 +10,7 @@ a separate explicit EPN messaging approval setting.
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from sniperplug.services.ebay_browse_api import EbaySettings, EbayListing
 
@@ -154,4 +155,12 @@ def safe_affiliate_link(
     """Never derive tracking URLs, never substitute an untracked API link."""
     if not may_promote(settings, opted_in=opted_in, channel_matches=channel_matches):
         return ""
-    return listing.affiliate_url
+    # eBay generated the URL via the official campaign header. Verify the
+    # returned tracking campaign still belongs to THIS EPN account, rather
+    # than forwarding an untracked or foreign-affiliate link.
+    try:
+        tracked = urlparse(listing.affiliate_url)
+        campaigns = parse_qs(tracked.query).get("campid", [])
+    except ValueError:
+        return ""
+    return listing.affiliate_url if campaigns == [settings.campaign_id] else ""

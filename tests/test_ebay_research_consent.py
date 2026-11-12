@@ -22,7 +22,7 @@ def _sample_payload(price="37.50", shipping="6.25", *, item_id="v1|1000|0"):
     return {
         "itemId": item_id, "title": "Sony genuine wireless controller",
         "itemWebUrl": "https://www.ebay.com/itm/1000",
-        "itemAffiliateWebUrl": "https://www.ebay.com/itm/1000?mkevt=1",
+        "itemAffiliateWebUrl": "https://www.ebay.com/itm/1000?mkevt=1&campid=1234567890",
         "buyingOptions": ["FIXED_PRICE"],
         "price": {"currency": "USD", "value": price},
         "condition": "New",
@@ -91,6 +91,10 @@ def test_marketing_approval_requires_all_independent_gates():
     )
     assert may_promote(ready, opted_in=True, channel_matches=True)
     assert safe_affiliate_link(ready, listing, opted_in=True) == listing.affiliate_url
+    foreign_campaign = replace(listing, affiliate_url="https://www.ebay.com/itm/1000?campid=9999999999")
+    assert safe_affiliate_link(ready, foreign_campaign, opted_in=True) == ""
+    no_campaign = replace(listing, affiliate_url="https://www.ebay.com/itm/1000")
+    assert safe_affiliate_link(ready, no_campaign, opted_in=True) == ""
     assert not may_promote(ready, opted_in=False)
     assert not may_promote(ready, opted_in=True, channel_matches=False)
     for disabled in (
@@ -196,3 +200,32 @@ def test_no_old_standalone_worker_in_canonical_repo():
     bot = (root / "sniperplug/bot.py").read_text()
     assert "await self.add_cog(EbayResearchCog(self))" in bot
     assert "from sniperplug.cogs.ebay_research import EbayResearchCog" in bot
+
+
+
+def test_unapproved_campaign_never_appears_in_research_http_header(monkeypatch):
+    async def run():
+        client = EbayBrowse(EbaySettings(
+            client_id="key", client_secret="secret",
+            campaign_id="1234567890", research_enabled=True,
+            messaging_approved=False,
+        ))
+        calls = []
+        async def fake_json(_session, method, url, *, headers, params=None, form=None):
+            calls.append((method, url, dict(headers)))
+            if "/identity/v1/" in url:
+                return {"access_token": "token", "expires_in": 7200}, 200
+            return {"itemSummaries": [_sample_payload()]}, 200
+        monkeypatch.setattr(client, "_json", fake_json)
+        await client.search(query="headphones")
+        browse = [x for x in calls if "/buy/browse/" in x[1]]
+        assert browse
+        assert all("X-EBAY-C-ENDUSERCTX" not in x[2] for x in browse)
+
+        approved = EbayBrowse(replace(client.settings, messaging_approved=True))
+        calls.clear()
+        monkeypatch.setattr(approved, "_json", fake_json)
+        await approved.search(query="headphones")
+        browse = [x for x in calls if "/buy/browse/" in x[1]]
+        assert browse[0][2]["X-EBAY-C-ENDUSERCTX"] == "affiliateCampaignId=1234567890"
+    asyncio.run(run())

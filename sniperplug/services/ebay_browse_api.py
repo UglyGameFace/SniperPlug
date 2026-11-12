@@ -220,7 +220,10 @@ class EbayBrowse:
                     "Accept": "application/json",
                     "Accept-Language": "en-US",
                 }
-                if re.fullmatch(r"[0-9]{10}", self.settings.campaign_id):
+                # Ordinary research never requests tracked affiliate URLs.
+                # EPN account membership or a campaign ID alone is not written
+                # permission to distribute promotions through Discord.
+                if self.settings.affiliate_ready:
                     headers["X-EBAY-C-ENDUSERCTX"] = f"affiliateCampaignId={self.settings.campaign_id}"
                 payload, status = await self._json(
                     session, "GET",

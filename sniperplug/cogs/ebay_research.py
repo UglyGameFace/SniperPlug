@@ -114,12 +114,20 @@ class EbayResearchCog(commands.GroupCog, group_name="ebay", group_description="e
         )
 
     @app_commands.command(name="research", description="Research active fixed-price eBay listings, not sold prices.")
-    @app_commands.describe(query="Item name, model, or category to search.")
+    @app_commands.describe(
+        query="Item name, model, or category to search (leave empty if entering a GTIN).",
+        gtin="Exact 8/12/13/14-digit barcode (leave query empty).",
+    )
     @app_commands.checks.cooldown(2, 60.0, key=lambda interaction: interaction.user.id)
-    async def research(self, interaction: discord.Interaction, query: app_commands.Range[str, 2, 100]) -> None:
+    async def research(
+        self,
+        interaction: discord.Interaction,
+        query: app_commands.Range[str, 2, 100] | None = None,
+        gtin: app_commands.Range[str, 8, 14] | None = None,
+    ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            listings = await self.browse.search(query=query)
+            listings = await self.browse.search(query=query or "", gtin=gtin or "")
         except EbayApiError as error:
             await interaction.followup.send(str(error), ephemeral=True)
             return
@@ -127,7 +135,7 @@ class EbayResearchCog(commands.GroupCog, group_name="ebay", group_description="e
         embed = discord.Embed(
             title="eBay active listing research",
             description=(
-                "Search: **" + discord.utils.escape_markdown(query) +
+                "Search: **" + discord.utils.escape_markdown(query or gtin or "") +
                 "**\nThese are ASKING prices, not verified completed sales or resale profits."
             ),
             color=discord.Color.blue(),

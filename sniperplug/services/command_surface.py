@@ -126,6 +126,7 @@ REQUIRED_CANONICAL_COMMANDS = frozenset(
         "active_deals",
         "active_deal_history",
         "sniperplug",
+        "ebay",
     }
 )
 

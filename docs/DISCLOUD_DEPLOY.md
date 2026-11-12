@@ -238,3 +238,13 @@ Before a code redeploy:
 This procedure is deliberately conservative because losing a 1 GB production
 SQLite file to a cheerful one-click redeploy would be an exceptionally stupid way
 to save five dollars a month.
+
+## eBay research and promotional consent (same Discloud app)
+
+The canonical `/ebay` group (registered in `sniperplug/bot.py`) performs **user-initiated official Browse searches only**. It does not run another Discloud app or depend on Turso; eBay opt-in/opt-out and admin-selected channel permission are stored in the same local SQLite file as SniperPlug.
+
+Place `EBAY_CLIENT_ID` and `EBAY_CLIENT_SECRET` in the existing Discloud app's **secrets/environment**, never GitHub. Set `EBAY_RESEARCH_ENABLED=true` only after Production keys are verified. Use `/ebay status`, `/ebay consent`, `/ebay research` and `/ebay review_sample` to verify live API behavior and opt-in/opt-out evidence. Users and server admins can revoke their own explicit eBay permissions; neither consent setting automatically sends eBay messages.
+
+**Approval boundary:** `EBAY_EPN_MESSAGING_APPROVED=false` stays disabled until written eBay Partner Network approval actually arrives. `EBAY_EPN_CAMPAIGN_ID` is optional until then. There is no separate eBay broadcast worker. Prior standalone watcher PR #200 was retired because it assumed a separate Discloud app sharing a remote Turso database, incompatible with the canonical local SQLite architecture. Do not deploy that PR.
+
+**Review evidence:** capture *real* bot command screenshots after deployment: `/ebay consent` opt-in, `/ebay consent` opt-out, and `/ebay review_sample` on a successfully fetched real listing. The review preview explicitly says it is not a sent promotion. Do not represent it as an already-delivered marketing campaign or invent a sent example to meet EPN's support-email request. Supply real proof and explain the planned post-approval delivery path.

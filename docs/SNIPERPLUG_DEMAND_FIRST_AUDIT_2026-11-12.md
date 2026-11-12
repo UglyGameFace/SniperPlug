@@ -94,3 +94,5 @@ eBay's current Buy Marketing API includes best-selling product and most-watched-
 ### Deployment blockers that code cannot safely bypass
 
 `docs/DISCLOUD_DEPLOY.md` states that the canonical production SniperPlug stores its database on **local SQLite inside the Discloud application filesystem**. A GitHub merge is **not** a verified Discloud deployment. A blind redeploy without an external Discloud backup could destroy guild preferences, exact queues and posting history. Back up first, verify a working pre-existing database, then deploy and inspect the live runtime. No Discloud access, local DB snapshot, real Walmart Affiliate sample or Discord event receipts were accessible for this audit. The merged SHA and live deployed SHA must be compared explicitly.
+
+- Legacy cleanup: the unregistered `BestBuyProvider` skeleton returned zero candidates even when configured. Deleted the dead adapter, unused Best Buy settings field and misleading environment variable; retained nonfunctional future-source planning previews explicitly labeled as such. No other runtime provider was removed.

@@ -51,3 +51,27 @@ Measure `first_seen → exact queued → offer verified → posted → expired`,
 Validation boundaries: green exact-head Python tests, import smoke and static checks; actual Discloud SHA/DB mode; live Walmart catalog/lookup source response and quota; end-to-end Discord receipts. A merged PR is not evidence of deployment. No production result metrics have been fabricated.
 
 Cleanup rule: consolidate the **active** call graph before deleting base classes or monkeypatched helpers; retire only import-unreachable files after test/reference checks. Preserve #200/#273 branches and #295 until evidence reconciles them.
+
+
+## 2026-11-12 continuation: official-source probe, exact comps and read-only miss trace
+
+### Bestseller canary (source input, not verified sales)
+- Every 12th completed global catalog batch at offset 7, use the **existing second broad request** as `sort=bestseller` instead of relevance, with the same original route/query, capped 25 results and no additional Affiliate calls. Both price-ascending sniper slots and the durable broad-route cursor remain unchanged.
+- Set `SNIPERPLUG_BESTSELLER_CANARY_ENABLED=false` if the retailer does not honor this sort or the trial harms coverage. It defaults to true.
+- Provider marks exact result position, query and timestamp as `walmartBestsellerSortRequested`, `walmartBestsellerSearchPosition`, `walmartBestsellerSearchQuery`, `walmartBestsellerObservedAt`; stale/invalid metadata is ignored. A top-five position contributes at most **4 auxiliary points**, and only if the same item already has credible retailer rating and review metadata.
+- Observed order after *requesting* bestseller sort is **not independently verified retail sold volume**. This canary is about finding stronger item candidates, not confirming resale liquidity. Track source success, model identity and real-world posting outcomes before expanding cadence.
+- The collector reports the number of canary searches and returned items. No new worker, token, persisted raw product-page data, or separate sender.
+
+### Exact cross-retailer sold-comps contract
+- A `yes` boolean for eBay identity/condition is insufficient. Even when those compatibility flags exist, Flip Override now requires valid matching GTIN-8/12/13/14 including check digits, matching normalized condition, and agreement on any supplied pack/model/variant.
+- It additionally requires an explicit fresh `ebay_marketplace_insights` completed-sales observation (not eBay Browse active listing prices), a recent sample window, and the existing completed-sale count / net-return / ROI gates.
+- **No approved Marketplace Insights connector is currently linked to this repo**; this gate stays closed instead of fabricating purchases. A source-name field is an *adapter contract*, not cryptographic proof. A future adapter must authenticate the official provider and produce actual completed-sale receipts.
+
+### Missed-item evidence and alert latency
+- New read-only `/sniperplug deal_trace item_id:<number>` for Manage Server permission. It inspects the exact queue row, a bounded sample of retained exact events, and the invoking guild's public-post receipt, including measured discovery→verification→post latency where timestamps exist.
+- It never calls the retailer, changes DB schemas, restarts worker cycles, reserves posts, or sends alerts. Errors are reduced to categories to avoid leaking raw database/HTTP exception text.
+- A missing queue row or the absence of a match among the most recent 200 events is explicitly **inconclusive**: source visibility, expiry, thresholds, opt-out, and historical delivery can remain unknown. The existing detailed `walmart_delivery_health`/recovery system is still authoritative for stored per-guild threshold and dedupe decisions.
+- The live missed-$1-item issue is NOT considered closed until the original item ID/offer/ZIP, scan budget, exact lookup and delivery receipt can be reconstructed in the deployed environment.
+
+### Unverified final gate
+Exact-head Python suite + import smoke + CI check, no regressions against the four-call constraint, current Discloud commit and bot menu sync, Walmart Affiliate API bestseller behavior, actual item-price/stock/offer data, guild receipts and labeled precision@10/recall. This document is a repository audit, not a live retailer or Discloud acceptance report.

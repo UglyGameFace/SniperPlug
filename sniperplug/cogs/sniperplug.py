@@ -19,6 +19,7 @@ from sniperplug.services.routing import (
     route_label,
 )
 from sniperplug.services.snipe_planner import build_default_snipe_batch
+from sniperplug.services.walmart_missed_deal_trace import trace_walmart_item
 
 
 REQUIRED_CHANNEL_PERMS = {
@@ -144,6 +145,72 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 )
 
         embed.set_footer(text="SniperPlug preview • verify checkout price, stock, shipping, and account eligibility before posting")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="deal_trace", description="Read-only evidence trace for one exact Walmart item.")
+    @app_commands.describe(item_id="Numeric Walmart item ID from the product link; no full URL needed.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def deal_trace(self, interaction: discord.Interaction, item_id: str) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message(
+                "This diagnostic requires a Discord server.", ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        result = await trace_walmart_item(
+            getattr(self.bot, "db", None),
+            item_id=item_id,
+            guild_id=interaction.guild_id,
+        )
+        embed = discord.Embed(
+            title="SniperPlug • exact Walmart item trace",
+            description=(
+                f"Item: `{result.item_id[:24]}`\n"
+                f"Result: **{result.outcome.replace('_', ' ')}**\n"
+                f"{result.detail}"
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.add_field(
+            name="Exact queue",
+            value=(
+                f"Status: `{result.queue_status or 'not retained'}`\n"
+                f"First seen: {result.first_seen_at or 'unavailable'}\n"
+                f"Last seen: {result.last_seen_at or 'unavailable'}\n"
+                f"Verified: {result.verified_at or 'unavailable'}\n"
+                f"Next attempt: {result.next_attempt_at or 'unavailable'}"
+            )[:1024],
+            inline=False,
+        )
+        embed.add_field(
+            name="Fanout / delivery",
+            value=(
+                f"Event seen: {result.event_seen_at or 'not in sample'}\n"
+                f"Processed: {result.event_processed_at or 'unknown'}\n"
+                f"Guild receipt: {result.post_status or 'not located'}\n"
+                f"Posted: {result.posted_at or 'not located'}\n"
+                f"Error class: {result.last_error_category or result.query_error or 'none'}"
+            )[:1024],
+            inline=False,
+        )
+        def duration(value: int | None) -> str:
+            return f"{value:,}s" if value is not None else "unverified"
+
+        embed.add_field(
+            name="Measured latency",
+            value=(
+                f"Discovery → verified: {duration(result.discovery_to_verification_seconds)}\n"
+                f"Discovery → post: {duration(result.discovery_to_post_seconds)}\n"
+                f"Verified → post: {duration(result.verification_to_post_seconds)}"
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text=(
+                f"Read-only • last {result.sampled_events} event rows searched; "
+                "absence is not proof the retailer never listed it"
+            )
+        )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="snipe_plan", description="Show SniperPlug's current source-first scan priorities.")
@@ -497,6 +564,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     @snipe_plan.error
     @monitor_plan.error
     @provider_scan.error
+    @deal_trace.error
     async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             message = "You need **Manage Server** permission to use this SniperPlug admin command."

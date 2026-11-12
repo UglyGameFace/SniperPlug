@@ -1,6 +1,10 @@
 # Active Task
 
 ## 2026-11-12: Demand-first value audit and evidence-aware ranking
+- Continuation: bounded Walmart bestseller-sort canary (one existing broad slot per 12 batches; no new calls); fresh query/position metadata remains an engagement hint, not sold volume.
+- Completed-sales flip overrides additionally require canonical GTIN/condition/variant matching and fresh authorized Marketplace Insights provenance; no such live feed is claimed connected.
+- Read-only Manage Server `/sniperplug deal_trace` reconstructs retained queue, event and guild-post receipts and exact latency without writes or unknown-source guesses.
+- CI and Discloud verification of continuation required before merge/deployment; do not close the missing $1 item incident on source-code evidence alone.
 
 - Branch: `feat/demand-first-proven-value-20261112` based on `main@f3b05193`. Full evidence and remaining gates: `docs/SNIPERPLUG_DEMAND_FIRST_AUDIT_2026-11-12.md`.
 - Clarifies curated category priorities versus genuine item demand. Best Picks, private review ordering and exact-detail queue scheduling now use source-backed Walmart item reviews strictly as a **proxy** (not actual sales).

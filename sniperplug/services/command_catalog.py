@@ -39,6 +39,13 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
+        name="/ebay …",
+        audience="Everyone",
+        purpose="Explore live eBay listing asking prices and manage optional eBay message consent.",
+        when_to_use="Use /ebay research for non-affiliate, on-demand listing comparisons; /ebay consent opts in or out of future promotion and /ebay review_sample previews disclosures. No eBay automatic sender exists until authorized.",
+        credit_risk="eBay official Browse API when configured",
+    ),
+    CommandCatalogEntry(
         name="/dm_deals",
         audience="Everyone",
         purpose="Enable, filter, test, pause, or delete personal exact-deal DM alerts.",

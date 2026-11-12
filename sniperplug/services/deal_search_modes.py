@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from sniperplug.cogs.deal_scanner import DealCard
+from sniperplug.services.product_demand_evidence import assess_product_demand
 
 
 MODE_BEST = "best"
@@ -56,7 +57,7 @@ class DemandProfile:
 
 
 DEAL_SEARCH_MODES: dict[str, DealSearchModeInfo] = {
-    MODE_BEST: DealSearchModeInfo(MODE_BEST, "Best Picks", "🔥", "Balances category demand, brand quality, seller trust, reviews, proof, and price."),
+    MODE_BEST: DealSearchModeInfo(MODE_BEST, "Best Picks", "🔥", "Balances verified value, product relevance, seller trust, and source-backed item reviews when available."),
     MODE_POPULAR: DealSearchModeInfo(MODE_POPULAR, "Popular Brands", "🏷️", "Boosts recognizable brands and trusted sellers first."),
     MODE_CHEAPEST: DealSearchModeInfo(MODE_CHEAPEST, "Cheapest", "💸", "Shows the lowest current prices first while still keeping proof visible."),
     MODE_HIDDEN: DealSearchModeInfo(MODE_HIDDEN, "Hidden Gems", "🧪", "Allows offbrand, weird clearance, scout, flip, and review-only leads.", public_safe=False),
@@ -216,7 +217,7 @@ def rank_for_search_mode(verified_cards: list[DealCard], review_cards: list[Deal
 
     ranked_verified = sorted(verified, key=best_pick_card_score, reverse=True)
     ranked_review = sorted(review, key=best_pick_card_score, reverse=True)
-    return ModeRankedCards(mode_info, ranked_verified[:limit], ranked_review[:limit], "Best Picks Mode now includes category-aware demand, brand tiers, hot product keywords, reviews, seller trust, clean proof, and markdown strength.")
+    return ModeRankedCards(mode_info, ranked_verified[:limit], ranked_review[:limit], "Best Picks considers verified value and retailer item reviews. Category and brand matches are heuristics, not verified sales demand.")
 
 
 def mode_select_options() -> list[tuple[str, str, str, str]]:
@@ -226,12 +227,15 @@ def mode_select_options() -> list[tuple[str, str, str, str]]:
 def best_pick_card_score(card: DealCard) -> tuple[float, float, float, float, float]:
     quality = product_quality_score(card)
     trust = seller_trust_score(card)
-    demand = category_demand_score(card)
+    relevance = category_demand_score(card)
+    # Retailer item reviews are only an engagement proxy, but they carry more
+    # item-level information than title keywords. Do not parse embeds for it.
+    interest = assess_product_demand(card).rank_points
     discount = float(getattr(card, "discount", 0.0) or 0.0)
     score = float(getattr(card, "score", 0.0) or 0.0)
     price = current_price(card)
-    final = demand + quality + trust + discount * 0.75 + min(score, 250.0) * 0.08
-    return (final, demand, discount, trust, -price)
+    final = relevance + quality + trust + discount * 0.75 + min(score, 250.0) * 0.08 + interest * 2.5
+    return (final, interest, discount, trust, -price)
 
 
 def popular_card_score(card: DealCard) -> tuple[float, float, float]:
@@ -290,6 +294,7 @@ def product_quality_score(card: DealCard) -> float:
 
 
 def category_demand_score(card: DealCard) -> float:
+    """Historical name: category-brand relevance only, not actual sold volume."""
     text = card_text(card)
     profile = infer_category_profile(card)
     if profile is None:

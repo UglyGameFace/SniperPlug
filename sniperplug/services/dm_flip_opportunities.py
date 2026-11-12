@@ -76,7 +76,7 @@ def assess_flip_opportunity(
     enforced by the caller before this assessment runs. Recent eBay sold data
     is accepted only when a future comp provider explicitly marks exact
     identity and condition matching. Active listing prices never count as sold
-    evidence.
+    evidence. Retail/MSRP projections are diagnostic-only, not an override.
     """
 
     minimum_profit = max(1_000, int(minimum_profit_cents))
@@ -142,15 +142,13 @@ def assess_flip_opportunity(
     if roi_percent < 35:
         return FlipAssessment(False, reason="conservative estimated ROI is below 35%")
 
+    # A 65%-of-MSRP resale projection is not independently observed demand.
+    # Retain the estimate for private diagnostics, but never allow it to override
+    # explicit category mutes, allowlists or Smart-mode requirements.
     return FlipAssessment(
-        True,
+        False,
         confirmed_sold_demand=False,
-        reason=(
-            "🚨 Price-error / flip override • "
-            f"{discount:.0f}% exact retail drop • "
-            f"conservative estimated net ${estimated_profit / 100:,.2f} • "
-            "recent sold comps not connected"
-        ),
+        reason="Retail spread only; exact recent sold comps required for Flip Override",
         estimated_profit_cents=estimated_profit,
     )
 

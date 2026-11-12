@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sniperplug.cogs.deal_scanner import DealCard
+from sniperplug.services.product_demand_evidence import assess_product_demand
 
 
 DIRECT_MATCH_VISIBLE_LIMIT = 5
@@ -35,8 +36,9 @@ def verified_card_score(card: DealCard) -> tuple[float, float, float, float]:
     discount = float(getattr(card, "discount", 0.0) or 0.0)
     score = float(getattr(card, "score", 0.0) or 0.0)
     current_price = float(getattr(card, "current_price", 0.0) or 0.0)
-    # Prefer higher discounts and scoring, then lower entry price for easier user action.
-    return (discount, score, -current_price, 1.0 if getattr(card, "should_alert", True) else 0.0)
+    # Markdown stays first; trustworthy item engagement breaks comparable ties.
+    interest = assess_product_demand(card).rank_points
+    return (discount, score + interest, -current_price, 1.0 if getattr(card, "should_alert", True) else 0.0)
 
 
 def review_card_score(card: DealCard) -> tuple[float, float, float]:

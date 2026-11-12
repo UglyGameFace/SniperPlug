@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from sniperplug.models.deal import NormalizedDeal
 from sniperplug.services.deal_intent import assess_deal_intent
 from sniperplug.services.opportunity_watchlist import category_for_title
+from sniperplug.services.product_demand_evidence import assess_product_demand
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
     category = category_for_title(deal.title)
     if category:
         score += category.demand_level // 2
-        reasons.append(f"High-demand category: {category.label}")
+        reasons.append(f"Curated watch category: {category.label} (scan priority, not sales proof)")
 
         if not suspicious_reference and deal.discount_percent is not None and deal.discount_percent >= category.min_discount_percent:
             score += 45
@@ -48,6 +49,11 @@ def score_deal_anomaly(deal: NormalizedDeal) -> AnomalyScore:
             if deal.current_price <= category.absolute_price_floor:
                 score += 35
                 reasons.append(f"Price is below watched floor for {category.label}")
+
+    interest = assess_product_demand(deal)
+    if interest.has_engagement_proxy:
+        score += min(24, interest.rank_points)
+        reasons.append(interest.reason)
 
     if deal.current_price is not None and deal.current_price <= 1:
         score += 80

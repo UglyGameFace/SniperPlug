@@ -82,7 +82,7 @@ def test_cheap_baby_clothing_stays_muted_despite_large_percentage() -> None:
     assert decision.reason == "category is muted in your personal DMs"
 
 
-def test_significant_cross_category_price_error_can_break_mute() -> None:
+def test_unconfirmed_resale_projection_cannot_break_category_mute() -> None:
     decision = match_dm_deal(
         _flip_preference(),
         _card(
@@ -94,11 +94,9 @@ def test_significant_cross_category_price_error_can_break_mute() -> None:
         ),
     )
 
-    assert decision.matched is True
+    assert decision.matched is False
     assert decision.category_key == "baby_kids"
-    assert "Price-error / flip override" in decision.reason
-    assert "conservative estimated net" in decision.reason
-    assert "sold comps not connected" in decision.reason
+    assert decision.reason == "category is muted in your personal DMs"
 
 
 def test_flip_override_respects_hard_maximum_price() -> None:

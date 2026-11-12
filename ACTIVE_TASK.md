@@ -1,5 +1,17 @@
 # Active Task
 
+## 2026-11-12: Demand-first value audit and evidence-aware ranking
+
+- Branch: `feat/demand-first-proven-value-20261112` based on `main@f3b05193`. Full evidence and remaining gates: `docs/SNIPERPLUG_DEMAND_FIRST_AUDIT_2026-11-12.md`.
+- Clarifies curated category priorities versus genuine item demand. Best Picks now uses source-backed Walmart item reviews strictly as a **proxy** (not actual sales).
+- Fixes unconfirmed MSRP/retail-price flip projections overriding subscriber category mutes. Only a verified recent sold-comps path can qualify an override.
+- No new Walmart calls, schema, vendor secrets or alternate senders. Preserves scanner class inheritance, verification, cooldown, quota, and post/expiry.
+- Open PR #200 (eBay watcher) and #273 (movie locality) not merged or deleted; #295 requires item-specific live trace.
+- Verification required: exact-head CI, labeled deal-quality sample, current Discloud SHA/database, official live Walmart responses and Discord receipts, and authorized true-demand feed for a stronger product-sold gate.
+
+---
+
+
 ## November 5, 2026: end-to-end Walmart pipeline audit and integrated correction
 
 - Owner mandate: audit the whole Walmart discovery → verification → classification → delivery chain against `main` @ `7570a992` (PRs #307 and #308 are **merged**, not open) and fix structural causes with production-chain proof. Full write-up: `docs/WALMART_PIPELINE_AUDIT_2026-11-05.md`.

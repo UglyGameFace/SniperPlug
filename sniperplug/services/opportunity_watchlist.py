@@ -5,6 +5,11 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class OpportunityCategory:
+    """Curated scan priorities, not measured item sales or buyer demand.
+
+    Keep demand_level for existing settings, call sites and persisted data;
+    it is a *heuristic priority* and must not be presented as sales evidence.
+    """
     key: str
     label: str
     demand_level: int

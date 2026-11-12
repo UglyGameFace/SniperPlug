@@ -10,7 +10,7 @@ def make_review_card(label: str, body: str) -> DealCard:
     return DealCard(embed=embed, url=f"https://example.com/{label}", label=label)
 
 
-def test_rank_review_candidate_result_preserves_counts_and_promotes_flip_cards():
+def test_rank_review_candidate_result_preserves_counts_without_faking_sold_demand():
     plain = make_review_card("plain", "Was/reference not trusted")
     flip = make_review_card("flip", "Marketplace comp and Flip estimate available")
     result = ReviewCandidateResult(
@@ -25,7 +25,7 @@ def test_rank_review_candidate_result_preserves_counts_and_promotes_flip_cards()
 
     ranked = rank_review_candidate_result(result)
 
-    assert ranked.cards[0].label == "flip"
+    assert ranked.cards[0].label == "plain"
     assert ranked.under_threshold_count == 1
     assert ranked.missing_reference_count == 2
     assert ranked.weak_reference_count == 3

@@ -3,7 +3,7 @@
 ## 2026-11-12: Demand-first value audit and evidence-aware ranking
 
 - Branch: `feat/demand-first-proven-value-20261112` based on `main@f3b05193`. Full evidence and remaining gates: `docs/SNIPERPLUG_DEMAND_FIRST_AUDIT_2026-11-12.md`.
-- Clarifies curated category priorities versus genuine item demand. Best Picks now uses source-backed Walmart item reviews strictly as a **proxy** (not actual sales).
+- Clarifies curated category priorities versus genuine item demand. Best Picks, private review ordering and exact-detail queue scheduling now use source-backed Walmart item reviews strictly as a **proxy** (not actual sales).
 - Fixes unconfirmed MSRP/retail-price flip projections overriding subscriber category mutes. Only a verified recent sold-comps path can qualify an override.
 - No new Walmart calls, schema, vendor secrets or alternate senders. Preserves scanner class inheritance, verification, cooldown, quota, and post/expiry.
 - Open PR #200 (eBay watcher) and #273 (movie locality) not merged or deleted; #295 requires item-specific live trace.

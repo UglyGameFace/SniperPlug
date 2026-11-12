@@ -43,10 +43,12 @@ def verified_card_score(card: DealCard) -> tuple[float, float, float, float]:
 
 def review_card_score(card: DealCard) -> tuple[float, float, float]:
     text = str(card.embed.to_dict()).lower()
-    flip_bonus = 35.0 if "flip estimate" in text or "marketplace comp" in text else 0.0
+    # Text claims like "flip estimate" or "marketplace comp" are not actual
+    # sale receipts. They must never push a speculative lead to the top.
+    interest_bonus = float(assess_product_demand(card).rank_points)
     value_bonus = 20.0 if "coupon from api" in text or "walmart cash from api" in text else 0.0
     direct_match_score = float(getattr(card, "product_match_score", 0.0) or 0.0)
     direct_match_bonus = 120.0 * max(0.0, min(1.0, direct_match_score)) if getattr(card, "product_search_match", False) else 0.0
     current_price = float(getattr(card, "current_price", 0.0) or 0.0)
     discount = float(getattr(card, "discount", 0.0) or 0.0)
-    return (direct_match_bonus + flip_bonus + value_bonus + discount, -current_price, float(getattr(card, "score", 0.0) or 0.0))
+    return (direct_match_bonus + interest_bonus + value_bonus + discount, -current_price, float(getattr(card, "score", 0.0) or 0.0))

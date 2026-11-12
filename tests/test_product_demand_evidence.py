@@ -69,3 +69,24 @@ def test_best_picks_prefers_item_engagement_when_offers_are_equal():
     result = rank_for_search_mode([unknown, engagement], [], MODE_BEST)
     assert result.verified[0] is engagement
     assert "not verified sales demand" in result.note
+
+
+def test_exact_queue_prioritizes_source_backed_interest_without_extra_fetches():
+    from sniperplug.models.candidate import SourceCandidate
+    from sniperplug.services.walmart_exact_price_enrichment import _enrichment_priority
+
+    def candidate(attrs):
+        return SourceCandidate(
+            source_key="walmart", retailer="walmart",
+            title="Xbox Wireless Controller",
+            product_url="https://www.walmart.com/ip/123",
+            current_price=25.0, api_current_price=25.0,
+            variant_attributes=attrs,
+        )
+
+    plain = _enrichment_priority(candidate({}), min_discount=40)
+    popular = _enrichment_priority(
+        candidate({"rating": "4.8", "reviews": "2300"}), min_discount=40
+    )
+    assert popular > plain
+    assert popular - plain <= 45.0

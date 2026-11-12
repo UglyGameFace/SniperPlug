@@ -23,7 +23,7 @@ def test_rank_verified_prefers_higher_discount_then_lower_price():
     assert [item.label for item in ranked] == ["strong", "weak cheap", "weak expensive"]
 
 
-def test_rank_review_promotes_flip_leads():
+def test_review_rank_does_not_promote_unconfirmed_flip_text():
     cards = [
         card("plain review", body="Was/reference not trusted"),
         card("flip review", body="Marketplace comp and Flip estimate available"),
@@ -31,4 +31,4 @@ def test_rank_review_promotes_flip_leads():
 
     ranked = rank_review_cards(cards)
 
-    assert ranked[0].label == "flip review"
+    assert ranked[0].label == "plain review"

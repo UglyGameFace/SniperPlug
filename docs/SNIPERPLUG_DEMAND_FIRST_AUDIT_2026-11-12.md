@@ -21,7 +21,7 @@ In `services/opportunity_watchlist.py`, numeric `demand_level` (e.g. mobile acce
 ## Implemented in this PR
 
 1. `product_demand_evidence.py` reads already-integrated **structured Walmart item rating/review counts** and rejects embed text, malformed numbers, weak ratings and other retailers. Review counts are cumulative *engagement proxies*, never recent sale volumes.
-2. Best Picks adds a bounded evidence bonus; tied markdown cards can use that bonus. Seller identity, exact item, reference price, public gate, offer checks and the existing API request budget stay unchanged.
+2. Best Picks and exact-detail queue scheduling add a bounded evidence bonus; tied markdown cards can use it. Speculative flip/marketplace-comp **words in an embed** no longer outrank substantive private review candidates. Seller identity, exact item, reference price, public gate, offer checks and the existing API request budget stay unchanged.
 3. Displays explain curated category `demand_level` as **scan priority**, maintaining persisted IDs and compatibility with subscribers.
 4. Without matched recent sold-comps, the 65%-of-MSRP resale projection remains private diagnostic information but is **not qualified** for Flip Override. It no longer bypasses explicit category mutes/allowlists or Smart thresholds. An existing confirmed sold-comps path is preserved, but its feed/provenance is not verified as connected.
 5. Add regression tests for valid/untrusted metadata and unconfirmed flip/mute behavior.

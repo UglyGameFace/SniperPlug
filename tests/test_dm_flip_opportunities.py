@@ -151,7 +151,7 @@ def test_flip_override_respects_explicit_score_and_savings_floors() -> None:
     low_score = match_dm_deal(
         _flip_preference(min_score=140),
         _card(
-            "Graco Baby Stroller Travel System",
+            "Nintendo Switch OLED Console",
             current=50.0,
             reference=300.0,
             discount=83.3,
@@ -161,7 +161,7 @@ def test_flip_override_respects_explicit_score_and_savings_floors() -> None:
     low_savings = match_dm_deal(
         _flip_preference(min_savings_cents=30_000),
         _card(
-            "Graco Baby Stroller Travel System",
+            "Nintendo Switch OLED Console",
             current=50.0,
             reference=300.0,
             discount=83.3,

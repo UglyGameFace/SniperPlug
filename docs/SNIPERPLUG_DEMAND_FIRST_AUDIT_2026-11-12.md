@@ -68,10 +68,12 @@ Cleanup rule: consolidate the **active** call graph before deleting base classes
 - **No approved Marketplace Insights connector is currently linked to this repo**; this gate stays closed instead of fabricating purchases. A source-name field is an *adapter contract*, not cryptographic proof. A future adapter must authenticate the official provider and produce actual completed-sale receipts.
 
 ### Missed-item evidence and alert latency
-- New read-only `/sniperplug deal_trace item_id:<number>` for Manage Server permission. It inspects the exact queue row, a bounded sample of retained exact events, and the invoking guild's public-post receipt, including measured discovery→verification→post latency where timestamps exist.
+- New read-only `/sniperplug deal_trace item_id:<number>` for Manage Server permission. It inspects the exact queue row, a bounded sample of the most recently inserted exact events, and the invoking guild's public-post receipt, including measured discovery→verification→post latency where timestamps exist.
 - It never calls the retailer, changes DB schemas, restarts worker cycles, reserves posts, or sends alerts. Errors are reduced to categories to avoid leaking raw database/HTTP exception text.
 - A missing queue row or the absence of a match among the most recent 200 events is explicitly **inconclusive**: source visibility, expiry, thresholds, opt-out, and historical delivery can remain unknown. The existing detailed `walmart_delivery_health`/recovery system is still authoritative for stored per-guild threshold and dedupe decisions.
 - The live missed-$1-item issue is NOT considered closed until the original item ID/offer/ZIP, scan budget, exact lookup and delivery receipt can be reconstructed in the deployed environment.
 
 ### Unverified final gate
 Exact-head Python suite + import smoke + CI check, no regressions against the four-call constraint, current Discloud commit and bot menu sync, Walmart Affiliate API bestseller behavior, actual item-price/stock/offer data, guild receipts and labeled precision@10/recall. This document is a repository audit, not a live retailer or Discloud acceptance report.
+
+- Query efficiency: exact queue uses the item-ID primary key, fanout samples newest inserted events by SQLite rowid (not a full-table timestamp sort), and guild receipt lookup uses the composite (guild_id, deal_key) key; reads remain bounded to the admin's selected item.

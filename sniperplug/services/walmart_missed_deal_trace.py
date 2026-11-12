@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 import re
 from typing import Any
 
-from sniperplug.services.discord_snowflake import snowflake_text
 from sniperplug.services.public_deal_posts import card_deal_key
 from sniperplug.services.walmart_exact_price_enrichment import _candidate_item_id
 from sniperplug.services.walmart_exact_verification_queue import (
@@ -105,7 +104,8 @@ async def trace_walmart_item(
 ) -> WalmartDealTrace:
     """Trace one exact item, including retained queue and one guild's receipt.
 
-    The event scan is capped and source snapshots are exact-ID compared. A
+    The event scan walks the most recently inserted rows by indexed rowid,
+    capped to avoid a full archive sort, and source snapshots are exact-ID compared. A
     missing event/receipt can mean retention, threshold suppression, muted
     categories or a processing error; only a stored decision can prove why.
     """
@@ -144,7 +144,7 @@ async def trace_walmart_item(
                 f"""SELECT deal_key, snapshot_json, first_seen_at,
                            source_verified_at, processed_at, last_error
                     FROM {fanout.EVENT_TABLE}
-                    ORDER BY first_seen_at DESC LIMIT ?""",
+                    ORDER BY rowid DESC LIMIT ?""",
                 (cap,),
             )
             event_rows = await cur.fetchall()
@@ -175,9 +175,9 @@ async def trace_walmart_item(
                     continue
                 cur = await conn.execute(
                     """SELECT status, posted_at FROM guild_public_deal_posts
-                       WHERE CAST(guild_id AS TEXT) = ? AND retailer = 'walmart'
+                       WHERE guild_id = ? AND retailer = 'walmart'
                          AND deal_key = ? LIMIT 1""",
-                    (snowflake_text(guild_id), key),
+                    (int(guild_id), key),
                 )
                 receipt = await cur.fetchone()
                 if receipt is not None:

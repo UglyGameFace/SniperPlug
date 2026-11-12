@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -326,11 +327,20 @@ class WalmartProvider(DealProvider):
         if not isinstance(items, list):
             return []
         candidates: list[SourceCandidate] = []
-        for item in items:
+        for position, item in enumerate(items, start=1):
             if not isinstance(item, dict):
                 continue
             candidate = self._candidate_from_item(item, request=request)
             if candidate:
+                # Ranking is the returned *position* under a requested sort.
+                # The API does not prove how many units sold, nor does this
+                # prove that a sort was honored. Never invent sales volume.
+                if request.sort == "bestseller" and request.page == 1:
+                    attrs = candidate.variant_attributes
+                    attrs["walmartBestsellerSortRequested"] = "yes"
+                    attrs["walmartBestsellerSearchPosition"] = str(position)
+                    attrs["walmartBestsellerSearchQuery"] = str(request.query or "")[:120]
+                    attrs["walmartBestsellerObservedAt"] = datetime.now(timezone.utc).isoformat()
                 candidates.append(candidate)
         return candidates
 

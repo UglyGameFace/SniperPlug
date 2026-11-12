@@ -115,13 +115,17 @@ def test_broad_cursor_still_advances_and_is_never_starved() -> None:
     # never starved.
     plans = simulate_batches(265)
     broad_counts: Counter[str] = Counter()
-    for plan in plans:
+    for batch_number, plan in enumerate(plans):
         assert len(plan) == 4
         broad_counts[plan[0][0]] += 1
         broad_counts[plan[1][0]] += 1
         # Broad slots are always the claimed routes, in cursor order.
         assert plan[0][2:] == (None, None)
-        assert plan[1][2:] == (None, None)
+        assert plan[1][2:] == (
+            ("bestseller", None) if catalog.is_bestseller_probe_batch(
+                batch_number
+            ) else (None, None)
+        )
     assert broad_counts == {f"query-{index}": 2 for index in range(TOTAL_ROUTES)}
     assert 265 / 2 == 132.5  # ceil -> 133 batches ~= 133 minutes per pass
 
@@ -142,7 +146,10 @@ def test_priority_rotation_is_hard_capped_and_cannot_starve_broad() -> None:
             priority_total += 1
         # Broad slots are never displaced by a priority search.
         assert plan[0][2:] == (None, None)
-        assert plan[1][2:] == (None, None)
+        assert plan[1][2:] == (
+            ("bestseller", None) if catalog.is_bestseller_probe_batch(batch_number)
+            else (None, None)
+        )
     # 1 priority per 5 batches at 1 batch/minute = 12/hour, structurally.
     assert priority_total == 60
     assert priority_total / 5 == 12.0  # per hour at the fixed 60s rate
@@ -260,3 +267,19 @@ def test_backpressure_still_pauses_discovery() -> None:
     )
     reason = catalog_backpressure_reason(emergency)
     assert reason is not None and "emergency backpressure" in reason
+
+
+
+def test_bestseller_canary_reuses_one_broad_slot_not_a_fifth_call() -> None:
+    plans = simulate_batches(144)
+    canaries = [
+        (batch, plan)
+        for batch, plan in enumerate(plans)
+        if plan[1][2] == "bestseller"
+    ]
+    assert len(canaries) == 12
+    assert all(batch % 12 == 7 for batch, _ in canaries)
+    assert all(len(plan) == 4 for plan in plans)
+    assert all(plan[2][2:] == ("price", "ascending") for plan in plans)
+    assert all(plan[3][2:] == ("price", "ascending") for plan in plans)
+    assert all(plan[0][2:] == (None, None) for plan in plans)

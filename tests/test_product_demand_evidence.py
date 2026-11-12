@@ -110,3 +110,48 @@ def test_brand_and_hot_keyword_scoring_does_not_match_inside_generic_words():
     )
     assert brand_score(real_brand) > 0
     assert global_demand_score(real_brand) >= 7.0
+
+
+
+def test_bestseller_position_alone_never_claims_sales_demand():
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    data = _record(rating="3.0", reviews="9999")
+    data.variant_attributes.update({
+        "walmartBestsellerSortRequested": "yes",
+        "walmartBestsellerSearchPosition": "1",
+        "walmartBestsellerSearchQuery": "console",
+        "walmartBestsellerObservedAt": now,
+    })
+    assert assess_product_demand(data).rank_points == 0
+
+
+def test_top_five_bestseller_request_gives_only_small_secondary_proxy():
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    baseline = _record()
+    sampled = _record()
+    sampled.variant_attributes.update({
+        "walmartBestsellerSortRequested": "yes",
+        "walmartBestsellerSearchPosition": "3",
+        "walmartBestsellerSearchQuery": "console",
+        "walmartBestsellerObservedAt": now,
+    })
+    assert assess_product_demand(sampled).rank_points == assess_product_demand(baseline).rank_points + 4
+    assert assess_product_demand(sampled).bestseller_search_position == 3
+    assert "API ordering unverified" in assess_product_demand(sampled).reason
+
+
+def test_bestseller_sort_provenance_cannot_be_invented_by_unsorted_search():
+    from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
+    from sniperplug.providers.base import ProviderScanRequest
+    provider = WalmartProvider(config=WalmartAffiliateConfig())
+    payload = {"items": [
+        {"name": "Xbox Wireless Controller", "itemId": 123456, "salePrice": 25.00},
+        {"name": "Nintendo Switch Console", "itemId": 987654, "salePrice": 150.00},
+    ]}
+    ordinary = provider._candidates_from_payload(payload, ProviderScanRequest(source_key="walmart", query="console", sort="price"))
+    assert all("walmartBestsellerSortRequested" not in c.variant_attributes for c in ordinary)
+    sampled = provider._candidates_from_payload(payload, ProviderScanRequest(source_key="walmart", query="console", sort="bestseller"))
+    assert [c.variant_attributes.get("walmartBestsellerSearchPosition") for c in sampled] == ["1", "2"]
+    assert all(c.variant_attributes.get("walmartBestsellerSortRequested") == "yes" for c in sampled)

@@ -103,3 +103,16 @@ def test_global_runtime_uses_request_priority_not_whole_job_provider_lock() -> N
     assert "enqueue_walmart_exact_verification_candidates_bulk" in autoscan
     assert "foreground_item_ids" in autoscan
     assert "true overflow verified added" in autoscan
+
+
+
+def test_nonfinite_retail_price_fails_closed_before_queue_priority() -> None:
+    from sniperplug.services.walmart_exact_price_enrichment import _positive_number
+    from sniperplug.services.walmart_catalog_discovery_only import distinct_catalog_offer_candidates
+    for bad in ("inf", "Infinity", "-Infinity", "nan", float("inf"), float("nan")):
+        assert _positive_number(bad) is None
+    candidate_bad = candidate("700103")
+    candidate_bad.api_current_price = float("inf")
+    candidate_bad.current_price = float("inf")
+    distinct = distinct_catalog_offer_candidates([candidate_bad])
+    assert len(distinct) == 1

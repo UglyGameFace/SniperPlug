@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -689,4 +690,4 @@ def _positive_number(value: Any) -> float | None:
         parsed = float(str(value).replace("$", "").replace(",", "").strip())
     except (TypeError, ValueError):
         return None
-    return parsed if parsed > 0 else None
+    return parsed if math.isfinite(parsed) and parsed > 0 else None

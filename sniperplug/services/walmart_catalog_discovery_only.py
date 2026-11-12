@@ -4,7 +4,6 @@ import asyncio
 import os
 from dataclasses import dataclass
 
-from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import HuntPreset
 from sniperplug.providers.base import ProviderScanResult
 from sniperplug.services import verified_discount_hunt as hunt

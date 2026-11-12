@@ -302,12 +302,12 @@ def category_demand_score(card: DealCard) -> float:
     score = 14.0
     score += category_brand_score(card)
     for term in profile.hot_terms:
-        if term in text:
+        if has_whole_phrase(text, term):
             score += 18.0
             break
-    hot_hits = sum(1 for term in profile.hot_terms if term in text)
+    hot_hits = sum(1 for term in profile.hot_terms if has_whole_phrase(text, term))
     score += min(24.0, max(0, hot_hits - 1) * 6.0)
-    if any(term in text for term in profile.low_priority_terms):
+    if any(has_whole_phrase(text, term) for term in profile.low_priority_terms):
         score -= 25.0
     score += global_demand_score(card) * 0.35
     return score
@@ -320,7 +320,7 @@ def global_demand_score(card: DealCard) -> float:
         "clearance", "rollback", "special buy", "limited", "bundle", "gift set", "starter kit", "pro", "max", "ultra", "oled", "4k", "lego", "pokemon", "dyson", "shark", "ninja", "milwaukee", "dewalt", "apple", "samsung",
     )
     for term in global_hot_terms:
-        if term in text:
+        if has_whole_phrase(text, term):
             score += 7.0
     return min(score, 45.0)
 
@@ -332,10 +332,10 @@ def category_brand_score(card: DealCard) -> float:
         return 0.0
     score = 0.0
     for brand in profile.tier1_brands:
-        if brand in text:
+        if has_whole_phrase(text, brand):
             score = max(score, 65.0)
     for brand in profile.tier2_brands:
-        if brand in text:
+        if has_whole_phrase(text, brand):
             score = max(score, 42.0)
     return score
 
@@ -345,7 +345,7 @@ def infer_category_profile(card: DealCard) -> DemandProfile | None:
     best_profile: DemandProfile | None = None
     best_hits = 0
     for profile in CATEGORY_PROFILES:
-        hits = sum(1 for term in profile.category_terms if term in text)
+        hits = sum(1 for term in profile.category_terms if has_whole_phrase(text, term))
         if hits > best_hits:
             best_profile = profile
             best_hits = hits
@@ -356,7 +356,7 @@ def brand_score(card: DealCard) -> float:
     text = card_text(card)
     score = 0.0
     for brand in POPULAR_BRAND_TERMS:
-        if brand in text:
+        if has_whole_phrase(text, brand):
             score = max(score, 45.0 if len(brand) > 3 else 25.0)
     return score
 
@@ -419,3 +419,16 @@ def first_float_match(text: str, pattern: str) -> float | None:
         return float(match.group(1).replace(",", ""))
     except (TypeError, ValueError):
         return None
+
+
+def has_whole_phrase(text: str, phrase: str) -> bool:
+    """Avoid branding ordinary 'product' as Pro or 'algae' as LG.
+
+    Category and brand terms are heuristics from display text. Match complete
+    terms only so generic copy cannot silently masquerade as sought-after
+    manufacturers or premium model families.
+    """
+    return re.search(
+        r"(?<![a-z0-9])" + re.escape(phrase.lower()) + r"(?![a-z0-9])",
+        text,
+    ) is not None

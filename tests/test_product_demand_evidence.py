@@ -90,3 +90,23 @@ def test_exact_queue_prioritizes_source_backed_interest_without_extra_fetches():
     )
     assert popular > plain
     assert popular - plain <= 45.0
+
+
+def test_brand_and_hot_keyword_scoring_does_not_match_inside_generic_words():
+    from sniperplug.services.deal_search_modes import (
+        brand_score, global_demand_score, has_popular_brand,
+    )
+    record = SimpleNamespace(
+        label="Algae extract for aquarium",
+        embed=discord.Embed(description="Product links and maximum shipping information"),
+    )
+    assert brand_score(record) == 0.0
+    assert not has_popular_brand(record)
+    assert global_demand_score(record) == 0.0
+
+    real_brand = SimpleNamespace(
+        label="LG 27 inch 4K gaming monitor",
+        embed=discord.Embed(description="Full product details"),
+    )
+    assert brand_score(real_brand) > 0
+    assert global_demand_score(real_brand) >= 7.0

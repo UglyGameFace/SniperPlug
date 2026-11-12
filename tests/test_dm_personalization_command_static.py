@@ -86,7 +86,7 @@ def test_flip_lane_never_treats_active_listings_as_sold_proof() -> None:
     assert "ebayCompIdentityMatched" in FLIP
     assert "ebayCompConditionMatched" in FLIP
     assert "ebayActiveListing" not in FLIP
-    assert "recent sold comps not connected" in FLIP
+    assert "exact recent sold comps required" in FLIP
     assert "assess_flip_opportunity(" in MATCHER
     assert "if flip.qualified" in MATCHER
 

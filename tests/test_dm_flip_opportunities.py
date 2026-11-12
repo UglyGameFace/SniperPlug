@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from types import SimpleNamespace
 
 import discord
@@ -25,6 +27,8 @@ def _card(
 ):
     return SimpleNamespace(
         label=title,
+        upc=(attrs or {}).get("walmartUPC"),
+        api_condition=(attrs or {}).get("condition"),
         url="https://www.walmart.com/ip/123",
         embed=discord.Embed(title=f"🔥 {discount:.0f}% OFF • {title}"),
         api_current_price=current,
@@ -82,7 +86,7 @@ def test_cheap_baby_clothing_stays_muted_despite_large_percentage() -> None:
     assert decision.reason == "category is muted in your personal DMs"
 
 
-def test_significant_cross_category_price_error_can_break_mute() -> None:
+def test_unconfirmed_resale_projection_cannot_break_category_mute() -> None:
     decision = match_dm_deal(
         _flip_preference(),
         _card(
@@ -94,11 +98,9 @@ def test_significant_cross_category_price_error_can_break_mute() -> None:
         ),
     )
 
-    assert decision.matched is True
+    assert decision.matched is False
     assert decision.category_key == "baby_kids"
-    assert "Price-error / flip override" in decision.reason
-    assert "conservative estimated net" in decision.reason
-    assert "sold comps not connected" in decision.reason
+    assert decision.reason == "category is muted in your personal DMs"
 
 
 def test_flip_override_respects_hard_maximum_price() -> None:
@@ -153,7 +155,7 @@ def test_flip_override_respects_explicit_score_and_savings_floors() -> None:
     low_score = match_dm_deal(
         _flip_preference(min_score=140),
         _card(
-            "Graco Baby Stroller Travel System",
+            "Nintendo Switch OLED Console",
             current=50.0,
             reference=300.0,
             discount=83.3,
@@ -163,7 +165,7 @@ def test_flip_override_respects_explicit_score_and_savings_floors() -> None:
     low_savings = match_dm_deal(
         _flip_preference(min_savings_cents=30_000),
         _card(
-            "Graco Baby Stroller Travel System",
+            "Nintendo Switch OLED Console",
             current=50.0,
             reference=300.0,
             discount=83.3,
@@ -188,6 +190,12 @@ def test_exact_recent_ebay_sold_comps_can_confirm_any_category() -> None:
             score=100,
             attrs={
                 "department": "Baby Gear",
+                "walmartUPC": "036000291452",
+                "condition": "New",
+                "ebayCompGTIN": "0036000291452",
+                "ebayCompCondition": "New",
+                "ebaySoldCompSource": "ebay_marketplace_insights",
+                "ebaySoldCompFetchedAt": datetime.now(timezone.utc).isoformat(),
                 "ebayCompIdentityMatched": "yes",
                 "ebayCompConditionMatched": "yes",
                 "ebayRecentSoldCount": 7,

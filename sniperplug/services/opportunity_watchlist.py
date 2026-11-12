@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 
 @dataclass(frozen=True)
 class OpportunityCategory:
+    """Curated scan priorities, not measured item sales or buyer demand.
+
+    Keep demand_level for existing settings, call sites and persisted data;
+    it is a *heuristic priority* and must not be presented as sales evidence.
+    """
     key: str
     label: str
     demand_level: int
@@ -62,7 +68,13 @@ OPPORTUNITY_CATEGORIES: tuple[OpportunityCategory, ...] = (
 
 def category_for_title(title: str) -> OpportunityCategory | None:
     normalized = title.lower()
-    matches = [category for category in OPPORTUNITY_CATEGORIES if any(term in normalized for term in category.terms)]
+    matches = [
+        category for category in OPPORTUNITY_CATEGORIES
+        if any(
+            re.search(r"(?<![a-z0-9])" + re.escape(term.lower()) + r"(?![a-z0-9])", normalized)
+            for term in category.terms
+        )
+    ]
     if not matches:
         return None
     return sorted(matches, key=lambda category: category.demand_level, reverse=True)[0]

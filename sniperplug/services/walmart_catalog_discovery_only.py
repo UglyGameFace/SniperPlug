@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 
 from sniperplug.cogs import deal_scanner
@@ -45,6 +46,21 @@ CATALOG_PAGES_PER_QUERY = 2
 CATALOG_PROVIDER_RESULT_LIMIT = 1000
 CATALOG_MAX_PAGE = max(1, CATALOG_PROVIDER_RESULT_LIMIT // hunt.RESULTS_PER_PAGE)
 CATALOG_SORT_PASSES: tuple[tuple[str | None, str | None], ...] = ((None, None),)
+# One existing broad query per 12 completed batches tests the official
+# bestseller search order. No fifth API call, no loss of either $1-price sniper.
+# The provider labels this as *sort requested*, not confirmed recent purchases.
+BESTSELLER_PROBE_EVERY_N_BATCHES = 12
+BESTSELLER_PROBE_BATCH_OFFSET = 7
+
+
+def is_bestseller_probe_batch(batch_number: int) -> bool:
+    enabled = str(os.getenv("SNIPERPLUG_BESTSELLER_CANARY_ENABLED", "true")).strip().lower()
+    if enabled in {"0", "false", "off", "no"}:
+        return False
+    return (
+        max(0, int(batch_number)) % BESTSELLER_PROBE_EVERY_N_BATCHES
+        == BESTSELLER_PROBE_BATCH_OFFSET
+    )
 
 
 @dataclass(frozen=True)
@@ -55,6 +71,8 @@ class WalmartCatalogDiscoveryResult:
     unique_candidates: int = 0
     candidates_with_item_id: int = 0
     warnings: tuple[str, ...] = ()
+    bestseller_searches: int = 0
+    bestseller_search_candidates: int = 0
 
 
 def _walmart_item_id(candidate) -> str:
@@ -119,6 +137,10 @@ def catalog_request_plan_for_claim(
     if len(routes) != BROAD_ROUTES_PER_BATCH or claim.total_routes < BROAD_ROUTES_PER_BATCH:
         return tuple(plan)
     batch_number = max(0, claim.completed_routes_before) // BROAD_ROUTES_PER_BATCH
+    if is_bestseller_probe_batch(batch_number):
+        # Reuse the second broad request, preserving its query and cursor. Its
+        # position in an Affiliate response is not validated sales volume.
+        plan[1] = (routes[1], 1, "bestseller", None)
     rotation_slots_before = (
         SNIPER_SEARCHES_PER_BATCH * batch_number
         - priority_snipers_before_batch(batch_number)
@@ -295,6 +317,11 @@ async def discover_walmart_catalog_candidates(
     page_label = ",".join(str(page) for page in dict.fromkeys(
         page for _query, page, _sort, _order in request_plan
     ))
+    bestseller_searches = sum(sort_value == "bestseller" for _query, _page, sort_value, _order in request_plan)
+    bestseller_search_candidates = sum(
+        str((getattr(candidate, "variant_attributes", None) or {}).get("walmartBestsellerSortRequested") or "").lower() == "yes"
+        for candidate in all_candidates
+    )
     sniper_requests = sum(
         sort_value == PRICE_SNIPER_SORT for _query, _page, sort_value, _order in request_plan
     )
@@ -311,6 +338,12 @@ async def discover_walmart_catalog_candidates(
         f"planned searches **{len(request_plan)}** • "
         f"completed full passes before this batch **{completed_passes}**."
     )
+    if bestseller_searches:
+        warnings.append(
+            "Walmart bestseller canary: search sort requested **1** • "
+            f"results **{bestseller_search_candidates}** • "
+            "positions indicate search order, NOT verified purchases or sell-through."
+        )
     warnings.append(
         "Walmart catalog discovery-only pass: "
         f"page window **{page_label}**/**{CATALOG_MAX_PAGE}** • "
@@ -325,4 +358,6 @@ async def discover_walmart_catalog_candidates(
         unique_candidates=len(deduped),
         candidates_with_item_id=item_id_count,
         warnings=tuple(warnings),
+        bestseller_searches=bestseller_searches,
+        bestseller_search_candidates=bestseller_search_candidates,
     )

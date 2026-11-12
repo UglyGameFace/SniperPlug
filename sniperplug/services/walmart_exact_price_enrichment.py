@@ -6,6 +6,8 @@ from typing import Any, Iterable
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.services.walmart_extreme_price_signals import is_priority_extreme_discovery
+from sniperplug.services.product_demand_evidence import assess_product_demand
+from sniperplug.services.product_target_fit import assess_product_target_fit
 from sniperplug.providers.base import ProviderScanRequest
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 
@@ -329,6 +331,18 @@ def _enrichment_priority(candidate: SourceCandidate, *, min_discount: int) -> fl
     if str(attrs.get("specialBuy") or "").lower() == "yes":
         score += 15.0
 
+    # Spend existing exact-detail capacity on better-evidenced items first
+    # among otherwise comparable candidates, without new API calls or
+    # displacing the dominant $1-$10 high-value anomaly priority.
+    score += assess_product_demand(candidate).rank_points * 1.5
+    # Small bounded discovery-ordering adjustment. An extreme-price device's
+    # existing +400 priority is retained; no candidate loses its ID or gets
+    # blocked from exact verification solely because curation is uncertain.
+    fit = assess_product_target_fit(candidate)
+    if fit.tier == "curated_target":
+        score += 55.0
+    elif fit.tier == "accessory":
+        score = max(1.0, score - 50.0)
     return score
 
 

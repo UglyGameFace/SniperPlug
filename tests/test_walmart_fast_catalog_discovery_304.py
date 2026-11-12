@@ -69,7 +69,10 @@ def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> No
         )
         plan = catalog.catalog_request_plan_for_claim(claim)
         assert len(plan) == 4
-        assert plan[:2] == tuple((query, 1, None, None) for query in claim.queries)
+        expected_broad = tuple((query, 1, None, None) for query in claim.queries)
+        if catalog.is_bestseller_probe_batch(completed // 2):
+            expected_broad = (expected_broad[0], (claim.queries[1], 1, "bestseller", None))
+        assert plan[:2] == expected_broad
         for query, page, sort_value, order_value in plan[2:]:
             assert (page, sort_value, order_value) == (1, "price", "ascending")
         # First sniper slot is always the general rotation; the second is

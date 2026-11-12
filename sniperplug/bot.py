@@ -126,11 +126,8 @@ class SniperPlugBot(commands.Bot):
         log.info("Persistent public panel views registered: %s", public_panel_views)
 
         provider_registry.clear()
-        # NOTE (C6): BestBuyProvider deliberately NOT registered. Its scan()
-        # returns zero candidates by design (staged skeleton, see
-        # sniperplug/providers/bestbuy.py) so registering it only adds a
-        # dead provider to the registry. Do not re-register without a real
-        # live Best Buy implementation.
+        # Only providers with real, tested scans belong in the runtime
+        # registry. Retired Best Buy zero-candidate stub is not shipped.
         walmart_provider = WalmartPageRecoveryProvider(
             walmart_affiliate_config(self.settings)
         )

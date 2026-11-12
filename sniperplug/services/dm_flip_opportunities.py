@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from sniperplug.services.opportunity_watchlist import OPPORTUNITY_CATEGORIES
+from sniperplug.services.product_identity_match import (
+    authorized_sold_comp_observation,
+    match_exact_product_identity,
+)
 
 
 DEFAULT_FLIP_MIN_PROFIT_CENTS = 5_000
@@ -76,7 +80,7 @@ def assess_flip_opportunity(
     enforced by the caller before this assessment runs. Recent eBay sold data
     is accepted only when a future comp provider explicitly marks exact
     identity and condition matching. Active listing prices never count as sold
-    evidence.
+    evidence. Retail/MSRP projections are diagnostic-only, not an override.
     """
 
     minimum_profit = max(1_000, int(minimum_profit_cents))
@@ -87,6 +91,7 @@ def assess_flip_opportunity(
 
     confirmed = _confirmed_ebay_assessment(
         attrs,
+        card=card,
         category_key=category_key,
         current_cents=current_cents,
         minimum_profit_cents=minimum_profit,
@@ -142,15 +147,13 @@ def assess_flip_opportunity(
     if roi_percent < 35:
         return FlipAssessment(False, reason="conservative estimated ROI is below 35%")
 
+    # A 65%-of-MSRP resale projection is not independently observed demand.
+    # Retain the estimate for private diagnostics, but never allow it to override
+    # explicit category mutes, allowlists or Smart-mode requirements.
     return FlipAssessment(
-        True,
+        False,
         confirmed_sold_demand=False,
-        reason=(
-            "🚨 Price-error / flip override • "
-            f"{discount:.0f}% exact retail drop • "
-            f"conservative estimated net ${estimated_profit / 100:,.2f} • "
-            "recent sold comps not connected"
-        ),
+        reason="Retail spread only; exact recent sold comps required for Flip Override",
         estimated_profit_cents=estimated_profit,
     )
 
@@ -158,6 +161,7 @@ def assess_flip_opportunity(
 def _confirmed_ebay_assessment(
     attrs: dict[str, Any],
     *,
+    card: Any,
     category_key: str,
     current_cents: int,
     minimum_profit_cents: int,
@@ -200,6 +204,30 @@ def _confirmed_ebay_assessment(
 
     if not identity_matched or not condition_matched:
         return FlipAssessment(False, reason="eBay comps are not exact identity/condition matches")
+    if not authorized_sold_comp_observation(attrs):
+        return FlipAssessment(False, reason="no fresh authorized completed-sales source observation")
+    exact_match = match_exact_product_identity(
+        retailer_gtin=(
+            getattr(card, "upc", None)
+            or attrs.get("walmartUPC")
+            or attrs.get("upc")
+        ),
+        sold_gtin=_first(attrs, "ebayCompGTIN", "resaleCompGTIN"),
+        retailer_condition=(
+            getattr(card, "api_condition", None)
+            or attrs.get("condition")
+            or attrs.get("apiCondition")
+        ),
+        sold_condition=_first(attrs, "ebayCompCondition", "resaleCompCondition"),
+        retailer_pack=getattr(card, "pack_size", None) or attrs.get("packSize"),
+        sold_pack=_first(attrs, "ebayCompPackSize", "resaleCompPackSize"),
+        retailer_model=getattr(card, "model", None) or attrs.get("modelNumber"),
+        sold_model=_first(attrs, "ebayCompModelNumber", "resaleCompModelNumber"),
+        retailer_variant=getattr(card, "variant_label", None) or attrs.get("variantLabel"),
+        sold_variant=_first(attrs, "ebayCompVariant", "resaleCompVariant"),
+    )
+    if not exact_match.matched:
+        return FlipAssessment(False, reason="sold-comp exact product mismatch: " + exact_match.reason)
     if sold_count < MIN_CONFIRMED_SOLD_COMPS:
         return FlipAssessment(False, reason="not enough recent eBay sold comps")
     if sold_window_days <= 0 or sold_window_days > MAX_CONFIRMED_SOLD_WINDOW_DAYS:

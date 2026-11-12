@@ -18,7 +18,6 @@ class Settings:
     dev_guild_ids: tuple[int, ...] = ()
     sync_global_commands: bool = False
     sync_commands_on_boot: bool = False
-    bestbuy_api_key: str | None = None
     target_redsky_api_key: str | None = None
     walmart_consumer_id: str | None = None
     walmart_key_version: str | None = None
@@ -48,7 +47,6 @@ class Settings:
             default=bool(dev_guild_ids or sync_global_commands),
         )
 
-        bestbuy_api_key = os.getenv("BESTBUY_API_KEY", "").strip() or None
         target_redsky_api_key = (
             os.getenv("TARGET_REDSKY_API_KEY", "").strip() or None
         )
@@ -66,7 +64,6 @@ class Settings:
             dev_guild_ids=dev_guild_ids,
             sync_global_commands=sync_global_commands,
             sync_commands_on_boot=sync_commands_on_boot,
-            bestbuy_api_key=bestbuy_api_key,
             target_redsky_api_key=target_redsky_api_key,
             walmart_consumer_id=walmart_consumer_id,
             walmart_key_version=walmart_key_version,

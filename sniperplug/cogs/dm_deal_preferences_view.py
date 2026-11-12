@@ -1026,7 +1026,7 @@ class _CategoryPageSelect(discord.ui.Select):
                 label=category.label[:100],
                 value=category.key,
                 description=(
-                    f"Demand {category.demand_level}/100 • discovery baseline "
+                    f"Scan priority {category.demand_level}/100 • discovery baseline "
                     f"{category.min_discount_percent:g}%"
                 )[:100],
                 default=category.key in active,

@@ -42,14 +42,15 @@ def test_open_box_coverage_is_native_without_a_duplicate_loaded_cog():
     assert "OPEN_BOX_AUTOSCAN_KEY" in routes
 
 
-def test_best_buy_stub_provider_stays_deregistered():
-    # NOTE (C6): BestBuyProvider.scan() returns zero candidates by design
-    # (staged skeleton, sniperplug/providers/bestbuy.py) — the provider file
-    # stays, but it must not be registered in bot.py.
+def test_dead_best_buy_provider_is_removed_and_not_registered():
     bot = read("sniperplug/bot.py")
-
+    config = read("sniperplug/config.py")
+    env_example = read(".env.example")
+    assert not (ROOT / "sniperplug/providers/bestbuy.py").exists()
     assert "from sniperplug.providers.bestbuy import BestBuyProvider" not in bot
     assert "BestBuyProvider(" not in bot
+    assert "bestbuy_api_key" not in config
+    assert "BESTBUY_API_KEY" not in env_example
 
 
 def test_canonical_deal_and_autoscan_commands_still_exist():

@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 
 from sniperplug.cogs.deal_scanner import DealCard
+from sniperplug.services.product_demand_evidence import assess_product_demand
+from sniperplug.services.product_target_fit import assess_product_target_fit, product_title
 
 
 MODE_BEST = "best"
@@ -56,7 +58,7 @@ class DemandProfile:
 
 
 DEAL_SEARCH_MODES: dict[str, DealSearchModeInfo] = {
-    MODE_BEST: DealSearchModeInfo(MODE_BEST, "Best Picks", "🔥", "Balances category demand, brand quality, seller trust, reviews, proof, and price."),
+    MODE_BEST: DealSearchModeInfo(MODE_BEST, "Best Picks", "🔥", "Balances verified value, product relevance, seller trust, and source-backed item reviews when available."),
     MODE_POPULAR: DealSearchModeInfo(MODE_POPULAR, "Popular Brands", "🏷️", "Boosts recognizable brands and trusted sellers first."),
     MODE_CHEAPEST: DealSearchModeInfo(MODE_CHEAPEST, "Cheapest", "💸", "Shows the lowest current prices first while still keeping proof visible."),
     MODE_HIDDEN: DealSearchModeInfo(MODE_HIDDEN, "Hidden Gems", "🧪", "Allows offbrand, weird clearance, scout, flip, and review-only leads.", public_safe=False),
@@ -216,7 +218,7 @@ def rank_for_search_mode(verified_cards: list[DealCard], review_cards: list[Deal
 
     ranked_verified = sorted(verified, key=best_pick_card_score, reverse=True)
     ranked_review = sorted(review, key=best_pick_card_score, reverse=True)
-    return ModeRankedCards(mode_info, ranked_verified[:limit], ranked_review[:limit], "Best Picks Mode now includes category-aware demand, brand tiers, hot product keywords, reviews, seller trust, clean proof, and markdown strength.")
+    return ModeRankedCards(mode_info, ranked_verified[:limit], ranked_review[:limit], "Best Picks favors complete sought-after hardware over accessories, using structured retailer reviews when present. Curation and reviews are not verified sales.")
 
 
 def mode_select_options() -> list[tuple[str, str, str, str]]:
@@ -226,19 +228,27 @@ def mode_select_options() -> list[tuple[str, str, str, str]]:
 def best_pick_card_score(card: DealCard) -> tuple[float, float, float, float, float]:
     quality = product_quality_score(card)
     trust = seller_trust_score(card)
-    demand = category_demand_score(card)
+    relevance = category_demand_score(card)
+    # Retailer item reviews are only an engagement proxy, but they carry more
+    # item-level information than title keywords. Do not parse embeds for it.
+    interest = assess_product_demand(card).rank_points
     discount = float(getattr(card, "discount", 0.0) or 0.0)
     score = float(getattr(card, "score", 0.0) or 0.0)
     price = current_price(card)
-    final = demand + quality + trust + discount * 0.75 + min(score, 250.0) * 0.08
-    return (final, demand, discount, trust, -price)
+    # Distinguish actual sought-after hardware from a case, mount or cable
+    # that merely mentions a premium product family in its title. This is
+    # curation only: exact seller/stock/discount proof remains independent.
+    target = assess_product_target_fit(card).rank_points
+    final = relevance + quality + trust + discount * 0.75 + min(score, 250.0) * 0.08 + interest * 2.5 + target * 2
+    return (final, interest, discount, trust, -price)
 
 
 def popular_card_score(card: DealCard) -> tuple[float, float, float]:
     brand = brand_score(card) + category_brand_score(card)
     trust = seller_trust_score(card)
     discount = float(getattr(card, "discount", 0.0) or 0.0)
-    return (brand * 2.4 + trust + product_quality_score(card), discount, -current_price(card))
+    target = assess_product_target_fit(card).rank_points
+    return (brand * 2.4 + trust + product_quality_score(card) + target, discount, -current_price(card))
 
 
 def cheapest_card_score(card: DealCard) -> tuple[float, float, float]:
@@ -267,15 +277,13 @@ def markdown_card_score(card: DealCard) -> tuple[float, float, float]:
 def product_quality_score(card: DealCard) -> float:
     text = card_text(card)
     score = brand_score(card) + category_brand_score(card) * 0.65
-    rating = first_float_match(text, r"rating[^0-9]*(\d+(?:\.\d+)?)")
-    reviews = first_float_match(text, r"reviews[^0-9]*(\d+(?:,\d{3})*|\d+)")
+    # Rendered embed text can be user-provided or include marketing claims.
+    # Only the verified structured Walmart product metadata may influence
+    # rating/review-based interest ranking, never regexes on Discord prose.
+    evidence = assess_product_demand(card)
+    if evidence.has_engagement_proxy:
+        score += min(24.0, evidence.rank_points * 0.6)
     profile = infer_category_profile(card)
-    if rating:
-        min_rating = profile.min_good_rating if profile else 4.0
-        score += min(30.0, max(-8.0, (rating - min_rating) * 14.0 + 10.0))
-    if reviews:
-        min_reviews = profile.min_good_reviews if profile else 75
-        score += min(30.0, reviews / max(20.0, min_reviews / 2.0))
     if "selected option" in text or "exact product match" in text:
         score += 8.0
     if "product links" in text:
@@ -290,57 +298,58 @@ def product_quality_score(card: DealCard) -> float:
 
 
 def category_demand_score(card: DealCard) -> float:
-    text = card_text(card)
+    """Historical name: category-brand relevance only, not actual sold volume."""
+    text = product_title(card)
     profile = infer_category_profile(card)
     if profile is None:
         return global_demand_score(card)
     score = 14.0
     score += category_brand_score(card)
     for term in profile.hot_terms:
-        if term in text:
+        if has_whole_phrase(text, term):
             score += 18.0
             break
-    hot_hits = sum(1 for term in profile.hot_terms if term in text)
+    hot_hits = sum(1 for term in profile.hot_terms if has_whole_phrase(text, term))
     score += min(24.0, max(0, hot_hits - 1) * 6.0)
-    if any(term in text for term in profile.low_priority_terms):
+    if any(has_whole_phrase(text, term) for term in profile.low_priority_terms):
         score -= 25.0
     score += global_demand_score(card) * 0.35
     return score
 
 
 def global_demand_score(card: DealCard) -> float:
-    text = card_text(card)
+    text = product_title(card)
     score = 0.0
     global_hot_terms = (
         "clearance", "rollback", "special buy", "limited", "bundle", "gift set", "starter kit", "pro", "max", "ultra", "oled", "4k", "lego", "pokemon", "dyson", "shark", "ninja", "milwaukee", "dewalt", "apple", "samsung",
     )
     for term in global_hot_terms:
-        if term in text:
+        if has_whole_phrase(text, term):
             score += 7.0
     return min(score, 45.0)
 
 
 def category_brand_score(card: DealCard) -> float:
-    text = card_text(card)
+    text = product_title(card)
     profile = infer_category_profile(card)
     if profile is None:
         return 0.0
     score = 0.0
     for brand in profile.tier1_brands:
-        if brand in text:
+        if has_whole_phrase(text, brand):
             score = max(score, 65.0)
     for brand in profile.tier2_brands:
-        if brand in text:
+        if has_whole_phrase(text, brand):
             score = max(score, 42.0)
     return score
 
 
 def infer_category_profile(card: DealCard) -> DemandProfile | None:
-    text = card_text(card)
+    text = product_title(card)
     best_profile: DemandProfile | None = None
     best_hits = 0
     for profile in CATEGORY_PROFILES:
-        hits = sum(1 for term in profile.category_terms if term in text)
+        hits = sum(1 for term in profile.category_terms if has_whole_phrase(text, term))
         if hits > best_hits:
             best_profile = profile
             best_hits = hits
@@ -348,10 +357,10 @@ def infer_category_profile(card: DealCard) -> DemandProfile | None:
 
 
 def brand_score(card: DealCard) -> float:
-    text = card_text(card)
+    text = product_title(card)
     score = 0.0
     for brand in POPULAR_BRAND_TERMS:
-        if brand in text:
+        if has_whole_phrase(text, brand):
             score = max(score, 45.0 if len(brand) > 3 else 25.0)
     return score
 
@@ -414,3 +423,16 @@ def first_float_match(text: str, pattern: str) -> float | None:
         return float(match.group(1).replace(",", ""))
     except (TypeError, ValueError):
         return None
+
+
+def has_whole_phrase(text: str, phrase: str) -> bool:
+    """Avoid branding ordinary 'product' as Pro or 'algae' as LG.
+
+    Category and brand terms are heuristics from display text. Match complete
+    terms only so generic copy cannot silently masquerade as sought-after
+    manufacturers or premium model families.
+    """
+    return re.search(
+        r"(?<![a-z0-9])" + re.escape(phrase.lower()) + r"(?![a-z0-9])",
+        text,
+    ) is not None

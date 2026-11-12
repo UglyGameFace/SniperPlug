@@ -1,4 +1,22 @@
+- Buyer-intent continuation (Nov 12): exact hardware target-family classification now separates consoles/controllers/GPUs/monitors/TVs/phones/tablets/VR headsets from lookalike cases, stands, repairs, game discs and download codes; this is a ranking signal, not sales proof. Strong existing $1-$10 hardware verification priority retained. Brand/category keywords and rating quality must come from actual product title / retailer structured attrs, never Discord embed marketing copy.
+- Release safety: production uses local SQLite under Discloud's app filesystem (see docs/DISCLOUD_DEPLOY.md). Never assume a code merge safely deploys or preserves DB; take verified Discloud off-host backup before any production release, and compare live Git SHA/DB state. Connected Discloud access not established.
 # Active Task
+
+## 2026-11-12: Demand-first value audit and evidence-aware ranking
+- Continuation: bounded Walmart bestseller-sort canary (one existing broad slot per 12 batches; no new calls); fresh query/position metadata remains an engagement hint, not sold volume.
+- Completed-sales flip overrides additionally require canonical GTIN/condition/variant matching and fresh authorized Marketplace Insights provenance; no such live feed is claimed connected.
+- Read-only Manage Server `/sniperplug deal_trace` reconstructs retained queue, event and guild-post receipts and exact latency without writes or unknown-source guesses.
+- CI and Discloud verification of continuation required before merge/deployment; do not close the missing $1 item incident on source-code evidence alone.
+
+- Branch: `feat/demand-first-proven-value-20261112` based on `main@f3b05193`. Full evidence and remaining gates: `docs/SNIPERPLUG_DEMAND_FIRST_AUDIT_2026-11-12.md`.
+- Clarifies curated category priorities versus genuine item demand. Best Picks, private review ordering and exact-detail queue scheduling now use source-backed Walmart item reviews strictly as a **proxy** (not actual sales).
+- Fixes unconfirmed MSRP/retail-price flip projections overriding subscriber category mutes. Only a verified recent sold-comps path can qualify an override.
+- No new Walmart calls, schema, vendor secrets or alternate senders. Preserves scanner class inheritance, verification, cooldown, quota, and post/expiry.
+- Open PR #200 (eBay watcher) and #273 (movie locality) not merged or deleted; #295 requires item-specific live trace.
+- Verification required: exact-head CI, labeled deal-quality sample, current Discloud SHA/database, official live Walmart responses and Discord receipts, and authorized true-demand feed for a stronger product-sold gate.
+
+---
+
 
 ## November 5, 2026: end-to-end Walmart pipeline audit and integrated correction
 

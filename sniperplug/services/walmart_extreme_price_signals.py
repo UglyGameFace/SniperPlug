@@ -133,13 +133,11 @@ def is_priority_extreme_discovery(
 ) -> bool:
     """Boost potentially valuable extreme leads in the shared queue.
 
-    Three shapes qualify: a recognized primary product at <=$10, any
-    non-accessory item at <=20% of a substantial trusted reference, or any
-    non-accessory item at <=20% of the list/MSRP price Walmart itself returned
-    for the item (a likely price error at any price point, even when that list
-    price is not trusted enough to prove a markdown). A search result is never
-    treated as a verified offer: this only changes ordering inside existing
-    bounded queues; exact detail still must confirm it.
+    Boost a recognized primary product at <=$10 or a non-accessory item at
+    <=20% of a substantial *trusted* reference. A merchant's display-only
+    MSRP is not independent value proof and must not get price-error priority.
+    A search result is only a discovery observation; exact detail still checks
+    identity, seller, stock and price.
     """
     try:
         price = float(current_price) if current_price is not None else None
@@ -156,9 +154,7 @@ def is_priority_extreme_discovery(
     )
     if not title.strip() or ACCESSORY.search(title) is not None:
         return False
-    return is_price_error_ratio(price, trusted_reference) or is_price_error_ratio(
-        price, walmart_listed_reference(candidate)
-    )
+    return is_price_error_ratio(price, trusted_reference)
 
 
 # ---------------------------------------------------------------------------
@@ -307,16 +303,14 @@ def exact_price_lead_evidence(
 ) -> str | None:
     """Single authority for whether an exact offer is an alertable price lead.
 
-    Returns ``"listed_price_anomaly"`` (any price, <=20% of Walmart's listed
-    price), ``"high_value_hardware"`` (<=$10 substantial hardware), or None.
-    Verified markdowns never reach this function: they are delivered by the
-    threshold-based markdown lane instead.
+    Returns ``"high_value_hardware"`` only for <=$10 substantial hardware,
+    or None. Walmart list/MSRP alone never qualifies an offer for public
+    extreme-price delivery. Verified markdowns belong to the separate
+    threshold-based markdown lane.
     """
 
     if candidate is None:
         return None
-    if listed_price_anomaly(candidate) is not None:
-        return "listed_price_anomaly"
     current = _positive_float(getattr(candidate, "api_current_price", None))
     if current is None or current > ABSOLUTE_EXTREME_MAX_PRICE:
         return None

@@ -224,6 +224,10 @@ async def live_extreme_offer_rejection_reason(candidate: Any, *, page_price: boo
         return "live_fetch_unverified"
     if exact_offer_identity(refreshed) != identity:
         return "live_offer_or_variant_changed"
+    original_seller = " ".join(str(getattr(candidate, "seller_name", "") or "").lower().split())
+    current_seller = " ".join(str(getattr(refreshed, "seller_name", "") or "").lower().split())
+    if not original_seller or not current_seller or original_seller != current_seller:
+        return "live_seller_name_changed"
     if refreshed.can_add_to_cart is not True or is_unavailable_stock(refreshed.stock_status):
         return "live_not_buyable"
     attrs = getattr(refreshed, "variant_attributes", None) or {}

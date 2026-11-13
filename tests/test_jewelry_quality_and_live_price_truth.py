@@ -96,7 +96,7 @@ def test_unverified_msrp_cannot_create_extreme_headset_alert():
     ("same", None),
     ("price_changed", "live_price_changed"),
     ("offer_changed", "live_offer_or_variant_changed"),
-    ("seller_changed", "live_offer_or_variant_changed"),
+    ("seller_changed", "live_seller_name_changed"),
     ("out_of_stock", "live_not_buyable"),
     ("missing", "live_fetch_unverified"),
 ])

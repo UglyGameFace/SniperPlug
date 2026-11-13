@@ -6,14 +6,15 @@ with its channel, message, item ID and the price it was posted at. A bounded
 sweep then looks for *authoritative* evidence that the posted offer is gone:
 
 1. Free: the exact worker already re-verified the item after it was posted and
-   the queue row is ``not_buyable`` or the exact price rose materially.
+   the queue row is ``not_buyable`` or the observed price changed materially.
 2. Paced: at most one batched Product Lookup (<= 20 item IDs) per sweep for
-   posts not checked in ``RECHECK_AFTER``; an item that is out of stock, not
-   available online, or priced materially higher counts as ended.
+   posts not checked in ``RECHECK_AFTER``; out-of-stock or higher prices
+   end the old offer, while materially lower prices make old quotes stale.
 
-On evidence the original message is edited in place: title prefixed
-"EXPIRED", grey colour, a "Deal ended" field with the reason and check time,
-and the buttons removed. No new message, no ping. Absence from a lookup
+On evidence the original message is edited in place: "EXPIRED" and "Deal
+ended" for ended offers, or "RECHECK PRICE" and a cautious variant/seller
+warning for materially cheaper item-level quotes. Grey colour and removed
+buttons prevent treating the old price as current. No new message, no ping. Absence from a lookup
 response is never treated as expiry (Walmart omits items for many reasons);
 such posts simply keep their original timestamp, which states their age.
 Posts older than ``TRACK_FOR`` stop being tracked; rows are pruned after

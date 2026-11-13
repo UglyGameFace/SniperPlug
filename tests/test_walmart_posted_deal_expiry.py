@@ -79,6 +79,23 @@ async def test_sold_out_edits_post_to_expired(tmp_path, monkeypatch):
         await p.close()
 
 
+def test_logitech_h390_reported_black_price_does_not_leave_old_quote_current():
+    from sniperplug.services.walmart_posted_deal_expiry import _lookup_evidence
+
+    # The owner's screenshot shows a $29.56 old Discord alert while Walmart
+    # displays $24.88 for black. A product-level lookup is not a seller/variant
+    # fingerprint; flag the old quote, never claim the new one as the same offer.
+    result = _lookup_evidence(
+        {"salePrice": 24.88, "stock": "Available", "availableOnline": True},
+        2_956,
+    )
+    assert result is not None
+    reason, current = result
+    assert current == 2_488
+    assert "lower price of $24.88" in reason
+    assert "different seller or selected variant" in reason
+
+
 @pytest.mark.asyncio
 async def test_materially_lower_walmart_price_marks_old_quote_for_recheck(tmp_path, monkeypatch):
     """A cheaper product-page quote invalidates the old live-looking price."""

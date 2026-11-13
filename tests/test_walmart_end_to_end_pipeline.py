@@ -87,7 +87,7 @@ async def test_one_dollar_tablet_without_trusted_reference_is_opt_in_exact_lead(
     ],
 )
 @pytest.mark.asyncio
-async def test_listed_price_anomalies_reach_opt_in_lane_at_any_price(tmp_path, monkeypatch, item, query):
+async def test_listed_msrp_alone_is_not_price_error_evidence(tmp_path, monkeypatch, item, query):
     p = await _pipeline(tmp_path, monkeypatch)
     try:
         await p.enroll(p.guilds[0], threshold=40, extreme=True)
@@ -96,8 +96,12 @@ async def test_listed_price_anomalies_reach_opt_in_lane_at_any_price(tmp_path, m
         await p.cycle()
         assert (await p.queue_row(item["itemId"]))["status"] == "verified_no_reference"
         posts = p.posts()
-        assert len(posts) == 1, "verified anomaly must not be stranded between lanes"
-        assert f"${item['msrp']:,.2f}" in str(posts[0].to_dict())
+        if float(item["salePrice"]) <= 10 and "Drill Driver Kit" in item["name"]:
+            # True sub-$10 substantial hardware may still qualify independently.
+            assert len(posts) == 1
+            assert "159.00" not in str(posts[0].to_dict())
+        else:
+            assert posts == [], "untrusted MSRP alone cannot create a public bargain"
     finally:
         await p.close()
 
@@ -525,14 +529,14 @@ async def test_walmart_sold_msrp_inflated_goods_never_post(tmp_path, monkeypatch
     ids=lambda item: str(item["itemId"]),
 )
 @pytest.mark.asyncio
-async def test_substantial_listed_price_errors_still_post(tmp_path, monkeypatch, item):
+async def test_unverified_msrp_anomalies_need_independent_value_evidence(tmp_path, monkeypatch, item):
     p = await _pipeline(tmp_path, monkeypatch)
     try:
         await p.enroll(p.guilds[0], threshold=40, extreme=True)
         p.api.add(item, queries=("real errors",))
         await p.discover("real errors")
         await p.cycle()
-        assert len(p.posts()) == 1
+        assert p.posts() == []
     finally:
         await p.close()
 

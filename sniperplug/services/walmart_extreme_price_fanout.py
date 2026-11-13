@@ -16,9 +16,12 @@ from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     VERIFIED_PAGE_PRICE_STATUS,
     _candidate_from_snapshot,
+    _QueueClaim,
     page_observed_price,
 )
 from sniperplug.services.public_deal_quality import walmart_item_id_from_url
+from sniperplug.providers.registry import provider_registry
+from sniperplug.services.walmart_exact_queue_runtime import _fetch_exact_candidate_off_loop
 from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 from sniperplug.services.walmart_exact_price_enrichment import (
     _positive_number,
@@ -33,8 +36,8 @@ from sniperplug.services.walmart_extreme_price_signals import (
 )
 from sniperplug.services.stock_status import is_unavailable_stock
 
-# Sub-$10 leads may qualify on substantial product type alone. Above this price
-# only a listed-price anomaly (<=20% of Walmart's own list/MSRP price) qualifies.
+# Only <=$10 substantial hardware qualifies without a trusted markdown.
+# Walmart's unverified MSRP cannot establish a price error.
 MAX_PRICE_CENTS = int(ABSOLUTE_EXTREME_MAX_PRICE * 100)
 
 def extreme_rejection_reason(candidate: Any) -> str | None:
@@ -184,6 +187,64 @@ def _row_get(row: Any, column: str, index: int) -> Any:
         pass
     return getattr(row, column, None)
 
+
+
+async def live_extreme_offer_rejection_reason(candidate: Any, *, page_price: bool = False) -> str | None:
+    """Refresh the exact Walmart item, offer and price right before public delivery.
+
+    Invalid, changed or unavailable offers fail closed instead of forwarding a
+    stale price. The canonical exact queue can create a new verified event.
+    """
+    identity = exact_offer_identity(candidate)
+    if identity is None:
+        return "original_identity_missing"
+    provider = provider_registry.get("walmart")
+    if provider is None:
+        return "live_provider_unavailable"
+    claim = _QueueClaim(
+        item_id=identity.item_id,
+        title=str(getattr(candidate, "title", "") or ""),
+        product_url=str(getattr(candidate, "product_url", "") or ""),
+        image_url=str(getattr(candidate, "image_url", "") or ""),
+        apparent_current_cents=None,
+        apparent_reference_cents=None,
+        route_hint="extreme_pre_send_recheck",
+        lease_token="",
+        attempt_count=0,
+    )
+    try:
+        refreshed, status, _error = await _fetch_exact_candidate_off_loop(
+            provider, claim, timeout_seconds=12.0
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("Walmart pre-send price check failed item=%s", identity.item_id)
+        return "live_fetch_failed"
+    if status != "verified" or refreshed is None:
+        return "live_fetch_unverified"
+    if exact_offer_identity(refreshed) != identity:
+        return "live_offer_or_variant_changed"
+    if refreshed.can_add_to_cart is not True or is_unavailable_stock(refreshed.stock_status):
+        return "live_not_buyable"
+    attrs = getattr(refreshed, "variant_attributes", None) or {}
+    if str(attrs.get("availableOnline") or "").lower() in {"no", "false", "0", "off"}:
+        return "live_not_online"
+    if refreshed.is_member_only or refreshed.is_checkout_price:
+        return "live_checkout_restricted"
+    old = page_observed_price(candidate) if page_price else _positive_number(getattr(candidate, "api_current_price", None))
+    new = page_observed_price(refreshed) if page_price else _positive_number(getattr(refreshed, "api_current_price", None))
+    if page_price and _positive_number(getattr(refreshed, "api_current_price", None)) is not None:
+        return "page_offer_now_api_priced"
+    if old is None or new is None:
+        return "live_price_missing"
+    if abs(old - new) >= 0.01:
+        return "live_price_changed"
+    if page_price and not eligible_page_price_extreme_candidate(refreshed):
+        return "live_page_proof_invalid"
+    if not page_price and not eligible_exact_extreme_candidate(refreshed):
+        return "live_exact_proof_invalid"
+    return None
 
 
 def build_extreme_price_card(candidate: Any) -> Any | None:
@@ -627,6 +688,14 @@ async def _replay_missing_guild_deliveries(
             else:
                 card = None
             if card is not None:
+                issue = await live_extreme_offer_rejection_reason(
+                    replay_candidate,
+                    page_price=str(_row_get(current, "status", 2)) == VERIFIED_PAGE_PRICE_STATUS,
+                )
+                if issue is not None:
+                    log.info("Walmart extreme replay rejected item=%s reason=%s", item_id, issue)
+                    card = None
+            if card is not None:
                 try:
                     result = await maybe_post_public_deal_cards(
                         bot=bot,
@@ -735,6 +804,13 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
             else:
                 card = build_extreme_price_card(candidate)
             if card is not None:
+                issue = await live_extreme_offer_rejection_reason(
+                    candidate, page_price=status == VERIFIED_PAGE_PRICE_STATUS
+                )
+                if issue is not None:
+                    log.info("Walmart extreme pre-send rejected item=%s reason=%s", item_id, issue)
+                    next_cursor = (verified_at, item_id)
+                    continue
                 eligible += 1
                 if enabled is None:
                     live = await list_live_public_alert_guilds(

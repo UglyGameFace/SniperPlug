@@ -45,7 +45,7 @@ _PRECIOUS_METAL = re.compile(
     r"(?:10|14|18|22|24)\s*(?:k|kt|karat|carat)\s*gold|"
     r"(?:10|14|18|22|24)\s*(?:k|kt|karat|carat)\s*(?:solid\s*)?gold|"
     r"solid\s*gold|"
-    r"(?:925|\.925|sterling)\s*(?:silver)?|"
+    r"(?:(?:925|\.925)\s*(?:sterling\s*)?silver|sterling\s*silver|925)\b|"
     r"(?:solid|pure|950|pt950)\s*platinum|"
     r"platinum\s*(?:950|pt950)|"
     r"(?:solid|pure)\s*palladium)\b",

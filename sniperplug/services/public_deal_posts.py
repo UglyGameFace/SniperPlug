@@ -157,6 +157,15 @@ async def maybe_post_public_deal_cards(
             skipped_wrong_retailer += 1
             continue
 
+        # Applies to regular markdowns, extreme leads and scout bypass lanes.
+        # No route or extreme discount can promote goldtone/faux material.
+        from sniperplug.services.jewelry_quality import card_jewelry_rejection_reason
+        jewelry_reason = card_jewelry_rejection_reason(card)
+        if jewelry_reason:
+            not_alertable_reasons.append(f"jewelry:{jewelry_reason}")
+            skipped_not_alertable += 1
+            continue
+
         if allow_verified_extreme:
             # Separate, exact-price-only opt-in lane; not a markdown or generic scout.
             # Page-observed prices ride the same opt-in lane under their own

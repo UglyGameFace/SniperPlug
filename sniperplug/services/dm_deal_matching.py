@@ -170,7 +170,8 @@ def match_dm_deal(
     # overly broad category allowlist/mute. This prevents old category state from
     # crossing into and silently blocking the newer specific-product UX.
     if (
-        not (has_specific_walmart_intent or has_route_intent)
+        not has_specific_walmart_intent
+        and not has_route_intent
         and category_key in muted_categories
         and not flip.qualified
     ):
@@ -180,7 +181,8 @@ def match_dm_deal(
             category_key,
         )
     if (
-        not (has_specific_walmart_intent or has_route_intent)
+        not has_specific_walmart_intent
+        and not has_route_intent
         and selected_categories
         and category_key not in selected_categories
     ):

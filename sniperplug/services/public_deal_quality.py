@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sniperplug.services.jewelry_quality import card_jewelry_rejection_reason
+
 import hashlib
 import json
 import re
@@ -336,6 +338,9 @@ def public_deal_rejection_reason(
     source_label: str = "",
     min_discount: int = DEFAULT_STARTING_DEAL_PERCENT,
 ) -> str | None:
+    jewelry_reason = card_jewelry_rejection_reason(card)
+    if jewelry_reason:
+        return jewelry_reason
     if is_review_or_watchlist(card, source_label=source_label):
         return "review_or_watchlist"
     if has_low_trust_reference(card, source_label=source_label):

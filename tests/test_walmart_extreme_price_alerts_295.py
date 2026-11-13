@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import aiosqlite
+import pytest
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.services import walmart_extreme_price_fanout as extreme
@@ -18,6 +19,14 @@ from sniperplug.services.walmart_exact_verification_queue import (
     _candidate_snapshot,
     ensure_walmart_exact_verification_queue,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fanout_unit_price_recheck(monkeypatch):
+    """Unit fanout uses static proven snapshots; live-API behavior has dedicated tests."""
+    async def _verified(_candidate, *, page_price=False):
+        return None
+    monkeypatch.setattr(extreme, "live_extreme_offer_rejection_reason", _verified)
 
 
 def candidate(*, title="(Open Box) Samsung Galaxy S24 FE Graphite 128 GB DEMO", price=1.0):
@@ -59,7 +68,7 @@ def test_extreme_exact_price_can_qualify_without_a_markdown_reference() -> None:
     assert is_public_deal_candidate(card, min_discount=40) is False
     text = str(card.embed.to_dict()).lower()
     assert "not a verified markdown" in text
-    assert "no comparison price or discount percentage is claimed" in text
+    assert "no verified was-price or discount percentage is claimed" in text
     assert "$1.00" in text
     assert "99%" not in text
 
@@ -410,7 +419,7 @@ def test_existing_sender_enforces_extreme_proof_and_scout_dedupe(monkeypatch) ->
         assert len(sent) == 1
         assert alerts[0]["alert_key"] == posts.PUBLIC_SCOUT_ALERT_KEY
         assert recorded[0]["allow_review_scout"] is True
-        assert "No comparison price or discount percentage is claimed" in str(sent[0]["embed"].to_dict())
+        assert "No verified was-price or discount percentage is claimed" in str(sent[0]["embed"].to_dict())
 
         # A forged card label is insufficient to enter this sender path.
         card.extreme_exact_candidate = None

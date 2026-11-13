@@ -79,6 +79,57 @@ async def test_sold_out_edits_post_to_expired(tmp_path, monkeypatch):
         await p.close()
 
 
+def test_logitech_h390_reported_black_price_does_not_leave_old_quote_current():
+    from sniperplug.services.walmart_posted_deal_expiry import _lookup_evidence
+
+    # The owner's screenshot shows a $29.56 old Discord alert while Walmart
+    # displays $24.88 for black. A product-level lookup is not a seller/variant
+    # fingerprint; flag the old quote, never claim the new one as the same offer.
+    result = _lookup_evidence(
+        {"salePrice": 24.88, "stock": "Available", "availableOnline": True},
+        2_956,
+    )
+    assert result is not None
+    reason, current = result
+    assert current == 2_488
+    assert "lower price of $24.88" in reason
+    assert "different seller or selected variant" in reason
+
+
+@pytest.mark.asyncio
+async def test_materially_lower_walmart_price_marks_old_quote_for_recheck(tmp_path, monkeypatch):
+    """A cheaper product-page quote invalidates the old live-looking price."""
+    p = await _posted(tmp_path, monkeypatch)
+    try:
+        p.api.set_price(IPAD["itemId"], 79.00)
+        result = await p.sweep_expired_posts()
+        assert result.api_calls == 1 and result.expired == 1
+        message = p.messages()[0]
+        assert message.embeds[0].title.startswith("⚠️ RECHECK PRICE")
+        first = message.embeds[0].fields[0]
+        assert first.name == "⚠️ Recheck current price"
+        assert "$79.00" in first.value and "$99.00" in first.value
+        assert "different seller or selected variant" in first.value
+        assert message.view is None
+        assert len(p.posts()) == 1
+        assert await _state(p, IPAD["itemId"]) == "expired"
+    finally:
+        await p.close()
+
+
+@pytest.mark.asyncio
+async def test_small_price_drop_does_not_relabel_current_post(tmp_path, monkeypatch):
+    p = await _posted(tmp_path, monkeypatch)
+    try:
+        p.api.set_price(IPAD["itemId"], 97.00)
+        result = await p.sweep_expired_posts()
+        assert result.api_calls == 1 and result.expired == 0
+        assert p.messages()[0].edits == 0
+        assert await _state(p, IPAD["itemId"]) == "active"
+    finally:
+        await p.close()
+
+
 @pytest.mark.asyncio
 async def test_item_missing_from_lookup_is_not_treated_as_expired(tmp_path, monkeypatch):
     p = await _posted(tmp_path, monkeypatch)

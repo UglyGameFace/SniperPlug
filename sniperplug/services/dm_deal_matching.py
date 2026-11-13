@@ -10,6 +10,7 @@ from sniperplug.services.dm_deal_alerts import (
     walmart_cash_cents,
 )
 from sniperplug.services.dm_deal_badges import personalize_dm_card_title
+from sniperplug.services.jewelry_quality import card_jewelry_rejection_reason
 from sniperplug.services.dm_deal_routes import split_dm_route_preferences, verified_card_route
 from sniperplug.services.routing import route_label
 from sniperplug.services.dm_flip_opportunities import (
@@ -54,6 +55,9 @@ def match_dm_deal(
     pref = preference.normalized()
     if not pref.enabled:
         return DmDealMatchDecision(False, "DM alerts are disabled")
+    jewelry_reason = card_jewelry_rejection_reason(card)
+    if jewelry_reason:
+        return DmDealMatchDecision(False, jewelry_reason)
 
     search_text = card_search_text(card)
     category_key = category_key_for_card(card)

@@ -18,7 +18,8 @@ _JEWELRY = re.compile(
 )
 _RING = re.compile(r"\brings?\b", re.IGNORECASE)
 _NON_JEWELRY_RING = re.compile(
-    r"\b(?:ring\s+(?:light|doorbell|camera|alarm|binder|stand|holder)|"
+    r"\b(?:ring\s+(?:video\s+)?(?:doorbell|camera|alarm)|"
+    r"ring\s+(?:light|binder|stand|holder)|"
     r"(?:phone|key|towel|napkin|shower curtain)\s+rings?)\b",
     re.IGNORECASE,
 )

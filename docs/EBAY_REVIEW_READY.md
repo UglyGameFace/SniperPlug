@@ -50,3 +50,36 @@ Local SQLite deployments require an **off-host verified database backup before r
 - Discloud deployment and real screenshot/permission checks after a verified database backup.
 
 These are explicit external blockers. They must not be marked complete by green unit tests or a merged PR.
+
+
+## What eBay can actually approve (current EPN conditions, 2026-11-12)
+
+The EPN **Messaging: Email, IM, Chat, Text** application expressly covers electronic messaging. It does not specifically promise approval of *Discord bots*. Do not call EPN registration or Developer key creation written Messaging approval. Request classification in writing for a **hosted Discord bot**: whether Messaging alone covers it or whether eBay additionally treats Discord server installation as a restricted Software Application promotional method.
+
+This bot **does not** automatically place auction bids, buy goods, or interact with eBay checkout. This matters because EPN's Network Agreement prohibits sniping functionality, defined around automated bids/purchases, in certain software/promotional placements. **SniperPlug is price discovery and manual shopping, not auction sniping**. Describe this accurately; the bot name is not an assurance of eligibility. Never add automatic bidding or purchasing to this affiliate integration.
+
+EPN's Network Agreement also prohibits some *placement topics*, including gambling/betting, illegal goods/services and sexually explicit material. Before applying, make sure the exact intended promotion channels and surrounding communities comply. The bot may operate in various servers, but server-admin channel consent is **not** evidence that every server or community is an EPN-acceptable promotion destination. Seek eBay's written guidance for the actual disclosed locations and any expansion to additional servers.
+
+### Submission and evidence sequence
+
+1. Back up and verify Discloud's canonical local SQLite database **off-host** and deploy main with verified SHA. Do not create a second Discloud worker. Configure protected **Developer Production** OAuth keys and `EBAY_RESEARCH_ENABLED=true`, keeping `EBAY_EPN_MESSAGING_APPROVED=false`.
+2. Use `/ebay status` to establish setup; `/ebay research` to obtain a real eBay fixed-price listing. Test missing-key, HTTP 401/403/429 and no-result behavior if possible.
+3. Show authentic screenshots of **`/ebay consent` before and after opting in**, then **after opting out**, including the button and resulting confirmation. Capture `/ebay server enabled:true` / `enabled:false` in the actual proposed posting channel with a server-admin account. Do not confuse admin-enabled public posts with personal DM consent.
+4. Use `/ebay review_sample` for an **ephemeral, private demonstration**. It displays an untracked real eBay URL, listing title, actual asking price, opt-out button, sample affiliate disclosure and a prominent declaration that this is **not** a previously sent affiliate promotion. We cannot meet the literal form's “previously sent promotional message” requirement by fabricating one or sending live affiliate promotions without approval. Explain this to eBay, request a permitted pre-launch screenshot/pilot procedure, and document eBay's response.
+5. Submit the **Messaging** special business-model application for chat posts/DMs with accurate proposed recipient counts and actual channel URL(s). When the automatic support email arrives, **reply directly to it within 72 business hours**, attaching authentic screenshots, a clear description of the not-yet-activated promotion, and asking how they classify Discord bot software, what channel placements they approve, and whether the current private mock is sufficient.
+6. **Only after eBay grants written approval** should a future automatic affiliate sender be built/activated, retaining source/evidence, opt-out, per-server controls, prominent inline disclosure near every link, campaign attribution, rate limiting, receipts and abuse controls. `EBAY_EPN_MESSAGING_APPROVED=true` is a local switch, not itself proof from eBay; operators must keep the approval record.
+
+### Browse API versus other data
+
+The EPN Developer Questionnaire says standard Browse API access **does not require additional questionnaire approval**. eBay's general Buy API Requirements warn that some production Buy API capabilities/partners may still need onboarding, so verify the actual OAuth/production call and eBay's account status rather than promising production is accessible. Data Feeds are separate, selective and reviewed; Marketplace Insights sold listings cannot currently be requested through that questionnaire. Do not describe active fixed-price eBay listing asks as completed-sales demand, and don't apply for bulk feeds until there is a credible traffic/business case.
+
+### Minimum app-review packet
+
+- Private screenshot showing /ebay consent with *opt-in* button.
+- Actual opt-in confirmation and stored state, and independent immediate opt-out/unsubscribe confirmation.
+- Screenshot of a real eBay listing in /ebay review_sample, with non-affiliate URL, the disclosure example next to the listing, and the explanation “private pre-launch sample; no affiliate campaign sent”.
+- Server-admin channel consent and revocation screenshots for the proposed (disclosed) Discord placement.
+- A description of the posting cadence, recipients, source/price accuracy, rate limits, no automated bidding/purchasing, moderation and affiliate disclosure policy.
+- EPN written answer on classification/acceptability and review-sample requirement.
+
+**No live screenshot, approval, or delivered commercial message exists merely because this code compiled or merged.**

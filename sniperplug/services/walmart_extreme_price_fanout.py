@@ -31,7 +31,6 @@ from sniperplug.services.walmart_extreme_price_signals import (
     ABSOLUTE_EXTREME_MAX_PRICE,
     ACCESSORY,
     exact_price_lead_evidence,
-    listed_price_anomaly,
     primary_product_evidence,
 )
 from sniperplug.services.stock_status import is_unavailable_stock
@@ -214,7 +213,7 @@ async def live_extreme_offer_rejection_reason(candidate: Any, *, page_price: boo
     )
     try:
         refreshed, status, _error = await _fetch_exact_candidate_off_loop(
-            provider, claim, timeout_seconds=12.0
+            provider, claim, timeout_seconds=6.0
         )
     except asyncio.CancelledError:
         raise
@@ -250,18 +249,8 @@ async def live_extreme_offer_rejection_reason(candidate: Any, *, page_price: boo
 def build_extreme_price_card(candidate: Any) -> Any | None:
     if not eligible_exact_extreme_candidate(candidate):
         return None
-    evidence = exact_price_lead_evidence(
-        candidate, trusted_reference=_trusted_reference(candidate)
-    )
-    listed = listed_price_anomaly(candidate) if evidence == "listed_price_anomaly" else None
     current_price = float(candidate.api_current_price)
-    # Do not recycle scout search-route and "cheap price" score reasons.
-    # Public reasons must describe the actual exact-item evidence.
-    reasons = (
-        ("price far below Walmart's own listed price", "official Walmart exact-item price")
-        if listed is not None
-        else ("high-value product type", "official Walmart exact-item price")
-    )
+    reasons = ("high-value product type", "official Walmart exact-item price")
     lead = ScoutLead(candidate=candidate, score=70, reasons=reasons)
     card = build_scout_card(lead)
     card.url = candidate.direct_product_url or candidate.product_url
@@ -270,11 +259,8 @@ def build_extreme_price_card(candidate: Any) -> Any | None:
     # The private scout may show an untrusted raw MSRP. Replace it with exactly
     # what was verified, and never derive a discount percentage from it.
     price_text = (
-        f"Exact offer price: **${current_price:,.2f}**. Walmart lists this item at "
-        f"**${listed:,.2f}** (MSRP/list price). That list price is not a verified "
-        "was-price, so no discount percentage is claimed."
-        if listed is not None
-        else f"Exact offer price: **${current_price:,.2f}**. No comparison price or discount percentage is claimed."
+        f"Exact offer price: **${current_price:,.2f}**. "
+        "No verified was-price or discount percentage is claimed."
     )
     for index, field in enumerate(card.embed.fields):
         if str(field.name) == "💰 Scout price":
@@ -291,11 +277,7 @@ def build_extreme_price_card(candidate: Any) -> Any | None:
             "Walmart's official exact-item API returned $"
             + f"{current_price:,.2f}"
             + " for this seller/offer/variant. "
-            + (
-                f"Walmart's listed price is ${listed:,.2f}; it is shown for context only. "
-                if listed is not None
-                else "No original price or discount is claimed. "
-            )
+            + "No original price or discount is claimed. "
             + "Recheck condition, local availability, shipping and checkout price."
         ),
         inline=False,
@@ -809,6 +791,9 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                 )
                 if issue is not None:
                     log.info("Walmart extreme pre-send rejected item=%s reason=%s", item_id, issue)
+                    if issue in {"live_fetch_unverified", "live_fetch_failed", "live_provider_unavailable"}:
+                        # Wait for the next cycle while snapshot freshness is valid.
+                        break
                     next_cursor = (verified_at, item_id)
                     continue
                 eligible += 1

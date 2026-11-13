@@ -15,6 +15,7 @@ from sniperplug.services.dm_deal_alerts import (
     ensure_dm_deal_alert_tables,
 )
 from sniperplug.services.dm_personal_categories import split_category_preferences
+from sniperplug.services.dm_deal_routes import split_dm_route_preferences
 
 
 FAMILY_RECEIPTS_TABLE = "user_dm_deal_alert_family_receipts"
@@ -108,6 +109,8 @@ def diversity_applies(
     if pref.mode != "smart" or not decision.matched or decision.priority_override:
         return False
 
+    if split_dm_route_preferences(pref.categories):
+        return False
     selected_categories, favorite_categories = split_category_preferences(
         pref.categories
     )

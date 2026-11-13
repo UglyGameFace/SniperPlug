@@ -930,7 +930,7 @@ class DmDealPreferencesView(discord.ui.View):
             muted=self.muted_categories,
             flip_enabled=self.flip_enabled,
             flip_min_profit_cents=self.flip_min_profit_cents,
-            routes=self.selected_routes,
+            routes=tuple(route for route, _ in route_labels() if route in self.selected_routes),
         )
         categories = update_product_preferences(
             categories,

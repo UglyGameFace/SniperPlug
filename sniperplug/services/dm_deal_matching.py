@@ -10,6 +10,8 @@ from sniperplug.services.dm_deal_alerts import (
     walmart_cash_cents,
 )
 from sniperplug.services.dm_deal_badges import personalize_dm_card_title
+from sniperplug.services.dm_deal_routes import split_dm_route_preferences, verified_card_route
+from sniperplug.services.routing import route_label
 from sniperplug.services.dm_flip_opportunities import (
     FlipAssessment,
     assess_flip_opportunity,
@@ -64,8 +66,10 @@ def match_dm_deal(
         pref.categories
     )
     product_interests, product_brands = split_product_preferences(pref.categories)
+    selected_routes = split_dm_route_preferences(pref.categories)
+    has_route_intent = bool(selected_routes)
     has_specific_walmart_intent = bool(
-        is_walmart and (product_interests or product_brands)
+        not has_route_intent and is_walmart and (product_interests or product_brands)
     )
     stored_muted = muted_category_preferences(pref.categories)
     muted_categories = frozenset((*legacy_muted, *stored_muted))
@@ -123,8 +127,19 @@ def match_dm_deal(
             category_key,
         )
 
+    # A selected deal type is the subscriber's inclusion preference. Old
+    # product/category selections cannot silently block an explicit route.
+    # Still apply every hard price, discount, proof and keyword guard.
+    route = verified_card_route(card) if has_route_intent else None
+    if has_route_intent and route not in selected_routes:
+        return DmDealMatchDecision(
+            False,
+            "deal is not in your selected routes" if route else "verified route metadata unavailable",
+            category_key,
+        )
+
     product_match = ProductPreferenceMatch(True)
-    if is_walmart:
+    if is_walmart and not has_route_intent:
         product_match = match_product_preferences(
             search_text,
             interests=product_interests,
@@ -156,6 +171,7 @@ def match_dm_deal(
     # crossing into and silently blocking the newer specific-product UX.
     if (
         not has_specific_walmart_intent
+        and not has_route_intent
         and category_key in muted_categories
         and not flip.qualified
     ):
@@ -166,6 +182,7 @@ def match_dm_deal(
         )
     if (
         not has_specific_walmart_intent
+        and not has_route_intent
         and selected_categories
         and category_key not in selected_categories
     ):
@@ -239,6 +256,8 @@ def match_dm_deal(
         if cash_cents > 0:
             reason += f" • ${cash_cents / 100:,.2f} Walmart Cash"
 
+    if has_route_intent and route:
+        reason += f" • route {route_label(route)}"
     if is_walmart and product_match.reason:
         reason += f" • {product_match.reason}"
     if has_specific_walmart_intent:

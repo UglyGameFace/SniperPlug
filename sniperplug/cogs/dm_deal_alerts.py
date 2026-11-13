@@ -18,6 +18,7 @@ from sniperplug.services.dm_deal_alerts import (
     save_dm_deal_alert_preference,
 )
 from sniperplug.services.dm_delivery_policy import delete_dm_delivery_history
+from sniperplug.services.dm_deal_routes import route_labels, split_dm_route_preferences
 from sniperplug.services.dm_delivery_telemetry import (
     UserDmDeliveryTelemetry,
     clear_user_dm_delivery_telemetry,
@@ -406,6 +407,9 @@ def build_dm_settings_embed(
         normalized.categories
     )
     flip_enabled, flip_min_profit_cents = flip_settings(normalized.categories)
+    selected_routes = split_dm_route_preferences(normalized.categories)
+    route_names = dict(route_labels())
+    route_text = ", ".join(route_names[key] for key in selected_routes) if selected_routes else "all verified types"
 
     muted_text = (
         ", ".join(category_label(category) for category in muted_categories)
@@ -437,6 +441,9 @@ def build_dm_settings_embed(
     summary: list[str] = []
     for line in normalized.summary_lines():
         if line.startswith("Categories:"):
+            summary.append(f"DM deal routes: **{route_text}**")
+            if selected_routes:
+                summary.append("Routes are active: old product/category inclusion filters are bypassed.")
             summary.append(f"Allowed categories: **{selected_text}**")
             summary.append(f"Favorite DM categories: **{favorite_text}**")
             summary.append(f"Specific products: **{interest_text}**")
@@ -463,9 +470,11 @@ def build_dm_settings_embed(
     embed.add_field(
         name="🎯 Specific product filters",
         value=(
-            "Specific products narrow your broad categories. Multiple product interests are **OR**; "
+            "Without a route subscription, specific products narrow broad categories. "
+            "Multiple product interests are **OR**; "
             "multiple brands are **OR**. If you set both products and brands, a deal must match "
-            "**one selected product AND one selected brand**. These stay hard even for Flip Override.\n"
+            "**one selected product AND one selected brand**. A selected deal route takes priority "
+            "over these product/category filters; other hard limits stay enforced.\n"
             "Run `/dm_deals action:Show specific product catalog` for the supported product profiles."
         ),
         inline=False,
@@ -474,7 +483,7 @@ def build_dm_settings_embed(
         name="Open the complete menu",
         value=(
             "Run `/dm_deals action:Open personalization menu` for the paginated, searchable "
-            "category catalog and your saved personal controls."
+            "deal route selector, products, categories and saved personal controls."
         ),
         inline=False,
     )
@@ -502,7 +511,8 @@ def build_dm_settings_embed(
         name="Built-in safety",
         value=(
             "Only exact-item, exact-offer, buyable Walmart deals with trusted current and was prices enter this stream. "
-            "Explicit product/brand filters, floors, maximum price, required/excluded words, dedupe, and your saved "
+            "Your active inclusion choice (routes or products/categories), floors, maximum price, "
+            "required/excluded words, dedupe, and your saved "
             "daily-limit policy remain hard. Broad Smart alerts with a finite limit also reserve room for category "
             "variety; Unlimited removes both the total cap and automatic family quota."
         ),

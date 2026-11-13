@@ -11,6 +11,7 @@ from sniperplug.services.dm_deal_alerts import (
     daily_cap_label,
     save_dm_deal_alert_preference,
 )
+from sniperplug.services.dm_deal_routes import route_labels, split_dm_route_preferences
 from sniperplug.services.dm_personal_categories import (
     all_personal_categories,
     category_label,
@@ -33,6 +34,7 @@ from sniperplug.services.dm_product_interests import (
 
 
 SCREEN_HOME = "home"
+SCREEN_ROUTES = "routes"
 SCREEN_PRODUCTS = "products"
 SCREEN_CATEGORIES = "categories"
 
@@ -229,6 +231,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.muted_categories = set((*legacy_muted, *stored_muted))
         self.product_interests = set(product_interests)
         self.product_brands = set(product_brands)
+        self.selected_routes = set(split_dm_route_preferences(self.preference.categories))
         self.exclude_keywords = tuple(keyword_excludes)
         self.flip_enabled = bool(flip_enabled)
         self.flip_min_profit_cents = int(flip_profit)
@@ -262,7 +265,9 @@ class DmDealPreferencesView(discord.ui.View):
         return False
 
     def build_embed(self, *, status: str = "") -> discord.Embed:
-        if self.screen == SCREEN_PRODUCTS:
+        if self.screen == SCREEN_ROUTES:
+            embed = self._build_routes_embed()
+        elif self.screen == SCREEN_PRODUCTS:
             embed = self._build_products_embed()
         elif self.screen == SCREEN_CATEGORIES:
             embed = self._build_categories_embed()
@@ -284,6 +289,29 @@ class DmDealPreferencesView(discord.ui.View):
         )
         return embed
 
+    def _build_routes_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🚨 DM deal routes",
+            description=(
+                "Choose the **kinds of verified deals** you want, without memorizing "
+                "products or categories. Multiple selections work as OR.\n\n"
+                "When routes are selected, they replace product/category inclusion "
+                "filters, but price, markdown, score, savings, keywords and daily "
+                "limits still apply. Clear routes to use product/category filters again."
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Your selected routes", value=self._route_preview(), inline=False)
+        return embed
+
+    def _route_preview(self) -> str:
+        labels = dict(route_labels())
+        return (
+            ", ".join(labels[route] for route in labels if route in self.selected_routes)
+            if self.selected_routes
+            else "None (product/category personalization is active)"
+        )
+
     def _build_home_embed(self) -> discord.Embed:
         max_price_text = (
             f"${self.dm_max_price_cents / 100:,.2f}"
@@ -293,13 +321,18 @@ class DmDealPreferencesView(discord.ui.View):
         embed = discord.Embed(
             title="🎯 Personal Walmart Deal Alerts",
             description=(
-                "Pick a section below. **Products & brands** is the easiest way to get "
-                "specific alerts. **Categories** is optional broad filtering.\n\n"
-                "When you choose specific Walmart products or brands, those explicit choices "
-                "take priority over old broad category allowlists/mutes, so category settings "
-                "cannot silently block something you deliberately selected."
+                "**Deal routes** lets you follow Price Glitches, Hot Deals and other "
+                "verified deal types without choosing products. Products and categories "
+                "remain optional for specific interests.\n\n"
+                "Selected routes take priority over old product/category filters. "
+                "Your hard deal rules always apply."
             ),
             color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="🚨 Deal routes",
+            value=f"**{self._route_preview()}**",
+            inline=False,
         )
         embed.add_field(
             name="🎯 Products & brands",
@@ -466,7 +499,9 @@ class DmDealPreferencesView(discord.ui.View):
 
     def _rebuild_items(self) -> None:
         self.clear_items()
-        if self.screen == SCREEN_PRODUCTS:
+        if self.screen == SCREEN_ROUTES:
+            self._build_route_items()
+        elif self.screen == SCREEN_PRODUCTS:
             self._build_product_items()
         elif self.screen == SCREEN_CATEGORIES:
             self._build_category_items()
@@ -474,6 +509,15 @@ class DmDealPreferencesView(discord.ui.View):
             self._build_home_items()
 
     def _build_home_items(self) -> None:
+        routes = discord.ui.Button(
+            label=f"Deal routes ({len(self.selected_routes)})",
+            emoji="🚨",
+            style=discord.ButtonStyle.primary,
+            row=0,
+        )
+        routes.callback = self._show_routes
+        self.add_item(routes)
+
         products = discord.ui.Button(
             label=f"Products & brands ({len(self.product_interests)})",
             emoji="🎯",
@@ -533,6 +577,27 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(profit)
 
         self._add_save_close(row=3)
+
+    def _build_route_items(self) -> None:
+        self.add_item(_DmRouteSelect(self))
+        clear = discord.ui.Button(
+            label="Clear selected routes",
+            emoji="🧹",
+            style=discord.ButtonStyle.secondary,
+            row=1,
+            disabled=not bool(self.selected_routes),
+        )
+        clear.callback = self._clear_routes
+        self.add_item(clear)
+        dashboard = discord.ui.Button(
+            label="Dashboard",
+            emoji="⬅️",
+            style=discord.ButtonStyle.secondary,
+            row=2,
+        )
+        dashboard.callback = self._show_home
+        self.add_item(dashboard)
+        self._add_save_close(row=2)
 
     def _build_product_items(self) -> None:
         self.add_item(_ProductPageSelect(self))
@@ -730,6 +795,15 @@ class DmDealPreferencesView(discord.ui.View):
         self.screen = SCREEN_HOME
         await self._refresh(interaction)
 
+    async def _show_routes(self, interaction: discord.Interaction) -> None:
+        self.screen = SCREEN_ROUTES
+        await self._refresh(interaction)
+
+    async def _clear_routes(self, interaction: discord.Interaction) -> None:
+        self.selected_routes.clear()
+        self.dirty = True
+        await self._refresh(interaction, status="Route selection cleared. Product/category filters apply.")
+
     async def _show_products(self, interaction: discord.Interaction) -> None:
         self.screen = SCREEN_PRODUCTS
         await self._refresh(interaction)
@@ -856,6 +930,7 @@ class DmDealPreferencesView(discord.ui.View):
             muted=self.muted_categories,
             flip_enabled=self.flip_enabled,
             flip_min_profit_cents=self.flip_min_profit_cents,
+            routes=tuple(route for route, _ in route_labels() if route in self.selected_routes),
         )
         categories = update_product_preferences(
             categories,
@@ -905,6 +980,27 @@ class DmDealPreferencesView(discord.ui.View):
             view=self,
         )
         self.stop()
+
+
+class _DmRouteSelect(discord.ui.Select):
+    def __init__(self, owner: DmDealPreferencesView) -> None:
+        self.owner = owner
+        options = [
+            discord.SelectOption(label=label, value=route, default=route in owner.selected_routes)
+            for route, label in route_labels()
+        ]
+        super().__init__(
+            placeholder="Select which verified deal types to DM",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.owner.selected_routes = set(self.values)
+        self.owner.dirty = True
+        await self.owner._refresh(interaction, status="Updated routes. Save changes to apply.")
 
 
 class _ProductPageSelect(discord.ui.Select):

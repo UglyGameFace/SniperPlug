@@ -24,6 +24,7 @@ _SCHEMA_LOCK = asyncio.Lock()
 
 CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
     "tech": (
+        "desktop_computers",
         "brand_direct_electronics",
         "apple",
         "gpus",
@@ -33,7 +34,7 @@ CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
         "mobile_accessories",
         "smart_home",
     ),
-    "gaming": ("brand_direct_electronics", "gpus", "cpus", "ram", "ssds", "toys_collectibles"),
+    "gaming": ("desktop_computers", "brand_direct_electronics", "gpus", "cpus", "ram", "ssds", "toys_collectibles"),
     "home": ("home_kitchen", "appliances", "office_school", "household_essentials"),
     "essentials": ("household_essentials", "grocery_pantry", "baby_kids", "pet_supplies", "health_wellness"),
     "toys": ("toys_collectibles",),

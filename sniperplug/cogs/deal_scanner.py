@@ -939,6 +939,7 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
 
         # Compatibility attributes used by older posting/dedupe helpers.
         card.retailer = deal.retailer
+        card.deal = deal  # Shared route authority for personal DM subscriptions.
         card.should_alert = decision.should_alert
         card.current_price = deal.current_price
         card.typical_price = deal.typical_price

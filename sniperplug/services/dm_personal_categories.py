@@ -5,6 +5,7 @@ from typing import Any, Iterable
 
 from sniperplug.services.dm_deal_alerts import normalize_categories, normalize_terms
 from sniperplug.services.dm_flip_opportunities import DEFAULT_FLIP_MIN_PROFIT_CENTS
+from sniperplug.services.dm_deal_routes import dm_route_tokens, split_dm_route_preferences
 from sniperplug.services.dm_product_interests import (
     BRAND_PREFIX,
     PRODUCT_INTEREST_PREFIX,
@@ -41,10 +42,15 @@ _CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
     "pet": ("pet_supplies",),
     "pets": ("pet_supplies",),
     "pet_supplies": ("pet_supplies",),
-    "pc": ("gpus", "cpus", "ram", "ssds"),
+    "pc": ("desktop_computers", "gpus", "cpus", "ram", "ssds"),
+    "computers": ("desktop_computers", "gpus", "cpus", "ram", "ssds"),
+    "desktops": ("desktop_computers",),
+    "desktop": ("desktop_computers",),
+    "prebuilt": ("desktop_computers",),
     "pc_parts": ("gpus", "cpus", "ram", "ssds"),
     "computer_parts": ("gpus", "cpus", "ram", "ssds"),
     "electronics": (
+        "desktop_computers",
         "brand_direct_electronics",
         "apple",
         "gpus",
@@ -283,6 +289,7 @@ def compose_category_preferences(
     flip_enabled: bool = False,
     flip_min_profit_cents: int = DEFAULT_FLIP_MIN_PROFIT_CENTS,
     product_tokens: Iterable[str] | str | None = None,
+    routes: Iterable[str] | str | None = None,
 ) -> tuple[str, ...]:
     selected_values = normalize_personal_categories(selected)
     favorite_tokens = tuple(
@@ -306,6 +313,7 @@ def compose_category_preferences(
             *muted_tokens,
             *flip_tokens,
             *product_preference_tokens(product_tokens),
+            *dm_route_tokens(routes),
         )
     )
 
@@ -342,6 +350,7 @@ def update_favorite_categories(
         flip_enabled=current_flip_enabled,
         flip_min_profit_cents=current_flip_profit,
         product_tokens=existing_categories,
+        routes=split_dm_route_preferences(existing_categories),
     )
 
 
@@ -370,6 +379,7 @@ def update_muted_categories(
         flip_enabled=current_flip_enabled,
         flip_min_profit_cents=current_flip_profit,
         product_tokens=existing_categories,
+        routes=split_dm_route_preferences(existing_categories),
     )
 
 
@@ -393,6 +403,7 @@ def update_flip_settings(
             else int(minimum_profit_cents)
         ),
         product_tokens=existing_categories,
+        routes=split_dm_route_preferences(existing_categories),
     )
 
 

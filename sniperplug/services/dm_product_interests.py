@@ -443,6 +443,22 @@ PRODUCT_INTEREST_PROFILES: tuple[ProductInterestProfile, ...] = (
         excluded=("tablet case", "screen protector", "keyboard case"),
     ),
     _profile(
+        "desktop_computers",
+        "Desktop computers / prebuilt gaming PCs",
+        "🖥️",
+        ("desktop computer", "desktops", "desktop pc", "prebuilt pc", "gaming pc",
+         "gaming desktop", "computer tower", "mini pc", "all in one pc", "mac mini"),
+        ("desktop computer", "desktop pc", "gaming pc", "gaming desktop",
+         "prebuilt pc", "pre-built pc", "computer tower", "tower pc",
+         "workstation pc", "workstation desktop", "mini pc", "mini computer",
+         "all in one pc", "all-in-one pc", "mac mini", "intel nuc"),
+        excluded=("pc case", "computer case", "desktop stand", "desktop monitor",
+                  "computer monitor", "monitor stand", "motherboard",
+                  "power supply", "graphics card", "laptop", "laptop stand",
+                  "mouse pad", "keyboard", "barebone case"),
+        description="Complete desktop systems, including gaming towers, mini PCs and all-in-ones.",
+    ),
+    _profile(
         "laptops",
         "Laptops",
         "💻",
@@ -480,6 +496,7 @@ _BRAND_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 _CATEGORY_EMOJIS: dict[str, str] = {
+    "desktop_computers": "🖥️",
     "gpus": "💻",
     "brand_direct_electronics": "📺",
     "sneakers": "👟",

@@ -21,6 +21,13 @@ class OpportunityCategory:
 
 
 OPPORTUNITY_CATEGORIES: tuple[OpportunityCategory, ...] = (
+    OpportunityCategory(
+        "desktop_computers", "Desktop Computers / Prebuilt PCs", 102, 45, 100,
+        ("gaming desktop", "desktop computer", "desktop pc", "gaming pc", "prebuilt pc",
+         "pre-built pc", "computer tower", "tower pc", "mini pc", "mini computer",
+         "workstation pc", "all in one pc", "all-in-one pc", "mac mini", "intel nuc"),
+        ("desktop gaming demand", "whole-system resale value", "business PC upgrades"),
+    ),
     OpportunityCategory("gpus", "Graphics Cards", 100, 55, 300, ("rtx 5090", "rtx 5080", "rtx 5070", "rtx 4090", "gpu", "graphics card", "radeon rx"), ("ai demand", "gaming demand", "scarce supply", "component inflation")),
     OpportunityCategory("brand_direct_electronics", "Brand-Direct Electronics", 96, 45, 100, ("samsung", "lg oled", "sony bravia", "pixel", "galaxy", "surface", "xbox", "playstation", "oled tv", "qled", "monitor"), ("high resale value", "brand-direct coupon stacks", "trade-in pricing mistakes")),
     OpportunityCategory("sneakers", "Sneakers / Streetwear", 94, 45, 25, ("nike", "jordan", "air max", "dunk", "adidas", "yeezy", "puma", "new balance", "asics", "sneaker", "foot locker", "jd sports"), ("resale value", "drop demand", "member pricing", "checkout/coupon mistakes")),

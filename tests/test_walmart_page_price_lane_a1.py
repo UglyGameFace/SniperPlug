@@ -35,6 +35,14 @@ from sniperplug.services.walmart_exact_verification_queue import (
 from sniperplug.services import walmart_extreme_price_fanout as extreme
 
 
+@pytest.fixture(autouse=True)
+def _page_fanout_unit_price_recheck(monkeypatch):
+    """Page-lane sender mechanics use a fixed page snapshot, not live HTTP."""
+    async def _verified(_candidate, *, page_price=False):
+        return None
+    monkeypatch.setattr(extreme, "live_extreme_offer_rejection_reason", _verified)
+
+
 IPHONE_ITEM_ID = "425031866"
 IPHONE_URL = (
     "https://www.walmart.com/ip/AT-T-Apple-iPhone-11-64GB-Green/425031866"

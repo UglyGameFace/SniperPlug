@@ -64,7 +64,7 @@ def test_category_mutes_and_favorites_are_personal_delivery_filters() -> None:
     assert 'MUTED_CATEGORY_PREFIX = "muted:"' in PERSONAL
     assert 'FAVORITE_CATEGORY_PREFIX = "favorite:"' in PERSONAL
     assert '"baby": ("baby_kids",)' in PERSONAL
-    assert '"pc": ("gpus", "cpus", "ram", "ssds")' in PERSONAL
+    assert '"pc": ("desktop_computers", "gpus", "cpus", "ram", "ssds")' in PERSONAL
     assert '"category is muted in your personal DMs"' in MATCHER
     assert "category_key in muted_categories" in MATCHER
     assert "category_key in favorite_categories" in MATCHER

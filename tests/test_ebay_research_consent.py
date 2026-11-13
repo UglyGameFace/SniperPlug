@@ -229,3 +229,33 @@ def test_unapproved_campaign_never_appears_in_research_http_header(monkeypatch):
         browse = [x for x in calls if "/buy/browse/" in x[1]]
         assert browse[0][2]["X-EBAY-C-ENDUSERCTX"] == "affiliateCampaignId=1234567890"
     asyncio.run(run())
+
+
+
+def test_ebay_promo_disclosure_is_inline_before_tracked_link():
+    from sniperplug.cogs.ebay_research import research_listing_field_text
+    listing = parse_listing(_sample_payload())
+    assert listing is not None
+    tracked = "https://www.ebay.com/itm/1000?mkevt=1&campid=1234567890"
+    value = research_listing_field_text(listing, affiliate_url=tracked)
+    assert DISCLOSURE in value
+    assert value.index(DISCLOSURE) < value.index("[View eBay item]")
+    assert tracked in value
+    assert "Asking: USD 37.50" in value
+    assert len(value) <= 1024
+
+    untracked = research_listing_field_text(listing)
+    assert DISCLOSURE not in untracked
+    assert listing.asking_url in untracked
+    assert tracked not in untracked
+
+
+def test_preapproval_review_sample_is_clearly_labeled_not_historical_promotion():
+    from pathlib import Path
+    source = (
+        Path(__file__).resolve().parents[1] / "sniperplug/cogs/ebay_research.py"
+    ).read_text()
+    assert "PRIVATE REVIEW SAMPLE (not a previously sent campaign)" in source
+    assert "Non-affiliate listing for review" in source
+    assert "listings[0].asking_url" in source
+    assert "Unsubscribe with **/ebay consent**" in source

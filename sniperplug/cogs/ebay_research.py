@@ -13,6 +13,23 @@ from sniperplug.services.ebay_promotion_consent import (
 )
 
 
+def research_listing_field_text(listing, *, affiliate_url: str = "") -> str:
+    """Render safe asking-price evidence with disclosure next to tracked links."""
+    delivered = (
+        f"USD {listing.delivered_cents / 100:,.2f} incl. shipping"
+        if listing.delivered_cents is not None
+        else "shipping total unknown"
+    )
+    link = affiliate_url or listing.asking_url
+    disclosure = (DISCLOSURE + "\n") if affiliate_url else ""
+    return (
+        f"Asking: USD {listing.price_cents / 100:,.2f}"
+        f" | Delivered: {delivered}\n"
+        "Condition: " + discord.utils.escape_markdown(listing.condition)[:80] +
+        "\n" + disclosure + "[View eBay item](" + link + ")"
+    )[:1024]
+
+
 class EbayConsentView(discord.ui.View):
     """Private real subscription/unsubscription controls for EPN review."""
 
@@ -141,23 +158,12 @@ class EbayResearchCog(commands.GroupCog, group_name="ebay", group_description="e
             color=discord.Color.blue(),
         )
         for listing in listings[:5]:
-            delivered = (
-                "USD " + f"{listing.delivered_cents / 100:,.2f}" + " incl. shipping"
-                if listing.delivered_cents is not None
-                else "shipping total unknown"
-            )
             affiliate = safe_affiliate_link(
                 self.settings, listing, opted_in=opted_in,
             )
-            link = affiliate or listing.asking_url
             embed.add_field(
                 name=discord.utils.escape_markdown(listing.title)[:150],
-                value=(
-                    "Asking: USD " + f"{listing.price_cents / 100:,.2f}" +
-                    " | Delivered: " + delivered + "\n" +
-                    "Condition: " + discord.utils.escape_markdown(listing.condition)[:80] +
-                    "\n[View eBay item](" + link + ")"
-                )[:1024],
+                value=research_listing_field_text(listing, affiliate_url=affiliate),
                 inline=False,
             )
         if not listings:
@@ -189,8 +195,9 @@ class EbayResearchCog(commands.GroupCog, group_name="ebay", group_description="e
             return
         opted_in = await user_consented(self.bot.db, int(interaction.user.id))
         await interaction.followup.send(
-            "**PRIVATE REVIEW SAMPLE. Not a sent promotion.**\n" +
+            "**PRIVATE REVIEW SAMPLE (not a previously sent campaign).**\n" +
             preview_text(listings[0], approved=False) +
+            "\n**Non-affiliate listing for review:** " + listings[0].asking_url +
             "\n" + DISCLOSURE +
             "\nSubscription: " + ("opted in" if opted_in else "not subscribed") +
             "\nUnsubscribe with **/ebay consent** or the button below.",

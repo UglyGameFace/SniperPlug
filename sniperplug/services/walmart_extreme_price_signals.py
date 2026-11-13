@@ -16,6 +16,7 @@ from typing import Any
 ACCESSORY = re.compile(
     r"\b(?:case|cover|protector|charger|cable|adapter|replacement|parts? only"
     r"|box only|mount|holder|remote control|display dummy|sticker|decal|"
+    r"drill bits?|driver bits?|saw blades?|bit sets?|"
     r"screen protector|refill|repair part|protective sleeve)\b",
     re.IGNORECASE,
 )
@@ -332,7 +333,8 @@ PUBLIC_HIGH_VALUE_HARDWARE = re.compile(
     r"controllers?|gamepads?|joy[-\s]?cons?|graphics\s*card|gpu|projector|drone|"
     r"robot\s*vacuum|refrigerator|"
     r"dishwasher|washing\s*machine|tumble\s*dryer|power\s*tool|"
-    r"electric\s*bike|treadmill)\b",
+    r"electric\s*bike|treadmill|(?:cordless|power|hammer)\s*drill|"
+    r"drill\s*driver|impact\s*driver)\b",
     re.IGNORECASE,
 )
 PUBLIC_HIGH_VALUE_CATEGORY_LEAF = re.compile(

@@ -24,6 +24,7 @@ _SCHEMA_LOCK = asyncio.Lock()
 _USER_LOCKS: dict[int, asyncio.Lock] = {}
 
 _FAMILY_BY_CATEGORY = {
+    "desktop_computers": "tech",
     "premium_apparel": "fashion",
     "shoes_apparel": "fashion",
     "sneakers": "fashion",

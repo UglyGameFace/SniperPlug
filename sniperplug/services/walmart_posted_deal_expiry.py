@@ -187,6 +187,12 @@ def _queue_evidence(row: Any) -> tuple[str, int | None] | None:
         return "Walmart no longer shows this offer as buyable online", current
     if current and _price_rose(posted, current):
         return f"Walmart's price is now ${current / 100:,.2f}", current
+    if current and _price_fell(posted, current):
+        return (
+            f"Walmart's product listing now shows a lower price of ${current / 100:,.2f}. "
+            "This may be a different seller or selected variant; the older quote should not appear current",
+            current,
+        )
     return None
 
 
@@ -194,6 +200,14 @@ def _price_rose(posted_cents: int, current_cents: int) -> bool:
     return (
         current_cents >= posted_cents * PRICE_RISE_RATIO
         and current_cents - posted_cents >= PRICE_RISE_MIN_CENTS
+    )
+
+
+def _price_fell(posted_cents: int, current_cents: int) -> bool:
+    """Material drops are informative, but item-level prices are not offer proof."""
+    return (
+        current_cents <= posted_cents * (2 - PRICE_RISE_RATIO)
+        and posted_cents - current_cents >= PRICE_RISE_MIN_CENTS
     )
 
 
@@ -209,6 +223,12 @@ def _lookup_evidence(item: dict, posted_cents: int) -> tuple[str, int | None] | 
         return "Walmart no longer offers this item online", current
     if current and _price_rose(posted_cents, current):
         return f"Walmart's price is now ${current / 100:,.2f}", current
+    if current and _price_fell(posted_cents, current):
+        return (
+            f"Walmart's product listing now shows a lower price of ${current / 100:,.2f}. "
+            "This may be a different seller or selected variant; the older quote should not appear current",
+            current,
+        )
     return None
 
 
@@ -475,21 +495,30 @@ EMBED_MAX_FIELDS = 25
 EMBED_MAX_CHARS = 6000
 
 
-def _expired_title(title: str) -> str:
+def _expired_title(title: str, *, price_changed: bool = False) -> str:
+    if price_changed:
+        if title.startswith("⚠️ RECHECK PRICE"):
+            return title[:256]
+        return ("⚠️ RECHECK PRICE — " + title)[:256]
     if title.startswith("⛔ EXPIRED"):
         return title[:256]
     return ("⛔ EXPIRED — " + title)[:256]
 
 
-def _expired_embed(embed: Any, ended_value: str) -> Any:
-    """Mark an embed expired while staying inside Discord's embed limits."""
+def _expired_embed(embed: Any, ended_value: str, *, price_changed: bool = False) -> Any:
+    """Mark an ended deal or stale price without inventing a same-offer quote."""
 
-    embed.title = _expired_title(str(getattr(embed, "title", "") or ""))
+    embed.title = _expired_title(str(getattr(embed, "title", "") or ""), price_changed=price_changed)
     embed.colour = discord.Colour.dark_grey()
     # Make room for the new first field (max 25 fields).
     while len(list(getattr(embed, "fields", []) or [])) >= EMBED_MAX_FIELDS:
         embed.remove_field(len(embed.fields) - 1)
-    embed.insert_field_at(0, name="⛔ Deal ended", value=ended_value, inline=False)
+    embed.insert_field_at(
+        0,
+        name="⚠️ Recheck current price" if price_changed else "⛔ Deal ended",
+        value=ended_value,
+        inline=False,
+    )
     # Keep the total under Discord's 6,000-character limit by trimming the
     # description, then dropping trailing fields (never the "Deal ended" one).
     try:
@@ -527,6 +556,7 @@ async def _retire_message(
         message = await channel.fetch_message(int(message_id))
         embeds = list(getattr(message, "embeds", None) or [])
         stamp = int(checked_at.timestamp())
+        price_changed = reason.startswith("Walmart's product listing now shows a lower price")
         ended_value = (
             f"{reason}. It was posted at ${posted_cents / 100:,.2f}. "
             f"Checked <t:{stamp}:R>."
@@ -534,6 +564,7 @@ async def _retire_message(
         embed = _expired_embed(
             embeds[0].copy() if embeds else discord.Embed(title="Walmart deal"),
             ended_value,
+            price_changed=price_changed,
         )
         try:
             await message.edit(embed=embed, view=None)
@@ -546,11 +577,15 @@ async def _retire_message(
             # post with a minimal embed rather than leaving it looking live.
             original = embeds[0] if embeds else None
             minimal = discord.Embed(
-                title=_expired_title(str(getattr(original, "title", "") or "Walmart deal")),
+                title=_expired_title(str(getattr(original, "title", "") or "Walmart deal"), price_changed=price_changed),
                 url=getattr(original, "url", None) or None,
                 colour=discord.Colour.dark_grey(),
             )
-            minimal.add_field(name="⛔ Deal ended", value=ended_value, inline=False)
+            minimal.add_field(
+                name="⚠️ Recheck current price" if price_changed else "⛔ Deal ended",
+                value=ended_value,
+                inline=False,
+            )
             await message.edit(embed=minimal, view=None)
         return "edited"
     except (discord.NotFound, discord.Forbidden):

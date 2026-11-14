@@ -5,6 +5,7 @@ import logging
 import os
 import platform
 import sys
+import time
 from typing import Any, Iterable
 
 import discord
@@ -59,6 +60,7 @@ from sniperplug.services.command_surface_hash import (
     command_surface_fingerprint,
     default_hash_store_path,
 )
+from sniperplug.services.operational_telemetry import publish_loop
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
     ensure_error_logging_table,
@@ -89,6 +91,8 @@ class SniperPlugBot(commands.Bot):
             default_hash_store_path(settings.database_path)
         )
         self._command_surface_issues: tuple[str, ...] = ()
+        self._ops_started_monotonic = time.monotonic()
+        self._ops_telemetry_task: asyncio.Task | None = None
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
     async def setup_hook(self) -> None:
@@ -195,6 +199,19 @@ class SniperPlugBot(commands.Bot):
 
         log.info("Runtime services ready: provider_count=%s", len(provider_registry.providers))
         await self._sync_commands()
+        # Diagnostics are opt-in and never become a prerequisite for the bot.
+        if len(os.getenv("SNIPERPLUG_OPS_INGEST_SECRET", "").strip()) >= 32:
+            self._ops_telemetry_task = asyncio.create_task(
+                publish_loop(self), name="sniperplug-ops-telemetry"
+            )
+
+    async def close(self) -> None:
+        task = self._ops_telemetry_task
+        self._ops_telemetry_task = None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await super().close()
 
     async def _sync_commands(self) -> None:
         store = getattr(self, "command_surface_hash_store", None)

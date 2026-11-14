@@ -46,7 +46,7 @@ class _Session:
         assert not allow_redirects
         timestamp = headers["x-sniperplug-timestamp"]
         expected = "sha256=" + hmac.new(
-            self.secret.encode(), timestamp.encode() + b"." + data,
+            hashlib.sha256(self.secret.encode()).digest(), timestamp.encode() + b"." + data,
             hashlib.sha256,
         ).hexdigest()
         assert hmac.compare_digest(headers["x-sniperplug-signature"], expected)
@@ -162,7 +162,7 @@ def test_operational_telemetry_is_read_only_and_signed():
 
 def test_operational_telemetry_redaction():
     assert sign_payload("key", 123, b"{}") == hmac.new(
-        b"key", b"123.{}", hashlib.sha256).hexdigest()
+        hashlib.sha256(b"key").digest(), b"123.{}", hashlib.sha256).hexdigest()
     assert safe_walmart_url("not-an-id") is None
     assert error_class("HTTP 429 token=very-secret") == "rate_limited"
     assert error_class("database locked password=hunter2") == "database_busy"

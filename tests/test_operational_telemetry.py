@@ -81,6 +81,9 @@ async def _run():
             CREATE TABLE guild_public_deal_posts (
                 status TEXT, posted_at TEXT, first_seen_at TEXT
             );
+            CREATE TABLE walmart_guild_fanout_decisions (
+                outcome TEXT, decided_at TEXT
+            );
         """)
         recent = datetime.now(timezone.utc).isoformat()
         await conn.execute(
@@ -108,6 +111,10 @@ async def _run():
             "INSERT INTO guild_public_deal_posts VALUES ('posted',?,?)",
             (recent, recent),
         )
+        await conn.execute(
+            "INSERT INTO walmart_guild_fanout_decisions VALUES ('quality_blocked',?)",
+            (recent,),
+        )
         await conn.commit()
         await conn.execute("PRAGMA query_only=ON")
         db = _DB(conn)
@@ -116,6 +123,7 @@ async def _run():
         assert snap["queue"]["due"] == 0
         assert snap["posts"]["posts_24h"] == 1
         assert snap["events"]["events_24h"] == 1
+        assert snap["decisions"]["quality_blocked"] == 1
         assert snap["catalog"]["completed_routes"] == 190
         assert snap["workers"]["exact"]["total_timeouts"] == 1
         assert snap["deals"][0]["exact_current_cents"] == 1999
@@ -145,7 +153,7 @@ async def _run():
         empty.row_factory = aiosqlite.Row
         missing = await read_snapshot(_DB(empty))
         assert missing["queue"] is None and missing["posts"] is None
-        assert len(missing["missing_tables"]) == 5
+        assert len(missing["missing_tables"]) == 6
 
 
 def test_operational_telemetry_is_read_only_and_signed():

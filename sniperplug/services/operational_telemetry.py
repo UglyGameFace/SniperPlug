@@ -261,8 +261,11 @@ async def read_snapshot(db: Any, *, now: datetime | None = None) -> dict:
 
 
 def sign_payload(secret: str, timestamp: int, raw: bytes) -> str:
+    # The website stores only this derived per-source key, not the one-time
+    # plaintext pairing token. Both sides sign the exact timestamp and bytes.
+    derived_key = hashlib.sha256(secret.encode("utf8")).digest()
     return hmac.new(
-        secret.encode("utf8"), str(timestamp).encode("ascii") + b"." + raw, hashlib.sha256
+        derived_key, str(timestamp).encode("ascii") + b"." + raw, hashlib.sha256
     ).hexdigest()
 
 

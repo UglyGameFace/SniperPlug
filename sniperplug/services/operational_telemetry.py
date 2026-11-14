@@ -29,6 +29,7 @@ TABLES = {
     "walmart_global_catalog_autoscan_state",
     "walmart_global_exact_deal_events",
     "guild_public_deal_posts",
+    "walmart_guild_fanout_decisions",
 }
 ERROR_CLASSES = (
     ("429", "rate_limited"),
@@ -113,6 +114,7 @@ async def read_snapshot(db: Any, *, now: datetime | None = None) -> dict:
     names = {str(value(row, "name", 0) or "") for row in existing}
     snapshot: dict[str, Any] = {
         "queue": None, "posts": None, "events": None, "catalog": None,
+        "decisions": None,
         "workers": {"catalog": None, "exact": None}, "deals": [],
         "missing_tables": sorted(TABLES - names),
     }
@@ -199,6 +201,22 @@ async def read_snapshot(db: Any, *, now: datetime | None = None) -> dict:
             "event_errors_24h": safe_count(value(row, "errors", 3)),
             "latest_event_at": value(row, "latest", 1),
         }
+    if "walmart_guild_fanout_decisions" in names:
+        rows = await query_rows(conn, """
+            SELECT outcome, COUNT(*) AS count
+            FROM walmart_guild_fanout_decisions WHERE decided_at >= ?
+            GROUP BY outcome
+        """, (cutoff,))
+        allowed = {
+            "posted", "below_threshold", "category_muted", "quality_blocked",
+            "recent_duplicate", "reserved_duplicate", "disabled",
+            "wrong_retailer", "error", "unexplained",
+        }
+        totals = {status: safe_count(value(row, "count", 1))
+                  for row in rows
+                  for status in [str(value(row, "outcome", 0) or "")]
+                  if status in allowed}
+        snapshot["decisions"] = totals
     if "walmart_global_catalog_autoscan_state" in names:
         rows = await query_rows(conn, """
             SELECT completed_routes, completed_passes, last_started_at, last_completed_at,
@@ -270,6 +288,7 @@ async def publish_once(bot: Any, *, session: aiohttp.ClientSession | None = None
         "metrics": {
             "queue": data["queue"], "posts": data["posts"], "events": data["events"],
             "catalog": data["catalog"], "workers": data["workers"],
+            "decisions": data["decisions"],
         },
         "deals": data["deals"],
     }

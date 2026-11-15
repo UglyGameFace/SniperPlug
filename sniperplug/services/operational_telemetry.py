@@ -305,13 +305,40 @@ async def publish_once(bot: Any, *, session: aiohttp.ClientSession | None = None
         "x-sniperplug-timestamp": str(timestamp),
         "x-sniperplug-signature": "sha256=" + sign_payload(secret, timestamp, raw),
     }
+    async def send(client: aiohttp.ClientSession) -> bool:
+        async with client.post(
+            ENDPOINT, data=raw, headers=headers, allow_redirects=False,
+        ) as response:
+            if response.status == 202:
+                return True
+            # Log only the HTTP status and a fixed diagnostic. Response bodies
+            # and request headers can contain private details and are never logged.
+            failures = {
+                400: "request rejected by website",
+                401: "pairing key or signature mismatch; check Discloud secret",
+                403: "ingest endpoint authorization rejected",
+                404: "ingest route missing or URL not deployed",
+                413: "sanitized snapshot exceeded receiver size limit",
+                422: "snapshot schema, item ID or timestamp rejected",
+                429: "Cloudflare rate limit",
+                500: "website ingest service error",
+                503: "website telemetry storage or pairing unavailable",
+            }
+            category = failures.get(
+                response.status,
+                "website upstream unavailable" if response.status >= 500 else "unexpected receiver response",
+            )
+            LOG.warning(
+                "Operational telemetry receiver HTTP %s (%s); bot scanning unaffected",
+                response.status, category,
+            )
+            return False
+
     if session is not None:
-        async with session.post(ENDPOINT, data=raw, headers=headers, allow_redirects=False) as response:
-            return response.status == 202
+        return await send(session)
     timeout = aiohttp.ClientTimeout(total=8)
     async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.post(ENDPOINT, data=raw, headers=headers, allow_redirects=False) as response:
-            return response.status == 202
+        return await send(client)
 
 
 async def publish_loop(bot: Any, *, interval_seconds: int = DEFAULT_INTERVAL_SECONDS) -> None:
@@ -319,13 +346,21 @@ async def publish_loop(bot: Any, *, interval_seconds: int = DEFAULT_INTERVAL_SEC
     if len(os.getenv("SNIPERPLUG_OPS_INGEST_SECRET", "").strip()) < 32:
         LOG.info("Operational telemetry disabled: no shared ingest secret configured")
         return
+    LOG.info(
+        "Operational telemetry configured: waiting for Discord gateway readiness; "
+        "restart the Discloud app after adding or changing its environment key"
+    )
     await bot.wait_until_ready()
     LOG.info("Operational telemetry enabled: SELECT-only snapshot every %ss", interval_seconds)
+    first_receipt_logged = False
     while not bot.is_closed():
         try:
             success = await asyncio.wait_for(publish_once(bot), timeout=15)
-            if not success:
-                LOG.warning("Operational telemetry delivery rejected or unavailable; bot scanning continues")
+            if success and not first_receipt_logged:
+                LOG.info("Operational telemetry accepted by website: HTTP 202, first signed snapshot")
+                first_receipt_logged = True
+            elif not success:
+                LOG.warning("Operational telemetry not accepted; check preceding receiver HTTP status")
         except asyncio.CancelledError:
             raise
         except Exception as exc:

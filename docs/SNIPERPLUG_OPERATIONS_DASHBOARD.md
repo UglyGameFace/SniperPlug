@@ -19,7 +19,7 @@ No SELECT requests use raw Discord messages, user identifiers, full error string
 ## Safely connect from Android
 
 1. Back up the **canonical** Discloud SniperPlug application, including `data/sniperplug.sqlite3`, to off-host storage before any redeploy. Never start with an empty DB.
-2. Open `https://sniperplug.com/operations/`, sign in using the existing owner Control Center account, and choose **Generate private connection key**. This saves only a SHA-256-derived HMAC key to Cloudflare D1 and displays the one-time plaintext key once.
+2. Open `https://sniperplug.com/operations/settings/` via the existing owner Control Center session, and choose **Generate private connection key**. This saves only a SHA-256-derived HMAC key to Cloudflare D1 and displays the one-time plaintext key once.
 3. In the *canonical* SniperPlug Discloud app's environment, set `SNIPERPLUG_OPS_INGEST_SECRET` to that one-time key. Do **not** add it to GitHub, an issue, Discord or public logs.
 4. Deploy only the integrated bot revision from `main` after the backup and migration-safety checks; leave all existing SQLite, quota and watcher settings unchanged. If available, set `SNIPERPLUG_RELEASE_SHA` to the exact deployed bot commit.
 5. Check the dashboard for an actual signed report. The first receipt proves a recent data path, **not** the correctness of each deal or live checkout. Verify one item against /sniperplug deal_trace and actual retailer timestamps.
@@ -37,3 +37,23 @@ The pairing key never appears in a read response. The **Rotate** button requires
 - Code/tests merged on GitHub is separate from Discloud deployment and DB integrity.
 - Cloudflare D1 migration `0008_sniperplug_operations.sql` is additive and must be applied to the production `SNIPERPLUG_DB` before owner pairing can succeed.
 - Validate the exact deployed bot SHA, real first signed receipt, worker-cycle metrics, a stored decision and a corresponding actual Discord receipt before marking the live feed accepted.
+
+## First-report troubleshooting (no bot or secret disclosure)
+
+A key registered by the website is not an accepted bot report. The owner-only
+`/operations/settings/` page shows the distinction. **Changing a Discloud
+environment variable does not change the environment of an already-running
+Python bot. Save the key and restart the canonical Discloud app after a verified
+SQLite backup.**
+
+Inspect Discloud startup logs for `SniperPlug owner telemetry key detected at
+process startup` and `Operational telemetry enabled`. A first accepted report
+produces `Operational telemetry accepted by website: HTTP 202`. Rejections
+log only a numeric HTTP status and safe category: 401 means HMAC pairing
+mismatch, 404 indicates a missing receiver route, 422 indicates invalid
+schema/timestamp and 503 indicates receiver configuration/storage unavailable.
+Do not paste key material or Discord tokens into logs or support tickets.
+
+If neither telemetry startup message appears after a restart, verify the canonical
+Discloud app is running the code containing `operational_telemetry.py`. GitHub
+main or a successful website deployment does not prove the production bot SHA.

@@ -30,7 +30,8 @@ class _Bot:
 
 
 class _Response:
-    status = 202
+    def __init__(self, status=202):
+        self.status = status
     async def __aenter__(self):
         return self
     async def __aexit__(self, *args):
@@ -38,8 +39,9 @@ class _Response:
 
 
 class _Session:
-    def __init__(self, secret):
+    def __init__(self, secret, status=202):
         self.secret = secret
+        self.status = status
         self.captured = None
     def post(self, url, *, data, headers, allow_redirects):
         assert url == ENDPOINT
@@ -51,10 +53,10 @@ class _Session:
         ).hexdigest()
         assert hmac.compare_digest(headers["x-sniperplug-signature"], expected)
         self.captured = json.loads(data)
-        return _Response()
+        return _Response(self.status)
 
 
-async def _run():
+async def _run(caplog):
     async with aiosqlite.connect(":memory:") as conn:
         conn.row_factory = aiosqlite.Row
         await conn.executescript("""
@@ -143,6 +145,11 @@ async def _run():
             assert outgoing.captured["bot"]["backend"] == "sqlite"
             assert outgoing.captured["metrics"]["posts"]["posts_24h"] == 1
             assert "guild_id" not in json.dumps(outgoing.captured)
+            refused = _Session(secret, status=401)
+            assert await publish_once(_Bot(db), session=refused) is False
+            assert "HTTP 401" in caplog.text
+            assert "pairing key or signature mismatch" in caplog.text
+            assert secret not in caplog.text
         finally:
             if original is None:
                 os.environ.pop("SNIPERPLUG_OPS_INGEST_SECRET", None)
@@ -156,8 +163,8 @@ async def _run():
         assert len(missing["missing_tables"]) == 6
 
 
-def test_operational_telemetry_is_read_only_and_signed():
-    asyncio.run(_run())
+def test_operational_telemetry_is_read_only_and_signed(caplog):
+    asyncio.run(_run(caplog))
 
 
 def test_operational_telemetry_redaction():

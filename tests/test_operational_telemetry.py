@@ -9,7 +9,7 @@ import json
 import aiosqlite
 
 from sniperplug.services.operational_telemetry import (
-    ENDPOINT, error_class, publish_once, read_snapshot, safe_walmart_url, sign_payload,
+    ENDPOINT, error_class, publish_once, query_rows, read_snapshot, safe_walmart_url, sign_payload,
 )
 
 
@@ -173,3 +173,27 @@ def test_operational_telemetry_redaction():
     assert safe_walmart_url("not-an-id") is None
     assert error_class("HTTP 429 token=very-secret") == "rate_limited"
     assert error_class("database locked password=hunter2") == "database_busy"
+
+
+def test_telemetry_query_error_logs_stage_without_secrets(caplog):
+    class BrokenConnection:
+        async def execute(self, *_args):
+            raise RuntimeError("sqlite failure secret-token=do-not-print")
+
+    async def run():
+        try:
+            await query_rows(
+                BrokenConnection(),
+                "SELECT status FROM walmart_exact_detail_queue WHERE item_id = ?",
+                ("secret-id",),
+            )
+        except RuntimeError:
+            return
+        raise AssertionError("Read failure must propagate to publisher")
+
+    asyncio.run(run())
+    assert "source=walmart_exact_detail_queue" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
+    assert "no report submitted" in caplog.text
+    assert "secret-token" not in caplog.text
+    assert "secret-id" not in caplog.text

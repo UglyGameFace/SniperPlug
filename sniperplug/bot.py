@@ -201,8 +201,17 @@ class SniperPlugBot(commands.Bot):
         await self._sync_commands()
         # Diagnostics are opt-in and never become a prerequisite for the bot.
         if len(os.getenv("SNIPERPLUG_OPS_INGEST_SECRET", "").strip()) >= 32:
+            log.info(
+                "SniperPlug owner telemetry key detected at process startup; "
+                "starting read-only publisher"
+            )
             self._ops_telemetry_task = asyncio.create_task(
                 publish_loop(self), name="sniperplug-ops-telemetry"
+            )
+        else:
+            log.info(
+                "SniperPlug owner telemetry not enabled at process startup; "
+                "a Discloud restart is required after saving the pairing key"
             )
 
     async def close(self) -> None:

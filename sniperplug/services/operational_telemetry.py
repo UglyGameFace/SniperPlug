@@ -97,8 +97,23 @@ def safe_walmart_url(item_id: Any) -> str | None:
 
 
 async def query_rows(conn: Any, sql: str, params: tuple = ()) -> list[Any]:
-    cursor = await conn.execute(sql, params)
-    return list(await cursor.fetchall())
+    try:
+        cursor = await conn.execute(sql, params)
+        return list(await cursor.fetchall())
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # Collector query failures happen before the outgoing HTTP request.
+        # Log a fixed table identifier and exception class only, so Discloud
+        # reveals why there was no ingest attempt without leaking row data,
+        # SQL parameters, API credentials or SQLite error text.
+        stage = next((name for name in sorted(TABLES) if name in sql), "sqlite_catalog")
+        LOG.warning(
+            "Operational telemetry snapshot SELECT failed source=%s error_type=%s; "
+            "no report submitted; normal deal scans unaffected",
+            stage, type(exc).__name__,
+        )
+        raise
 
 
 async def read_snapshot(db: Any, *, now: datetime | None = None) -> dict:

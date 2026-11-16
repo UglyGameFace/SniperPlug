@@ -272,6 +272,58 @@ def test_proven_price_anomaly_can_qualify_outside_standard_hardware_types() -> N
     assert extreme.extreme_rejection_reason(without_proof) is not None
 
 
+def test_listed_price_anomaly_qualifies_over_ten_dollar_exact_price() -> None:
+    """A $49 exact price on a $599 Walmart list qualifies via the list-price check."""
+    from dataclasses import replace
+
+    from sniperplug.services.walmart_extreme_price_signals import listed_price_anomaly
+
+    base = candidate(title="Samsung 65-inch 4K Smart TV", price=49.0)
+    listed = replace(
+        base,
+        variant_attributes={**base.variant_attributes, "msrp": "599.00"},
+    )
+    assert listed_price_anomaly(listed) == 599.0
+    assert extreme.extreme_rejection_reason(listed) is None
+    assert extreme.eligible_exact_extreme_candidate(listed)
+
+    # The guards travel with the wire-in: no list price, a weak ratio, an
+    # accessory, a cheap consumable, and an inflated-MSRP department sold by
+    # a third party all stay rejected.
+    assert extreme.extreme_rejection_reason(base) == "price_mismatch_or_over_limit"
+    weak_ratio = replace(
+        base,
+        variant_attributes={**base.variant_attributes, "msrp": "100.00"},
+    )
+    assert listed_price_anomaly(weak_ratio) is None
+    assert extreme.extreme_rejection_reason(weak_ratio) == "price_mismatch_or_over_limit"
+    mount = replace(
+        base,
+        title="Samsung 65-inch TV Wall Mount",
+        variant_attributes={**base.variant_attributes, "msrp": "599.00"},
+    )
+    assert extreme.extreme_rejection_reason(mount) == "accessory_or_parts"
+    detergent = replace(
+        base,
+        title="Laundry Detergent 100 oz",
+        variant_attributes={**base.variant_attributes, "msrp": "599.00"},
+    )
+    assert extreme.extreme_rejection_reason(detergent) == "price_mismatch_or_over_limit"
+    handbag = replace(
+        base,
+        title="Women's Leather Handbag",
+        seller_name="Marketplace Seller",
+        variant_attributes={
+            **base.variant_attributes,
+            "msrp": "599.00",
+            "seller": "Marketplace Seller",
+            "walmartSeller": "no",
+        },
+    )
+    assert listed_price_anomaly(handbag) is None
+    assert extreme.extreme_rejection_reason(handbag) == "price_mismatch_or_over_limit"
+
+
 def test_extreme_exact_price_still_blocks_accessories_and_unproven_offers() -> None:
     from dataclasses import replace
 

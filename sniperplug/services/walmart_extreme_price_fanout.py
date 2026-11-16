@@ -31,6 +31,7 @@ from sniperplug.services.walmart_extreme_price_signals import (
     ABSOLUTE_EXTREME_MAX_PRICE,
     ACCESSORY,
     exact_price_lead_evidence,
+    listed_price_anomaly,
     primary_product_evidence,
 )
 from sniperplug.services.stock_status import is_unavailable_stock
@@ -90,6 +91,8 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
     if current > MAX_PRICE_CENTS / 100:
         # Above $10 the only accepted evidence is an extreme anomaly against
         # Walmart's own listed price; nothing else is claimed for pricier items.
+        if listed_price_anomaly(candidate) is not None:
+            return None
         return "price_mismatch_or_over_limit"
     if primary_product_evidence(
         candidate, trusted_reference=trusted_reference

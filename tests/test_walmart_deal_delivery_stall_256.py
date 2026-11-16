@@ -290,9 +290,12 @@ def test_all_walmart_retention_is_after_fanout_and_bounded() -> None:
     )[1].split("async def maybe_prune_global_deal_event_storage_bounded", 1)[0]
     assert "DELETE FROM" not in legacy_schema
     assert "DELETE FROM" not in bulk_schema
+    # The legacy post-fanout prune helper was deleted with the legacy fanout
+    # entry point; the next function after prune_global_deal_events_bounded
+    # is now _exact_card_for_candidate.
     assert "LIMIT ?" in legacy_fanout_source.split(
         "async def prune_global_deal_events_bounded", 1
-    )[1].split("async def maybe_prune_global_deal_events_after_fanout", 1)[0]
+    )[1].split("def _exact_card_for_candidate", 1)[0]
     assert "FANOUT_CLEANUP_BATCH_SIZE = 100" in fanout_source
 
     exact_worker = runner_source.split(

@@ -7,7 +7,7 @@ import aiosqlite
 
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
-from sniperplug.services import walmart_exact_queue_runtime as runtime
+from sniperplug.services import walmart_exact_queue_bulk_runtime as bulk_runtime
 from sniperplug.services.walmart_exact_queue_drain import (
     claim_due_rows_batched,
     tiered_recheck_delay,
@@ -211,11 +211,14 @@ def test_runtime_enters_bounded_drain_mode(monkeypatch) -> None:
             for candidate in candidates
         }
         provider = FakeDetailProvider(payloads)
-        monkeypatch.setattr(runtime, "DRAIN_ACTIONABLE_THRESHOLD", 2)
-        monkeypatch.setattr(runtime, "DRAIN_BATCH_SIZE", 4)
-        monkeypatch.setattr(runtime, "DRAIN_CONCURRENCY", 2)
+        # The live batch path decides drain mode from queue pressure (48 fresh
+        # rows), not from the retired single threshold. Force the decision
+        # here so this test still proves the escalation behavior itself.
+        monkeypatch.setattr(bulk_runtime, "should_use_drain_mode", lambda _pressure: True)
+        monkeypatch.setattr(bulk_runtime, "DRAIN_BATCH_SIZE", 4)
+        monkeypatch.setattr(bulk_runtime, "DRAIN_CONCURRENCY", 2)
 
-        result = await runtime.process_actionable_walmart_exact_queue_batch(
+        result = await bulk_runtime.process_actionable_walmart_exact_queue_batch(
             db,
             provider=provider,
             limit=1,

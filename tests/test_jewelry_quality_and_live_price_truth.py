@@ -82,14 +82,20 @@ def test_material_proof_uses_metal_fields_not_color_or_marketing():
     assert jewelry_quality_rejection_reason("USB Headset") is None
 
 
-def test_unverified_msrp_cannot_create_extreme_headset_alert():
+def test_listed_price_anomaly_creates_extreme_headset_lead():
     headset = candidate(title="Logitech H390 Wired USB Headset, Black", price=29.56)
     headset.variant_attributes["msrp"] = "240.00"
     assert not is_priority_extreme_discovery(
         headset, current_price=29.56, trusted_reference=None
     )
     assert exact_price_lead_evidence(headset) is None
-    assert extreme.build_extreme_price_card(headset) is None
+    # A $29.56 Walmart-sold headset against a $240 list clears the
+    # listed-price anomaly guards (<=20% of list, list >= $100, savings
+    # >= $75), so it is an extreme lead even though the MSRP alone is not
+    # a trusted reference and earns no discovery priority.
+    card = extreme.build_extreme_price_card(headset)
+    assert card is not None
+    assert card.embed.title.startswith("Extreme exact-price find")
 
 
 @pytest.mark.parametrize("kind,expected", [

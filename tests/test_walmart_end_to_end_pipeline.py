@@ -70,24 +70,27 @@ async def test_one_dollar_tablet_without_trusted_reference_is_opt_in_exact_lead(
 
 
 @pytest.mark.parametrize(
-    "item, query",
+    "item, query, posts_expected",
     [
         # $600 TV at $49 where Walmart only returns an (untrusted) MSRP.
+        # Substantial hardware at <=20% of list is an extreme lead now.
         (walmart_item(9103, 'TCL 65" Class 4K UHD Smart TV', 49.00, msrp=599.99,
-                      category="Electronics/TV & Video/Televisions"), "65 inch 4k smart tv"),
+                      category="Electronics/TV & Video/Televisions"), "65 inch 4k smart tv", 1),
         # Power tool: not in any product-type list, sold by Walmart.
         (walmart_item(9105, "DEWALT 20V MAX Cordless Drill Driver Kit", 2.00, msrp=159.00,
-                      category="Home Improvement/Tools/Power Tools/Drills"), "dewalt power tool kit"),
-        # Collectible: not hardware at all.
+                      category="Home Improvement/Tools/Power Tools/Drills"), "dewalt power tool kit", 1),
+        # Collectible: not hardware at all, and under $10 so the list-price
+        # anomaly path (over-$10 only) never applies. Still no public post.
         (walmart_item(9109, "LEGO Star Wars Millennium Falcon 75257 Building Set", 3.00, msrp=169.99,
-                      category="Toys/Building Sets/LEGO"), "lego set"),
-        # Product type the code has never heard of (overfitting guard).
+                      category="Toys/Building Sets/LEGO"), "lego set", 0),
+        # Product type the code has never heard of (overfitting guard): sold by
+        # Walmart at <=20% of a $749.95 list, so it qualifies as an extreme lead.
         (walmart_item(9110, "Breville Barista Express Espresso Machine BES870XL", 25.00, msrp=749.95,
-                      category="Home/Kitchen Appliances/Coffee"), "espresso machine"),
+                      category="Home/Kitchen Appliances/Coffee"), "espresso machine", 1),
     ],
 )
 @pytest.mark.asyncio
-async def test_listed_msrp_alone_is_not_price_error_evidence(tmp_path, monkeypatch, item, query):
+async def test_listed_price_anomaly_posts_only_for_guarded_goods(tmp_path, monkeypatch, item, query, posts_expected):
     p = await _pipeline(tmp_path, monkeypatch)
     try:
         await p.enroll(p.guilds[0], threshold=40, extreme=True)
@@ -96,12 +99,15 @@ async def test_listed_msrp_alone_is_not_price_error_evidence(tmp_path, monkeypat
         await p.cycle()
         assert (await p.queue_row(item["itemId"]))["status"] == "verified_no_reference"
         posts = p.posts()
-        if float(item["salePrice"]) <= 10 and "Drill Driver Kit" in item["name"]:
+        assert len(posts) == posts_expected
+        if posts_expected:
+            assert posts[0].title.startswith("Extreme exact-price find")
+            # No fabricated percentage; Walmart's list price shown only as context.
+            assert "% off" not in _text(posts[0])
+            assert "not a verified" in _text(posts[0])
+        if "Drill Driver Kit" in item["name"]:
             # True sub-$10 substantial hardware may still qualify independently.
-            assert len(posts) == 1
             assert "159.00" not in str(posts[0].to_dict())
-        else:
-            assert posts == [], "untrusted MSRP alone cannot create a public bargain"
     finally:
         await p.close()
 
@@ -529,14 +535,22 @@ async def test_walmart_sold_msrp_inflated_goods_never_post(tmp_path, monkeypatch
     ids=lambda item: str(item["itemId"]),
 )
 @pytest.mark.asyncio
-async def test_unverified_msrp_anomalies_need_independent_value_evidence(tmp_path, monkeypatch, item):
+async def test_listed_price_anomaly_posts_for_substantial_walmart_sold_goods(tmp_path, monkeypatch, item):
     p = await _pipeline(tmp_path, monkeypatch)
     try:
         await p.enroll(p.guilds[0], threshold=40, extreme=True)
         p.api.add(item, queries=("real errors",))
         await p.discover("real errors")
         await p.cycle()
-        assert p.posts() == []
+        # Substantial Walmart-sold goods at <=20% of list now qualify as
+        # opt-in extreme leads. Inflated-department goods still never post;
+        # see test_walmart_sold_msrp_inflated_goods_never_post.
+        posts = p.posts()
+        assert len(posts) == 1
+        assert posts[0].title.startswith("Extreme exact-price find")
+        # No fabricated percentage; Walmart's list price shown only as context.
+        assert "% off" not in _text(posts[0])
+        assert "not a verified" in _text(posts[0])
     finally:
         await p.close()
 

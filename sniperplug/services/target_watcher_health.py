@@ -37,10 +37,11 @@ class TargetWatcherHealth:
     def summary_line(self) -> str:
         if self.status == "not_started":
             return (
-                "Target watcher **not started** • standalone `SniperPlug-Target-Watcher` has not reported "
-                "a production cycle to the shared database • catalog "
+                "Target watcher **off by design** • the Target watcher is not enabled, so no "
+                "Target deals are scanned • catalog "
                 f"**{self.priced_products}/{self.products} priced**. "
-                "Start/deploy `target_watcher_main.py` as the separate Discloud watcher using the same Turso DB."
+                "Nothing is misconfigured: Target scanning stays off until it is "
+                "deliberately enabled."
             )
         if self.status == "healthy" and self.stale:
             state = "stale"

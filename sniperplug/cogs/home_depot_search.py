@@ -89,15 +89,8 @@ class HomeDepotSearchCog(commands.Cog):
         if not cleaned_query:
             await interaction.followup.send(f"Home Depot search needs a product term. Try {BROAD_QUERY_EXAMPLES}.", ephemeral=True)
             return
-        if broad_warning and not has_local_anchor:
-            await interaction.followup.send(
-                "SerpApi credit protected: that query is too broad without a ZIP or store ID.\n\n"
-                f"{broad_warning}\n"
-                "Add `zip_code:`/`store_id:` or use a tighter product term before spending a credit.",
-                ephemeral=True,
-            )
-            return
-
+        # Check availability before the broad-query guard: a missing key is
+        # the answer, not a lecture about spending credits on a dead feature.
         provider = provider_registry.get("home_depot_serpapi")
         if provider is None:
             await interaction.followup.send("Home Depot SerpApi provider is not registered yet.", ephemeral=True)
@@ -105,6 +98,14 @@ class HomeDepotSearchCog(commands.Cog):
         health = await provider.healthcheck()
         if health.status != ProviderStatus.READY:
             await interaction.followup.send(health.message, ephemeral=True)
+            return
+        if broad_warning and not has_local_anchor:
+            await interaction.followup.send(
+                "SerpApi credit protected: that query is too broad without a ZIP or store ID.\n\n"
+                f"{broad_warning}\n"
+                "Add `zip_code:`/`store_id:` or use a tighter product term before spending a credit.",
+                ephemeral=True,
+            )
             return
 
         lock_key = ScanLockKey(

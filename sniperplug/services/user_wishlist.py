@@ -40,6 +40,13 @@ from sniperplug.services.dm_product_interests import (
 WISHLIST_TABLE = "user_wishlist_items"
 MAX_WISHLIST_ITEMS_PER_USER = 20
 MAX_WISHLIST_ITEM_LENGTH = 80
+
+# Plain-words honesty note, shared by the cog: a wishlist never steers
+# scanning. It only qualifies deals the bot's broad scan already found.
+WISHLIST_SCAN_NOTE = (
+    "Your wishlist doesn't steer the bot's scanning — a DM can only fire "
+    "after the bot's broad scan finds the item as a verified deal."
+)
 _SCHEMA_READY = False
 _SCHEMA_LOCK = asyncio.Lock()
 

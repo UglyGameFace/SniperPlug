@@ -711,7 +711,9 @@ async def build_global_autoscan_health_embed(
         title="🩺 Global Autoscan Health",
         description=(
             "Walmart discovery and exact verification run inside SniperPlug. "
-            "HP Store and Target have independent watcher health. "
+            "HP Store and Target watchers are off by design — neither retailer "
+            "is scanned, so their panels below report the last known state, "
+            "not a missing setup. "
             "One unhealthy retailer does not silently disable another retailer."
         ),
         color=color,
@@ -951,13 +953,16 @@ def _next_action(
         and (not target_location_ready or not target_delivery_ready)
     ):
         return (
-            "Target needs `/target_location` plus a healthy Target watcher. "
+            "Target is selected but the Target watcher is off by design, so no "
+            "Target deals are scanned. Save a store with `/target_location` so "
+            "Target is ready if a watcher is ever enabled. "
             "This does not block Walmart delivery."
         )
     if "hp" in selected_retailers and not hp_delivery_ready:
         return (
-            "HP Store is enabled but its separate watcher is not healthy. "
-            "This does not block Walmart; repair the HP deployment or turn HP off."
+            "HP Store is selected but the HP watcher is off by design, so no HP "
+            "deals are scanned. This does not block Walmart; turn HP off in "
+            "`/walmart setup` to hide this note."
         )
     if delivery_health.events_seen and not delivery_health.posted:
         return (

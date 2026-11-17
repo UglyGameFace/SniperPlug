@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 
 from sniperplug.cogs.unified_deal_scanner import UnifiedDealScannerCog
-from sniperplug.cogs.deal_scanner import WalmartCashOffersButton, acquire_command_scan_lock
+from sniperplug.cogs.deal_scanner import acquire_command_scan_lock
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
 from sniperplug.services.verified_discount_hunt import (
     HUNT_PRESETS,
@@ -39,7 +39,6 @@ class VerifiedHuntPresetMenuView(discord.ui.View):
         super().__init__(timeout=300)
         for index, preset in enumerate(HUNT_PRESETS.values()):
             self.add_item(VerifiedHuntPresetButton(preset, row=index // 2))
-        self.add_item(WalmartCashOffersButton(row=4))
 
 
 class VerifiedHuntPresetButton(discord.ui.Button):

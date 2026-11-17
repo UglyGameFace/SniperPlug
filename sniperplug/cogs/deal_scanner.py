@@ -516,7 +516,6 @@ class HuntPresetMenuView(discord.ui.View):
         self.add_item(HuntPresetButton(HUNT_PRESETS["home"], row=1))
         self.add_item(HuntPresetButton(HUNT_PRESETS["toys"], row=1))
         self.add_item(HuntPresetButton(HUNT_PRESETS["auto_tools"], row=1))
-        self.add_item(WalmartCashOffersButton(row=2))
 
 
 class HuntPresetButton(discord.ui.Button):
@@ -559,26 +558,6 @@ class HuntPresetButton(discord.ui.Button):
             )
         finally:
             await scan_operation_locks.release(lock_key)
-
-
-class WalmartCashOffersButton(discord.ui.Button):
-    def __init__(self, row: int = 2):
-        super().__init__(
-            label="Walmart Cash Offers",
-            emoji="💸",
-            style=discord.ButtonStyle.success,
-            row=row,
-            custom_id="hunt:walmart_cash_offers",
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if not await safe_defer(interaction, ephemeral=True, thinking=True):
-            return
-        cog = interaction.client.get_cog("VerifiedDealScannerCog") or interaction.client.get_cog("DealScannerCog")
-        if cog is None or not hasattr(cog, "_send_walmart_cash_search"):
-            await safe_send_interaction(interaction, "Walmart Cash search is not loaded yet.", ephemeral=True)
-            return
-        await cog._send_walmart_cash_search(interaction, "walmart cash offers", 8)
 
 
 class PresetResultView(discord.ui.View):

@@ -101,7 +101,6 @@ class DmDealAlertsCog(commands.Cog):
         unmute_categories="Restore personally muted categories, such as baby or toys.",
         flip_alerts="Allow exceptional price-error/resell alerts across category mutes.",
         flip_min_profit="Minimum conservative estimated net profit for a flip alert.",
-        walmart_cash_only="Only alert when strict Walmart API Cash proof is attached.",
         daily_cap="Daily DM limit: 1-100, or type unlimited for no cap.",
     )
     @app_commands.choices(action=ACTION_CHOICES, mode=MODE_CHOICES)
@@ -127,7 +126,6 @@ class DmDealAlertsCog(commands.Cog):
         unmute_categories: app_commands.Range[str, 1, 300] | None = None,
         flip_alerts: bool | None = None,
         flip_min_profit: app_commands.Range[float, 10.0, 100000.0] | None = None,
-        walmart_cash_only: bool | None = None,
         daily_cap: app_commands.Range[str, 1, 12] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -156,7 +154,6 @@ class DmDealAlertsCog(commands.Cog):
             "unmute_categories": unmute_categories,
             "flip_alerts": flip_alerts,
             "flip_min_profit": flip_min_profit,
-            "walmart_cash_only": walmart_cash_only,
             "daily_cap": daily_cap,
         }
         _ignored_options = sorted(
@@ -369,11 +366,6 @@ class DmDealAlertsCog(commands.Cog):
                 else preference.keywords
             ),
             exclude_keywords=updated_excludes,
-            walmart_cash_only=(
-                bool(walmart_cash_only)
-                if walmart_cash_only is not None
-                else preference.walmart_cash_only
-            ),
             max_alerts_per_day=(
                 parsed_daily_cap
                 if parsed_daily_cap is not None

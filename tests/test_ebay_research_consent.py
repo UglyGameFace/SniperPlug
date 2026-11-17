@@ -258,4 +258,5 @@ def test_preapproval_review_sample_is_clearly_labeled_not_historical_promotion()
     assert "PRIVATE REVIEW SAMPLE (not a previously sent campaign)" in source
     assert "Non-affiliate listing for review" in source
     assert "listings[0].asking_url" in source
-    assert "Unsubscribe with **/ebay consent**" in source
+    assert "Unsubscribe with the button below" in source
+    assert "/ebay consent" not in source

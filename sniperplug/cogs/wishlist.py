@@ -35,13 +35,17 @@ from sniperplug.services.dm_deal_alerts import (
 )
 from sniperplug.services.user_wishlist import (
     MAX_WISHLIST_ITEMS_PER_USER,
+    WISHLIST_SCAN_NOTE,
     add_user_wishlist_item,
     clear_user_wishlist,
     list_user_wishlist,
     remove_user_wishlist_item,
 )
 
-GROUP_DESCRIPTION = "Your wishlist: name items you want, get a DM when one is a verified deal."
+GROUP_DESCRIPTION = (
+    "Name items you want — get a DM only if the broad scan finds one "
+    "as a verified deal."
+)
 
 
 def _wishlist_lines(items: tuple[str, ...]) -> str:
@@ -67,7 +71,7 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
 
     # -- add -----------------------------------------------------------
 
-    @app_commands.command(name="add", description="Add an item to your wishlist. I'll DM you when it's a verified deal.")
+    @app_commands.command(name="add", description="Add an item to your wishlist. I'll DM you if the bot's broad scan finds it as a verified deal.")
     @app_commands.describe(item="Plain product name, for example: iphone 11, dyson airwrap, rtx 5070.")
     async def add(self, interaction: discord.Interaction, item: str) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -105,8 +109,9 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
         await interaction.followup.send(
             f"✅ Added **{result.item}** to your wishlist "
             f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).\n\n"
-            "I'll DM you when it shows up as a verified deal "
+            "I'll DM you if the bot's broad scan finds it first as a verified deal "
             "(exact price proof, at least 20% off). "
+            f"{WISHLIST_SCAN_NOTE} "
             "See everything with `/wishlist list`."
             + (f"\n\n{dm_note}" if dm_note else ""),
             ephemeral=True,
@@ -137,7 +142,8 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
                 "are now on with the usual Smart settings "
                 "(exact verified deals, at least 20% off, daily cap 25). "
                 "You will only hear about wishlist matches and other deals "
-                "that pass those filters.\n\n"
+                "that pass those filters — and a wishlist match only happens "
+                "when the bot's broad scan finds your item first.\n\n"
                 "Pause anytime with `/walmart my-alerts action:Pause alerts`."
             ),
             color=discord.Color.green(),
@@ -210,7 +216,8 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
         embed.set_footer(
             text=(
                 f"{len(items)}/{MAX_WISHLIST_ITEMS_PER_USER} items • "
-                "Add with /wishlist add • Matches need exact price proof and at least 20% off."
+                "Add with /wishlist add • Matches need exact price proof and at least 20% off, "
+                "and the item must first be found by the bot's broad scan."
             )
         )
         await interaction.followup.send(embed=embed, ephemeral=True)

@@ -6,6 +6,13 @@ from discord.ext import commands
 
 from sniperplug.cogs.local_inventory import clean_optional, normalize_retailer_key
 from sniperplug.models.local_inventory import clearance_signal_from_price
+from sniperplug.providers.registry import provider_registry
+from sniperplug.services.walmart_deal_recheck import recheck_clearance_seed
+
+# One /clearance_bank call rechecks at most this many Walmart seeds live:
+# each recheck is a guarded live item-detail call (up to 25s), so the cap
+# bounds the command's latency while still reading the bank for real.
+CLEARANCE_BANK_RECHECK_LIMIT = 5
 
 
 class ClearanceBankCog(commands.Cog):
@@ -77,13 +84,14 @@ class ClearanceBankCog(commands.Cog):
             embed.add_field(name="Price signal", value=value, inline=False)
         if notes:
             embed.add_field(name="Notes", value=notes[:500], inline=False)
-        embed.set_footer(text="Next: use /clearance_bank to list saved leads, then verify manually or with future provider checks.")
+        embed.set_footer(text="Next: use /clearance_bank recheck:true to recheck Walmart seeds against live item detail.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="clearance_bank", description="List saved clearance/penny leads for this server.")
     @app_commands.describe(
         retailer="Optional retailer filter, like home or walmart.",
         limit="How many seeds to show. Max 25.",
+        recheck="Recheck listed Walmart seeds against live Walmart item detail (max 5 per call).",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def clearance_bank(
@@ -91,6 +99,7 @@ class ClearanceBankCog(commands.Cog):
         interaction: discord.Interaction,
         retailer: str | None = None,
         limit: app_commands.Range[int, 1, 25] = 10,
+        recheck: bool = False,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -104,9 +113,19 @@ class ClearanceBankCog(commands.Cog):
             await interaction.followup.send("No clearance seeds saved yet. Add one with `/seed_clearance`.", ephemeral=True)
             return
 
+        provider = provider_registry.get("walmart") if recheck else None
+        recheck_budget = CLEARANCE_BANK_RECHECK_LIMIT if recheck else 0
         embed = discord.Embed(
             title="🌱 Clearance Seed Bank",
-            description="Manual leads only. These need API/in-store verification before public alerts.",
+            description=(
+                "Manual leads only. These need API/in-store verification before public alerts."
+                + (
+                    " Walmart seeds below were rechecked against live item detail "
+                    f"(max {CLEARANCE_BANK_RECHECK_LIMIT} per call)."
+                    if recheck
+                    else ""
+                )
+            ),
             color=discord.Color.orange(),
         )
         for seed in seeds[:25]:
@@ -118,5 +137,36 @@ class ClearanceBankCog(commands.Cog):
             value = f"Retailer: `{seed['retailer']}`{price_text}\nIDs: `{ids}`\nLocation: `{location}`"
             if notes:
                 value += f"\nNotes: {notes[:160]}"
+            if recheck:
+                line, spent = await self._recheck_line(seed, provider, recheck_budget)
+                recheck_budget -= spent
+                value += f"\n{line}"
             embed.add_field(name=seed["title"][:80], value=value[:1024], inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @staticmethod
+    async def _recheck_line(
+        seed: dict, provider, budget: int
+    ) -> tuple[str, int]:
+        """One seed's live-recheck line; returns (line, budget spent)."""
+
+        if provider is None:
+            return "Live recheck: unavailable — the Walmart provider is not registered.", 0
+        if str(seed.get("retailer") or "").strip().lower() != "walmart":
+            return "Live recheck: skipped — no live recheck for this retailer.", 0
+        if budget <= 0:
+            return (
+                f"Live recheck: skipped — {CLEARANCE_BANK_RECHECK_LIMIT}-recheck limit for this call reached.",
+                0,
+            )
+        result = await recheck_clearance_seed(provider, seed)
+        if result.current_price is not None:
+            old = (
+                f"${result.old_price:,.2f}"
+                if result.old_price is not None
+                else "n/a"
+            )
+            summary = f"live price ${result.current_price:,.2f} (saved {old})"
+        else:
+            summary = result.message[:200]
+        return f"Live recheck: **{result.status}** — {summary}", 1

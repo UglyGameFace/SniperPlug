@@ -28,6 +28,5 @@ def test_one_dashboard_owns_workflow_health_and_command_help():
 
 
 def test_specialist_commands_are_separated():
-    assert command_guide_section(entry("/walmart cash")) == "Special searches"
     assert command_guide_section(entry("/hd_stock")) == "Special searches"
     assert command_guide_section(entry("/walmart my-alerts")) == "Helpful shortcuts"

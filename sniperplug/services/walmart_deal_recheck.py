@@ -79,6 +79,50 @@ async def recheck_walmart_observation(provider: Any, row: dict[str, Any]) -> Wal
     )
 
 
+async def recheck_clearance_seed(provider: Any, seed: dict[str, Any]) -> WalmartRecheckResult:
+    """Recheck one clearance-bank seed against live Walmart item detail.
+
+    Seeds were write-only: nothing ever read the bank. A seed is recheckable
+    only when it is a Walmart seed carrying a Walmart item id (numeric SKU
+    or a ``/ip/`` product URL) — the live item-detail provider is
+    Walmart-only and the store on the seed is a where-seen note, not an
+    input the online detail check can use. Anything else returns a plain
+    status instead of guessing.
+    """
+
+    seed = dict(seed or {})
+    retailer = str(seed.get("retailer") or "").strip().lower()
+    if retailer not in {"walmart", "wal-mart"}:
+        return WalmartRecheckResult(
+            status="unsupported_retailer",
+            old_price=_float_or_none(seed.get("observed_price")),
+            message=(
+                f"This seed is for `{retailer or 'unknown'}`, which has no live "
+                "Walmart item-detail recheck. Verify it manually or in store."
+            ),
+        )
+
+    item_id = extract_walmart_item_id(seed.get("product_url"), seed.get("sku"))
+    if not item_id:
+        return WalmartRecheckResult(
+            status="identity_missing",
+            old_price=_float_or_none(seed.get("observed_price")),
+            message=(
+                "The seed has no Walmart item ID (SKU or /ip/ link), so "
+                "SniperPlug refused to guess which item to recheck."
+            ),
+        )
+
+    row = {
+        "url": seed.get("product_url")
+        or f"https://www.walmart.com/ip/{item_id}",
+        "active_key": str(seed.get("sku") or item_id),
+        "current_price": seed.get("observed_price"),
+        "discount": None,
+    }
+    return await recheck_walmart_observation(provider, row)
+
+
 async def _perform_walmart_recheck(provider: Any, row: dict[str, Any]) -> WalmartRecheckResult:
     item_id = extract_walmart_item_id(row.get("url"), row.get("active_key"))
     old_price = _float_or_none(row.get("current_price"))

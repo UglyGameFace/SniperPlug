@@ -108,8 +108,10 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     ),
     RetiredCommand(
         "walmart_cash",
-        "/walmart cash",
-        "One Walmart command now holds every Walmart function.",
+        "/walmart find",
+        "Retired 2026-11-17: no supported Walmart Cash offer feed exists "
+        "(the Affiliate Product API is not a Cash feed), so the command "
+        "promised offers it could never return. Use /walmart find instead.",
     ),
     RetiredCommand(
         "discover",
@@ -188,6 +190,22 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
         "/sniperplug_dashboard",
         "This legacy status alias was never part of the canonical runtime.",
     ),
+    # eBay consent subcommands (2026-11-17 audit §3 item 10). Research and
+    # review_sample never require stored consent — they only read it to decide
+    # whether an on-demand result may carry a tracked affiliate link — and no
+    # promotional sender exists to consume an opt-in. Collecting consent for
+    # a sender that does not exist is worse than not having the commands.
+    # Names with a space are group subcommands ("ebay consent", not top-level).
+    RetiredCommand(
+        "ebay consent",
+        "/ebay status",
+        "No eBay promotional sender consumes stored consent; research works without it.",
+    ),
+    RetiredCommand(
+        "ebay server",
+        "/ebay status",
+        "No eBay promotional sender consumes stored server consent; research works without it.",
+    ),
 )
 
 RETIRED_COMMAND_NAMES = frozenset(item.name for item in RETIRED_COMMANDS)
@@ -222,6 +240,25 @@ def prune_retired_commands(tree: Any) -> tuple[RetiredCommand, ...]:
 
     removed: list[RetiredCommand] = []
     for item in RETIRED_COMMANDS:
+        if " " in item.name:
+            # Group subcommand, e.g. "ebay consent": remove it from its group.
+            group_name, sub_name = item.name.split(" ", 1)
+            try:
+                group = tree.get_command(group_name)
+            except Exception:
+                group = None
+            remove = getattr(group, "remove_command", None)
+            if group is None or remove is None:
+                continue
+            try:
+                subcommand = group.get_command(sub_name)
+            except Exception:
+                subcommand = None
+            if subcommand is None:
+                continue
+            remove(sub_name)
+            removed.append(item)
+            continue
         try:
             command = tree.get_command(item.name)
         except Exception:
@@ -249,6 +286,14 @@ def command_surface_issues(root_commands: Iterable[Any]) -> tuple[str, ...]:
         issues.append(f"duplicate top-level command names: {', '.join(duplicates)}")
 
     retired_loaded = sorted(RETIRED_COMMAND_NAMES.intersection(top_names))
+    for command in top_level:
+        group_name = str(getattr(command, "name", "") or "")
+        children = getattr(command, "commands", ()) or ()
+        for child in children:
+            full_name = f"{group_name} {getattr(child, 'name', '') or ''}".strip()
+            if full_name in RETIRED_COMMAND_NAMES and full_name not in retired_loaded:
+                retired_loaded.append(full_name)
+    retired_loaded = sorted(set(retired_loaded))
     if retired_loaded:
         issues.append(f"retired commands still loaded: {', '.join(retired_loaded)}")
 

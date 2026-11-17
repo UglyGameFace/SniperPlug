@@ -213,7 +213,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="snipe_plan", description="Show SniperPlug's current source-first scan priorities.")
+    @app_commands.command(name="snipe_plan", description="Static preview of scan priorities \u2014 demo only, not live data.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def snipe_plan(self, interaction: discord.Interaction) -> None:
         batch = build_default_snipe_batch(limit_sources=12, limit_categories=10)
@@ -221,7 +221,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
 
         embed = discord.Embed(
             title="SniperPlug Snipe Plan",
-            description="Source-first priorities for future providers. This command does not scan sites or make API calls.",
+            description="Source-first priorities for future providers. This command does not scan sites or make API calls.\n\nStatic preview / demo \u2014 not live data.",
             color=discord.Color.orange(),
         )
         for plan in top_plans:
@@ -238,7 +238,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="monitor_plan", description="Show live monitor targets without scanning retailers.")
+    @app_commands.command(name="monitor_plan", description="Static preview of monitor targets \u2014 demo only, not live data.")
     @app_commands.describe(source_key="Optional source filter, like amazon, best_buy, walmart, msi_store, nike.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def monitor_plan(self, interaction: discord.Interaction, source_key: str | None = None) -> None:
@@ -249,7 +249,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             title="SniperPlug Monitor Plan",
             description=(
                 "Control-plane preview only. This does not scan retailers, call APIs, "
-                "or post public alerts. Generated monitors default to Staff Review."
+                "or post public alerts. Generated monitors default to Staff Review.\n\n"
+                "Static preview / demo \u2014 not live data."
             ),
             color=discord.Color.orange(),
         )
@@ -348,7 +349,7 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             ephemeral=True,
         )
 
-    @app_commands.command(name="scan_test", description="Preview demo source candidates. Set post_alerts true to post demo alerts.")
+    @app_commands.command(name="scan_test", description="Static preview of demo source candidates \u2014 not live data.")
     @app_commands.describe(
         post_alerts="Post demo alerts. Defaults to private preview only.",
         test_channel="Optional test channel to receive all demo alerts instead of route channels.",
@@ -376,7 +377,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
                 description=(
                     "Private preview only. No public alerts were posted. "
                     "Run with `post_alerts:true` only when you intentionally want demo alerts. "
-                    "Use `test_channel` to keep demo alerts out of real deal channels."
+                    "Use `test_channel` to keep demo alerts out of real deal channels.\n\n"
+                    "Static preview / demo \u2014 not live data."
                 ),
                 color=discord.Color.orange(),
             )

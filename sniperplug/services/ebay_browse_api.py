@@ -170,6 +170,36 @@ def parse_listing(payload: Any) -> EbayListing | None:
     )
 
 
+def ebay_not_configured_message(settings: EbaySettings) -> str | None:
+    """Exact not-configured reason, or None when research can run.
+
+    Names only the settings that are actually missing, so the reply says
+    plainly what the server owner must set instead of looking broken.
+    """
+    if not settings.research_enabled:
+        return (
+            "eBay research is disabled: the server owner has not set "
+            "EBAY_RESEARCH_ENABLED. Research is unavailable until the owner "
+            "enables it. No eBay request was made."
+        )
+    missing = [
+        name
+        for name, value in (
+            ("EBAY_CLIENT_ID", settings.client_id),
+            ("EBAY_CLIENT_SECRET", settings.client_secret),
+        )
+        if not value
+    ]
+    if missing:
+        return (
+            "eBay research is not configured: the server owner has not set "
+            + " and ".join(missing)
+            + ". Research is unavailable until the owner sets the eBay "
+            "Developer credentials. No eBay request was made."
+        )
+    return None
+
+
 class EbayBrowse:
     """Small credential-scoped client, no shared Discord gateway blocking.
 
@@ -185,10 +215,9 @@ class EbayBrowse:
         self._calls: list[float] = []
 
     async def search(self, *, query: str = "", gtin: str = "", limit: int = PAGE_SIZE) -> tuple[EbayListing, ...]:
-        if not self.settings.research_enabled:
-            raise EbayApiError("eBay research is disabled in the bot environment.")
-        if not self.settings.credentials_ready:
-            raise EbayApiError("Production eBay Developer Client ID and Secret are not configured.")
+        not_configured = ebay_not_configured_message(self.settings)
+        if not_configured is not None:
+            raise EbayApiError(not_configured)
         query = " ".join(str(query or "").split())
         gtin = str(gtin or "").strip()
         if bool(query) == bool(gtin):

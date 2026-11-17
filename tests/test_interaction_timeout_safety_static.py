@@ -20,10 +20,13 @@ def test_walmart_cash_uses_safe_defer_before_scan_work():
     assert expected in DEALS
 
 
-def test_walmart_cash_button_uses_safe_defer():
-    assert 'custom_id="hunt:walmart_cash_offers"' in DEALS
-    assert "if not await safe_defer(interaction, ephemeral=True, thinking=True):" in DEALS
-    assert 'await safe_send_interaction(interaction, "Walmart Cash search is not loaded yet.", ephemeral=True)' in DEALS
+def test_walmart_cash_button_removed_so_no_button_callback_to_safe_defer():
+    # /walmart cash was retired (no Cash offer feed exists); the Hunt
+    # "Walmart Cash Offers" button is gone, so there is no button callback
+    # that needs safe_defer. The cash search path itself still safe-defers
+    # (see test_walmart_cash_uses_safe_defer_before_scan_work).
+    assert 'custom_id="hunt:walmart_cash_offers"' not in DEALS
+    assert "WalmartCashOffersButton" not in DEALS
 
 
 def test_command_error_sender_does_not_raise_second_unknown_interaction():

@@ -26,7 +26,7 @@ class LocalInventoryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="local_check", description="Create a safe local inventory proof check without public posting.")
+    @app_commands.command(name="local_check", description="Record a local inventory proof \u2014 no live stock confirmation.")
     @app_commands.describe(
         retailer="Retailer key, like home_depot.",
         sku="Optional store SKU / item ID / internet number.",
@@ -90,10 +90,10 @@ def clean_optional(value: str | None) -> str | None:
 
 
 def build_local_inventory_embed(proof: LocalInventoryProof) -> discord.Embed:
-    title = f"{proof.retailer} Local Inventory Proof"
+    title = f"{proof.retailer} Local Inventory Proof \u2014 recorded proof only, not live stock"
     embed = discord.Embed(
         title=title,
-        description="Private proof preview only. SniperPlug will not public-alert weak local inventory candidates without stronger proof.",
+        description="Proof-recording tool only: it records the proof state per retailer. No live inventory confirmation exists for any retailer. SniperPlug will not public-alert weak local inventory candidates without stronger proof.",
         color=discord.Color.orange(),
     )
     embed.add_field(name="Product", value=f"SKU: `{proof.sku or 'n/a'}`\nUPC: `{proof.upc or 'n/a'}`", inline=True)

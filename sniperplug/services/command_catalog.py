@@ -18,6 +18,12 @@ class CommandCatalogEntry:
 # and obsolete per-server Walmart interval controls do not belong in user help.
 COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
+        name="/menu",
+        audience="Everyone",
+        purpose="Open the one menu for the whole bot: every function grouped by category.",
+        when_to_use="Use when you don't remember the slash command name — pick a category, pick a function, it runs right there.",
+    ),
+    CommandCatalogEntry(
         name="/walmart find",
         audience="Everyone",
         purpose="Search for a specific Walmart product using exact-detail verification.",

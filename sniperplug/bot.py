@@ -37,6 +37,7 @@ from sniperplug.cogs.storage_admin import StorageAdminCog
 from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
 from sniperplug.cogs.walmart_command import WalmartCommandCog
+from sniperplug.cogs.wishlist import WishlistCog
 from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
@@ -173,6 +174,9 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(HomeDepotLocalCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
         await self.add_cog(DmDealAlertsCog(self))
+        # Standalone group, not a /walmart delegate: the wishlist matches
+        # every retailer, and its cog is loaded here directly.
+        await self.add_cog(WishlistCog(self))
         await self.add_cog(EbayResearchCog(self))
         await self.add_cog(CanonicalPublicAlertsCog(self))
         await self.add_cog(ActiveDealsCog(self))

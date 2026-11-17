@@ -16,6 +16,7 @@ from sniperplug.services.dm_deal_alerts import (
     record_dm_delivery_failure,
 )
 from sniperplug.services.dm_deal_matching import match_dm_deal
+from sniperplug.services.user_wishlist import list_wishlists_for_users
 from sniperplug.services.dm_delivery_policy import (
     dm_delivery_lock,
     evaluate_dm_delivery_gate,
@@ -123,6 +124,11 @@ async def fanout_verified_retailer_events(
         )
         guilds = list(load_result.guilds)
         preferences = await list_enabled_dm_deal_alert_preferences(db)
+        # One query for the whole batch: wishlist items ride the same DM
+        # fanout as every other personal filter.
+        wishlists = await list_wishlists_for_users(
+            db, [preference.user_id for preference in preferences]
+        )
         totals = {
             "events_processed": 0,
             "events_deferred": 0,
@@ -217,7 +223,11 @@ async def fanout_verified_retailer_events(
                         location_skipped=True,
                     )
                     continue
-                decision = match_dm_deal(preference, card)
+                decision = match_dm_deal(
+                    preference,
+                    card,
+                    wishlist_items=wishlists.get(preference.user_id, ()),
+                )
                 record_user_dm_decision(
                     preference.user_id,
                     event_key=event.event_key,

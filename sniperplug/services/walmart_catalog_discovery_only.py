@@ -33,7 +33,7 @@ GLOBAL_CATALOG_REQUEST_BUDGET = 4
 # Sniper-first split of the unchanged 4-searches/minute budget: 2 broad page-1
 # routes + 2 price-sorted sniper searches. The real Walmart quota is unknown,
 # so the total rate never rises; the trade-off is explicit and deliberate:
-# sniper revisit 29 min -> ~16 min (29 rotation queries, ~9 rotation slots
+# sniper revisit 29 min -> ~17.4 min (29 rotation queries, ~8.3 rotation slots
 # per 5 batches once the priority slot displaces one), broad rotation
 # 89 min -> ~133 min (265 routes / 2 per batch). Money first: a $1 error on a
 # phone/console/GPU is worth far more than re-sweeping a department page an
@@ -53,8 +53,8 @@ BESTSELLER_PROBE_BATCH_OFFSET = 7
 # A fraction of the existing *second* price-sorted requests sample page two.
 # The first rotation slot and every urgent/hot query always retain page one,
 # so no family becomes page-two-only and the 4-request budget never changes.
-PRICE_SNIPER_PAGE2_EVERY_N_BATCHES = 4
-PRICE_SNIPER_PAGE2_BATCH_OFFSET = 2
+PRICE_SNIPER_PAGE2_EVERY_N_BATCHES = 2
+PRICE_SNIPER_PAGE2_BATCH_OFFSET = 1
 
 
 def is_price_sniper_page2_batch(batch_number: int) -> bool:
@@ -170,11 +170,11 @@ def catalog_request_plan_for_claim(
     for specific high-value products, where a price error appears at the top.
 
     The first sniper slot always runs the general rotation (29 queries,
-    ~16 min revisit once the priority slot displaces one slot per 5 batches).
+    ~17.4 min revisit once the priority slot displaces one slot per 3 batches).
     The second sniper slot is the priority hot list (phones, consoles, GPUs)
-    on every 5th batch, and the general rotation otherwise. The priority
+    on every 3rd batch, and the general rotation otherwise. The priority
     slot only ever replaces a sniper search, never a broad route, and is
-    capped at 12/hour by construction.
+    capped at 20/hour by construction.
 
     Both sniper queries derive from the durable claim cursor only, so a
     retried or replayed claim repeats exactly the same four requests and no
@@ -261,7 +261,7 @@ async def discover_walmart_catalog_candidates(
     The global scan uses a four-request budget: page 1 for each of two
     freshly claimed routes plus two price-sorted (lowest first) searches for
     rotating high-value products, where price errors surface. The second
-    sniper slot is the priority hot list (phones, consoles, GPUs) every 5th
+    sniper slot is the priority hot list (phones, consoles, GPUs) every 3rd
     batch. Manual callers without a durable claim preserve the legacy
     two-page behavior.
     All scans stay global, independent of Discord server count.

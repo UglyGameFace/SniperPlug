@@ -17,6 +17,7 @@ from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.coordinated_walmart import CoordinatedWalmartProvider
 from sniperplug.providers.registry import ProviderRegistry
 from sniperplug.services.walmart_request_coordinator import (
+    DEFAULT_CAPACITY,
     EXACT_PRIORITY,
     SEARCH_PRIORITY,
     WalmartRequestCoordinator,
@@ -134,3 +135,12 @@ def test_coordinated_provider_delegates_scan_and_detail() -> None:
         assert raw.detail_calls == 1
 
     asyncio.run(run())
+
+
+def test_default_capacity_is_five() -> None:
+    """Cheap speed-up (Nov 16): capacity 3 -> 5 so exact prefetch + per-item
+    fetches can proceed alongside a full 3-search catalog batch. No API-rate
+    increase by itself — it only removes serialization.
+    """
+    assert DEFAULT_CAPACITY == 5
+    assert WalmartRequestCoordinator().capacity == 5

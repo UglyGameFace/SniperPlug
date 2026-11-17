@@ -2,7 +2,7 @@
 
 Budget is unchanged at 4 searches/minute/batch. The split moves from
 3 broad + 1 sniper to 2 broad + 2 sniper, and the second sniper slot is a
-hard-capped priority hot list (phones, consoles, GPUs) every 5th batch.
+hard-capped priority hot list (phones, consoles, GPUs) every 3rd batch.
 """
 from __future__ import annotations
 
@@ -79,12 +79,13 @@ def test_budget_still_exactly_four_searches_per_batch() -> None:
 
 
 def test_sniper_share_is_two_of_four_with_pinned_revisit_math() -> None:
-    # 145 batches: 29 priority firings, 261 rotation slots = 9 full passes
+    # 87 batches: 29 priority firings, 145 rotation slots = 5 full passes
     # over the 29-query rotation. One batch per minute at the fixed rate, so
-    # each rotation query recurs every 145/9 = ~16.1 batches ~= 16 minutes
-    # (was ~29 min at 1 sniper/batch; pure 2/batch without priority would be
-    # 14.5 min — the priority slot costs ~1.6 min of revisit).
-    plans = simulate_batches(145)
+    # each rotation query recurs every 87/5 = 17.4 batches ~= 17 minutes
+    # (was ~16.1 min at 1 priority/5 batches; the hotter priority slot costs
+    # ~1.3 min of revisit while cutting each hot query's priority check
+    # from ~30 to ~18 min).
+    plans = simulate_batches(87)
     rotation_counts: Counter[str] = Counter()
     priority_counts: Counter[str] = Counter()
     sniper_total = 0
@@ -103,11 +104,11 @@ def test_sniper_share_is_two_of_four_with_pinned_revisit_math() -> None:
             rotation_counts[first] += 1
             rotation_counts[second] += 1
 
-    assert sniper_total == 290
+    assert sniper_total == 174
     assert sum(priority_counts.values()) == 29
-    assert rotation_counts == {query: 9 for query in PRICE_SNIPER_QUERIES}
-    # ~16.1 batches between repeat visits of the same rotation query.
-    assert 145 / 9 == 16.11111111111111
+    assert rotation_counts == {query: 5 for query in PRICE_SNIPER_QUERIES}
+    # ~17.4 batches between repeat visits of the same rotation query.
+    assert 87 / 5 == 17.4
 
 
 def test_broad_cursor_still_advances_and_is_never_starved() -> None:
@@ -152,9 +153,9 @@ def test_priority_rotation_is_hard_capped_and_cannot_starve_broad() -> None:
             ("bestseller", None) if catalog.is_bestseller_probe_batch(batch_number)
             else (None, None)
         )
-    # 1 priority per 5 batches at 1 batch/minute = 12/hour, structurally.
-    assert priority_total == 60
-    assert priority_total / 5 == 12.0  # per hour at the fixed 60s rate
+    # 1 priority per 3 batches at 1 batch/minute = 20/hour, structurally.
+    assert priority_total == 100
+    assert priority_total / 5 == 20.0  # per hour at the fixed 60s rate
 
 
 def test_priority_hot_list_covers_phones_consoles_and_gpus() -> None:
@@ -173,29 +174,30 @@ def test_priority_hot_list_covers_phones_consoles_and_gpus() -> None:
     # Every hot query is visited by the priority rotation.
     seen = {
         priority_sniper_query_for_batch(batch)
-        for batch in range(0, 30, 5)
+        for batch in range(0, 18, 3)
     }
     assert seen == set(PRIORITY_SNIPER_QUERIES)
 
 
 def test_priority_slot_never_duplicates_the_rotation_slot() -> None:
-    # Batch 5 collides without avoidance: rotation slot 9 is "apple iphone"
-    # and the raw priority pick is also "apple iphone". The helper steps to
-    # the next hot query instead of spending two searches on one query.
-    assert priority_sniper_query_for_batch(5) == "apple iphone"
+    # Batch 6 collides without avoidance: rotation slot 10 is
+    # "playstation 5 console" and the raw priority pick is also
+    # "playstation 5 console". The helper steps to the next hot query
+    # instead of spending two searches on one query.
+    assert priority_sniper_query_for_batch(6) == "playstation 5 console"
     assert (
-        priority_sniper_query_for_batch(5, avoid="apple iphone")
-        == "playstation 5 console"
+        priority_sniper_query_for_batch(6, avoid="playstation 5 console")
+        == "xbox series x console"
     )
-    plan = simulate_batches(6)[5]
-    assert plan[2][0] == "apple iphone"
-    assert plan[3][0] == "playstation 5 console"
+    plan = simulate_batches(7)[6]
+    assert plan[2][0] == "playstation 5 console"
+    assert plan[3][0] == "xbox series x console"
     assert len({query for query, _page, _sort, _order in plan}) == 4
 
 
 def test_priority_cap_binds_from_below_and_fails_safe() -> None:
-    # Default: every 5 batches, 12/hour.
-    assert priority_sniper_interval_batches() == 5
+    # Default: every 3 batches, 20/hour.
+    assert priority_sniper_interval_batches() == 3
     # Asking for every batch with a 12/hour cap still waits 5 batches.
     assert priority_sniper_interval_batches(every_n_batches=1, max_per_hour=12) == 5
     # A tighter cap stretches the interval: 6/hour -> every 10 batches.
@@ -203,18 +205,20 @@ def test_priority_cap_binds_from_below_and_fails_safe() -> None:
     # A looser cap does not shorten the configured interval.
     assert priority_sniper_interval_batches(every_n_batches=5, max_per_hour=60) == 5
     # Invalid values fail safe to the defaults instead of disabling the cap.
-    assert priority_sniper_interval_batches(every_n_batches=0, max_per_hour=0) == 5
-    assert priority_sniper_interval_batches(every_n_batches=-3, max_per_hour=-1) == 5
+    assert priority_sniper_interval_batches(every_n_batches=0, max_per_hour=0) == 3
+    assert priority_sniper_interval_batches(every_n_batches=-3, max_per_hour=-1) == 3
     # Counting helper agrees with the firing helper.
     assert priority_snipers_before_batch(0) == 0
     assert priority_snipers_before_batch(1) == 1
-    assert priority_snipers_before_batch(5) == 1
+    assert priority_snipers_before_batch(3) == 1
+    assert priority_snipers_before_batch(5) == 2
     assert priority_snipers_before_batch(6) == 2
-    assert priority_snipers_before_batch(145) == 29
+    assert priority_snipers_before_batch(145) == 49
     assert priority_sniper_query_for_batch(0) == "iphone"
     assert priority_sniper_query_for_batch(1) is None
+    assert priority_sniper_query_for_batch(3) == "apple iphone"
     assert priority_sniper_query_for_batch(4) is None
-    assert priority_sniper_query_for_batch(5) == "apple iphone"
+    assert priority_sniper_query_for_batch(5) is None
 
 
 def test_priority_env_overrides_parse_safely(monkeypatch) -> None:
@@ -223,7 +227,7 @@ def test_priority_env_overrides_parse_safely(monkeypatch) -> None:
     assert priority_sniper_env() == (10, 6)
     monkeypatch.setenv("SNIPERPLUG_PRIORITY_SNIPER_EVERY_N_BATCHES", "banana")
     monkeypatch.setenv("SNIPERPLUG_PRIORITY_SNIPER_MAX_PER_HOUR", "0")
-    assert priority_sniper_env() == (5, 12)
+    assert priority_sniper_env() == (3, 20)
 
 
 def test_plan_is_replay_deterministic() -> None:
@@ -294,7 +298,11 @@ def test_page_two_probe_never_adds_calls_or_displaces_page_one_safety(monkeypatc
         if plan[3][1] == 2
     ]
     assert second_page
-    assert all(batch % 4 == 2 for batch, _ in second_page)
+    # Page-2 probes land on odd batches (offset 1, every 2nd batch) except
+    # the odd batches the priority slot takes (every 3rd): 72 odd batches
+    # minus 24 odd priority batches = 48 probes over 145 batches (~20/hour).
+    assert len(second_page) == 48
+    assert all(batch % 2 == 1 for batch, _ in second_page)
     assert all(len(plan) == 4 for plan in plans)
     assert all(plan[2][1] == 1 for plan in plans)
     assert all(plan[0][1] == plan[1][1] == 1 for plan in plans)
@@ -305,3 +313,25 @@ def test_page_two_probe_never_adds_calls_or_displaces_page_one_safety(monkeypatc
     assert all(plan[3][2:] == ("price", "ascending") for _, plan in second_page)
     monkeypatch.setenv("SNIPERPLUG_PRICE_SNIPER_PAGE2_ENABLED", "false")
     assert all(plan[3][1] == 1 for plan in simulate_batches(145))
+
+
+def test_cheap_speedups_pin_new_defaults(monkeypatch) -> None:
+    """Cheap speed-ups (Nov 16): page-2 every 2nd batch, priority every 3rd.
+
+    The page-2 offset is 1: with an every-2nd-batch cadence, offset 2 could
+    never match (batch % 2 is only 0 or 1), so the probe would silently
+    stop firing. Priority defaults are every 3 batches at 20/hour — the
+    cap alone does not set the cadence (the interval is
+    max(every_n_batches, ceil(60 / max_per_hour))), so both defaults moved
+    together; the cap-only change would have left the interval at 5.
+    """
+    assert catalog.PRICE_SNIPER_PAGE2_EVERY_N_BATCHES == 2
+    assert catalog.PRICE_SNIPER_PAGE2_BATCH_OFFSET == 1
+    assert catalog.is_price_sniper_page2_batch(1)
+    assert not catalog.is_price_sniper_page2_batch(0)
+    assert not catalog.is_price_sniper_page2_batch(2)
+    assert catalog.is_price_sniper_page2_batch(3)
+    assert priority_sniper_interval_batches() == 3
+    monkeypatch.delenv("SNIPERPLUG_PRIORITY_SNIPER_EVERY_N_BATCHES", raising=False)
+    monkeypatch.delenv("SNIPERPLUG_PRIORITY_SNIPER_MAX_PER_HOUR", raising=False)
+    assert priority_sniper_env() == (3, 20)

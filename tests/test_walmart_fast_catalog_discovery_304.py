@@ -48,10 +48,10 @@ def test_catalog_plan_keeps_original_api_budget_but_checks_two_fresh_routes() ->
 
 @pytest.mark.parametrize("route_count", [3, 4, 5, 6, 7, 8, 265])
 def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> None:
-    """Exactly 4 searches/batch; 2 sniper slots, priority displaces one per 5.
+    """Exactly 4 searches/batch; 2 sniper slots, priority displaces one per 3.
 
-    Over 145 batches there are 29 priority firings and 261 rotation slots,
-    so every rotation query is visited exactly 9 times (~16 min revisit at
+    Over 87 batches there are 29 priority firings and 145 rotation slots,
+    so every rotation query is visited exactly 5 times (~17.4 min revisit at
     1 batch/minute) and no rotation query is ever skipped by a priority
     search.
     """
@@ -61,7 +61,7 @@ def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> No
     start = 0
     completed = 0
     passes = 0
-    batches = 145
+    batches = 87
     for _ in range(batches):
         claim = fake_claim(
             total_routes=route_count, start_index=start,
@@ -82,7 +82,7 @@ def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> No
             )
             assert (page, sort_value, order_value) == (expected_page, "price", "ascending")
         # First sniper slot is always the general rotation; the second is
-        # the priority hot list on every 5th batch, rotation otherwise.
+        # the priority hot list on every 3rd batch, rotation otherwise.
         batch_number = completed // 2
         counts[plan[2][0]] += 1
         expected_priority = catalog.priority_sniper_query_for_batch(
@@ -99,7 +99,7 @@ def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> No
         completed += 2
         start = claim.next_index
 
-    assert counts == {query: 9 for query in PRICE_SNIPER_QUERIES}
+    assert counts == {query: 5 for query in PRICE_SNIPER_QUERIES}
     assert sum(priority_counts.values()) == 29
     assert sum(fresh_counts.values()) == 2 * batches
 

@@ -21,6 +21,35 @@ ACCESSORY = re.compile(
     re.IGNORECASE,
 )
 
+
+def is_accessory_title(title: str) -> bool:
+    """True when a title describes an accessory/part, not a primary product.
+
+    A listing that names a primary product and mentions an accessory only as
+    an included item ("TV with remote control", "laptop with charger
+    included") is a bundle, not an accessory: the accessory words sit in a
+    trailing "with ..." clause and the text before that clause is not itself
+    an accessory. An accessory sold on its own ("Remote Control for Samsung
+    TV", "DeWalt 20V drill bit set") has no such clause and stays rejected.
+    A blank title counts as an accessory so callers can use this directly.
+    """
+    if not title or not title.strip():
+        return True
+    if ACCESSORY.search(title) is None:
+        return False
+    with_match = re.search(r"\bwith\b", title, re.IGNORECASE)
+    if with_match is None:
+        return True
+    prefix = title[: with_match.start()].strip()
+    suffix = title[with_match.start():]
+    if (
+        prefix
+        and ACCESSORY.search(prefix) is None
+        and ACCESSORY.search(suffix) is not None
+    ):
+        return False
+    return True
+
 # Walmart categoryPath is a retailer-origin product taxonomy, not a model-name
 # allowlist. That permits new brands and product generations automatically.
 VALUABLE_DEPARTMENTS = (
@@ -41,7 +70,10 @@ DURABLE_PRODUCT_TYPE = re.compile(
     r"graphics\s*card|gpu|camera|projector|drone|robot\s*vacuum|"
     r"refrigerator|dishwasher|washing\s*machine|dryer|power\s*tool|"
     r"electric\s*bike|treadmill|smartwatch|headphones|earbuds|"
-    r"coffee\s*maker|printer|office\s*chair|mattress|"
+    r"coffee\s*maker|espresso\s*(?:machine|maker)|mixer|"
+    r"headset|processor|cpu|ram|memory|"
+    r"ssd|solid\s*state\s*drive|nvme|storage|"
+    r"printer|office\s*chair|mattress|"
     r"controllers?|gamepads?|joy[-\s]?cons?)\b",
     re.IGNORECASE,
 )
@@ -50,7 +82,7 @@ DURABLE_PRODUCT_TYPE = re.compile(
 DEVICE_FAMILY = re.compile(
     r"\b(?:galaxy\s+(?:tab|s\d+|z\s*(?:fold|flip)|a\d+)|"
     r"iphone|ipad|pixel\s*\d+|macbook|playstation\s*\d+|"
-    r"xbox\s+series|nintendo\s+switch)\b",
+    r"xbox\s+series|nintendo\s+switch|meta\s*quest|oculus\s*quest)\b",
     re.IGNORECASE,
 )
 
@@ -70,7 +102,7 @@ def primary_product_evidence(candidate: Any, *, trusted_reference: float | None 
             getattr(candidate, "parent_title", ""),
         )
     ).strip()
-    if not title or ACCESSORY.search(title):
+    if not title or is_accessory_title(title):
         return None
     attrs = getattr(candidate, "variant_attributes", None) or {}
     category = str(attrs.get("category") or attrs.get("categoryPath") or "").lower()
@@ -153,7 +185,7 @@ def is_priority_extreme_discovery(
     title = " ".join(
         str(getattr(candidate, key, "") or "") for key in ("title", "parent_title")
     )
-    if not title.strip() or ACCESSORY.search(title) is not None:
+    if is_accessory_title(title):
         return False
     return is_price_error_ratio(price, trusted_reference)
 
@@ -275,7 +307,7 @@ def listed_price_anomaly(candidate: Any) -> float | None:
     fulfillment = str(getattr(candidate, "fulfillment_type", "") or "")
     if (
         not title
-        or ACCESSORY.search(title)
+        or is_accessory_title(title)
         or NON_HARDWARE_PUBLIC_LEADS.search(" ".join((title, source_type, fulfillment)))
         or CHEAP_CONSUMABLE.search(title)
     ):
@@ -334,7 +366,10 @@ PUBLIC_HIGH_VALUE_HARDWARE = re.compile(
     r"robot\s*vacuum|refrigerator|"
     r"dishwasher|washing\s*machine|tumble\s*dryer|power\s*tool|"
     r"electric\s*bike|treadmill|(?:cordless|power|hammer)\s*drill|"
-    r"drill\s*driver|impact\s*driver)\b",
+    r"drill\s*driver|impact\s*driver|"
+    r"headset|processor|cpu|ram|memory|"
+    r"ssd|solid\s*state\s*drive|nvme|storage|"
+    r"espresso\s*(?:machine|maker)|mixer)\b",
     re.IGNORECASE,
 )
 PUBLIC_HIGH_VALUE_CATEGORY_LEAF = re.compile(
@@ -345,7 +380,8 @@ PUBLIC_HIGH_VALUE_CATEGORY_LEAF = re.compile(
     r"video\s*game\s*consoles?|game\s*controllers?|gaming\s*controllers?|"
     r"gamepads?|joy[-\s]?cons?|graphics\s*cards?|projectors?|"
     r"robot\s*vacuums?|refrigerators?|dishwashers?|washing\s*machines?|"
-    r"treadmills?|electric\s*bikes?)$",
+    r"treadmills?|electric\s*bikes?|headsets?|processors?|cpus?|memory|"
+    r"ssds?|solid\s*state\s*drives?|espresso\s*machines?|mixers?)$",
     re.IGNORECASE,
 )
 # Product-family names in software and accessories do not make those items
@@ -390,7 +426,7 @@ def public_extreme_value_evidence(
     fulfillment = str(getattr(candidate, "fulfillment_type", "") or "")
     if (
         not title
-        or ACCESSORY.search(title)
+        or is_accessory_title(title)
         or NON_HARDWARE_PUBLIC_LEADS.search(" ".join((title, source_type, fulfillment)))
     ):
         return None

@@ -1,5 +1,14 @@
 # Active Task
 
+## 2026-11-14: Discloud-to-SniperPlug dashboard ingestion failure (unresolved)
+- Confirmed website pairing persisted in Cloudflare D1 at `2026-11-15T00:53:26Z`, but D1 still has **0 accepted SniperPlug snapshots**.
+- Cloudflare HTTP analytics over 2026-11-14T00:00Z to 2026-11-15T03:00Z has 1,626 requests to sniperplug.com, including 42 dashboard live reads and 2 pairing writes; **zero recorded requests to /api/sniperplug-ops/ingest**. This does not prove zero network attempts by the bot, but narrows the issue to startup/configuration, pre-HTTP DB sampling, or outbound network rather than an observed HMAC rejection.
+- User's supplied Discloud logs are from `parlay_bot` / **RivaL**, not `sniperplug`, and cannot diagnose the canonical SniperPlug process.
+- Current GitHub main includes telemetry exporter (`c73f921c8c58a2619cc474e9027cb4c6ef8f0a2e`), but no evidence confirms that code or the pairing env key is loaded by the live Discloud SniperPlug process. GitHub Actions only run tests and import smoke checks; they do not confirm Discloud deployment.
+- Open PR #321 on this branch: startup key detection (without showing key), HTTP status-only delivery errors, first accepted HTTP 202, and SELECT query-stage errors. These diagnostics do not change deal pipelines, local SQLite schema, worker scheduling or Discord sends.
+- Safety blocker: don't merge or restart any auto-deploying canonical Discloud bot without a verified off-host SQLite backup. Do not rotate the website pairing token without a confirmed HMAC mismatch.
+- Required real-world verification: inspect **SniperPlug** Discloud app startup after backup/restart, look for telemetry enabled/disabled, snapshot SELECT failure or receiver HTTP status; then verify first signed D1 report, exact deployed SHA, and dashboard freshness. Status: NOT CONNECTED, root cause not yet proven.
+
 ## 2026-11-14: Real operational dashboard telemetry exporter
 - Objective: provide the existing SniperPlug website with actual aggregate runtime snapshots from the canonical Discloud bot rather than GitHub-derived status cards.
 - Source: existing local SQLite queue, worker-cycle health, catalog progress, fanout events, guild public-post receipts, and historical fanout decisions.

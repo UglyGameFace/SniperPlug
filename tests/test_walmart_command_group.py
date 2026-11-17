@@ -1,7 +1,7 @@
 """Tests for the /walmart command group, its menu, and the review-pass fixes.
 
-The 17 folded Walmart commands keep their handlers on their original cogs;
-this file pins the new surface: the group registers all 18 subcommands, the
+The 18 folded Walmart commands keep their handlers on their original cogs;
+this file pins the new surface: the group registers all 19 subcommands, the
 old names are retired and pruned from the tree, the menu reaches every
 function, and the small behaviour fixes from the review pass hold.
 """
@@ -52,14 +52,15 @@ OLD_TO_NEW = {
     "active_deals": "active",
     "active_deal_history": "history",
     "setup_sniperplug_here": "setup",
+    "autoscan_now": "scan-now",
 }
 
 
-def test_walmart_group_has_all_18_subcommands() -> None:
+def test_walmart_group_has_all_19_subcommands() -> None:
     cog = WalmartCommandCog(bot=None)
     names = {command.name for command in cog.app_command.commands}
     assert names == set(WALMART_SUBCOMMANDS) | {"menu"}
-    assert len(names) == 18
+    assert len(names) == 19
 
 
 def test_my_alerts_keeps_all_21_options() -> None:
@@ -141,12 +142,20 @@ def test_menu_embed_lists_every_function() -> None:
         assert f"/walmart {sub}" in text
 
 
-def test_menu_view_has_select_for_all_17_and_quick_buttons() -> None:
+def test_scan_now_keeps_force_parameter() -> None:
+    cog = WalmartCommandCog(bot=None)
+    by_name = {command.name: command for command in cog.app_command.commands}
+    # Same signature as the old top-level command: one optional force flag
+    # that defaults to True (bypass interval/daily gate for a manual test).
+    assert [param.name for param in by_name["scan-now"].parameters] == ["force"]
+
+
+def test_menu_view_has_select_for_all_18_and_quick_buttons() -> None:
     view = WalmartMenuView(WalmartCommandCog(bot=None))
     selects = [child for child in view.children if isinstance(child, discord.ui.Select)]
     assert len(selects) == 1
     assert {option.value for option in selects[0].options} == set(WALMART_SUBCOMMANDS)
-    assert len(selects[0].options) == 17
+    assert len(selects[0].options) == 18
     buttons = [child for child in view.children if isinstance(child, discord.ui.Button)]
     assert {button.label for button in buttons} == {"Check a deal", "Find deals", "Hunt"}
 
@@ -339,3 +348,69 @@ async def test_dm_deals_enable_with_nothing_typed_says_already_enabled() -> None
     _, kwargs = interaction.followup.sent[0]
     embed = kwargs["embed"]
     assert "already enabled" in (embed.title or "")
+
+
+def test_every_delegate_target_is_a_loaded_cog_with_its_method() -> None:
+    """Regression: check/find/cash delegated to DealScannerCog, which the
+    live bot never loads (bot.py only adds VerifiedDealScannerCog), so all
+    three failed at call time with "isn't loaded right now". Every delegate
+    target must be a cog bot.py actually adds, and must carry its method —
+    inherited methods count, since check_deal lives on the base class."""
+
+    import ast
+    import importlib
+    from pathlib import Path
+
+    from sniperplug.cogs.walmart_command import _DELEGATES
+
+    bot_path = Path(__file__).resolve().parents[1] / "sniperplug" / "bot.py"
+    tree = ast.parse(bot_path.read_text())
+    # bot.py imports the live runner aliased (AutoScanRunnerCog as
+    # GlobalAutoScanRunnerCog); the runtime cog name is the real class name.
+    aliases = {
+        name.asname: name.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for name in node.names
+        if name.asname
+    }
+    loaded: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Await):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_cog"):
+            continue
+        if not call.args or not isinstance(call.args[0], ast.Call):
+            continue
+        arg_func = call.args[0].func
+        if isinstance(arg_func, ast.Name):
+            loaded.add(aliases.get(arg_func.id, arg_func.id))
+
+    cog_modules = {
+        "VerifiedDealScannerCog": "sniperplug.cogs.verified_deal_scanner",
+        "AutoDiscoveryCog": "sniperplug.cogs.auto_discovery",
+        "CanonicalPublicAlertsCog": "sniperplug.cogs.canonical_public_alerts",
+        "CanonicalSettingsCog": "sniperplug.cogs.canonical_settings",
+        "SniperPlugCog": "sniperplug.cogs.sniperplug",
+        "DmDealAlertsCog": "sniperplug.cogs.dm_deal_alerts",
+        "DealFeedbackAdminCog": "sniperplug.cogs.deal_feedback_admin",
+        "ActiveDealsCog": "sniperplug.cogs.active_deals",
+        "ActiveDealHistoryCog": "sniperplug.cogs.active_deal_history",
+        "CanonicalWorkflowCog": "sniperplug.cogs.canonical_workflow",
+        # The live runner's class is AutoScanRunnerCog (global module);
+        # bot.py imports it aliased as GlobalAutoScanRunnerCog.
+        "AutoScanRunnerCog": "sniperplug.cogs.global_auto_scan_runner",
+    }
+    for key, (cog_name, method_name) in _DELEGATES.items():
+        assert cog_name in loaded, (
+            f"/walmart {key} delegates to {cog_name}, which bot.py never loads"
+        )
+        module = importlib.import_module(cog_modules[cog_name])
+        cls = getattr(module, cog_name)
+        assert hasattr(cls, method_name), (
+            f"{cog_name} has no {method_name} for /walmart {key}"
+        )

@@ -316,6 +316,17 @@ async def test_exact_worker_loop_survives_hung_cycle_and_runs_next_cycle(
             )
             assert succeeded, "worker loop never completed a cycle after the hang"
             assert calls["n"] >= 2
+            # The row flips inside the batch, but the success health write
+            # lands only after the batch returns (run_exact_worker_cycle
+            # records the outcome after process_actionable_... returns).
+            # Reading health the instant the row flips can catch
+            # consecutive_failures still at 1, so wait for the write
+            # instead of asserting on a racy first read.
+            health_landed = await _wait_until(
+                lambda: _health_shows_post_hang_success(p),
+                timeout_seconds=15.0,
+            )
+            assert health_landed, "worker loop never recorded the post-hang success"
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -332,6 +343,18 @@ async def test_exact_worker_loop_survives_hung_cycle_and_runs_next_cycle(
 async def _row_is(p: Pipeline, item_id: int, status: str) -> bool:
     row = await p.queue_row(item_id)
     return row is not None and row["status"] == status
+
+
+async def _health_shows_post_hang_success(p: Pipeline) -> bool:
+    """True once the success outcome of the post-hang cycle is durable."""
+
+    health = await load_worker_cycle_health(p.db)
+    return (
+        health.exact.total_timeouts >= 1
+        and health.exact.total_failures >= 1
+        and health.exact.last_failure_at is not None
+        and health.exact.consecutive_failures == 0
+    )
 
 
 # ----------------------------------------------------------- catalog timeout

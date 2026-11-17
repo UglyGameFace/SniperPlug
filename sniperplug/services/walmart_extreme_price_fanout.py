@@ -8,10 +8,32 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import discord
+
+from sniperplug.services import walmart_global_deal_fanout as legacy
 from sniperplug.services.autoscan_live_guild_reconciliation import list_live_public_alert_guilds
 from sniperplug.services.discord_snowflake import snowflake_text
+from sniperplug.services.dm_deal_alerts import (
+    clear_dm_delivery_failures,
+    dm_receipt_exists,
+    list_enabled_dm_deal_alert_preferences,
+    record_dm_delivery_failure,
+)
+from sniperplug.services.dm_deal_matching import match_dm_deal
+from sniperplug.services.dm_delivery_policy import (
+    dm_delivery_lock,
+    evaluate_dm_delivery_gate,
+    record_dm_delivery_receipt,
+)
+from sniperplug.services.dm_delivery_telemetry import (
+    record_user_dm_decision,
+    record_user_dm_outcome,
+)
 from sniperplug.services.low_price_scout import ScoutLead, build_scout_card
-from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
+from sniperplug.services.public_deal_posts import (
+    card_deal_key,
+    maybe_post_public_deal_cards,
+)
 from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     VERIFIED_PAGE_PRICE_STATUS,
@@ -718,6 +740,118 @@ async def _replay_missing_guild_deliveries(
     return posted, live
 
 
+async def _deliver_extreme_card_to_dm_subscribers(
+    bot: Any, db: Any, card: Any
+) -> dict[str, int]:
+    """DM an eligible extreme lead to subscribers who named the product.
+
+    Personal alerts previously never fired for no-reference or page-price
+    glitches: the bulk fanout only ingests verified_markdown rows, so extreme
+    cards never reached the DM path at all, and the matcher rejected cards
+    without a trusted was-price. The matcher now has an explicit-product-
+    intent lead path (``dm_deal_matching``), and this pass runs it for
+    extreme cards. Delivery reuses the bulk fanout's dedupe receipts, daily
+    caps, and diversity gate, so a lead is DM'd at most once per subscriber.
+
+    Best-effort by design: a DM failure never blocks the public lane or the
+    cursor — the caller runs this after the public post succeeds.
+    """
+
+    totals = {
+        "dm_preferences_checked": 0,
+        "dm_matches": 0,
+        "dm_sent": 0,
+        "dm_skipped_duplicate": 0,
+        "dm_skipped_daily_cap": 0,
+        "dm_skipped_diversity": 0,
+        "dm_disabled": 0,
+        "dm_errors": 0,
+    }
+    try:
+        preferences = await list_enabled_dm_deal_alert_preferences(db)
+    except Exception:  # noqa: BLE001 - DMs must never break the public lane.
+        log.exception("Extreme-price DM pass could not load preferences")
+        return totals
+    deal_key = card_deal_key(
+        card, retailer=str(getattr(card, "retailer", None) or "walmart")
+    )
+    for preference in preferences:
+        totals["dm_preferences_checked"] += 1
+        decision = match_dm_deal(preference, card)
+        record_user_dm_decision(
+            preference.user_id, event_key=deal_key, decision=decision
+        )
+        if not decision.matched:
+            continue
+        totals["dm_matches"] += 1
+        try:
+            async with dm_delivery_lock(preference.user_id):
+                if await dm_receipt_exists(
+                    db, user_id=preference.user_id, deal_key=deal_key
+                ):
+                    totals["dm_skipped_duplicate"] += 1
+                    record_user_dm_outcome(preference.user_id, "duplicate")
+                    continue
+                gate = await evaluate_dm_delivery_gate(
+                    db, preference=preference, decision=decision
+                )
+                if not gate.allowed:
+                    if gate.reason == "daily_cap":
+                        totals["dm_skipped_daily_cap"] += 1
+                    elif gate.reason == "diversity_cap":
+                        totals["dm_skipped_diversity"] += 1
+                    record_user_dm_outcome(preference.user_id, gate.reason)
+                    continue
+                user = bot.get_user(preference.user_id)
+                if user is None:
+                    user = await bot.fetch_user(preference.user_id)
+                await user.send(
+                    embed=legacy._personal_dm_embed(card, decision.reason)
+                )
+                await record_dm_delivery_receipt(
+                    db,
+                    user_id=preference.user_id,
+                    deal_key=deal_key,
+                    category_family=gate.category_family,
+                )
+                await clear_dm_delivery_failures(db, user_id=preference.user_id)
+                record_user_dm_outcome(preference.user_id, "sent")
+                totals["dm_sent"] += 1
+        except discord.Forbidden as error:
+            totals["dm_disabled"] += 1
+            record_user_dm_outcome(preference.user_id, "disabled")
+            await record_dm_delivery_failure(
+                db,
+                user_id=preference.user_id,
+                error=f"Discord DMs closed: {error}",
+                disable=True,
+            )
+        except discord.NotFound as error:
+            totals["dm_disabled"] += 1
+            record_user_dm_outcome(preference.user_id, "disabled")
+            await record_dm_delivery_failure(
+                db,
+                user_id=preference.user_id,
+                error=f"Discord user unavailable: {error}",
+                disable=True,
+            )
+        except Exception as error:  # noqa: BLE001 - one subscriber cannot block others.
+            totals["dm_errors"] += 1
+            record_user_dm_outcome(preference.user_id, "error")
+            await record_dm_delivery_failure(
+                db,
+                user_id=preference.user_id,
+                error=f"{type(error).__name__}: {error}",
+                disable=False,
+            )
+            log.exception(
+                "Extreme-price DM fanout failed user=%s deal=%s",
+                preference.user_id,
+                deal_key,
+            )
+    return totals
+
+
 async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
     """Post only opt-in, exact-verified, unusually cheap primary products.
 
@@ -732,7 +866,19 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
     """
     db = getattr(bot, "db", None)
     if db is None or _LOCK.locked():
-        return {"examined": 0, "eligible": 0, "posted": 0}
+        return {
+            "examined": 0,
+            "eligible": 0,
+            "posted": 0,
+            "dm_preferences_checked": 0,
+            "dm_matches": 0,
+            "dm_sent": 0,
+            "dm_skipped_duplicate": 0,
+            "dm_skipped_daily_cap": 0,
+            "dm_skipped_diversity": 0,
+            "dm_disabled": 0,
+            "dm_errors": 0,
+        }
     async with _LOCK:
         await ensure_extreme_tables(db)
         conn = db.require_conn()
@@ -743,7 +889,19 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         # Almost all servers keep this optional lane disabled. Never run the
         # full live-guild reconciliation on every 20-second worker cycle.
         if not opted_ids:
-            return {"examined": 0, "eligible": 0, "posted": 0}
+            return {
+                "examined": 0,
+                "eligible": 0,
+                "posted": 0,
+                "dm_preferences_checked": 0,
+                "dm_matches": 0,
+                "dm_sent": 0,
+                "dm_skipped_duplicate": 0,
+                "dm_skipped_daily_cap": 0,
+                "dm_skipped_diversity": 0,
+                "dm_disabled": 0,
+                "dm_errors": 0,
+            }
         cursor = await conn.execute(
             f"SELECT last_verified_at, last_item_id FROM {STATE_TABLE} WHERE state_key = 'walmart'"
         )
@@ -771,6 +929,7 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
         next_cursor = previous
         examined = eligible = 0
         posted = replayed
+        dm_totals: Counter[str] = Counter()
         enabled: list[int] | None = (
             [
                 int(guild.guild_id)
@@ -855,6 +1014,14 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                         )
                         break
                 else:
+                    # Public post succeeded; the card is now safe to match
+                    # for personal DMs (matching badges the shared card title,
+                    # so it must never run before the public post).
+                    dm_totals.update(
+                        await _deliver_extreme_card_to_dm_subscribers(
+                            bot, db, card
+                        )
+                    )
                     next_cursor = (verified_at, item_id)
                     continue
                 break
@@ -871,4 +1038,16 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                 "Walmart extreme exact-price examined=%s eligible=%s posted=%s destinations=%s",
                 examined, eligible, posted, len(enabled or ()),
             )
-        return {"examined": examined, "eligible": eligible, "posted": posted}
+        return {
+            "examined": examined,
+            "eligible": eligible,
+            "posted": posted,
+            "dm_preferences_checked": dm_totals["dm_preferences_checked"],
+            "dm_matches": dm_totals["dm_matches"],
+            "dm_sent": dm_totals["dm_sent"],
+            "dm_skipped_duplicate": dm_totals["dm_skipped_duplicate"],
+            "dm_skipped_daily_cap": dm_totals["dm_skipped_daily_cap"],
+            "dm_skipped_diversity": dm_totals["dm_skipped_diversity"],
+            "dm_disabled": dm_totals["dm_disabled"],
+            "dm_errors": dm_totals["dm_errors"],
+        }

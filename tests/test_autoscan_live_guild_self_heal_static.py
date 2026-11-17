@@ -35,7 +35,7 @@ def test_ambiguous_channels_are_never_guessed() -> None:
 
 def test_manual_command_channel_remains_safe_one_step_repair() -> None:
     assert '"current command channel"' in REPAIR
-    assert "Run `/autoscan_now force:true` once inside the exact channel" in REPAIR
+    assert "Run `/walmart scan-now` once inside the exact channel" in REPAIR
 
 
 def test_runtime_floor_is_not_misrepresented_as_unlimited_execution() -> None:

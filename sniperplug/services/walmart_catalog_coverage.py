@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 
 from sniperplug.services import verified_discount_hunt as hunt
+from sniperplug.services.open_box_autoscan_routes import OPEN_BOX_AUTOSCAN_QUERIES
 from sniperplug.services.walmart_cash_offers import DEFAULT_CASH_QUERIES
 
 
@@ -71,6 +72,14 @@ def catalog_route_pool() -> tuple[str, ...]:
     rotates through every curated category, broad department, markdown surface,
     condition route, and Walmart Cash route, while the global exact-detail queue
     persists item IDs across passes.
+
+    The dedicated open-box preset (``open_box_autoscan_routes``) is part of
+    the pool, not a standalone search: its 11 condition queries (open-box,
+    like-new, restored, refurbished vacuums, appliances, gaming, monitors,
+    laptops) previously had no production caller, so open-box/restored
+    glitches outside electronics depended on 3 incidental routes. The pool
+    dedupes, so the 2 preset queries that already appear elsewhere are not
+    counted twice.
     """
 
     values: list[str] = []
@@ -78,6 +87,7 @@ def catalog_route_pool() -> tuple[str, ...]:
         values.extend(queries)
     values.extend(BROAD_DEPARTMENT_ROUTES)
     values.extend(DEFAULT_CASH_QUERIES)
+    values.extend(OPEN_BOX_AUTOSCAN_QUERIES)
     return _dedupe(values)
 
 

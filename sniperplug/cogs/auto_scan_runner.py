@@ -570,7 +570,7 @@ class AutoScanRunnerCog(commands.Cog):
 def select_autoscan_preset(guild_id: int, *, force: bool = False, query_count_override: int | None = None) -> HuntPreset:
     """Pick the Walmart auto-scan route.
 
-    Manual `/autoscan_now force:true` always starts with Deal Week so testing
+    Manual `/walmart scan-now` always starts with Deal Week so testing
     does not randomly land on a weak category. Scheduled runs still rotate, but
     Deal Week appears often and `all` is included for broader coverage.
     """

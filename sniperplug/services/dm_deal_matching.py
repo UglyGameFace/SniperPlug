@@ -96,13 +96,32 @@ def match_dm_deal(
     savings_cents = max(0, (reference_cents or 0) - (current_cents or 0))
     cash_cents = walmart_cash_cents(card)
 
+    no_reference_lead = False
     if current_cents is None or reference_cents is None or discount is None:
-        return DmDealMatchDecision(
-            False,
-            "exact current/was price proof is incomplete",
-            category_key,
-        )
-    if current_cents <= 0 or reference_cents <= current_cents:
+        if (
+            current_cents is not None
+            and current_cents > 0
+            and reference_cents is None
+            and _is_extreme_price_lead(card)
+        ):
+            # Exact-price lead with no verified was-price: the extreme lane
+            # (<= $10 substantial hardware, or a list-price anomaly) or the
+            # page-price lane already qualified the price itself, so there is
+            # no markdown to measure against the discount/score/savings
+            # floors below. The explicit product-interest requirement further
+            # down is what keeps this narrow: category-only subscribers never
+            # get unproven-price DMs.
+            no_reference_lead = True
+            discount = 0.0
+        else:
+            return DmDealMatchDecision(
+                False,
+                "exact current/was price proof is incomplete",
+                category_key,
+            )
+    if not no_reference_lead and (
+        current_cents <= 0 or reference_cents <= current_cents
+    ):
         return DmDealMatchDecision(
             False,
             "exact markdown is not positive",
@@ -156,8 +175,20 @@ def match_dm_deal(
                 category_key,
             )
 
+    # An exact-price lead is only ever a DM for a subscriber who named the
+    # exact product or brand. Without that explicit intent there is no
+    # markdown to rank it by, so category-only subscribers stay out.
+    if no_reference_lead and not has_specific_walmart_intent:
+        return DmDealMatchDecision(
+            False,
+            "exact-price leads need an explicit product or brand interest",
+            category_key,
+        )
+
     flip = FlipAssessment(False)
-    if flip_enabled:
+    # Flip assessment needs a trusted reference and discount to weigh; a
+    # lead has neither, so it can never qualify as a flip override.
+    if flip_enabled and not no_reference_lead:
         flip = assess_flip_opportunity(
             card,
             category_key=category_key,
@@ -202,7 +233,15 @@ def match_dm_deal(
     required_score = pref.min_score
     required_savings = pref.min_savings_cents
 
-    if pref.mode == "smart" and not flip.qualified:
+    if no_reference_lead:
+        # No verified markdown exists to measure: the lane already qualified
+        # the exact price, and the explicit product interest above is the
+        # filter. The cutoffs stay exactly as-is for markdown deals; this
+        # path never applies to them.
+        required_discount = 0
+        required_score = 0
+        required_savings = 0
+    elif pref.mode == "smart" and not flip.qualified:
         smart_discount, smart_savings = smart_requirements(current_cents)
         adaptive_discount = max(20, smart_discount)
         adaptive_savings = smart_savings
@@ -248,7 +287,13 @@ def match_dm_deal(
             cash_cents,
         )
 
-    if flip.qualified:
+    if no_reference_lead:
+        reason = (
+            f"Exact-price lead • ${current_cents / 100:,.2f} • "
+            "no verified was-price, no discount claimed • "
+            f"category {category_key}"
+        )
+    elif flip.qualified:
         reason = f"{flip.reason} • category {category_key}"
     else:
         reason = (
@@ -279,6 +324,22 @@ def match_dm_deal(
         cash_cents,
         priority_override=flip.qualified,
     )
+
+
+def _is_extreme_price_lead(card: Any) -> bool:
+    """True only for cards the extreme / page-price lane itself built.
+
+    The lane markers are set by ``build_extreme_price_card`` (API-priced
+    leads) and ``build_page_price_extreme_card`` (page-observed leads). Any
+    other card without a reference price keeps the old exact-proof rejection
+    — a missing was-price on an ordinary card is not a lead.
+    """
+
+    if bool(getattr(card, "page_price_lead", False)):
+        return True
+    if getattr(card, "extreme_exact_candidate", None) is not None:
+        return True
+    return getattr(card, "page_price_candidate", None) is not None
 
 
 def _money_to_cents(value: Any) -> int | None:

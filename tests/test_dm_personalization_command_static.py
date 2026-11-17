@@ -95,7 +95,7 @@ def test_flip_lane_keeps_hard_personal_limits_before_category_override() -> None
     max_price_position = MATCHER.index("if pref.max_price_cents is not None")
     required_keyword_position = MATCHER.index("if pref.keywords and not any")
     exclusion_position = MATCHER.index("if keyword_excludes and any")
-    flip_position = MATCHER.index("if flip_enabled:")
+    flip_position = MATCHER.index("if flip_enabled and not no_reference_lead:")
     threshold_position = MATCHER.index("if discount < required_discount")
 
     assert max_price_position < flip_position

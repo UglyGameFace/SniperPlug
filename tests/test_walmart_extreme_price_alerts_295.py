@@ -690,7 +690,7 @@ def test_qualified_extreme_item_waits_when_no_opted_in_live_route(monkeypatch) -
             )
             initial = tuple(await before_cursor.fetchone())
             stalled = await extreme.fanout_recent_extreme_walmart_prices(bot)
-            assert stalled == {"examined": 1, "eligible": 1, "posted": 0}
+            assert stalled == {"examined": 1, "eligible": 1, "posted": 0, "dm_preferences_checked": 0, "dm_matches": 0, "dm_sent": 0, "dm_skipped_duplicate": 0, "dm_skipped_daily_cap": 0, "dm_skipped_diversity": 0, "dm_disabled": 0, "dm_errors": 0}
             after_cursor = await conn.execute(
                 f"SELECT last_verified_at, last_item_id FROM {extreme.STATE_TABLE} WHERE state_key='walmart'"
             )
@@ -698,7 +698,7 @@ def test_qualified_extreme_item_waits_when_no_opted_in_live_route(monkeypatch) -
             assert deliveries == []
 
             resumed = await extreme.fanout_recent_extreme_walmart_prices(bot)
-            assert resumed == {"examined": 1, "eligible": 1, "posted": 1}
+            assert resumed == {"examined": 1, "eligible": 1, "posted": 1, "dm_preferences_checked": 0, "dm_matches": 0, "dm_sent": 0, "dm_skipped_duplicate": 0, "dm_skipped_daily_cap": 0, "dm_skipped_diversity": 0, "dm_disabled": 0, "dm_errors": 0}
             assert len(deliveries) == 1
             assert deliveries[0]["guild_id"] == 295
             assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["examined"] == 0
@@ -746,7 +746,7 @@ def test_missing_second_guild_replays_after_first_guild_cursor_advanced(monkeypa
             bot = SimpleNamespace(db=db)
 
             first = await extreme.fanout_recent_extreme_walmart_prices(bot)
-            assert first == {"examined": 1, "eligible": 1, "posted": 1}
+            assert first == {"examined": 1, "eligible": 1, "posted": 1, "dm_preferences_checked": 0, "dm_matches": 0, "dm_sent": 0, "dm_skipped_duplicate": 0, "dm_skipped_daily_cap": 0, "dm_skipped_diversity": 0, "dm_disabled": 0, "dm_errors": 0}
             assert deliveries == [295]
             read = await conn.execute(
                 f"SELECT guild_id, item_id, verified_at FROM {extreme.PENDING_TABLE}"
@@ -952,7 +952,7 @@ def test_pending_replay_with_no_live_guild_does_not_skip_new_verified_offer(monk
             monkeypatch.setattr(extreme, "maybe_post_public_deal_cards", fake_post)
             bot = SimpleNamespace(db=db)
             stalled = await extreme.fanout_recent_extreme_walmart_prices(bot)
-            assert stalled == {"examined": 1, "eligible": 1, "posted": 0}
+            assert stalled == {"examined": 1, "eligible": 1, "posted": 0, "dm_preferences_checked": 0, "dm_matches": 0, "dm_sent": 0, "dm_skipped_duplicate": 0, "dm_skipped_daily_cap": 0, "dm_skipped_diversity": 0, "dm_disabled": 0, "dm_errors": 0}
             cursor = await conn.execute(
                 f"SELECT last_verified_at, last_item_id FROM {extreme.STATE_TABLE} "
                 "WHERE state_key='walmart'"
@@ -965,7 +965,7 @@ def test_pending_replay_with_no_live_guild_does_not_skip_new_verified_offer(monk
 
             accessible = True
             resumed = await extreme.fanout_recent_extreme_walmart_prices(bot)
-            assert resumed == {"examined": 1, "eligible": 1, "posted": 2}
+            assert resumed == {"examined": 1, "eligible": 1, "posted": 2, "dm_preferences_checked": 0, "dm_matches": 0, "dm_sent": 0, "dm_skipped_duplicate": 0, "dm_skipped_daily_cap": 0, "dm_skipped_diversity": 0, "dm_disabled": 0, "dm_errors": 0}
             assert posted_ids == [first.product_id, second.product_id]
             assert (await extreme.fanout_recent_extreme_walmart_prices(bot))["posted"] == 0
         finally:

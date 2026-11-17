@@ -40,12 +40,18 @@ _RETAILER_LABELS = {"hp": "HP", "bestbuy": "Best Buy"}
 # is a plain method on SniperPlugCog (its slash decorator was removed when
 # the command moved here); every other entry is a Command object whose
 # ``.callback`` is the handler.
+#
+# check/find/cash resolve through VerifiedDealScannerCog, NOT DealScannerCog:
+# the live bot only adds the verified subclass (bot.py), so naming the base
+# class makes get_cog return None and every call fails with "isn't loaded
+# right now". The methods are inherited unchanged from the base class.
 _DELEGATES: dict[str, tuple[str, str]] = {
-    "check": ("DealScannerCog", "check_deal"),
-    "find": ("DealScannerCog", "deals"),
+    "check": ("VerifiedDealScannerCog", "check_deal"),
+    "find": ("VerifiedDealScannerCog", "deals"),
     "hunt": ("VerifiedDealScannerCog", "hunt"),
-    "cash": ("DealScannerCog", "walmart_cash"),
+    "cash": ("VerifiedDealScannerCog", "walmart_cash"),
     "discover": ("AutoDiscoveryCog", "discover"),
+    "scan-now": ("AutoScanRunnerCog", "autoscan_now"),
     "health": ("CanonicalPublicAlertsCog", "autoscan_health"),
     "threshold": ("CanonicalSettingsCog", "deal_threshold"),
     "categories": ("CanonicalPublicAlertsCog", "deal_categories"),
@@ -60,7 +66,7 @@ _DELEGATES: dict[str, tuple[str, str]] = {
     "setup": ("CanonicalWorkflowCog", "setup_sniperplug_here"),
 }
 
-# The 17 functions, in subcommand order (the 18th subcommand is the menu).
+# The 18 functions, in subcommand order (the 19th subcommand is the menu).
 WALMART_SUBCOMMANDS: tuple[str, ...] = tuple(_DELEGATES)
 
 # Subcommands the menu runs in place (no required input). Everything else
@@ -74,6 +80,7 @@ _MENU_RUN_IN_PLACE = frozenset(
         "recovery",
         "feedback",
         "discover",
+        "scan-now",
         "cash",
         "active",
         "history",
@@ -100,6 +107,7 @@ _MENU_MANAGE_GUILD = frozenset(
         "active",
         "history",
         "setup",
+        "scan-now",
     }
 )
 
@@ -245,6 +253,25 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
     @discover.error
     async def discover_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await self._send_error(interaction, f"Discovery hit an error: `{self._type_only_error(error)}`")
+
+    @app_commands.command(name="scan-now", description="Run the Walmart auto-scan now and show why it did or did not post.")
+    @app_commands.describe(force="Bypass interval/daily gate for this manual test. Public alerts still must be configured.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def scan_now(
+        self,
+        interaction: discord.Interaction,
+        force: bool = True,
+    ) -> None:
+        await self._delegate(interaction, "scan-now", force=force)
+
+    @scan_now.error
+    async def scan_now_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = (
+            "You need **Manage Server** permission to run a manual auto-scan."
+            if isinstance(error, app_commands.MissingPermissions)
+            else f"Manual auto-scan hit an error: `{self._type_only_error(error)}`"
+        )
+        await self._send_error(interaction, message)
 
     # -- server health & setup ------------------------------------------
 
@@ -613,6 +640,7 @@ MENU_FUNCTIONS: dict[str, tuple[str, str, str]] = {
     "hunt": ("Hunt deals", "Pick a category and hunt verified deals.", "/walmart hunt"),
     "cash": ("Walmart Cash", "API-proven Cash offers only. Feed currently unavailable.", "/walmart cash"),
     "discover": ("Discover", "Run a broad catalog sweep (Quick, Deep, or Full).", "/walmart discover"),
+    "scan-now": ("Scan now", "Run the Walmart auto-scan now and show why it did or did not post.", "/walmart scan-now"),
     "my-alerts": ("My alerts", "Your personal DM alerts: menu, filters, pause, delete.", "/walmart my-alerts action:Open personalization menu"),
     "setup": ("Setup", "Set (or move) this server's deal-alert channel.", "/walmart setup"),
     "threshold": ("Threshold", "Set the server's minimum markdown for public deals.", "/walmart threshold percent:35"),
@@ -628,7 +656,7 @@ MENU_FUNCTIONS: dict[str, tuple[str, str, str]] = {
 }
 
 MENU_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("🔍 Find deals", ("check", "find", "hunt", "cash", "discover")),
+    ("🔍 Find deals", ("check", "find", "hunt", "cash", "discover", "scan-now")),
     ("🔔 Your alerts", ("my-alerts",)),
     ("🛠️ Server setup", ("setup", "threshold", "categories", "extreme")),
     ("🏥 Health & history", ("health", "recovery", "active", "history", "trace", "feedback", "feedback-reset")),
@@ -640,6 +668,7 @@ _MENU_EMOJIS = {
     "hunt": "🎯",
     "cash": "💸",
     "discover": "🗺️",
+    "scan-now": "▶️",
     "my-alerts": "🔔",
     "setup": "🛠️",
     "threshold": "📊",

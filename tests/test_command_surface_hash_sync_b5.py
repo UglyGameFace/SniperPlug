@@ -3,8 +3,8 @@
 Covers the fingerprint (surface changes change it, cosmetic changes do not),
 the boot decision (first boot syncs, unchanged second boot skips, changed
 surface syncs once and persists, sync failure does not persist and retries,
-forced sync still works, invalid schema still blocks), and that /walmart is in the loaded tree with its 18 subcommands (and none
-of the 17 folded names) when all canonical cogs load against a scratch
+forced sync still works, invalid schema still blocks), and that /walmart is in the loaded tree with its 19 subcommands (and none
+of the 18 folded names) when all canonical cogs load against a scratch
 SQLite DB (no live Discord connection).
 """
 
@@ -460,8 +460,8 @@ async def test_walmart_group_present_in_loaded_command_tree_and_hash_syncs_once(
 ) -> None:
     """Load all canonical cogs against a scratch SQLite DB, no Discord.
 
-    The 17 folded Walmart commands must be gone from the loaded tree and
-    replaced by the /walmart group with its 18 subcommands. Background
+    The 18 folded Walmart commands must be gone from the loaded tree and
+    replaced by the /walmart group with its 19 subcommands. Background
     @tasks.loop cogs log wait_until_ready errors offline; those are expected
     noise here, not setup failures.
     """
@@ -495,6 +495,7 @@ async def test_walmart_group_present_in_loaded_command_tree_and_hash_syncs_once(
             "hunt",
             "cash",
             "discover",
+            "scan-now",
             "health",
             "threshold",
             "categories",
@@ -515,6 +516,7 @@ async def test_walmart_group_present_in_loaded_command_tree_and_hash_syncs_once(
             "hunt",
             "walmart_cash",
             "discover",
+            "autoscan_now",
             "autoscan_health",
             "deal_threshold",
             "deal_categories",

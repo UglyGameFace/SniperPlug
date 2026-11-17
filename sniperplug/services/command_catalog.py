@@ -59,6 +59,24 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use when you want your own Smart, All, or Custom deal stream without changing a server's public feed.",
     ),
     CommandCatalogEntry(
+        name="/wishlist add",
+        audience="Everyone",
+        purpose="Add a plain product name to your personal wishlist.",
+        when_to_use="Use when you want a DM about one exact item, for example iphone 11 or dyson airwrap, instead of a whole category. Adding an item turns your personal deal DMs on with the usual Smart settings.",
+    ),
+    CommandCatalogEntry(
+        name="/wishlist list",
+        audience="Everyone",
+        purpose="Show your wishlist and whether your personal deal DMs are on.",
+        when_to_use="Use to check what you are watching for and whether matches can reach your DMs.",
+    ),
+    CommandCatalogEntry(
+        name="/wishlist remove",
+        audience="Everyone",
+        purpose="Remove one item from your personal wishlist.",
+        when_to_use="Use when you no longer want DM alerts about that item.",
+    ),
+    CommandCatalogEntry(
         name="/walmart discover",
         audience="Everyone",
         purpose="Start an optional immediate Quick, Deep, or Full exact Walmart sweep.",

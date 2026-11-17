@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
@@ -29,11 +29,14 @@ from sniperplug.services.dm_product_interests import (
     match_product_preferences,
     split_product_preferences,
 )
+from sniperplug.services.user_wishlist import match_wishlist_items
 
 
 def match_dm_deal(
     preference: DmDealAlertPreference,
     card: Any,
+    *,
+    wishlist_items: Iterable[str] | str | None = None,
 ) -> DmDealMatchDecision:
     """Apply exact-proof personal filters without weakening hard user limits.
 
@@ -43,13 +46,20 @@ def match_dm_deal(
     user chose. Without specific product intent, existing category behavior stays
     unchanged. Favorites may still affect Smart-mode priority.
 
+    A matching wishlist item (a free-text product name, any retailer) is the
+    same kind of explicit intent: it satisfies the inclusion layer on its own,
+    so a muted or unselected category cannot veto the exact item the user
+    asked for. It never touches a hard guard — exact proof, discount/score/
+    savings floors, max price, keywords, dedupe and daily limits all still
+    apply, and it never triggers its own scan.
+
     Product interests are OR within their group, brands are OR within their group,
     and when both groups are configured a Walmart deal must satisfy both groups.
     HP/Target delivery retains its existing behavior.
 
     Maximum price, Walmart-Cash-only, required/excluded keywords, exact proof,
     minimum markdown/score/savings, dedupe and daily limits remain hard regardless
-    of category, product intent or Flip Override.
+    of category, product intent, wishlist intent or Flip Override.
     """
 
     pref = preference.normalized()
@@ -72,6 +82,8 @@ def match_dm_deal(
     product_interests, product_brands = split_product_preferences(pref.categories)
     selected_routes = split_dm_route_preferences(pref.categories)
     has_route_intent = bool(selected_routes)
+    wishlist_match = match_wishlist_items(wishlist_items, search_text)
+    has_wishlist_match = bool(wishlist_match)
     has_specific_walmart_intent = bool(
         not has_route_intent and is_walmart and (product_interests or product_brands)
     )
@@ -149,7 +161,9 @@ def match_dm_deal(
             interests=product_interests,
             brands=product_brands,
         )
-        if not product_match.matched:
+        # A wishlist hit is explicit intent too: it satisfies the product
+        # layer even when the curated product/brand picks do not match.
+        if not product_match.matched and not has_wishlist_match:
             return DmDealMatchDecision(
                 False,
                 product_match.reason,
@@ -170,11 +184,13 @@ def match_dm_deal(
         )
 
     # Broad categories are a fallback inclusion layer. Once a Walmart subscriber
-    # explicitly chooses products/brands, those exact choices win over a stale or
-    # overly broad category allowlist/mute. This prevents old category state from
-    # crossing into and silently blocking the newer specific-product UX.
+    # explicitly chooses products/brands — or names an exact wishlist item —
+    # those exact choices win over a stale or overly broad category
+    # allowlist/mute. This prevents old category state from crossing into and
+    # silently blocking the newer specific-product UX.
     if (
         not has_specific_walmart_intent
+        and not has_wishlist_match
         and not has_route_intent
         and category_key in muted_categories
         and not flip.qualified
@@ -186,6 +202,7 @@ def match_dm_deal(
         )
     if (
         not has_specific_walmart_intent
+        and not has_wishlist_match
         and not has_route_intent
         and selected_categories
         and category_key not in selected_categories
@@ -266,6 +283,8 @@ def match_dm_deal(
         reason += f" • {product_match.reason}"
     if has_specific_walmart_intent:
         reason += " • explicit product intent"
+    if has_wishlist_match and not has_route_intent:
+        reason += f" • wishlist: {wishlist_match}"
 
     if is_walmart:
         personalize_dm_card_title(card)

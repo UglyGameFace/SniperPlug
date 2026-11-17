@@ -34,7 +34,6 @@ CRITICAL_MODULES = (
     "sniperplug.cogs.sniperplug",
     "sniperplug.cogs.storage_admin",
     "sniperplug.cogs.verified_deal_scanner",
-    "sniperplug.cogs.workflow",
     "sniperplug.services.autoscan_history",
     "sniperplug.services.deal_confidence",
     "sniperplug.services.deal_feedback",

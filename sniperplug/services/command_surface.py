@@ -117,6 +117,11 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
         "One Walmart command now holds every Walmart function.",
     ),
     RetiredCommand(
+        "autoscan_now",
+        "/walmart scan-now",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
         "autoscan_health",
         "/walmart health",
         "One Walmart command now holds every Walmart function.",
@@ -200,7 +205,6 @@ REQUIRED_CANONICAL_COMMANDS = frozenset(
         "seed_clearance",
         "clearance_bank",
         "sniperplug_dashboard",
-        "autoscan_now",
         "sniperplug",
         "ebay",
     }

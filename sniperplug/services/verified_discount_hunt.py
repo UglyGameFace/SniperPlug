@@ -508,19 +508,6 @@ async def collect_verified_discount_cards(
     )
 
 
-def install_verified_discount_hunt() -> None:
-    if getattr(deal_scanner, "_sniperplug_verified_discount_hunt_installed", False):
-        return
-    deal_scanner.HUNT_PRESETS.clear()
-    deal_scanner.HUNT_PRESETS.update(HUNT_PRESETS)
-    deal_scanner.run_preset_hunt = run_verified_discount_hunt
-    deal_scanner.build_hunt_menu_embed = build_verified_hunt_menu_embed
-    deal_scanner.HuntPresetMenuView.__init__ = verified_menu_init
-    deal_scanner.HuntPresetButton.callback = verified_hunt_button_callback
-    deal_scanner.build_preset_hunt_summary = build_verified_hunt_summary
-    deal_scanner._sniperplug_verified_discount_hunt_installed = True
-
-
 def verified_menu_init(self) -> None:
     discord.ui.View.__init__(self, timeout=300)
     for index, preset in enumerate(HUNT_PRESETS.values()):

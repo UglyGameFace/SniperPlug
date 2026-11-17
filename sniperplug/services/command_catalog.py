@@ -129,7 +129,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Retry current rules, recheck exact proof, or let the actual server owner post one soft-blocked event without weakening automatic settings.",
     ),
     CommandCatalogEntry(
-        name="/autoscan_now",
+        name="/walmart scan-now",
         audience="Owner",
         purpose="Run a bounded manual autoscan test and show exact post/block decisions.",
         when_to_use="Use only for diagnostics after a deploy or setup change. It is not required for normal background coverage.",

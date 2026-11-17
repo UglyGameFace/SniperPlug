@@ -35,10 +35,11 @@ GLOBAL_CATALOG_REQUEST_BUDGET = 4
 # so the total rate never rises; the trade-off is explicit and deliberate:
 # sniper revisit 29 min -> ~17.4 min (29 rotation queries, ~8.3 rotation slots
 # per 5 batches once the priority slot displaces one), broad rotation
-# 89 min -> ~133 min (265 routes / 2 per batch). Money first: a $1 error on a
+# 89 min -> ~139 min (277 routes / 2 per batch). Money first: a $1 error on a
 # phone/console/GPU is worth far more than re-sweeping a department page an
 # hour sooner, and broad still advances every batch — it is slower, never
-# starved.
+# starved. The route count is pinned by
+# tests/test_walmart_catalog_coverage.py::test_catalog_route_pool_includes_every_open_box_preset_query.
 BROAD_ROUTES_PER_BATCH = 2
 SNIPER_SEARCHES_PER_BATCH = 2
 CATALOG_PAGES_PER_QUERY = 2
@@ -165,7 +166,7 @@ def catalog_request_plan_for_claim(
     """Four bounded API searches: two fresh routes plus two price snipers.
 
     Page one of each claimed catalog route (relevance order) keeps broad
-    coverage, now at 2 routes/batch (~133 min for the 265-route pool instead
+    coverage, now at 2 routes/batch (~139 min for the 277-route pool instead
     of ~89). The other two requests are price-sorted (lowest first) searches
     for specific high-value products, where a price error appears at the top.
 

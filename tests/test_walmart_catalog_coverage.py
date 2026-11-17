@@ -1,10 +1,26 @@
 from sniperplug.cogs.native_auto_scan_runner import build_native_broad_preset
+from sniperplug.services.open_box_autoscan_routes import OPEN_BOX_AUTOSCAN_QUERIES
 from sniperplug.services.walmart_catalog_coverage import (
     BROAD_DEPARTMENT_ROUTES,
     ROTATION_SECONDS,
     catalog_route_pool,
     rotating_catalog_slice,
 )
+
+
+def test_catalog_route_pool_includes_every_open_box_preset_query() -> None:
+    # The open-box preset was dead (no production caller): only 2 of its 11
+    # queries reached the broad pool incidentally. Every preset query is now
+    # a discovery route, so Like New / restored glitches on vacuums, gaming
+    # gear, monitors, and laptops get broad coverage, not just electronics.
+    pool = catalog_route_pool()
+    lowered = {query.lower() for query in pool}
+    for query in OPEN_BOX_AUTOSCAN_QUERIES:
+        assert query.lower() in lowered
+    # 268 routes + 9 preset queries not already in the pool (2 overlap).
+    # The sweep-time comments in walmart_catalog_discovery_only.py and
+    # global_auto_scan_runner.py must move with this number.
+    assert len(pool) == 277
 
 
 def test_catalog_route_pool_spans_departments_and_walmart_cash() -> None:

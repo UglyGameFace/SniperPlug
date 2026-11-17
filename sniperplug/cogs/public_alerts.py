@@ -396,7 +396,7 @@ class PublicAlertsCog(commands.Cog):
             await interaction.followup.send("Use this in a server so I know which active deal cache to clear.", ephemeral=True)
             return
         cleared = await clear_autoscan_posting_memory(self.bot.db, interaction.guild_id)
-        await interaction.followup.send(("Cleared SniperPlug auto-scan memory for this server.\n" f"• Active cache: **{cleared['active_cache']}**\n" f"• Public post duplicate memory: **{cleared['public_posts']}**\n" f"• Alert dedupe memory: **{cleared['alert_dedupe']}**\n\n" "This does not delete Discord messages. Run `/autoscan_now force:true` next."), ephemeral=True)
+        await interaction.followup.send(("Cleared SniperPlug auto-scan memory for this server.\n" f"• Active cache: **{cleared['active_cache']}**\n" f"• Public post duplicate memory: **{cleared['public_posts']}**\n" f"• Alert dedupe memory: **{cleared['alert_dedupe']}**\n\n" "This does not delete Discord messages. Run `/walmart scan-now` next."), ephemeral=True)
 
     @autoscan_clear_cache.error
     async def autoscan_clear_cache_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -458,7 +458,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     latest_settings = latest_report.get("settings") if isinstance(latest_report, dict) else {}
     latest_is_manual = bool(isinstance(latest_settings, dict) and latest_settings.get("forced"))
     latest_decision_label = "Last manual test decision" if latest_is_manual else "Last scheduled decision"
-    latest_report_source = "manual `/autoscan_now` force test" if latest_is_manual else "scheduled autoscan"
+    latest_report_source = "manual `/walmart scan-now` force test" if latest_is_manual else "scheduled autoscan"
     latest_text = format_latest_report_line(latest_report)
     latest_lower = latest_text.lower()
     last_run_has_route_error = "public channel lookup failed" in latest_lower or "ghost guild" in latest_lower or "bot is not currently connected to guild" in latest_lower
@@ -503,7 +503,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
     if last_run_has_route_error:
         embed.add_field(name="🚨 Posting route problem", value="SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. SniperPlug now repairs saved routes automatically when a safe saved channel exists. If this still appears, run `/walmart health` and fix the exact channel/permission issue shown there.", inline=False)
     embed.add_field(name=latest_decision_label, value=trim_field(latest_text, 1024), inline=False)
-    embed.add_field(name="How to read this", value="Green requires the server to be in the scheduler's real live guild set. A manual `/autoscan_now` report is labeled separately and never counts as proof that the scheduled loop ran.", inline=False)
+    embed.add_field(name="How to read this", value="Green requires the server to be in the scheduler's real live guild set. A manual `/walmart scan-now` report is labeled separately and never counts as proof that the scheduled loop ran.", inline=False)
     return embed
 
 

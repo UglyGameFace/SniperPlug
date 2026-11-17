@@ -13,7 +13,7 @@ def test_command_catalog_has_canonical_core_commands():
         "/walmart setup",
         "/sniperplug_dashboard",
         "/walmart health",
-        "/autoscan_now",
+        "/walmart scan-now",
         "/walmart find",
         "/walmart hunt",
         "/walmart discover",
@@ -54,12 +54,13 @@ def test_command_catalog_excludes_removed_duplicate_commands():
         "/active_deal_recheck",
         "/active_deals_recheck",
         "/active_deals_cleanup",
-        # The 17 Walmart commands folded into the /walmart group.
+        # The 18 Walmart commands folded into the /walmart group.
         "/check_deal",
         "/deals",
         "/hunt",
         "/walmart_cash",
         "/discover",
+        "/autoscan_now",
         "/autoscan_health",
         "/deal_threshold",
         "/deal_categories",

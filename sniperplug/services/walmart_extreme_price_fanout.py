@@ -29,8 +29,8 @@ from sniperplug.services.walmart_exact_price_enrichment import (
 )
 from sniperplug.services.walmart_extreme_price_signals import (
     ABSOLUTE_EXTREME_MAX_PRICE,
-    ACCESSORY,
     exact_price_lead_evidence,
+    is_accessory_title,
     listed_price_anomaly,
     primary_product_evidence,
 )
@@ -81,7 +81,7 @@ def extreme_rejection_reason(candidate: Any) -> str | None:
         str(value or "")
         for value in (candidate.title, candidate.parent_title)
     )
-    if ACCESSORY.search(title):
+    if is_accessory_title(title):
         return "accessory_or_parts"
     trusted_reference = _trusted_reference(candidate)
     if exact_price_lead_evidence(
@@ -150,7 +150,7 @@ def page_price_rejection_reason(candidate: Any) -> str | None:
         str(value or "")
         for value in (candidate.title, candidate.parent_title)
     )
-    if ACCESSORY.search(title):
+    if is_accessory_title(title):
         return "accessory_or_parts"
     # A listed-price anomaly cannot be established from a page price alone
     # (the page carries no trusted list price), so only the substantial

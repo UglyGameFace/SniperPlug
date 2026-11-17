@@ -21,6 +21,7 @@ from sniperplug.cogs.canonical_settings import CanonicalSettingsCog
 from sniperplug.cogs.canonical_workflow import CanonicalWorkflowCog
 from sniperplug.cogs.global_auto_scan_runner import AutoScanRunnerCog as GlobalAutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
+from sniperplug.cogs.deal_drops_intake import DealDropsIntakeCog
 from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.dm_deal_alerts import DmDealAlertsCog
 from sniperplug.cogs.ebay_research import EbayResearchCog
@@ -181,6 +182,10 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(VerizonShineCog(self))
         await self.add_cog(MovieTicketsCog(self))
         await self.add_cog(MovieTicketFeedbackCog(self))
+        # D3: second on_message listener; it only acts on non-bot humans in
+        # the configured drops channel, while MovieTicketFeedbackCog only
+        # acts on the bot's own movie-alert embeds, so they never overlap.
+        await self.add_cog(DealDropsIntakeCog(self))
         await self.add_cog(MovieCommandGuideCog(self))
         await self.add_cog(GlobalAutoScanRunnerCog(self))
 

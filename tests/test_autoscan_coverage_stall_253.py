@@ -349,11 +349,14 @@ def test_fanout_decision_provenance_round_trips_and_classifies_real_skip_reason(
 
 
 def test_not_started_standalone_watcher_health_is_actionable() -> None:
+    # Audit-honesty 2026-11-17: both watchers are OFF BY DESIGN, not a
+    # missing setup — the health line must say so and must not tell the
+    # user to deploy a standalone watcher.
     hp = HPWatcherHealth().summary_line()
     target = TargetWatcherHealth().summary_line()
-    assert "SniperPlug-HP-Watcher" in hp
-    assert "hp_watcher_main.py" in hp
-    assert "same Turso DB" in hp
-    assert "SniperPlug-Target-Watcher" in target
-    assert "target_watcher_main.py" in target
-    assert "same Turso DB" in target
+    assert "off by design" in hp
+    assert "off by design" in target
+    assert "Start/deploy" not in hp
+    assert "Start/deploy" not in target
+    assert "hp_watcher_main.py" not in hp
+    assert "target_watcher_main.py" not in target

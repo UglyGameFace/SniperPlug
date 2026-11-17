@@ -320,7 +320,9 @@ class CanonicalWorkflowCog(commands.Cog):
         if not api_key:
             return (
                 (),
-                "Target location setup is temporarily unavailable because the owner has not configured `TARGET_REDSKY_API_KEY`.",
+                "Target store lookup is not available: the server owner has not set "
+                "`TARGET_REDSKY_API_KEY`. Nothing was saved. Ask the server owner "
+                "to set the key to enable Target store selection.",
             )
         settings = TargetWatcherSettings(
             redsky_api_key=api_key,

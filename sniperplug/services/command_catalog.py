@@ -45,17 +45,10 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
-        name="/walmart cash",
-        audience="Everyone",
-        purpose="Find only products with strict API-proven Walmart Cash offers.",
-        when_to_use="Use for a manual Cash-only search. Global autoscan can attach the exact Cash amount to normal deal alerts automatically.",
-        credit_risk="Walmart official API",
-    ),
-    CommandCatalogEntry(
         name="/ebay …",
         audience="Everyone",
-        purpose="Explore live eBay listing asking prices and manage optional eBay message consent.",
-        when_to_use="Use /ebay research for non-affiliate, on-demand listing comparisons; /ebay consent opts in or out of future promotion and /ebay review_sample previews disclosures. No eBay automatic sender exists until authorized.",
+        purpose="Explore live eBay listing asking prices and check eBay integration status.",
+        when_to_use="Use /ebay research for non-affiliate, on-demand listing comparisons; /ebay status shows integration and opt-in state, and /ebay review_sample previews disclosures with an opt-out button in its view. No eBay automatic sender exists until authorized.",
         credit_risk="eBay official Browse API when configured",
     ),
     CommandCatalogEntry(
@@ -211,7 +204,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         name="/sniperplug …",
         audience="Owner",
         purpose="Owner-only grouped diagnostics such as provider previews, routes, monitor plans, and test alerts.",
-        when_to_use="Use only for technical diagnostics. Normal users should use `/walmart find`, `/walmart hunt`, `/walmart cash`, or `/walmart my-alerts`.",
+        when_to_use="Use only for technical diagnostics. Normal users should use `/walmart find`, `/walmart hunt`, or `/walmart my-alerts`.",
     ),
 )
 

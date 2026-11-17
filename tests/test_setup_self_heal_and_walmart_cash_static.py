@@ -43,10 +43,14 @@ def test_canonical_autoscan_health_shows_self_heal_and_global_fanout():
     assert "does not need rerun" in SELF_HEAL
 
 
-def test_walmart_cash_only_command_and_button_exist():
+def test_walmart_cash_button_removed_but_proof_machinery_kept():
+    # /walmart cash was retired (no Cash offer feed exists), so the Hunt
+    # "Walmart Cash Offers" button is gone from both views; the strict-proof
+    # cash machinery underneath stays — it still validates Cash proof on the
+    # normal deal stream.
+    assert "WalmartCashOffersButton" not in DEALS
+    assert "WalmartCashOffersButton" not in VERIFIED
     assert 'name="walmart_cash"' in DEALS
-    assert "WalmartCashOffersButton" in DEALS
-    assert "WalmartCashOffersButton(row=4)" in VERIFIED
     assert "find_walmart_cash_offer" in DEALS
     assert "build_walmart_cash_summary_embed" in DEALS
 
@@ -67,8 +71,8 @@ def test_walmart_cash_only_blocks_guesses_onepay_and_query_text():
     assert "return None" in API_TRUTH
 
 
-def test_command_catalog_lists_cash_and_one_setup_command():
-    assert 'name="/walmart cash"' in CATALOG
+def test_command_catalog_no_longer_lists_retired_cash_and_one_setup_command():
+    assert 'name="/walmart cash"' not in CATALOG
     assert "Run once during installation" in CATALOG
     assert CATALOG.count('name="/walmart setup"') == 1
     assert SETUP.count('name="setup_sniperplug_here"') == 1

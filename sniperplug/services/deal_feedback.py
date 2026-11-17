@@ -504,12 +504,12 @@ def feedback_total_score(good: int, bad: int, bad_brand: int, flip: int, weak: i
     return good * 2 - bad * 2 - bad_brand * 3 + flip * 3 - weak
 
 
-async def apply_feedback_learning_to_cards(db, *, guild_id: int | None, cards: list[Any], fallback_retailer: str = "walmart") -> list[Any]:
+async def apply_feedback_learning_to_cards(db, *, guild_id: int | None, cards: list[Any], fallback_retailer: str = "walmart", ensure_tables: bool = True) -> list[Any]:
     if db is None or guild_id is None or not cards:
         return cards
     adjusted: list[tuple[float, int, Any]] = []
     for index, card in enumerate(cards):
-        adjustment = await get_feedback_adjustment(db, guild_id=guild_id, card=card, fallback_retailer=fallback_retailer)
+        adjustment = await get_feedback_adjustment(db, guild_id=guild_id, card=card, fallback_retailer=fallback_retailer, ensure_tables=ensure_tables)
         setattr(card, "feedback_learning_score", adjustment.total)
         if adjustment.total:
             annotate_card_with_feedback_learning(card, adjustment)
@@ -521,8 +521,9 @@ async def apply_feedback_learning_to_cards(db, *, guild_id: int | None, cards: l
     return [card for _, __, card in adjusted]
 
 
-async def get_feedback_adjustment(db, *, guild_id: int, card: Any, fallback_retailer: str = "walmart") -> FeedbackAdjustment:
-    await ensure_deal_feedback_tables(db)
+async def get_feedback_adjustment(db, *, guild_id: int, card: Any, fallback_retailer: str = "walmart", ensure_tables: bool = True) -> FeedbackAdjustment:
+    if ensure_tables:
+        await ensure_deal_feedback_tables(db)
     retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
     target_key = feedback_product_key(card, retailer=retailer)
     brand_hint = guess_brand_hint(card)

@@ -362,7 +362,6 @@ def check_env(name: str, *, required: bool, label: str) -> tuple[str, str, str]:
 
 PRIMARY_COMMANDS = {"/walmart find", "/walmart hunt", "/walmart discover"}
 SPECIALIST_COMMANDS = {
-    "/walmart cash",
     "/home_depot_search",
     "/home_depot_penny_hunt",
     "/hd_stock",

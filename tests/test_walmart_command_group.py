@@ -1,7 +1,8 @@
 """Tests for the /walmart command group, its menu, and the review-pass fixes.
 
-The 18 folded Walmart commands keep their handlers on their original cogs;
-this file pins the new surface: the group registers all 19 subcommands, the
+The 17 folded Walmart commands plus the 2 restored ones keep their handlers
+on their original cogs; this file pins the new surface: the group registers
+all 20 subcommands, the
 old names are retired and pruned from the tree, the menu reaches every
 function, and the small behaviour fixes from the review pass hold.
 """
@@ -38,7 +39,6 @@ OLD_TO_NEW = {
     "check_deal": "check",
     "deals": "find",
     "hunt": "hunt",
-    "walmart_cash": "cash",
     "discover": "discover",
     "autoscan_health": "health",
     "deal_threshold": "threshold",
@@ -56,14 +56,14 @@ OLD_TO_NEW = {
 }
 
 
-def test_walmart_group_has_all_19_subcommands() -> None:
+def test_walmart_group_has_all_20_subcommands() -> None:
     cog = WalmartCommandCog(bot=None)
     names = {command.name for command in cog.app_command.commands}
     assert names == set(WALMART_SUBCOMMANDS) | {"menu"}
-    assert len(names) == 19
+    assert len(names) == 20
 
 
-def test_my_alerts_keeps_all_21_options() -> None:
+def test_my_alerts_keeps_all_20_options() -> None:
     cog = WalmartCommandCog(bot=None)
     my_alerts = next(
         command for command in cog.app_command.commands if command.name == "my-alerts"
@@ -88,7 +88,6 @@ def test_my_alerts_keeps_all_21_options() -> None:
         "unmute_categories",
         "flip_alerts",
         "flip_min_profit",
-        "walmart_cash_only",
         "daily_cap",
     ]
 
@@ -107,6 +106,10 @@ def test_old_walmart_names_are_retired_with_new_paths() -> None:
     for old, sub in OLD_TO_NEW.items():
         assert old in RETIRED_COMMAND_NAMES
         assert replacement_for(old) == f"/walmart {sub}"
+    # /walmart cash was retired 2026-11-17 (no Cash offer feed exists), so
+    # its old top-level name now points at /walmart find instead.
+    assert "walmart_cash" in RETIRED_COMMAND_NAMES
+    assert replacement_for("walmart_cash") == "/walmart find"
     assert "walmart" not in RETIRED_COMMAND_NAMES
 
 
@@ -150,12 +153,12 @@ def test_scan_now_keeps_force_parameter() -> None:
     assert [param.name for param in by_name["scan-now"].parameters] == ["force"]
 
 
-def test_menu_view_has_select_for_all_18_and_quick_buttons() -> None:
+def test_menu_view_has_select_for_all_19_and_quick_buttons() -> None:
     view = WalmartMenuView(WalmartCommandCog(bot=None))
     selects = [child for child in view.children if isinstance(child, discord.ui.Select)]
     assert len(selects) == 1
     assert {option.value for option in selects[0].options} == set(WALMART_SUBCOMMANDS)
-    assert len(selects[0].options) == 18
+    assert len(selects[0].options) == 19
     buttons = [child for child in view.children if isinstance(child, discord.ui.Button)]
     assert {button.label for button in buttons} == {"Check a deal", "Find deals", "Hunt"}
 
@@ -351,9 +354,9 @@ async def test_dm_deals_enable_with_nothing_typed_says_already_enabled() -> None
 
 
 def test_every_delegate_target_is_a_loaded_cog_with_its_method() -> None:
-    """Regression: check/find/cash delegated to DealScannerCog, which the
-    live bot never loads (bot.py only adds VerifiedDealScannerCog), so all
-    three failed at call time with "isn't loaded right now". Every delegate
+    """Regression: check/find delegated to DealScannerCog, which the
+    live bot never loads (bot.py only adds VerifiedDealScannerCog), so both
+    failed at call time with "isn't loaded right now". Every delegate
     target must be a cog bot.py actually adds, and must carry its method —
     inherited methods count, since check_deal lives on the base class."""
 

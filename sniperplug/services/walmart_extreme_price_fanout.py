@@ -754,7 +754,9 @@ async def _deliver_extreme_card_to_dm_subscribers(
     caps, and diversity gate, so a lead is DM'd at most once per subscriber.
 
     Best-effort by design: a DM failure never blocks the public lane or the
-    cursor — the caller runs this after the public post succeeds.
+    cursor. The caller runs this after the public post succeeds — or, when
+    no guild opted into the public lane, on its own: the DM opt-in is
+    sufficient for DM delivery and the public opt-in gates only public posts.
     """
 
     totals = {
@@ -863,6 +865,10 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
     no ``exact_current_cents`` value and is selected on status alone. The
     card labels the price as page-observed, not API-verified, and never
     claims a discount.
+
+    The public lane is opt-in per guild, but that opt-in gates only public
+    posting. When no guild opted in, eligible leads are still DM'd to
+    subscribers who opted into DMs — a DM opt-in is sufficient on its own.
     """
     db = getattr(bot, "db", None)
     if db is None or _LOCK.locked():
@@ -886,22 +892,12 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
             f"SELECT guild_id FROM {SETTINGS_TABLE} WHERE enabled = 1"
         )
         opted_ids = {str(_row_get(row, "guild_id", 0)) for row in await opted_cursor.fetchall()}
-        # Almost all servers keep this optional lane disabled. Never run the
-        # full live-guild reconciliation on every 20-second worker cycle.
-        if not opted_ids:
-            return {
-                "examined": 0,
-                "eligible": 0,
-                "posted": 0,
-                "dm_preferences_checked": 0,
-                "dm_matches": 0,
-                "dm_sent": 0,
-                "dm_skipped_duplicate": 0,
-                "dm_skipped_daily_cap": 0,
-                "dm_skipped_diversity": 0,
-                "dm_disabled": 0,
-                "dm_errors": 0,
-            }
+        # The public extreme lane is opt-in per guild, but it gates only
+        # public posting — never DMs. A user who opted into DMs in a guild
+        # that never opted into the public lane still gets the lead below,
+        # so this function must NOT return early when no guild opted in.
+        # Live-guild reconciliation still stays lazy: it only runs when an
+        # eligible card exists (see the loop), not on every 20-second cycle.
         cursor = await conn.execute(
             f"SELECT last_verified_at, last_item_id FROM {STATE_TABLE} WHERE state_key = 'walmart'"
         )
@@ -972,10 +968,11 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                         for guild in live.guilds
                         if snowflake_text(guild.guild_id) in opted_ids
                     ]
-                if not enabled:
-                    # Replaying pending tickets may also return an empty live
-                    # guild set. Never let that cached empty result bypass the
-                    # no-recipient guard or advance the shared cursor.
+                if not enabled and opted_ids:
+                    # Opted-in guilds exist but none are live in Discord's
+                    # cache right now. Never let that cached empty result
+                    # bypass the no-recipient guard or advance the shared
+                    # cursor: the public post is retried next cycle.
                     log.warning(
                         "Walmart extreme-price eligible item has no currently "
                         "live opted-in destination; cursor retained item=%s "
@@ -983,48 +980,59 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                         item_id, len(opted_ids),
                     )
                     break
-                # Persist a bounded, expiring ticket for opted-in guilds that
-                # were absent from reconciliation before acknowledging the
-                # global cursor after any live destination receives this item.
-                missing = opted_ids - {snowflake_text(gid) for gid in enabled}
-                if missing:
-                    await _record_missing_guild_deliveries(
-                        conn,
-                        missing_guild_ids=missing,
-                        item_id=item_id,
-                        verified_at=verified_at,
-                        snapshot_json=snapshot,
-                    )
-                for guild_id in enabled:
-                    result = await maybe_post_public_deal_cards(
-                        bot=bot,
-                        guild_id=guild_id,
-                        cards=[card],
-                        source_label="walmart_extreme_exact_price",
-                        fallback_retailer="walmart",
-                        allow_verified_extreme=True,
-                    )
-                    posted += result.posted
-                    if delivery_requires_retry(result):
-                        # Failed posts remain eligible next cycle. Existing durable
-                        # receipts prevent double delivery to successful guilds.
-                        log.error(
-                            "Walmart extreme-price delivery failed guild=%s item=%s errors=%s",
-                            guild_id, item_id, result.errors,
+                if enabled:
+                    # Persist a bounded, expiring ticket for opted-in guilds that
+                    # were absent from reconciliation before acknowledging the
+                    # global cursor after any live destination receives this item.
+                    missing = opted_ids - {snowflake_text(gid) for gid in enabled}
+                    if missing:
+                        await _record_missing_guild_deliveries(
+                            conn,
+                            missing_guild_ids=missing,
+                            item_id=item_id,
+                            verified_at=verified_at,
+                            snapshot_json=snapshot,
                         )
-                        break
-                else:
-                    # Public post succeeded; the card is now safe to match
-                    # for personal DMs (matching badges the shared card title,
-                    # so it must never run before the public post).
-                    dm_totals.update(
-                        await _deliver_extreme_card_to_dm_subscribers(
-                            bot, db, card
+                    for guild_id in enabled:
+                        result = await maybe_post_public_deal_cards(
+                            bot=bot,
+                            guild_id=guild_id,
+                            cards=[card],
+                            source_label="walmart_extreme_exact_price",
+                            fallback_retailer="walmart",
+                            allow_verified_extreme=True,
                         )
-                    )
-                    next_cursor = (verified_at, item_id)
-                    continue
-                break
+                        posted += result.posted
+                        if delivery_requires_retry(result):
+                            # Failed posts remain eligible next cycle. Existing durable
+                            # receipts prevent double delivery to successful guilds.
+                            log.error(
+                                "Walmart extreme-price delivery failed guild=%s item=%s errors=%s",
+                                guild_id, item_id, result.errors,
+                            )
+                            break
+                    else:
+                        # Public post succeeded; the card is now safe to match
+                        # for personal DMs (matching badges the shared card title,
+                        # so it must never run before the public post).
+                        dm_totals.update(
+                            await _deliver_extreme_card_to_dm_subscribers(
+                                bot, db, card
+                            )
+                        )
+                        next_cursor = (verified_at, item_id)
+                        continue
+                    break
+                # No guild opted into the public lane: there is no public
+                # post to wait for, so the DM opt-in alone is sufficient.
+                # The lead is still DM'd only to subscribers with explicit
+                # product/brand intent, under the same dedupe and daily
+                # caps as the public-lane DM pass.
+                dm_totals.update(
+                    await _deliver_extreme_card_to_dm_subscribers(bot, db, card)
+                )
+                next_cursor = (verified_at, item_id)
+                continue
             next_cursor = (verified_at, item_id)
         if next_cursor != previous:
             await conn.execute(

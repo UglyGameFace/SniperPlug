@@ -55,7 +55,16 @@ class SerpApiHomeDepotProvider(DealProvider):
 
     async def healthcheck(self) -> ProviderHealth:
         if not self.config.configured:
-            return ProviderHealth(provider_key=self.provider_key, ok=False, status=ProviderStatus.DISABLED, message="SerpApi Home Depot search disabled: set SERPAPI_API_KEY.")
+            return ProviderHealth(
+                provider_key=self.provider_key,
+                ok=False,
+                status=ProviderStatus.DISABLED,
+                message=(
+                    "Home Depot search is not available: the server owner has not set "
+                    "SERPAPI_API_KEY. Set it to enable Home Depot search, penny hunt, "
+                    "and stock checks. Nothing was searched and no SerpApi credit was spent."
+                ),
+            )
         return ProviderHealth(provider_key=self.provider_key, ok=True, status=ProviderStatus.READY, message="Ready: SerpApi Home Depot search is configured.")
 
     async def scan(self, request: ProviderScanRequest) -> ProviderScanResult:

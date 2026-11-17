@@ -17,7 +17,6 @@ def test_command_catalog_has_canonical_core_commands():
         "/walmart find",
         "/walmart hunt",
         "/walmart discover",
-        "/walmart cash",
         "/walmart my-alerts",
         "/walmart categories",
         "/walmart threshold",

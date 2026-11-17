@@ -26,6 +26,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
 from sniperplug.cogs.auto_discovery import DISCOVERY_COVERAGE_CHOICES
 from sniperplug.cogs.dm_deal_alerts import ACTION_CHOICES, MODE_CHOICES
 from sniperplug.services.public_posting import SUPPORTED_RETAILERS
@@ -41,7 +42,7 @@ _RETAILER_LABELS = {"hp": "HP", "bestbuy": "Best Buy"}
 # the command moved here); every other entry is a Command object whose
 # ``.callback`` is the handler.
 #
-# check/find/cash resolve through VerifiedDealScannerCog, NOT DealScannerCog:
+# check/find resolve through VerifiedDealScannerCog, NOT DealScannerCog:
 # the live bot only adds the verified subclass (bot.py), so naming the base
 # class makes get_cog return None and every call fails with "isn't loaded
 # right now". The methods are inherited unchanged from the base class.
@@ -49,8 +50,13 @@ _DELEGATES: dict[str, tuple[str, str]] = {
     "check": ("VerifiedDealScannerCog", "check_deal"),
     "find": ("VerifiedDealScannerCog", "deals"),
     "hunt": ("VerifiedDealScannerCog", "hunt"),
-    "cash": ("VerifiedDealScannerCog", "walmart_cash"),
     "discover": ("AutoDiscoveryCog", "discover"),
+    # scan-now resolves by loaded instance, NOT by the cog name below: three
+    # modules each define a class literally named AutoScanRunnerCog (legacy,
+    # native/resilient, global) and only the global one is loaded, so a
+    # name lookup breaks silently the moment the global class is renamed.
+    # _delegate resolves it by module instead (see _SCAN_NOW_RUNNER_MODULE);
+    # the name here is kept only for the static delegate audit.
     "scan-now": ("AutoScanRunnerCog", "autoscan_now"),
     "health": ("CanonicalPublicAlertsCog", "autoscan_health"),
     "threshold": ("CanonicalSettingsCog", "deal_threshold"),
@@ -64,10 +70,26 @@ _DELEGATES: dict[str, tuple[str, str]] = {
     "active": ("ActiveDealsCog", "active_deals"),
     "history": ("ActiveDealHistoryCog", "active_deal_history"),
     "setup": ("CanonicalWorkflowCog", "setup_sniperplug_here"),
+    # Restored diagnostics (audit SS3 item 12): walmart_api_probe lives on
+    # DealScannerCog and is inherited by the loaded VerifiedDealScannerCog.
+    "probe": ("VerifiedDealScannerCog", "walmart_api_probe"),
 }
 
-# The 18 functions, in subcommand order (the 19th subcommand is the menu).
-WALMART_SUBCOMMANDS: tuple[str, ...] = tuple(_DELEGATES)
+# scan-now resolves by loaded instance, not by cog name (see the note on the
+# _DELEGATES entry above).
+_SCAN_NOW_RUNNER_MODULE = "sniperplug.cogs.global_auto_scan_runner"
+
+# Subcommands restored from never-loaded cogs, served by a locally held
+# instance instead of a bot-loaded cog: key -> (attribute on this cog,
+# method name). ActiveDealRecheckCog is never added to the live bot, so the
+# group holds its own instance; the cog has no listeners or cog_load, and
+# its handlers only need bot.db plus the provider registry.
+_LOCAL_DELEGATES: dict[str, tuple[str, str]] = {
+    "recheck": ("_recheck_cog", "active_deal_recheck"),
+}
+
+# The 19 functions, in subcommand order (the 20th subcommand is the menu).
+WALMART_SUBCOMMANDS: tuple[str, ...] = tuple(_DELEGATES) + tuple(_LOCAL_DELEGATES)
 
 # Subcommands the menu runs in place (no required input). Everything else
 # either opens a modal (check/find) or shows guidance with the exact
@@ -81,14 +103,14 @@ _MENU_RUN_IN_PLACE = frozenset(
         "feedback",
         "discover",
         "scan-now",
-        "cash",
         "active",
         "history",
         "setup",
+        "probe",
     }
 )
 _MENU_MODAL = frozenset({"check", "find"})
-_MENU_GUIDANCE = frozenset({"trace", "threshold", "extreme", "my-alerts", "feedback-reset"})
+_MENU_GUIDANCE = frozenset({"trace", "threshold", "extreme", "my-alerts", "feedback-reset", "recheck"})
 
 # Subcommands that require Manage Server (same gate as the old commands).
 # The menu enforces this itself before running one in place or opening a
@@ -108,6 +130,8 @@ _MENU_MANAGE_GUILD = frozenset(
         "history",
         "setup",
         "scan-now",
+        "recheck",
+        "probe",
     }
 )
 
@@ -117,6 +141,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._recheck_cog = ActiveDealRecheckCog(bot)
 
     # -- delegation ----------------------------------------------------
 
@@ -129,8 +154,17 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
     ) -> None:
         """Run the handler that used to own the old top-level command."""
 
-        cog_name, method_name = _DELEGATES[key]
-        cog = self.bot.get_cog(cog_name)
+        if key in _LOCAL_DELEGATES:
+            attr_name, method_name = _LOCAL_DELEGATES[key]
+            cog = getattr(self, attr_name)
+        elif key == "scan-now":
+            # Resolved by loaded instance, not by cog name: the class name
+            # AutoScanRunnerCog exists in three runner modules.
+            method_name = _DELEGATES[key][1]
+            cog = self._find_global_scan_runner()
+        else:
+            cog_name, method_name = _DELEGATES[key]
+            cog = self.bot.get_cog(cog_name)
         if cog is None:
             await self._send_error(
                 interaction,
@@ -150,6 +184,23 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
         else:
             # Plain method (deal_trace): call it directly.
             await command(interaction, *args, **kwargs)
+
+    def _find_global_scan_runner(self):
+        """The loaded global autoscan runner, found by module, not by the
+        class name it shares with the legacy/native/resilient runners."""
+
+        cogs = getattr(self.bot, "cogs", None) or {}
+        try:
+            candidates = list(cogs.values())
+        except AttributeError:
+            candidates = list(cogs)
+        for candidate in candidates:
+            if (
+                type(candidate).__module__ == _SCAN_NOW_RUNNER_MODULE
+                and hasattr(candidate, "autoscan_now")
+            ):
+                return candidate
+        return None
 
     @staticmethod
     async def _send_error(interaction: discord.Interaction, message: str) -> None:
@@ -206,25 +257,8 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
     async def hunt_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         # The live hunt override never had an error handler (the only one
         # was attached to the shadowed base command), so failures surfaced
-        # nowhere friendly. This one matches the deals/cash pattern.
+        # nowhere friendly. This one matches the deals pattern.
         await self._send_error(interaction, f"Deal hunt hit an error: `{self._type_only_error(error)}`")
-
-    @app_commands.command(name="cash", description="Find API-proven Walmart Cash offers. The Cash feed is currently unavailable.")
-    @app_commands.describe(
-        search="Cash search terms. The Cash feed is currently unavailable.",
-        max_results="Max results to inspect per route (max 5 shown). Cash feed is currently off.",
-    )
-    async def cash(
-        self,
-        interaction: discord.Interaction,
-        search: str = "walmart cash offers",
-        max_results: app_commands.Range[int, 3, 12] = 8,
-    ) -> None:
-        await self._delegate(interaction, "cash", search=search, max_results=max_results)
-
-    @cash.error
-    async def cash_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        await self._send_error(interaction, f"Walmart Cash search hit an error: `{self._type_only_error(error)}`")
 
     # -- discovery -----------------------------------------------------
 
@@ -270,6 +304,46 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
             "You need **Manage Server** permission to run a manual auto-scan."
             if isinstance(error, app_commands.MissingPermissions)
             else f"Manual auto-scan hit an error: `{self._type_only_error(error)}`"
+        )
+        await self._send_error(interaction, message)
+
+    # -- recheck & diagnostics (restored, audit SS3 item 12) -------------
+
+    @app_commands.command(name="recheck", description="Recheck one cached Walmart deal through the official item-detail provider.")
+    @app_commands.describe(search="Part of the cached title, Walmart URL, or exact active-cache key.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def recheck(self, interaction: discord.Interaction, search: str) -> None:
+        await self._delegate(interaction, "recheck", search=search)
+
+    @recheck.error
+    async def recheck_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = (
+            "You need **Manage Server** permission to recheck cached deals."
+            if isinstance(error, app_commands.MissingPermissions)
+            else f"Deal recheck hit an error: `{self._type_only_error(error)}`"
+        )
+        await self._send_error(interaction, message)
+
+    @app_commands.command(name="probe", description="Owner diagnostic: check Walmart API promo proof paths.")
+    @app_commands.describe(
+        query="Product/category to inspect. Example: detergent, personal care, baby.",
+        max_results="Small bounded probe size.",
+    )
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def probe(
+        self,
+        interaction: discord.Interaction,
+        query: str = "detergent",
+        max_results: app_commands.Range[int, 1, 8] = 3,
+    ) -> None:
+        await self._delegate(interaction, "probe", query=query, max_results=max_results)
+
+    @probe.error
+    async def probe_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        message = (
+            "You need **Manage Server** permission to run the Walmart API probe."
+            if isinstance(error, app_commands.MissingPermissions)
+            else f"Walmart API probe hit an error: `{self._type_only_error(error)}`"
         )
         await self._send_error(interaction, message)
 
@@ -373,7 +447,6 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
         unmute_categories="Restore personally muted categories, such as baby or toys.",
         flip_alerts="Allow exceptional price-error/resell alerts across category mutes.",
         flip_min_profit="Minimum conservative estimated net profit for a flip alert.",
-        walmart_cash_only="Only alert when strict Walmart API Cash proof is attached.",
         daily_cap="Daily DM limit: 1-100, or type unlimited for no cap.",
     )
     @app_commands.choices(action=ACTION_CHOICES, mode=MODE_CHOICES)
@@ -399,7 +472,6 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
         unmute_categories: app_commands.Range[str, 1, 300] | None = None,
         flip_alerts: bool | None = None,
         flip_min_profit: app_commands.Range[float, 10.0, 100000.0] | None = None,
-        walmart_cash_only: bool | None = None,
         daily_cap: app_commands.Range[str, 1, 12] | None = None,
     ) -> None:
         await self._delegate(
@@ -424,7 +496,6 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
             unmute_categories=unmute_categories,
             flip_alerts=flip_alerts,
             flip_min_profit=flip_min_profit,
-            walmart_cash_only=walmart_cash_only,
             daily_cap=daily_cap,
         )
 
@@ -638,9 +709,10 @@ MENU_FUNCTIONS: dict[str, tuple[str, str, str]] = {
     "check": ("Check a deal", "Check one link or item ID, even when search misses it.", "/walmart check link:<Walmart link or item ID>"),
     "find": ("Find deals", "Search Walmart deals by typing what you want.", "/walmart find search:<what you want>"),
     "hunt": ("Hunt deals", "Pick a category and hunt verified deals.", "/walmart hunt"),
-    "cash": ("Walmart Cash", "API-proven Cash offers only. Feed currently unavailable.", "/walmart cash"),
     "discover": ("Discover", "Run a broad catalog sweep (Quick, Deep, or Full).", "/walmart discover"),
     "scan-now": ("Scan now", "Run the Walmart auto-scan now and show why it did or did not post.", "/walmart scan-now"),
+    "recheck": ("Recheck a deal", "Recheck one cached Walmart deal through the official provider.", "/walmart recheck search:<title, URL, or cache key>"),
+    "probe": ("API probe", "Owner diagnostic: check Walmart API promo proof paths.", "/walmart probe"),
     "my-alerts": ("My alerts", "Your personal DM alerts: menu, filters, pause, delete.", "/walmart my-alerts action:Open personalization menu"),
     "setup": ("Setup", "Set (or move) this server's deal-alert channel.", "/walmart setup"),
     "threshold": ("Threshold", "Set the server's minimum markdown for public deals.", "/walmart threshold percent:35"),
@@ -656,19 +728,20 @@ MENU_FUNCTIONS: dict[str, tuple[str, str, str]] = {
 }
 
 MENU_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("🔍 Find deals", ("check", "find", "hunt", "cash", "discover", "scan-now")),
+    ("🔍 Find deals", ("check", "find", "hunt", "discover", "scan-now", "recheck")),
     ("🔔 Your alerts", ("my-alerts",)),
     ("🛠️ Server setup", ("setup", "threshold", "categories", "extreme")),
-    ("🏥 Health & history", ("health", "recovery", "active", "history", "trace", "feedback", "feedback-reset")),
+    ("🏥 Health & history", ("health", "recovery", "active", "history", "trace", "probe", "feedback", "feedback-reset")),
 )
 
 _MENU_EMOJIS = {
     "check": "🔍",
     "find": "🔎",
     "hunt": "🎯",
-    "cash": "💸",
     "discover": "🗺️",
     "scan-now": "▶️",
+    "recheck": "🔄",
+    "probe": "🧪",
     "my-alerts": "🔔",
     "setup": "🛠️",
     "threshold": "📊",

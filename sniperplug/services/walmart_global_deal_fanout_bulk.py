@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -20,6 +21,10 @@ from sniperplug.services.ghost_guild_tombstones import load_ghost_tombstones
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.public_deal_quality import walmart_item_id_from_url
 from sniperplug.services.deal_threshold_settings import get_starting_deal_percent
+from sniperplug.services.deal_feedback import (
+    apply_feedback_learning_to_cards,
+    ensure_deal_feedback_tables,
+)
 from sniperplug.services.dm_deal_alerts import (
     card_search_text,
     clear_dm_delivery_failures,
@@ -299,6 +304,18 @@ async def fanout_recent_exact_walmart_deals(
         )
         superseded = await _superseded_event_keys(db, claimed_events)
         preferences = await list_enabled_dm_deal_alert_preferences(db)
+        # Feedback learning is guild-scoped, so it is applied per guild at
+        # delivery time (below), not once for the shared card. The tables are
+        # ensured once here so the per-guild call does no DDL on the hot
+        # path; if that fails the run still delivers, just unadjusted.
+        feedback_ready = False
+        try:
+            await ensure_deal_feedback_tables(db)
+            feedback_ready = True
+        except Exception:  # noqa: BLE001 - feedback must never block delivery.
+            log.exception(
+                "Feedback-learning tables unavailable; fanout continues unadjusted"
+            )
         # One query for the whole batch: wishlist items ride the same DM
         # fanout as every other personal filter.
         wishlists = await list_wishlists_for_users(
@@ -349,10 +366,37 @@ async def fanout_recent_exact_walmart_deals(
                 threshold = 0
                 try:
                     threshold = await get_starting_deal_percent(db, guild_id)
+                    # Thumbs-up/down votes used to be theatre on this path:
+                    # feedback learning only ran in the legacy/native autoscan
+                    # cogs. Apply this guild's saved feedback to a private
+                    # copy of the card (the shared card must keep no other
+                    # guild's annotation) before posting. Read-only SELECTs;
+                    # no new DB writes, no cutoff or weight changes. A
+                    # failure here never blocks delivery.
+                    guild_card = copy.deepcopy(event.card)
+                    if feedback_ready:
+                        try:
+                            adjusted = await apply_feedback_learning_to_cards(
+                                db,
+                                guild_id=guild_id,
+                                cards=[guild_card],
+                                fallback_retailer="walmart",
+                                ensure_tables=False,
+                            )
+                            if adjusted:
+                                guild_card = adjusted[0]
+                        except Exception:  # noqa: BLE001 - post unadjusted.
+                            log.exception(
+                                "Feedback learning failed guild=%s deal=%s; "
+                                "posting unadjusted card",
+                                guild_id,
+                                event.deal_key,
+                            )
+                            guild_card = copy.deepcopy(event.card)
                     public_result = await maybe_post_public_deal_cards(
                         bot=bot,
                         guild_id=guild_id,
-                        cards=[event.card],
+                        cards=[guild_card],
                         source_label="global_catalog_autoscan:exact_verified",
                         fallback_retailer="walmart",
                         min_public_discount=int(threshold),

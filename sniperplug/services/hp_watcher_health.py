@@ -35,10 +35,11 @@ class HPWatcherHealth:
     def summary_line(self) -> str:
         if self.status == "not_started":
             return (
-                "HP watcher **not started** • standalone `SniperPlug-HP-Watcher` has not reported "
-                "a production cycle to the shared database • catalog "
+                "HP watcher **off by design** • the HP watcher is not enabled, so no "
+                "HP deals are scanned • catalog "
                 f"**{self.identified_products}/{self.products} identified**. "
-                "Start/deploy `hp_watcher_main.py` as the separate Discloud watcher using the same Turso DB."
+                "Nothing is misconfigured: HP scanning stays off until it is "
+                "deliberately enabled."
             )
         if self.status == "healthy" and self.stale:
             state = "stale"

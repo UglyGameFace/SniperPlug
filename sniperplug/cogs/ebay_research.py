@@ -200,7 +200,7 @@ class EbayResearchCog(commands.GroupCog, group_name="ebay", group_description="e
             "\n**Non-affiliate listing for review:** " + listings[0].asking_url +
             "\n" + DISCLOSURE +
             "\nSubscription: " + ("opted in" if opted_in else "not subscribed") +
-            "\nUnsubscribe with **/ebay consent** or the button below.",
+            "\nUnsubscribe with the button below.",
             view=EbayConsentView(bot=self.bot, user_id=int(interaction.user.id)),
             ephemeral=True,
         )

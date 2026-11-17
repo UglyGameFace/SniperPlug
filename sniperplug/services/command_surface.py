@@ -197,6 +197,7 @@ RETIRED_COMMAND_NAMES = frozenset(item.name for item in RETIRED_COMMANDS)
 # the official command guide may silently disappear during a future refactor.
 REQUIRED_CANONICAL_COMMANDS = frozenset(
     {
+        "menu",
         "walmart",
         "home_depot_search",
         "home_depot_penny_hunt",

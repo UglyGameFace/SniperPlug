@@ -38,6 +38,7 @@ from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
 from sniperplug.cogs.walmart_command import WalmartCommandCog
 from sniperplug.cogs.wishlist import WishlistCog
+from sniperplug.cogs.unified_menu import UnifiedMenuCog
 from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
@@ -195,6 +196,8 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(GlobalAutoScanRunnerCog(self))
         # Last: the /walmart group delegates to the cogs above at call time.
         await self.add_cog(WalmartCommandCog(self))
+        # The unified menu delegates to the same cogs; it opens after them.
+        await self.add_cog(UnifiedMenuCog(self))
 
         removed = prune_retired_commands(self.tree)
         self._command_surface_issues = command_surface_issues(self.tree.get_commands())

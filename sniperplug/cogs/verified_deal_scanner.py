@@ -14,11 +14,11 @@ from sniperplug.services.verified_discount_hunt import (
 
 
 class VerifiedDealScannerCog(UnifiedDealScannerCog):
-    """Deal scanner with `/deals`, advanced Walmart scan, and verified `/hunt` wired directly."""
+    """Deal scanner with `/walmart find`, advanced Walmart scan, and verified `/walmart hunt` wired directly."""
 
     @app_commands.command(name="hunt", description="Pick a Walmart category and let SniperPlug hunt verified deals.")
     async def hunt(self, interaction: discord.Interaction) -> None:
-        # Live /hunt: this override (not DealScannerCog.hunt) is the command
+        # Live /walmart hunt: this override (not DealScannerCog.hunt) is the command
         # Discord serves, so the scan lock lives here. The preset buttons
         # lock their own runs separately.
         lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hunt")

@@ -166,7 +166,7 @@ class CanonicalWorkflowCog(commands.Cog):
         )
         embed.add_field(
             name="Next check",
-            value="Run `/autoscan_health` to confirm live delivery and Target location health.",
+            value="Run `/walmart health` to confirm live delivery and Target location health.",
             inline=False,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -398,5 +398,5 @@ def missing_permissions_message(
         f"SniperPlug cannot post in {channel.mention} yet.\n\n"
         "Missing channel permissions:\n"
         + "\n".join(f"• {permission}" for permission in missing)
-        + "\n\nFix those permissions, then run `/setup_sniperplug_here` again in this channel."
+        + "\n\nFix those permissions, then run `/walmart setup` again in this channel."
     )

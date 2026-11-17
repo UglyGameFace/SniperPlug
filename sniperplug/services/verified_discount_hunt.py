@@ -595,7 +595,7 @@ def build_verified_hunt_menu_embed() -> discord.Embed:
         title="🚨 SniperPlug Walmart Hunt",
         description=(
             "Pick a category. Each button scans Walmart sale/result surfaces using your server's starting deal threshold.\n"
-            "Change it with `/deal_threshold percent:30`. Lower values show more verified results."
+            "Change it with `/walmart threshold percent:30`. Lower values show more verified results."
         ),
         color=discord.Color.red(),
     )
@@ -645,12 +645,12 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
     elif not result.cards:
         embed.add_field(
             name=f"No verified {result.min_discount}%+ API markdowns found",
-            value="Walmart did not return enough trusted markdown proof at this threshold. Lower it with `/deal_threshold percent:30` to show more verified results.",
+            value="Walmart did not return enough trusted markdown proof at this threshold. Lower it with `/walmart threshold percent:30` to show more verified results.",
             inline=False,
         )
     if result.warnings:
         embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
-    embed.set_footer(text="Change starting markdown with /deal_threshold. Review/flip/scout leads are private and require manual checkout/comp checks.")
+    embed.set_footer(text="Change starting markdown with /walmart threshold. Review/flip/scout leads are private and require manual checkout/comp checks.")
     return embed
 
 

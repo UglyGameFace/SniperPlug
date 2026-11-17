@@ -297,7 +297,7 @@ class PublicAlertsCog(commands.Cog):
         settings = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
         embed = discord.Embed(
             title="Retailer auto-scan updated",
-            description=f"`{key}` scheduled auto-scan is now **{'on' if enabled else 'off'}**.\nManual `/deals`, `/hunt`, and `/discover` are still allowed even when background auto-scan is off.",
+            description=f"`{key}` scheduled auto-scan is now **{'on' if enabled else 'off'}**.\nManual `/walmart find`, `/walmart hunt`, and `/walmart discover` are still allowed even when background auto-scan is off.",
             color=discord.Color.green() if enabled else discord.Color.orange(),
         )
         embed.add_field(name="Current auto-scan settings", value=format_auto_scan_status(settings), inline=False)
@@ -425,11 +425,11 @@ def public_alert_channel_missing_permissions(channel: discord.TextChannel, membe
 
 
 def public_alert_channel_missing_permissions_message(channel: discord.TextChannel, missing: list[str]) -> str:
-    return f"SniperPlug cannot post in {channel.mention} yet.\n\nMissing channel permissions:\n" + "\n".join(f"• {perm}" for perm in missing) + "\n\nGive the SniperPlug bot/role those permissions, then run `/setup_sniperplug_here` in that channel."
+    return f"SniperPlug cannot post in {channel.mention} yet.\n\nMissing channel permissions:\n" + "\n".join(f"• {perm}" for perm in missing) + "\n\nGive the SniperPlug bot/role those permissions, then run `/walmart setup` in that channel."
 
 
 def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None, auto_scan: dict[str, dict] | None = None, threshold: int | None = None) -> discord.Embed:
-    embed = discord.Embed(title="📣 Public Alert Settings", description="This is the simple view. Use `/setup_sniperplug_here` for one-step setup, `/deal_categories` for boost/mute categories, `/deal_threshold` to adjust markdown, and `/autoscan_health` to diagnose posting.", color=discord.Color.green() if enabled else discord.Color.dark_gold())
+    embed = discord.Embed(title="📣 Public Alert Settings", description="This is the simple view. Use `/walmart setup` for one-step setup, `/walmart categories` for boost/mute categories, `/walmart threshold` to adjust markdown, and `/walmart health` to diagnose posting.", color=discord.Color.green() if enabled else discord.Color.dark_gold())
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
     embed.add_field(name="Public stores", value=format_retailers(retailers), inline=True)
     embed.add_field(name="Channel", value=f"<#{channel_id}>" if channel_id else "not set", inline=True)
@@ -501,7 +501,7 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
             inline=False,
         )
     if last_run_has_route_error:
-        embed.add_field(name="🚨 Posting route problem", value="SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. SniperPlug now repairs saved routes automatically when a safe saved channel exists. If this still appears, run `/autoscan_health` and fix the exact channel/permission issue shown there.", inline=False)
+        embed.add_field(name="🚨 Posting route problem", value="SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. SniperPlug now repairs saved routes automatically when a safe saved channel exists. If this still appears, run `/walmart health` and fix the exact channel/permission issue shown there.", inline=False)
     embed.add_field(name=latest_decision_label, value=trim_field(latest_text, 1024), inline=False)
     embed.add_field(name="How to read this", value="Green requires the server to be in the scheduler's real live guild set. A manual `/autoscan_now` report is labeled separately and never counts as proof that the scheduled loop ran.", inline=False)
     return embed
@@ -509,16 +509,16 @@ async def build_autoscan_health_embed(bot: commands.Bot, guild_id: int) -> disco
 
 def public_alert_channel_status(bot: commands.Bot, guild_id: int, channel_id: int | str | None) -> str:
     if not channel_id:
-        return "⛔ No public channel saved. Run `/setup_sniperplug_here` only for first install, or fix the saved channel/permission issue shown by `/autoscan_health`."
+        return "⛔ No public channel saved. Run `/walmart setup` only for first install, or fix the saved channel/permission issue shown by `/walmart health`."
     guild = bot.get_guild(guild_id)
     if guild is None:
         return f"⛔ Bot is not connected to guild `{guild_id}` right now."
     decoded = decode_channel_id(channel_id)
     if decoded is None:
-        return f"⛔ Saved channel ID is invalid: `{channel_id}`. `/autoscan_health` will try to repair from the saved default route."
+        return f"⛔ Saved channel ID is invalid: `{channel_id}`. `/walmart health` will try to repair from the saved default route."
     channel = guild.get_channel(decoded)
     if channel is None:
-        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. `/autoscan_health` will try to repair from another saved route."
+        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. `/walmart health` will try to repair from another saved route."
     if not hasattr(channel, "send"):
         return f"⛔ Saved channel <#{decoded}> is not a sendable text channel."
     me = getattr(guild, "me", None)

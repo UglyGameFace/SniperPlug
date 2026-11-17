@@ -50,7 +50,16 @@ class ActiveDealHistoryCog(commands.Cog):
                 search=search,
                 limit=int(limit),
             )
-            await interaction.followup.send(embed=build_walmart_recheck_audit_embed(rows), ephemeral=True)
+            embed = build_walmart_recheck_audit_embed(rows)
+            if retailer:
+                # The recheck audit is Walmart-only, so a retailer filter
+                # cannot narrow it; say so instead of silently ignoring it.
+                embed.add_field(
+                    name="Retailer filter not applied",
+                    value=f"The recheck audit only covers Walmart, so `retailer:{retailer}` was ignored.",
+                    inline=False,
+                )
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         retailer_key = normalize_retailer_key(retailer) if retailer else None
@@ -121,7 +130,7 @@ def build_walmart_recheck_audit_embed(rows: list[dict[str, Any]]) -> discord.Emb
     if not rows:
         embed.add_field(
             name="No recheck attempts recorded yet",
-            value="Run `/active_deal_recheck` or `/active_deals_recheck` to create the first audited attempt.",
+            value="Run `/walmart active` and use its recheck controls to create the first audited attempt.",
             inline=False,
         )
         return embed

@@ -125,7 +125,7 @@ class CanonicalSettingsCog(commands.Cog):
             description=(
                 f"Public deal channel minimum: **{saved}%+ markdown**.\n\n"
                 "This controls this server's **public SniperPlug deal posts only**. "
-                "It does **not** change anyone's personal `/dm_deals` threshold.\n\n"
+                "It does **not** change anyone's personal `/walmart my-alerts` threshold.\n\n"
                 "The global catalog scanner still checks every configured route; this setting filters public delivery only."
             ),
             color=discord.Color.green(),
@@ -194,7 +194,7 @@ async def build_overview_dashboard(
             f"Channel: {f'<#{channel_id}>' if channel_id else '**not set**'}\n"
             f"Retailers: {format_retailers(public_config.get('retailers') or ())}\n"
             f"Public Deal Threshold: **{threshold}%+**\n"
-            "Personal `/dm_deals` thresholds: **separate per user**"
+            "Personal `/walmart my-alerts` thresholds: **separate per user**"
         ),
         inline=False,
     )
@@ -232,7 +232,7 @@ async def build_overview_dashboard(
         inline=False,
     )
     embed.set_footer(
-        text="Public autoscan and personal DM thresholds are separate. Use /autoscan_health for detailed public-delivery diagnosis."
+        text="Public autoscan and personal DM thresholds are separate. Use /walmart health for detailed public-delivery diagnosis."
     )
     return embed
 

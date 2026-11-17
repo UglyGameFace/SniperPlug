@@ -389,7 +389,7 @@ async def resolve_public_alert_channel(
                 return None, (
                     f"public channel lookup failed: saved route uses ghost guild `{guild_id}`, "
                     f"but saved channel <#{channel_id}> belongs to live guild `{fetched_guild_id}`. "
-                    "Run `/setup_sniperplug_here` inside the live public deals channel to repair the route."
+                    "Run `/walmart setup` inside the live public deals channel to repair the route."
                 )
         except Exception:
             pass
@@ -417,7 +417,7 @@ async def resolve_public_alert_channel(
 
     repaired = await find_named_public_channel(guild)
     if repaired is None:
-        return None, f"{fetch_error}. Run `/setup_sniperplug_here` inside the live public deals channel to save the correct route."
+        return None, f"{fetch_error}. Run `/walmart setup` inside the live public deals channel to save the correct route."
 
     permission_error = public_channel_permission_error(guild, repaired)
     if permission_error:

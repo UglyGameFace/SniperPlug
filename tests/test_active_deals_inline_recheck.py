@@ -30,7 +30,7 @@ def test_component_reloads_only_active_exact_walmart_rows():
     assert "retailer = 'walmart' AND status = 'active'" in SOURCE
     assert "active_key IN" in SOURCE
     assert "That cached Walmart row is no longer active" in SOURCE
-    assert "Refresh `/active_deals` before rechecking it" in SOURCE
+    assert "Refresh `/walmart active` before rechecking it" in SOURCE
 
 
 def test_active_page_query_includes_cache_identity():

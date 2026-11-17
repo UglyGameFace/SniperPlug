@@ -47,7 +47,7 @@ log = logging.getLogger(__name__)
 
 
 class UnifiedDealScannerCog(DealScannerCog):
-    """Deal scanner with the unified beginner `/deals` flow wired directly."""
+    """Deal scanner with the unified beginner `/walmart find` flow wired directly."""
 
     async def _send_walmart_scan(
         self,
@@ -242,7 +242,7 @@ class DealSearchModeView(discord.ui.View):
         if self.owner_id is not None and getattr(interaction.user, "id", None) != self.owner_id:
             await deal_scanner.safe_send_interaction(
                 interaction,
-                "Run your own `/deals` search to use these controls.",
+                "Run your own `/walmart find` search to use these controls.",
                 ephemeral=True,
             )
             return False
@@ -288,7 +288,7 @@ class DealSearchModeView(discord.ui.View):
         )
         await deal_scanner.safe_send_interaction(
             interaction,
-            "That result button hit an internal error. It was logged; run `/deals` again if the retry also fails.",
+            "That result button hit an internal error. It was logged; run `/walmart find` again if the retry also fails.",
             ephemeral=True,
         )
 
@@ -755,7 +755,7 @@ def build_deal_finder_summary(
 
     embed.set_footer(
         text=(
-            f"Cache hits: {cache_hits} • Change starting markdown with /deal_threshold • "
+            f"Cache hits: {cache_hits} • Change starting markdown with /walmart threshold • "
             "Fresh Scan spends another live pass."
         )
     )

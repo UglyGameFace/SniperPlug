@@ -134,12 +134,56 @@ class DmDealAlertsCog(commands.Cog):
         user_id = int(interaction.user.id)
         selected_action = str(action.value)
 
+        # Typed filters only apply to the enable/update action. If another
+        # action was picked with filters typed, say so instead of dropping
+        # them silently.
+        _typed_options: dict[str, object | None] = {
+            "mode": mode,
+            "min_discount": min_discount,
+            "max_price": max_price,
+            "min_score": min_score,
+            "min_savings": min_savings,
+            "categories": categories,
+            "favorite_categories": favorite_categories,
+            "unfavorite_categories": unfavorite_categories,
+            "product_interests": product_interests,
+            "remove_interests": remove_interests,
+            "brands": brands,
+            "remove_brands": remove_brands,
+            "keywords": keywords,
+            "exclude": exclude,
+            "mute_categories": mute_categories,
+            "unmute_categories": unmute_categories,
+            "flip_alerts": flip_alerts,
+            "flip_min_profit": flip_min_profit,
+            "walmart_cash_only": walmart_cash_only,
+            "daily_cap": daily_cap,
+        }
+        _ignored_options = sorted(
+            name for name, value in _typed_options.items() if value is not None
+        )
+        _ignored_note = (
+            "Note: "
+            + ", ".join(f"`{name}`" for name in _ignored_options)
+            + " only applies when action is Enable or update — it was ignored for this action."
+            if selected_action != "enable" and _ignored_options
+            else ""
+        )
+
+        def _with_ignored_note(embed: discord.Embed) -> discord.Embed:
+            if _ignored_note:
+                embed.add_field(name="Ignored options", value=_ignored_note, inline=False)
+            return embed
+
+        def _with_ignored_text(text: str) -> str:
+            return text + ("\n\n" + _ignored_note if _ignored_note else "")
+
         if selected_action == "delete":
             await delete_dm_deal_alert_preference(self.bot.db, user_id)
             await delete_dm_delivery_history(self.bot.db, user_id=user_id)
             clear_user_dm_delivery_telemetry(user_id)
             await interaction.followup.send(
-                "🗑️ Your SniperPlug DM alert settings and delivery receipts were deleted.",
+                _with_ignored_text("🗑️ Your SniperPlug DM alert settings and delivery receipts were deleted."),
                 ephemeral=True,
             )
             return
@@ -153,7 +197,7 @@ class DmDealAlertsCog(commands.Cog):
                 preference=preference,
             )
             await interaction.followup.send(
-                embed=view.build_embed(),
+                embed=_with_ignored_note(view.build_embed()),
                 view=view,
                 ephemeral=True,
             )
@@ -161,7 +205,7 @@ class DmDealAlertsCog(commands.Cog):
 
         if selected_action == "interests":
             await interaction.followup.send(
-                embed=build_product_interest_catalog_embed(preference),
+                embed=_with_ignored_note(build_product_interest_catalog_embed(preference)),
                 ephemeral=True,
             )
             return
@@ -177,7 +221,7 @@ class DmDealAlertsCog(commands.Cog):
                 telemetry=telemetry,
             )
             await interaction.followup.send(
-                embed=embed,
+                embed=_with_ignored_note(embed),
                 ephemeral=True,
             )
             return
@@ -188,9 +232,11 @@ class DmDealAlertsCog(commands.Cog):
                 replace(preference, enabled=False),
             )
             await interaction.followup.send(
-                embed=build_dm_settings_embed(
-                    saved,
-                    title="⏸️ Personal deal DMs paused",
+                embed=_with_ignored_note(
+                    build_dm_settings_embed(
+                        saved,
+                        title="⏸️ Personal deal DMs paused",
+                    )
                 ),
                 ephemeral=True,
             )
@@ -203,7 +249,7 @@ class DmDealAlertsCog(commands.Cog):
                 )
             except discord.Forbidden:
                 await interaction.followup.send(
-                    "I could not DM you. Allow direct messages from server members for a server we share, then run `/dm_deals action:Send a test DM` again.",
+                    "I could not DM you. Allow direct messages from server members for a server we share, then run `/walmart my-alerts action:Send a test DM` again.",
                     ephemeral=True,
                 )
                 return
@@ -214,8 +260,10 @@ class DmDealAlertsCog(commands.Cog):
                 )
                 return
             await interaction.followup.send(
-                "✅ Test DM delivered. Your alerts are still "
-                + ("enabled." if preference.enabled else "paused until you choose Enable or update alerts."),
+                _with_ignored_text(
+                    "✅ Test DM delivered. Your alerts are still "
+                    + ("enabled." if preference.enabled else "paused until you choose Enable or update alerts.")
+                ),
                 ephemeral=True,
             )
             return
@@ -241,7 +289,7 @@ class DmDealAlertsCog(commands.Cog):
             preview = ", ".join(f"`{value}`" for value in unknown_interests[:6])
             await interaction.followup.send(
                 "⚠️ I did not change your settings because I could not identify "
-                f"these specific product interests: {preview}. Run `/dm_deals "
+                f"these specific product interests: {preview}. Run `/walmart my-alerts "
                 "action:Show specific product catalog` to see accepted names.",
                 ephemeral=True,
             )
@@ -352,10 +400,17 @@ class DmDealAlertsCog(commands.Cog):
             return
 
         saved = await save_dm_deal_alert_preference(self.bot.db, updated)
+        # Enabling with nothing typed while already enabled changes nothing;
+        # say so instead of reporting a fresh enable.
+        enable_title = (
+            "✅ Personal exact-deal DMs already enabled — nothing changed"
+            if preference.enabled and not _ignored_options
+            else "✅ Personal exact-deal DMs enabled"
+        )
         await interaction.followup.send(
             embed=build_dm_settings_embed(
                 saved,
-                title="✅ Personal exact-deal DMs enabled",
+                title=enable_title,
             ),
             ephemeral=True,
         )
@@ -475,14 +530,14 @@ def build_dm_settings_embed(
             "multiple brands are **OR**. If you set both products and brands, a deal must match "
             "**one selected product AND one selected brand**. A selected deal route takes priority "
             "over these product/category filters; other hard limits stay enforced.\n"
-            "Run `/dm_deals action:Show specific product catalog` for the supported product profiles."
+            "Run `/walmart my-alerts action:Show specific product catalog` for the supported product profiles."
         ),
         inline=False,
     )
     embed.add_field(
         name="Open the complete menu",
         value=(
-            "Run `/dm_deals action:Open personalization menu` for the paginated, searchable "
+            "Run `/walmart my-alerts action:Open personalization menu` for the paginated, searchable "
             "deal route selector, products, categories and saved personal controls."
         ),
         inline=False,
@@ -545,7 +600,7 @@ def build_product_interest_catalog_embed(
     embed = discord.Embed(
         title="🎯 Specific personal DM products",
         description=(
-            "These are intentionally narrower than categories. Add them with `/dm_deals "
+            "These are intentionally narrower than categories. Add them with `/walmart my-alerts "
             "action:Enable or update with typed options product_interests:...` and optionally "
             "add `brands:...`.\n\n"
             f"**Selected products:** {selected_products}\n"
@@ -636,6 +691,6 @@ def build_enabled_dm_embed(preference: DmDealAlertPreference) -> discord.Embed:
         title="✅ SniperPlug personal deal alerts are ready",
     )
     embed.set_footer(
-        text="Use /dm_deals action:Open personalization menu or action:Pause alerts at any time."
+        text="Use /walmart my-alerts action:Open personalization menu or action:Pause alerts at any time."
     )
     return embed

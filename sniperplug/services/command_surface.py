@@ -16,7 +16,7 @@ class RetiredCommand:
 RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     RetiredCommand(
         "walmart_scan",
-        "/deals",
+        "/walmart find",
         "The unified deal finder already owns normal and advanced Walmart ranking.",
     ),
     RetiredCommand(
@@ -26,7 +26,7 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     ),
     RetiredCommand(
         "open_box_deals",
-        "/hunt",
+        "/walmart hunt",
         "Open-box/restored routes are part of Hunt and the global catalog autoscan.",
     ),
     RetiredCommand(
@@ -51,12 +51,12 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     ),
     RetiredCommand(
         "retailer_autoscan",
-        "/setup_sniperplug_here",
+        "/walmart setup",
         "Walmart discovery is global; per-server interval and daily scan gates are obsolete.",
     ),
     RetiredCommand(
         "retailer_autoscan_status",
-        "/autoscan_health",
+        "/walmart health",
         "Global catalog coverage and per-server delivery health are shown together.",
     ),
     RetiredCommand(
@@ -66,28 +66,115 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     ),
     RetiredCommand(
         "autoscan_clear_cache",
-        "/active_deals",
+        "/walmart active",
         "Destructive duplicate-memory clearing is no longer a routine user command.",
     ),
     RetiredCommand(
         "active_deal_recheck",
-        "/active_deals",
+        "/walmart active",
         "The Active Deals picker can recheck one exact Walmart item safely.",
     ),
     RetiredCommand(
         "active_deals_recheck",
-        "/active_deals",
+        "/walmart active",
         "The Active Deals page already includes a bounded batch recheck button.",
     ),
     RetiredCommand(
         "active_deals_cleanup",
-        "/active_deals",
+        "/walmart active",
         "Stale cache maintenance runs automatically when Active Deals is loaded.",
     ),
     RetiredCommand(
         "hd_penny_zip",
         "/home_depot_penny_hunt",
         "The targeted Home Depot penny command already accepts a ZIP and product query.",
+    ),
+    # Walmart commands folded into the /walmart group (2026-11-17). Each
+    # subcommand delegates to the same handler, so these are renames only.
+    RetiredCommand(
+        "check_deal",
+        "/walmart check",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "deals",
+        "/walmart find",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "hunt",
+        "/walmart hunt",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "walmart_cash",
+        "/walmart cash",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "discover",
+        "/walmart discover",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "autoscan_health",
+        "/walmart health",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "deal_threshold",
+        "/walmart threshold",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "deal_categories",
+        "/walmart categories",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "walmart_extreme_alerts",
+        "/walmart extreme",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "walmart_recovery",
+        "/walmart recovery",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "deal_trace",
+        "/walmart trace",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "dm_deals",
+        "/walmart my-alerts",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "feedback_learning_status",
+        "/walmart feedback",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "feedback_learning_reset",
+        "/walmart feedback-reset",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "active_deals",
+        "/walmart active",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "active_deal_history",
+        "/walmart history",
+        "One Walmart command now holds every Walmart function.",
+    ),
+    RetiredCommand(
+        "setup_sniperplug_here",
+        "/walmart setup",
+        "One Walmart command now holds every Walmart function.",
     ),
     # Historical/nonexistent catalog entries are listed so documentation tests
     # cannot accidentally advertise them again.
@@ -105,26 +192,15 @@ RETIRED_COMMAND_NAMES = frozenset(item.name for item in RETIRED_COMMANDS)
 # the official command guide may silently disappear during a future refactor.
 REQUIRED_CANONICAL_COMMANDS = frozenset(
     {
-        "deals",
-        "hunt",
-        "discover",
-        "walmart_cash",
-        "dm_deals",
+        "walmart",
         "home_depot_search",
         "home_depot_penny_hunt",
         "hd_stock",
         "local_check",
         "seed_clearance",
         "clearance_bank",
-        "setup_sniperplug_here",
         "sniperplug_dashboard",
-        "autoscan_health",
-        "walmart_recovery",
         "autoscan_now",
-        "deal_categories",
-        "deal_threshold",
-        "active_deals",
-        "active_deal_history",
         "sniperplug",
         "ebay",
     }

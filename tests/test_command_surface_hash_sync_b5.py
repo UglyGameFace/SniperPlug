@@ -3,8 +3,8 @@
 Covers the fingerprint (surface changes change it, cosmetic changes do not),
 the boot decision (first boot syncs, unchanged second boot skips, changed
 surface syncs once and persists, sync failure does not persist and retries,
-forced sync still works, invalid schema still blocks), and that /check_deal
-is in the loaded tree when all 20 canonical cogs load against a scratch
+forced sync still works, invalid schema still blocks), and that /walmart is in the loaded tree with its 18 subcommands (and none
+of the 17 folded names) when all canonical cogs load against a scratch
 SQLite DB (no live Discord connection).
 """
 
@@ -142,13 +142,33 @@ def _run(bot: _FakeBot) -> None:
 def _base_commands() -> list[_FakeCommand]:
     commands: list[_FakeCommand] = []
     for name in sorted(REQUIRED_CANONICAL_COMMANDS):
-        if name == "deals":
+        if name == "walmart":
             commands.append(
                 _FakeCommand(
-                    name="deals",
-                    description="Find deals",
-                    parameters=[
-                        _FakeParameter(name="query", description="Search text")
+                    name="walmart",
+                    description="Walmart deals, alerts, and server setup",
+                    commands=[
+                        _FakeCommand(name=sub, description=f"Walmart {sub}")
+                        for sub in (
+                            "check",
+                            "find",
+                            "hunt",
+                            "cash",
+                            "discover",
+                            "health",
+                            "threshold",
+                            "categories",
+                            "extreme",
+                            "recovery",
+                            "trace",
+                            "my-alerts",
+                            "feedback",
+                            "feedback-reset",
+                            "active",
+                            "history",
+                            "setup",
+                            "menu",
+                        )
                     ],
                 )
             )
@@ -162,8 +182,6 @@ def _base_commands() -> list[_FakeCommand]:
                     ],
                 )
             )
-        elif name == "hunt":
-            commands.append(_FakeCommand(name="hunt", description="Hunt verified deals"))
         else:
             commands.append(
                 _FakeCommand(name=name, description=f"Canonical {name} command")
@@ -200,11 +218,11 @@ def test_fingerprint_changes_when_command_added_removed_or_renamed() -> None:
     added.append(_FakeCommand(name="check_deal", description="Check one product"))
     assert command_surface_fingerprint(added) != base
 
-    removed = [command for command in _base_commands() if command.name != "hunt"]
+    removed = [command for command in _base_commands() if command.name != "walmart"]
     assert command_surface_fingerprint(removed) != base
 
     renamed = _replace(
-        _base_commands(), "hunt", _FakeCommand(name="hunt2", description="Hunt verified deals")
+        _base_commands(), "walmart", _FakeCommand(name="walmart2", description="Walmart deals, alerts, and server setup")
     )
     assert command_surface_fingerprint(renamed) != base
 
@@ -229,28 +247,28 @@ def test_fingerprint_changes_when_subcommand_changes() -> None:
 def test_fingerprint_changes_when_parameter_changes() -> None:
     base = command_surface_fingerprint(_base_commands())
 
-    def with_deals_parameter(parameter: _FakeParameter) -> list[_FakeCommand]:
+    def with_dashboard_parameter(parameter: _FakeParameter) -> list[_FakeCommand]:
         return _replace(
             _base_commands(),
-            "deals",
+            "sniperplug_dashboard",
             _FakeCommand(
-                name="deals",
-                description="Find deals",
+                name="sniperplug_dashboard",
+                description="Canonical sniperplug_dashboard command",
                 parameters=[parameter],
             ),
         )
 
     assert command_surface_fingerprint(
-        with_deals_parameter(_FakeParameter(name="query", description="Search text", required=False))
+        with_dashboard_parameter(_FakeParameter(name="query", description="Search text", required=False))
     ) != base
     assert command_surface_fingerprint(
-        with_deals_parameter(_FakeParameter(name="terms", description="Search text"))
+        with_dashboard_parameter(_FakeParameter(name="terms", description="Search text"))
     ) != base
     assert command_surface_fingerprint(
-        with_deals_parameter(_FakeParameter(name="query", description="Different text"))
+        with_dashboard_parameter(_FakeParameter(name="query", description="Different text"))
     ) != base
     assert command_surface_fingerprint(
-        with_deals_parameter(
+        with_dashboard_parameter(
             _FakeParameter(
                 name="query",
                 description="Search text",
@@ -259,7 +277,7 @@ def test_fingerprint_changes_when_parameter_changes() -> None:
         )
     ) != base
     assert command_surface_fingerprint(
-        with_deals_parameter(
+        with_dashboard_parameter(
             _FakeParameter(name="query", description="Search text", min_value=1, max_value=10)
         )
     ) != base
@@ -284,7 +302,7 @@ def test_fingerprint_ignores_cosmetic_only_changes() -> None:
                 description=command.description,
                 parameters=list(command.parameters),
                 commands=list(command.commands),
-                callback=_handler_b if command.name != "deals" else _handler_a,
+                callback=_handler_b if command.name != "walmart" else _handler_a,
                 __doc__="A completely rewritten docstring",
             )
         )
@@ -293,8 +311,8 @@ def test_fingerprint_ignores_cosmetic_only_changes() -> None:
     # A description-only change is NOT cosmetic: Discord registers it.
     changed_description = _replace(
         _base_commands(),
-        "hunt",
-        _FakeCommand(name="hunt", description="Hunt deals now"),
+        "walmart",
+        _FakeCommand(name="walmart", description="Walmart deals now"),
     )
     assert command_surface_fingerprint(changed_description) != base
 
@@ -353,7 +371,7 @@ def test_changed_hash_syncs_once_and_persists_new_hash(
     assert tree.sync_calls == [None]
 
     tree._commands.append(
-        _FakeCommand(name="check_deal", description="Check one product")
+        _FakeCommand(name="walmart_probe", description="Probe one product")
     )
     _run(bot)
 
@@ -437,13 +455,15 @@ def test_guild_sync_failure_does_not_persist(
 
 
 @pytest.mark.asyncio
-async def test_check_deal_present_in_loaded_command_tree_and_hash_syncs_once(
+async def test_walmart_group_present_in_loaded_command_tree_and_hash_syncs_once(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Load all 20 canonical cogs against a scratch SQLite DB, no Discord.
+    """Load all canonical cogs against a scratch SQLite DB, no Discord.
 
-    Background @tasks.loop cogs log wait_until_ready errors offline; those
-    are expected noise here, not setup failures.
+    The 17 folded Walmart commands must be gone from the loaded tree and
+    replaced by the /walmart group with its 18 subcommands. Background
+    @tasks.loop cogs log wait_until_ready errors offline; those are expected
+    noise here, not setup failures.
     """
 
     monkeypatch.delenv("CLEAR_STALE_GLOBAL_COMMANDS_ON_BOOT", raising=False)
@@ -466,10 +486,49 @@ async def test_check_deal_present_in_loaded_command_tree_and_hash_syncs_once(
         await bot.setup_hook()
 
         names = {command.name for command in bot.tree.get_commands()}
-        assert "check_deal" in names
-        assert "deals" in names
-        assert "hunt" in names
-        assert len(names) >= 20
+        assert "walmart" in names
+        walmart_group = bot.tree.get_command("walmart")
+        assert walmart_group is not None
+        assert {command.name for command in walmart_group.commands} == {
+            "check",
+            "find",
+            "hunt",
+            "cash",
+            "discover",
+            "health",
+            "threshold",
+            "categories",
+            "extreme",
+            "recovery",
+            "trace",
+            "my-alerts",
+            "feedback",
+            "feedback-reset",
+            "active",
+            "history",
+            "setup",
+            "menu",
+        }
+        assert not {
+            "check_deal",
+            "deals",
+            "hunt",
+            "walmart_cash",
+            "discover",
+            "autoscan_health",
+            "deal_threshold",
+            "deal_categories",
+            "walmart_extreme_alerts",
+            "walmart_recovery",
+            "deal_trace",
+            "dm_deals",
+            "feedback_learning_status",
+            "feedback_learning_reset",
+            "active_deals",
+            "active_deal_history",
+            "setup_sniperplug_here",
+        }.intersection(names)
+        assert len(names) >= 10
 
         # First boot with no stored hash syncs once and persists the hash.
         assert sync_scopes == ["global commands"]
@@ -500,7 +559,7 @@ async def test_check_deal_present_in_loaded_command_tree_and_hash_syncs_once(
     try:
         await bot2.setup_hook()
         assert sync_scopes2 == []
-        assert "check_deal" in {
+        assert "walmart" in {
             command.name for command in bot2.tree.get_commands()
         }
     finally:

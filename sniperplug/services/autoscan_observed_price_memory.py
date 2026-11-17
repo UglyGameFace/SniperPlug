@@ -124,7 +124,7 @@ def select_current_search_queue_candidates(
 
     The global queue is shared across autoscan and manual discovery. A verified
     snapshot from another route/job may be useful to global fanout, but it must
-    not become a result card for a different `/discover` or category scan.
+    not become a result card for a different `/walmart discover` or category scan.
     """
     selected: list[Any] = []
     for candidate in candidates:

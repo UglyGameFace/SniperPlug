@@ -54,10 +54,10 @@ class AutoScanRunnerCog(legacy.AutoScanRunnerCog):
                     await self._safe_autoscan_followup(interaction, "SniperPlug could not safely repair posting setup. " + repair.discord_line())
                     return
                 if not config.get("enabled") or not config.get("channel_id"):
-                    await self._safe_autoscan_followup(interaction, "Public alerts are missing. Run `/autoscan_health` for the exact blocker.")
+                    await self._safe_autoscan_followup(interaction, "Public alerts are missing. Run `/walmart health` for the exact blocker.")
                     return
                 if legacy.AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):
-                    await self._safe_autoscan_followup(interaction, "Walmart is not enabled for public alerts in this server. Run `/autoscan_health`.")
+                    await self._safe_autoscan_followup(interaction, "Walmart is not enabled for public alerts in this server. Run `/walmart health`.")
                     return
 
                 progress_task = asyncio.create_task(self._autoscan_progress_notice(interaction))

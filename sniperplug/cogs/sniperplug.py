@@ -147,9 +147,9 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         embed.set_footer(text="SniperPlug preview • verify checkout price, stock, shipping, and account eligibility before posting")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="deal_trace", description="Read-only evidence trace for one exact Walmart item.")
-    @app_commands.describe(item_id="Numeric Walmart item ID from the product link; no full URL needed.")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    # No slash decorator: this moved to /walmart trace (cogs/walmart_command).
+    # It stays a plain method so the Walmart group can delegate to it, and so
+    # the /walmart trace permission check lives on the subcommand itself.
     async def deal_trace(self, interaction: discord.Interaction, item_id: str) -> None:
         if interaction.guild_id is None:
             await interaction.response.send_message(
@@ -564,7 +564,6 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
     @snipe_plan.error
     @monitor_plan.error
     @provider_scan.error
-    @deal_trace.error
     async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             message = "You need **Manage Server** permission to use this SniperPlug admin command."

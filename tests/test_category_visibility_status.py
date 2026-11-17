@@ -9,7 +9,7 @@ PUBLIC_ALERTS = Path("sniperplug/cogs/public_alerts.py").read_text(encoding="utf
 def test_category_summary_shows_empty_state():
     text = summarize_category_preferences({})
     assert "No category preferences saved yet" in text
-    assert "/deal_categories" in text
+    assert "/walmart categories" in text
 
 
 def test_category_summary_shows_priority_and_muted():
@@ -28,4 +28,4 @@ def test_status_and_health_show_category_preferences():
     assert "Current category settings" in PUBLIC_ALERTS
     assert 'name="Category preferences"' in PUBLIC_ALERTS
     assert "summarize_category_preferences" in PUBLIC_ALERTS
-    assert "/deal_categories" in PUBLIC_ALERTS
+    assert "/walmart categories" in PUBLIC_ALERTS

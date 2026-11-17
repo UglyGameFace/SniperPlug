@@ -25,7 +25,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Consecutive failed cycles before /autoscan_health flags the worker as
+# Consecutive failed cycles before /walmart health flags the worker as
 # needing attention. Env-overridable; 3 keeps a single transient provider
 # blip quiet while a stuck worker surfaces within about a minute.
 FAILURE_ALERT_THRESHOLD = _env_int(

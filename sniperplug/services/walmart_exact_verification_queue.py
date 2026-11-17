@@ -425,7 +425,7 @@ def parse_walmart_item_id(value: Any) -> str | None:
 
 @dataclass(frozen=True)
 class SingleExactVerification:
-    """Outcome of a one-item direct exact verification (see /check_deal)."""
+    """Outcome of a one-item direct exact verification (see /walmart check)."""
 
     item_id: str
     candidate: SourceCandidate | None = None

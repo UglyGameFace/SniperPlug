@@ -46,7 +46,7 @@ async def cached_provider_scan_or_run(
 ) -> ScanCacheOutcome:
     """Use DB-backed route cache for exact provider scan requests.
 
-    This cache is intentionally short-lived. It speeds up repeated `/deals` runs
+    This cache is intentionally short-lived. It speeds up repeated `/walmart find` runs
     and button refreshes without letting stale glitches hide for hours.
     Provider/auth failures are never trusted as cache hits and are never written
     back to cache, because that turns a real outage into fake empty scans.

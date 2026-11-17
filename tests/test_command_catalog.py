@@ -10,18 +10,18 @@ def test_command_catalog_has_canonical_core_commands():
     names = {entry.name for entry in COMMAND_CATALOG}
 
     for command in (
-        "/setup_sniperplug_here",
+        "/walmart setup",
         "/sniperplug_dashboard",
-        "/autoscan_health",
+        "/walmart health",
         "/autoscan_now",
-        "/deals",
-        "/hunt",
-        "/discover",
-        "/walmart_cash",
-        "/dm_deals",
-        "/deal_categories",
-        "/deal_threshold",
-        "/active_deals",
+        "/walmart find",
+        "/walmart hunt",
+        "/walmart discover",
+        "/walmart cash",
+        "/walmart my-alerts",
+        "/walmart categories",
+        "/walmart threshold",
+        "/walmart active",
     ):
         assert command in names
 
@@ -31,11 +31,11 @@ def test_command_catalog_has_canonical_core_commands():
 def test_entries_for_audience_filters_owner_commands():
     names = {entry.name for entry in entries_for_audience("owner")}
 
-    assert "/setup_sniperplug_here" in names
+    assert "/walmart setup" in names
     assert "/sniperplug_dashboard" in names
-    assert "/autoscan_health" in names
-    assert "/deals" not in names
-    assert "/dm_deals" not in names
+    assert "/walmart health" in names
+    assert "/walmart find" not in names
+    assert "/walmart my-alerts" not in names
 
 
 def test_command_catalog_excludes_removed_duplicate_commands():
@@ -54,5 +54,23 @@ def test_command_catalog_excludes_removed_duplicate_commands():
         "/active_deal_recheck",
         "/active_deals_recheck",
         "/active_deals_cleanup",
+        # The 17 Walmart commands folded into the /walmart group.
+        "/check_deal",
+        "/deals",
+        "/hunt",
+        "/walmart_cash",
+        "/discover",
+        "/autoscan_health",
+        "/deal_threshold",
+        "/deal_categories",
+        "/walmart_extreme_alerts",
+        "/walmart_recovery",
+        "/deal_trace",
+        "/dm_deals",
+        "/feedback_learning_status",
+        "/feedback_learning_reset",
+        "/active_deals",
+        "/active_deal_history",
+        "/setup_sniperplug_here",
     ):
         assert removed not in names

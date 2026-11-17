@@ -37,11 +37,11 @@ PRIORITY_SNIPER_QUERIES: tuple[str, ...] = (
     "graphics card",
 )
 
-# Priority cadence defaults: one priority search every 5 batches at the fixed
-# 60s/batch rate is 12/hour. Both knobs are env-overridable; a bad value
+# Priority cadence defaults: one priority search every 3 batches at the fixed
+# 60s/batch rate is 20/hour. Both knobs are env-overridable; a bad value
 # fails safe to the default instead of disabling the cap or the slot.
-_DEFAULT_PRIORITY_EVERY_N_BATCHES = 5
-_DEFAULT_PRIORITY_MAX_PER_HOUR = 12
+_DEFAULT_PRIORITY_EVERY_N_BATCHES = 3
+_DEFAULT_PRIORITY_MAX_PER_HOUR = 20
 
 
 def _priority_env_int(name: str, default: int) -> int:

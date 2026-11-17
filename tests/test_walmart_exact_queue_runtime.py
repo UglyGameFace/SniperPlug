@@ -9,9 +9,11 @@ import aiosqlite
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider, WalmartProviderError
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
+from sniperplug.services.walmart_exact_queue_bulk_runtime import (
+    process_actionable_walmart_exact_queue_batch,
+)
 from sniperplug.services.walmart_exact_queue_runtime import (
     maintain_terminal_identity_rows,
-    process_actionable_walmart_exact_queue_batch,
 )
 from sniperplug.services.walmart_exact_verification_queue import (
     PAGE_RETRY_STATUS,
@@ -212,6 +214,13 @@ def test_missing_seller_is_terminal_and_does_not_consume_future_batches() -> Non
         )
         await conn.commit()
 
+        # The live batch path runs terminal maintenance through a 15-minute
+        # cadence guard, so the immediate second run reports no maintenance
+        # work. Run the same maintenance function directly to prove the
+        # terminal row is quarantined, then prove the next batch skips it.
+        quarantined = await maintain_terminal_identity_rows(db)
+        assert quarantined.quarantined == 1
+
         second = await process_actionable_walmart_exact_queue_batch(
             db,
             provider=provider,
@@ -220,7 +229,6 @@ def test_missing_seller_is_terminal_and_does_not_consume_future_batches() -> Non
             min_discount=50,
         )
         assert second.claimed == 0
-        assert second.terminal_quarantined == 1
         assert provider.calls == ["777777"]
 
         cursor = await conn.execute(

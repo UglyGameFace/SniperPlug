@@ -19,6 +19,11 @@ BOT = (ROOT / "sniperplug/bot.py").read_text(encoding="utf-8")
 FANOUT = (ROOT / "sniperplug/services/walmart_global_deal_fanout.py").read_text(
     encoding="utf-8"
 )
+# The live fanout path is the bulk module; the legacy module keeps only the
+# shared schema, tables, lock, and card/DM helpers it depends on.
+BULK_FANOUT = (ROOT / "sniperplug/services/walmart_global_deal_fanout_bulk.py").read_text(
+    encoding="utf-8"
+)
 DELIVERY_POLICY = (ROOT / "sniperplug/services/dm_delivery_policy.py").read_text(
     encoding="utf-8"
 )
@@ -67,17 +72,17 @@ def test_fanout_events_use_durable_cross_process_leases() -> None:
     assert "claim_token TEXT NOT NULL DEFAULT ''" in FANOUT
     assert "lease_until TEXT" in FANOUT
     assert "EVENT_LEASE_SECONDS" in FANOUT
-    assert "async def _claim_pending_events" in FANOUT
-    assert "AND (lease_until IS NULL OR lease_until <= ?)" in FANOUT
-    assert "WHERE deal_key = ? AND claim_token = ?" in FANOUT
-    assert "uuid.uuid4().hex" in FANOUT
+    assert "async def _claim_pending_events_bulk" in BULK_FANOUT
+    assert "AND (lease_until IS NULL OR lease_until <= ?)" in BULK_FANOUT
+    assert "AND target.claim_token = finalized.claim_token" in BULK_FANOUT
+    assert "uuid.uuid4().hex" in BULK_FANOUT
 
 
 def test_fanout_uses_watermark_and_durable_snapshots_without_starvation() -> None:
     assert "walmart_global_exact_deal_fanout_state" in FANOUT
     assert "last_verified_at" in FANOUT
     assert "last_item_id" in FANOUT
-    assert "ORDER BY verified_at ASC, item_id ASC" in FANOUT
+    assert "ORDER BY verified_at ASC, item_id ASC" in BULK_FANOUT
     assert "snapshot_json TEXT NOT NULL" in FANOUT
     assert "_candidate_from_snapshot" in FANOUT
 

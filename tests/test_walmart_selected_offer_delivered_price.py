@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
+from sniperplug.cogs.deal_scanner import build_walmart_cards
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest, ProviderScanResult
 from sniperplug.providers.walmart import WalmartAffiliateConfig, WalmartProvider
 from sniperplug.services.price_proof import verified_deal_value
-from sniperplug.services.walmart_card_renderer import (
-    build_walmart_cards,
-    price_lines,
-)
+from sniperplug.services.walmart_card_renderer import price_lines
 from sniperplug.services.walmart_exact_price_enrichment import (
     enrich_walmart_exact_prices,
     exact_detail_verified_candidates,

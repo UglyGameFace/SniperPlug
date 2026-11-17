@@ -12,4 +12,4 @@ def test_discover_auto_scan_status_says_manual_allowed():
     rendered = discover_auto_scan_status({"enabled": False, "interval_hours": 6, "daily_limit": 25})
 
     assert "Auto enabled: **no**" in rendered
-    assert "Manual `/discover`: **allowed**" in rendered
+    assert "Manual `/walmart discover`: **allowed**" in rendered

@@ -63,8 +63,8 @@ def interactive_query_routes(
 
     The exact user query gets two relevance pages plus price and bestseller
     coverage. Remaining route budget goes to the highest-priority expanded
-    queries on page one. This deliberately prevents `/deals` from behaving like
-    the deep `/discover` crawler.
+    queries on page one. This deliberately prevents `/walmart find` from behaving like
+    the deep `/walmart discover` crawler.
     """
     queries = [str(value or "").strip() for value in plan.queries if str(value or "").strip()]
     if not queries:

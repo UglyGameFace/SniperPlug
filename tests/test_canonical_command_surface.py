@@ -84,14 +84,8 @@ def test_command_catalog_only_advertises_canonical_commands() -> None:
     }
     assert not RETIRED_COMMAND_NAMES.intersection(advertised)
     assert {
-        "deals",
-        "hunt",
-        "discover",
-        "walmart_cash",
-        "dm_deals",
-        "setup_sniperplug_here",
+        "walmart",
         "sniperplug_dashboard",
-        "autoscan_health",
     }.issubset(advertised)
 
 

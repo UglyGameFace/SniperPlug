@@ -257,7 +257,7 @@ class AutoDiscoveryCog(commands.Cog):
 
         if interaction.guild_id is None:
             await interaction.followup.send(
-                "Use `/discover` in a server so SniperPlug can use that server's threshold, category, channel, and duplicate settings.",
+                "Use `/walmart discover` in a server so SniperPlug can use that server's threshold, category, channel, and duplicate settings.",
                 ephemeral=True,
             )
             return
@@ -271,7 +271,17 @@ class AutoDiscoveryCog(commands.Cog):
             getattr(getattr(interaction, "permissions", None), "manage_guild", False)
         ):
             await interaction.followup.send(
-                "The full-catalog sweep is owner/staff only. Use `coverage:Deep` for broad normal discovery.",
+                "The full-catalog sweep needs Manage Server permission. Use `coverage:Deep` for broad normal discovery.",
+                ephemeral=True,
+            )
+            return
+        if public_posts and not bool(
+            getattr(getattr(interaction, "permissions", None), "manage_guild", False)
+        ):
+            # Publishing to the public deal channel is a server-manager
+            # action; private Quick/Deep runs stay open to everyone.
+            await interaction.followup.send(
+                "Public posts need Manage Server permission. Run it again with `public_posts` off, or ask a server manager.",
                 ephemeral=True,
             )
             return
@@ -726,7 +736,7 @@ class AutoDiscoveryCog(commands.Cog):
         embed.set_footer(
             text=(
                 "Search finds item IDs; only official exact-detail seller/offer and price proof can create a deal card. "
-                "Use /deal_threshold to include smaller verified markdowns."
+                "Use /walmart threshold to include smaller verified markdowns."
             )
         )
         return embed
@@ -840,7 +850,7 @@ class AutoDiscoveryCog(commands.Cog):
 
     def _set_watchdog_phase(self, phase: str) -> None:
         # The autoscan watchdog lives in another cog. Updating its runtime phase
-        # prevents a long /discover job from being mislabeled as phase=idle.
+        # prevents a long /walmart discover job from being mislabeled as phase=idle.
         for cog in tuple(getattr(self.bot, "cogs", {}).values()):
             if hasattr(cog, "_event_loop_watchdog_task") and hasattr(cog, "_runtime_phase"):
                 setattr(cog, "_runtime_phase", str(phase or "idle"))
@@ -956,10 +966,10 @@ def batch_cards_for_embed_limit(
 def manual_discover_note(settings: dict) -> str:
     if not settings.get("enabled"):
         return (
-            f"Manual `/discover` override: `{AUTO_DISCOVERY_RETAILER}` auto-scan is off, but this manual command is allowed."
+            f"Manual `/walmart discover` override: `{AUTO_DISCOVERY_RETAILER}` auto-scan is off, but this manual command is allowed."
         )
     return (
-        f"Manual `/discover` run. `{AUTO_DISCOVERY_RETAILER}` auto-scan settings only gate scheduled/background pulls."
+        f"Manual `/walmart discover` run. `{AUTO_DISCOVERY_RETAILER}` auto-scan settings only gate scheduled/background pulls."
     )
 
 
@@ -979,5 +989,5 @@ def discover_auto_scan_status(settings: dict) -> str:
         f"Auto enabled: **{'yes' if settings.get('enabled') else 'no'}**\n"
         f"Interval: **{format_interval(interval_hours)}**\n"
         f"Daily limit: **{format_daily_limit(daily_limit)}**\n"
-        "Manual `/discover`: **allowed**"
+        "Manual `/walmart discover`: **allowed**"
     )

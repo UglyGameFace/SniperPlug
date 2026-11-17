@@ -178,7 +178,7 @@ class WalmartPageDealSelect(discord.ui.Select):
         rows = await load_active_walmart_rows_by_keys(db, interaction.guild_id, [active_key])
         if not rows:
             await interaction.followup.send(
-                "That cached Walmart row is no longer active. Refresh `/active_deals` before rechecking it.",
+                "That cached Walmart row is no longer active. Refresh `/walmart active` before rechecking it.",
                 ephemeral=True,
             )
             return
@@ -431,7 +431,7 @@ def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discor
     if not page_data.rows:
         embed.add_field(
             name="No recent observations matched",
-            value="Try lowering filters, changing page to 1, or run a fresh `/deals`, `/hunt`, or `/discover` scan.",
+            value="Try lowering filters, changing page to 1, or run a fresh `/walmart find`, `/walmart hunt`, or `/walmart discover` scan.",
             inline=False,
         )
         return embed

@@ -2,7 +2,7 @@
 
 Any ``walmart.com/ip`` link or bare Walmart item ID posted in the
 designated channel is auto-verified through ``verify_single_exact_item`` —
-the same exact path ``/check_deal`` uses. No new verification logic, no
+the same exact path ``/walmart check`` uses. No new verification logic, no
 gate/threshold changes.
 
 Guardrails (all cheap, all in this module):
@@ -246,7 +246,7 @@ class DealDropsIntakeCog(commands.Cog):
             except Exception as error:  # noqa: BLE001 - report, don't crash the listener.
                 log.exception("Deal-drops intake healthcheck failed: %s", error)
                 await self._reply(
-                    message, "Deal search is not ready yet. Try /check_deal later."
+                    message, "Deal search is not ready yet. Try /walmart check later."
                 )
                 return
             if health.status != ProviderStatus.READY:
@@ -290,12 +290,12 @@ class DealDropsIntakeCog(commands.Cog):
             lines.append(
                 f"⏭️ {len(rate_limited)} item(s) skipped "
                 f"(max {self.config.max_per_minute}/min in this channel — "
-                "use /check_deal)."
+                "use /walmart check)."
             )
         if overflow:
             lines.append(
                 f"⏭️ {len(overflow)} item(s) skipped "
-                f"(max {MAX_ITEMS_PER_MESSAGE} per message — use /check_deal)."
+                f"(max {MAX_ITEMS_PER_MESSAGE} per message — use /walmart check)."
             )
         if lines:
             await self._reply(message, "\n".join(lines))

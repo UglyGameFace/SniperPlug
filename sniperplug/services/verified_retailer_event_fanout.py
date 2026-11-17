@@ -348,7 +348,7 @@ def _personal_dm_embed(
     )
     value = (
         f"{reason}\n"
-        f"This came from your opt-in `/dm_deals` filter and was verified against the exact {retailer_label} structured offer. "
+        f"This came from your opt-in `/walmart my-alerts` filter and was verified against the exact {retailer_label} structured offer. "
         "Prices can change; recheck the product before buying."
     )
     if len(embed.fields) < 25:

@@ -183,7 +183,7 @@ class CanonicalPublicAlertsCog(commands.Cog):
         if enabled and not route_ready:
             message += (
                 "\nYour Walmart public alert channel is not fully configured yet. "
-                "Run /setup_sniperplug_here in the destination channel."
+                "Run /walmart setup in the destination channel."
             )
         await interaction.followup.send(message, ephemeral=True)
 
@@ -246,7 +246,7 @@ class WalmartRecoveryView(discord.ui.View):
         if int(interaction.user.id) == self.requester_id:
             return True
         await interaction.response.send_message(
-            "Open your own `/walmart_recovery` panel to use these controls.",
+            "Open your own `/walmart recovery` panel to use these controls.",
             ephemeral=True,
         )
         return False
@@ -785,7 +785,7 @@ async def build_global_autoscan_health_embed(
             "Optional, separate alerts for exact API offers at $10 or less on recognizable "
             "primary products, even without a verified original price. "
             "Not a claimed 40% markdown; check local checkout. "
-            "Use /walmart_extreme_alerts to change this setting.\n"
+            "Use /walmart extreme to change this setting.\n"
             f"{extreme_summary}"
         ),
         inline=False,
@@ -838,7 +838,7 @@ async def build_global_autoscan_health_embed(
             "A running catalog or exact queue does not guarantee a public post. "
             "A Walmart item posts only after exact item/offer/seller/variant proof, "
             f"the server's **{threshold}%+** threshold, category rules, and duplicate "
-            "guards all pass. Use `/walmart_recovery` to inspect and act on a specific "
+            "guards all pass. Use `/walmart recovery` to inspect and act on a specific "
             "no-post reason without weakening automatic delivery."
         ),
         inline=False,
@@ -909,7 +909,7 @@ def _next_action(
 ) -> str | None:
     if not public_route_ready or not selected_retailers:
         return (
-            "Run `/setup_sniperplug_here` in the exact channel that should receive "
+            "Run `/walmart setup` in the exact channel that should receive "
             "deals, then reopen this panel."
         )
     if quota_snapshot is not None and not quota_snapshot.allowed:
@@ -934,16 +934,16 @@ def _next_action(
     if "walmart" in selected_retailers and not walmart_delivery_ready:
         return (
             "Walmart is selected but is not enrolled in the live fanout set. "
-            "Run `/setup_sniperplug_here` once in the saved public channel."
+            "Run `/walmart setup` once in the saved public channel."
         )
     if delivery_health.eligible_without_post:
         return (
-            "Run `/walmart_recovery`. The audit found an exact event that currently "
+            "Run `/walmart recovery`. The audit found an exact event that currently "
             "passes the server rules without a durable public-post receipt."
         )
     if delivery_health.events_with_errors:
         return (
-            "Run `/walmart_recovery` to retry the affected event under current rules. "
+            "Run `/walmart recovery` to retry the affected event under current rules. "
             "The global fanout table contains a recent error."
         )
     if (
@@ -961,7 +961,7 @@ def _next_action(
         )
     if delivery_health.events_seen and not delivery_health.posted:
         return (
-            "Run `/walmart_recovery` to inspect recent exact events. Safe retry keeps "
+            "Run `/walmart recovery` to inspect recent exact events. Safe retry keeps "
             f"the **{threshold}%+** threshold; the server owner may post one soft-blocked "
             "event without changing automatic settings."
         )

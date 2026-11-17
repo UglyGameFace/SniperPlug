@@ -350,7 +350,7 @@ async def test_rate_limit_skips_extras_with_a_note(monkeypatch) -> None:
     assert verify.calls[0]["item_id"] == IPHONE_ID
     content = message.replies[0]["content"]
     assert "max 1/min" in content
-    assert "use /check_deal" in content
+    assert "use /walmart check" in content
 
 
 @pytest.mark.asyncio

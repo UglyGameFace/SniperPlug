@@ -63,7 +63,7 @@ class DealFeedbackAdminCog(commands.Cog):
         scope_value = normalize_reset_scope(scope.value)
         if not confirm:
             await interaction.followup.send(
-                f"Reset blocked. Re-run with `confirm:true` to clear **{scope_value}** feedback learning. Example: `/feedback_learning_reset scope:{scope_value} confirm:true`",
+                f"Reset blocked. Re-run with `confirm:true` to clear **{scope_value}** feedback learning. Example: `/walmart feedback-reset scope:{scope_value} confirm:true`",
                 ephemeral=True,
             )
             return
@@ -114,7 +114,7 @@ async def build_feedback_learning_status_embed(db, guild_id: int, *, limit: int 
     embed.add_field(name="📉 Penalized products", value=format_product_rows(bad_products) or "No penalized products yet.", inline=False)
     embed.add_field(name="🏷️ Boosted brands", value=format_brand_rows(top_brands) or "No boosted brands yet.", inline=False)
     embed.add_field(name="🚫 Penalized brands", value=format_brand_rows(bad_brands) or "No penalized brands yet.", inline=False)
-    embed.set_footer(text="Feedback affects auto-scan ranking, but threshold, confidence, duplicate, and proof gates still protect public posts. Use /feedback_learning_reset if learning goes sideways.")
+    embed.set_footer(text="Feedback affects auto-scan ranking, but threshold, confidence, duplicate, and proof gates still protect public posts. Use /walmart feedback-reset if learning goes sideways.")
     return embed
 
 
@@ -146,9 +146,11 @@ async def reset_feedback_learning(db, guild_id: int, *, scope: str) -> dict[str,
 
 
 def normalize_reset_scope(scope: str) -> Literal["all", "products", "brands", "events", "votes"]:
-    value = str(scope or "all").strip().lower()
+    value = str(scope or "").strip().lower()
     if value not in RESET_SCOPES:
-        return "all"
+        # Never silently fall back to "all": an unknown scope here used to
+        # wipe the most learning. Reject it so a typo cannot clear everything.
+        raise ValueError(f"Unknown feedback reset scope: {scope!r}")
     return value  # type: ignore[return-value]
 
 

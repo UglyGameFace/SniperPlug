@@ -359,7 +359,7 @@ def summarize_category_preferences(preferences: dict[str, str] | None, *, limit:
     priority = [by_key[key].label for key, mode in sorted(preferences.items()) if key in by_key and normalize_category_mode(mode) == CATEGORY_MODE_PRIORITY]
     muted = [by_key[key].label for key, mode in sorted(preferences.items()) if key in by_key and normalize_category_mode(mode) == CATEGORY_MODE_MUTED]
     if not priority and not muted:
-        return "No category preferences saved yet. Run `/deal_categories` to customize public deal feed categories. Tap **🔥 Deal Week** for broad Walmart coverage, or pick a category below."
+        return "No category preferences saved yet. Run `/walmart categories` to customize public deal feed categories. Tap **🔥 Deal Week** for broad Walmart coverage, or pick a category below."
 
     def trim(items: list[str]) -> str:
         if not items:

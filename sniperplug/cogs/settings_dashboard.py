@@ -41,12 +41,12 @@ class SettingsDashboardCog(commands.Cog):
         channel_text = str(channel_id) if channel_id else "not set"
 
         embed = discord.Embed(title="SniperPlug Dashboard", description="Settings that decide whether SniperPlug scans, caches, and posts deals.", color=discord.Color.blue())
-        embed.add_field(name="Deal finder threshold", value=f"Starting verified markdown: **{starting_percent}%+**\nChange with `/deal_threshold percent:30`.", inline=False)
+        embed.add_field(name="Deal finder threshold", value=f"Starting verified markdown: **{starting_percent}%+**\nChange with `/walmart threshold percent:30`.", inline=False)
         embed.add_field(name="Public posting", value=f"Enabled: {'yes' if public_config['enabled'] else 'no'}\nChannel ID: {channel_text}\nRetailers: {format_retailers(public_config['retailers'])}", inline=False)
         embed.add_field(name="Auto-scan retailers", value=format_auto_scan_status(auto_scan), inline=False)
         embed.add_field(name="Active cache", value=format_active_counts(active_counts), inline=False)
         embed.add_field(name="Provider health", value=format_provider_health(provider_health), inline=False)
-        embed.add_field(name="Recommended owner checks", value="Run `/sniperplug_doctor`, `/sniperplug_health`, `/sniperplug_commands`, `/public_alerts_status`, `/retailer_autoscan_status`, and `/active_deals` after each deploy.", inline=False)
+        embed.add_field(name="Recommended owner checks", value="Run `/sniperplug_doctor`, `/sniperplug_dashboard`, `/sniperplug_commands`, `/public_alerts_status`, `/walmart health`, and `/walmart active` after each deploy.", inline=False)
         embed.set_footer(text="Manual commands can run even when auto-scan is off. Auto-scan only controls scheduled pulls.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -139,7 +139,7 @@ class SettingsDashboardCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
-    @app_commands.command(name="deal_threshold", description="Set the starting verified discount percent for /deals and /hunt.")
+    @app_commands.command(name="deal_threshold", description="Set the starting verified discount percent for /walmart find and /walmart hunt.")
     @app_commands.describe(percent="Starting verified markdown percent. Lower shows more results. Try 20, 30, 40, or 50.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def deal_threshold(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 95]) -> None:
@@ -151,7 +151,7 @@ class SettingsDashboardCog(commands.Cog):
         embed = discord.Embed(
             title="Deal threshold updated",
             description=(
-                f"SniperPlug will now start `/deals` and `/hunt` at **{saved}%+ verified markdown**.\n\n"
+                f"SniperPlug will now start `/walmart find` and `/walmart hunt` at **{saved}%+ verified markdown**.\n\n"
                 "Lower numbers show more results. Higher numbers are stricter and may hide profitable flip/value leads."
             ),
             color=discord.Color.green(),
@@ -304,7 +304,7 @@ def format_cache_counts(counts: dict[str, int]) -> str:
 
 def format_recent_scans(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return "No scan runs recorded yet. Run `/deals` or `/walmart_scan` twice after redeploy."
+        return "No scan runs recorded yet. Run `/walmart find` twice after redeploy."
     lines = []
     for row in rows[:6]:
         retailer = row.get("retailer") or "unknown"
@@ -316,7 +316,7 @@ def format_recent_scans(rows: list[dict[str, Any]]) -> str:
 
 def format_query_memory(rows: list[dict[str, Any]]) -> str:
     if not rows:
-        return "No query memory yet. It fills as `/hunt`, `/deals`, and `/walmart_scan` run."
+        return "No query memory yet. It fills as `/walmart hunt` and `/walmart find` run."
     lines = []
     for row in rows[:5]:
         lines.append(
@@ -342,10 +342,10 @@ def format_recent_errors(errors: list[dict[str, Any]]) -> str:
 
 def doctor_next_action(failed: list[tuple[str, str, str]], warnings: list[tuple[str, str, str]]) -> str:
     if failed:
-        return "Fix the ❌ checks before testing `/deals` or auto-scan. Start with the first failed line."
+        return "Fix the ❌ checks before testing `/walmart find` or auto-scan. Start with the first failed line."
     if warnings:
         return "Safe to test manually, but review the ⚠️ checks before turning on auto-scan/public posting."
-    return "Looks clean. Test `/deals search:lego` twice, then rerun `/sniperplug_health` to confirm scan/run data updates."
+    return "Looks clean. Test `/walmart find search:lego` twice, then rerun `/sniperplug_dashboard` to confirm scan/run data updates."
 
 
 def check(name: str, passed: bool, detail: str, *, warn: bool = False) -> tuple[str, str, str]:
@@ -360,9 +360,9 @@ def check_env(name: str, *, required: bool, label: str) -> tuple[str, str, str]:
     return status, label, detail
 
 
-PRIMARY_COMMANDS = {"/deals", "/hunt", "/discover"}
+PRIMARY_COMMANDS = {"/walmart find", "/walmart hunt", "/walmart discover"}
 SPECIALIST_COMMANDS = {
-    "/walmart_cash",
+    "/walmart cash",
     "/home_depot_search",
     "/home_depot_penny_hunt",
     "/hd_stock",
@@ -372,13 +372,13 @@ SPECIALIST_COMMANDS = {
     "/clearance_bank",
 }
 ADVANCED_COMMANDS = {
-    "/walmart_scan",
+    "/walmart find",
     "/active_deals_cleanup",
     "/public_alerts_status",
     "/setup_sniperplug_here_status",
     "/retailer_autoscan",
     "/retailer_autoscan_status",
-    "/sniperplug_health",
+    "/sniperplug_dashboard",
 }
 
 
@@ -397,7 +397,7 @@ def command_guide_section(entry: CommandCatalogEntry) -> str:
 def build_command_guide_embed(entries: tuple[CommandCatalogEntry, ...], audience: str | None = None) -> discord.Embed:
     title = "SniperPlug Command Guide"
     description = (
-        "Start with **`/deals`**, **`/hunt`**, or **`/discover`**. "
+        "Start with **`/walmart find`**, **`/walmart hunt`**, or **`/walmart discover`**. "
         "Specialist and diagnostic commands are grouped separately so you do not have to understand the whole bot first."
     )
     if audience:

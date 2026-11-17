@@ -2,7 +2,7 @@
 
 The bot must not sync slash commands on every boot (a needless Discord API
 call), but it also must not silently keep serving Discord's last registered
-command set after a deploy adds a command such as ``/check_deal``. This
+command set after a deploy adds a command such as ``/walmart check``. This
 module fingerprints the loaded command surface and persists that fingerprint
 durably, so boot can sync exactly once when the surface changes and skip the
 sync otherwise.

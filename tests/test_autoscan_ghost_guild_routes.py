@@ -39,7 +39,7 @@ def test_legacy_loader_still_fails_closed_for_direct_callers():
 def test_public_post_resolver_explains_ghost_guild_route():
     assert "ghost guild" in POSTS
     assert "saved channel <#{channel_id}> belongs to live guild" in POSTS
-    assert "Run `/setup_sniperplug_here`" in POSTS
+    assert "Run `/walmart setup`" in POSTS
 
 
 def test_health_flags_route_error_as_not_healthy():

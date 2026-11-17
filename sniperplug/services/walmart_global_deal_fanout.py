@@ -220,13 +220,13 @@ def _personal_dm_embed(card: Any, reason: str) -> discord.Embed:
         embed = discord.Embed.from_dict(source.to_dict())
     value = (
         f"{reason}\n"
-        "This was sent by your opt-in `/dm_deals` filter. Prices can change; "
+        "This was sent by your opt-in `/walmart my-alerts` filter. Prices can change; "
         "open the exact product offer before buying."
     )
     if len(embed.fields) < 25:
         embed.add_field(name="🔔 Your smart alert", value=value[:1024], inline=False)
     else:
-        embed.set_footer(text="Matched your /dm_deals smart filters • Recheck before buying")
+        embed.set_footer(text="Matched your /walmart my-alerts smart filters • Recheck before buying")
     return sanitize_embed(embed)
 
 

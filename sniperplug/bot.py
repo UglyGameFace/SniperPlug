@@ -36,6 +36,7 @@ from sniperplug.cogs.sniperplug import SniperPlugCog
 from sniperplug.cogs.storage_admin import StorageAdminCog
 from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
+from sniperplug.cogs.walmart_command import WalmartCommandCog
 from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
@@ -188,6 +189,8 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(DealDropsIntakeCog(self))
         await self.add_cog(MovieCommandGuideCog(self))
         await self.add_cog(GlobalAutoScanRunnerCog(self))
+        # Last: the /walmart group delegates to the cogs above at call time.
+        await self.add_cog(WalmartCommandCog(self))
 
         removed = prune_retired_commands(self.tree)
         self._command_surface_issues = command_surface_issues(self.tree.get_commands())

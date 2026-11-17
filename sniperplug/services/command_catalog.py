@@ -18,21 +18,28 @@ class CommandCatalogEntry:
 # and obsolete per-server Walmart interval controls do not belong in user help.
 COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
     CommandCatalogEntry(
-        name="/deals",
+        name="/walmart find",
         audience="Everyone",
         purpose="Search for a specific Walmart product using exact-detail verification.",
         when_to_use="Use when you know what you want, such as `gaming headset`, `lego`, or `detergent`.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
-        name="/hunt",
+        name="/walmart check",
+        audience="Everyone",
+        purpose="Check one Walmart link or item ID directly, even when search never surfaces it.",
+        when_to_use="Use when you have a Walmart link or item ID and want the exact-verified result.",
+        credit_risk="Walmart official API",
+    ),
+    CommandCatalogEntry(
+        name="/walmart hunt",
         audience="Everyone",
         purpose="Open category buttons for verified Walmart deal hunting.",
         when_to_use="Use when you want SniperPlug to pick category and value lanes for you, including open-box/restored coverage.",
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
-        name="/walmart_cash",
+        name="/walmart cash",
         audience="Everyone",
         purpose="Find only products with strict API-proven Walmart Cash offers.",
         when_to_use="Use for a manual Cash-only search. Global autoscan can attach the exact Cash amount to normal deal alerts automatically.",
@@ -46,13 +53,13 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         credit_risk="eBay official Browse API when configured",
     ),
     CommandCatalogEntry(
-        name="/dm_deals",
+        name="/walmart my-alerts",
         audience="Everyone",
         purpose="Enable, filter, test, pause, or delete personal exact-deal DM alerts.",
         when_to_use="Use when you want your own Smart, All, or Custom deal stream without changing a server's public feed.",
     ),
     CommandCatalogEntry(
-        name="/discover",
+        name="/walmart discover",
         audience="Everyone",
         purpose="Start an optional immediate Quick, Deep, or Full exact Walmart sweep.",
         when_to_use="Use for an on-demand sweep. Normal automatic coverage does not require this command because the global cursor scans continuously.",
@@ -98,7 +105,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use to revisit staff-seeded local or retailer-specific leads.",
     ),
     CommandCatalogEntry(
-        name="/setup_sniperplug_here",
+        name="/walmart setup",
         audience="Owner",
         purpose="Choose this channel for public exact-deal delivery and apply the normal server defaults.",
         when_to_use="Run once during installation or when intentionally moving the posting channel. Global Walmart discovery itself is shared and continuous.",
@@ -110,13 +117,13 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         when_to_use="Use instead of the retired workflow, health, doctor, commands, and raw status aliases.",
     ),
     CommandCatalogEntry(
-        name="/autoscan_health",
+        name="/walmart health",
         audience="Owner",
         purpose="Show global catalog progress, exact queue health, and this server's fanout enrollment.",
         when_to_use="Use when automatic deals are missing or after changing the posting channel.",
     ),
     CommandCatalogEntry(
-        name="/walmart_recovery",
+        name="/walmart recovery",
         audience="Owner",
         purpose="Review recent exact Walmart events that did not post and choose a safe recovery action.",
         when_to_use="Retry current rules, recheck exact proof, or let the actual server owner post one soft-blocked event without weakening automatic settings.",
@@ -129,34 +136,58 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         credit_risk="Walmart official API",
     ),
     CommandCatalogEntry(
-        name="/deal_categories",
+        name="/walmart categories",
         audience="Owner",
         purpose="Boost, normalize, or mute categories for this server's public feed.",
         when_to_use="Use to customize delivery after the normal Best Setup has been applied.",
     ),
     CommandCatalogEntry(
-        name="/deal_threshold",
+        name="/walmart threshold",
         audience="Owner",
         purpose="Set this server's minimum exact Walmart markdown.",
         when_to_use="Use 30-40% for normal coverage or 50%+ for stricter alerts. It filters delivery, not global discovery.",
     ),
     CommandCatalogEntry(
-        name="/active_deals",
+        name="/walmart extreme",
+        audience="Owner",
+        purpose="Turn exact-price Walmart leads with no verified original price on or off.",
+        when_to_use="Use to opt this server into (or out of) separately labeled exact-price leads up to $10.",
+    ),
+    CommandCatalogEntry(
+        name="/walmart active",
         audience="Owner",
         purpose="Browse recently observed public-quality deals and recheck exact Walmart items from the page controls.",
         when_to_use="Use for cache review, single-item rechecks, or bounded page rechecks. Separate recheck and cleanup aliases were retired.",
     ),
     CommandCatalogEntry(
-        name="/active_deal_history",
+        name="/walmart history",
         audience="Owner",
         purpose="Review durable lifecycle changes and the Walmart recheck audit.",
         when_to_use="Use when you need historical evidence instead of current active rows.",
     ),
     CommandCatalogEntry(
+        name="/walmart trace",
+        audience="Owner",
+        purpose="Read-only evidence trace for one exact Walmart item.",
+        when_to_use="Use when a deal did not post and you need the queue, fanout, and latency evidence for one item ID.",
+    ),
+    CommandCatalogEntry(
+        name="/walmart feedback",
+        audience="Owner",
+        purpose="Show what SniperPlug learned from deal feedback buttons.",
+        when_to_use="Use to review boosted and penalized products and brands before changing thresholds.",
+    ),
+    CommandCatalogEntry(
+        name="/walmart feedback-reset",
+        audience="Owner",
+        purpose="Reset SniperPlug feedback learning for this server.",
+        when_to_use="Use only when learning went sideways; pick a scope and confirm.",
+    ),
+    CommandCatalogEntry(
         name="/sniperplug …",
         audience="Owner",
         purpose="Owner-only grouped diagnostics such as provider previews, routes, monitor plans, and test alerts.",
-        when_to_use="Use only for technical diagnostics. Normal users should use `/deals`, `/hunt`, `/walmart_cash`, or `/dm_deals`.",
+        when_to_use="Use only for technical diagnostics. Normal users should use `/walmart find`, `/walmart hunt`, `/walmart cash`, or `/walmart my-alerts`.",
     ),
 )
 

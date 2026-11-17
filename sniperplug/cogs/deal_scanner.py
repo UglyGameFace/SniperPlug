@@ -46,7 +46,7 @@ SORT_CHOICES = [
     app_commands.Choice(name="New", value="new"),
 ]
 
-# Rungs below the resolved starting threshold for /deals. The starting value
+# Rungs below the resolved starting threshold for /walmart find. The starting value
 # itself comes from resolve_min_discount (guild setting, else 40) and is
 # prepended by cards_with_fallback; these are only the relax steps, so the
 # old hardcoded 50 start is gone.
@@ -497,11 +497,11 @@ class DealScannerCog(commands.Cog):
 
     @walmart_scan.error
     async def walmart_scan_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        await send_command_error(interaction, "You need **Manage Server** permission to run advanced Walmart scans. Use `/deals` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Walmart scan hit an error: `{error}`")
+        await send_command_error(interaction, "You need **Manage Server** permission to run advanced Walmart scans. Use `/walmart find` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Walmart scan hit an error: `{error}`")
 
     @check_deal.error
     async def check_deal_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        await send_command_error(interaction, "You need **Manage Server** permission to run direct deal checks. Use `/deals` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Direct deal check hit an error: `{error}`")
+        await send_command_error(interaction, "You need **Manage Server** permission to run direct deal checks. Use `/walmart find` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Direct deal check hit an error: `{error}`")
 
 
 async def send_command_error(interaction: discord.Interaction, message: str) -> None:
@@ -536,7 +536,7 @@ class HuntPresetButton(discord.ui.Button):
             cards, pages_checked, products_checked, warnings, shown_discount = await run_preset_hunt(self.preset, str(interaction.user.id))
             summary = build_preset_hunt_summary(self.preset, pages_checked, products_checked, len(cards), tuple(warnings), shown_discount)
             if not cards:
-                summary.add_field(name="Nothing useful found yet", value="I checked multiple smart searches and still could not prove a useful markdown.\nTry another category, or use `/deals search:` with a specific item like `oled tv`, `lego`, `detergent`, or `ssd`.", inline=False)
+                summary.add_field(name="Nothing useful found yet", value="I checked multiple smart searches and still could not prove a useful markdown.\nTry another category, or use `/walmart find search:` with a specific item like `oled tv`, `lego`, `detergent`, or `ssd`.", inline=False)
                 await interaction.followup.send(embed=summary, view=HuntPresetMenuView(), ephemeral=True)
                 return
             shown_cards = cards[:5]
@@ -585,7 +585,7 @@ class PresetResultView(discord.ui.View):
     def __init__(self, cards: list[DealCard]):
         super().__init__(timeout=150)
         add_deal_link_buttons(self, cards[:5])
-        self.add_item(discord.ui.Button(label="Run /hunt again for more categories", style=discord.ButtonStyle.secondary, disabled=True, row=4))
+        self.add_item(discord.ui.Button(label="Run /walmart hunt again for more categories", style=discord.ButtonStyle.secondary, disabled=True, row=4))
 
 
 class DealSearchControlView(discord.ui.View):
@@ -722,7 +722,7 @@ class DealSearchControlView(discord.ui.View):
                     ephemeral=True,
                 )
                 return
-            summary.add_field(name="No useful markdowns found yet", value=f"I checked **{len(all_candidates)} products across {pages_checked} page(s)** and could not prove a strong markdown.\nTry another search like `iphone case`, `iphone charger`, `oled tv`, `clearance toy`, or run `/hunt` and tap a category.", inline=False)
+            summary.add_field(name="No useful markdowns found yet", value=f"I checked **{len(all_candidates)} products across {pages_checked} page(s)** and could not prove a strong markdown.\nTry another search like `iphone case`, `iphone charger`, `oled tv`, `clearance toy`, or run `/walmart hunt` and tap a category.", inline=False)
             await interaction.followup.send(embed=summary, view=self._copy_for(self.page, min_discount, [], has_next_page), ephemeral=True)
         finally:
             await scan_operation_locks.release(lock_key)
@@ -823,7 +823,7 @@ def build_preset_hunt_summary(preset: HuntPreset, pages_checked: int, products_c
         embed.add_field(name="Product links", value="Each product card includes its own **App/Web** and **Browser Search** links.", inline=False)
     if warnings:
         embed.add_field(name="⚠️ Notes", value="\n".join(f"• {w}" for w in warnings[:3]), inline=False)
-    embed.set_footer(text="Preset hunts are broad. Use /deals search:your item for something specific.")
+    embed.set_footer(text="Preset hunts are broad. Use /walmart find search:your item for something specific.")
     return embed
 
 
@@ -1099,7 +1099,7 @@ def short_value(value: str, limit: int) -> str:
 def no_match_help(query: str, min_discount: int, page: int, simple_mode: bool) -> str:
     if simple_mode:
         return "I checked the returned products and could not prove a useful markdown yet.\nTry **Next Page**, **Hunt 80%+**, or a tighter search like `iphone case`, `oled tv`, `lego`, `detergent`, or `ssd`."
-    return f"Try one of these next:\n• `/walmart_scan query:{query} min_discount:{min_discount} page:{page + 1}`\n• `/walmart_scan query:{query} min_discount:{max(0, min_discount - 20)} page:{page}`\n• Try tighter terms like `oled tv`, `gaming monitor`, `lego`, `patio`, `ssd`."
+    return f"Try one of these next:\n• `/walmart find query:{query} min_discount:{min_discount} page:{page + 1}`\n• `/walmart find query:{query} min_discount:{max(0, min_discount - 20)} page:{page}`\n• Try tighter terms like `oled tv`, `gaming monitor`, `lego`, `patio`, `ssd`."
 
 
 def parse_sort_choice(value: str | None) -> tuple[str | None, str | None]:
@@ -1129,7 +1129,7 @@ def build_page_price_direct_check_embed(
     page_price: float,
     enqueued: bool,
 ) -> discord.Embed:
-    """Explain a page-observed /check_deal result without claiming a markdown.
+    """Explain a page-observed /walmart check result without claiming a markdown.
 
     The official API returned no usable price for the item, but product-page
     recovery confirmed seller/offer/item identity and exposed a price. The

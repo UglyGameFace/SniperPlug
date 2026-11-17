@@ -56,13 +56,13 @@ async def get_starting_deal_percent(db, guild_id: int | None, *, fallback: int =
 async def resolve_min_discount(db, guild_id: int | None, *, explicit: int | None = None) -> int:
     """Single authority for the display/public min-discount threshold.
 
-    Precedence: an explicit per-invocation value (e.g. /walmart_scan's
+    Precedence: an explicit per-invocation value (e.g. /walmart find's
     min_discount argument) wins; otherwise the guild's saved starting
     percent; otherwise DEFAULT_STARTING_DEAL_PERCENT (40). Every display
     and public-gate threshold in the manual commands goes through here so
     a guild with no saved setting sees 40% everywhere.
 
-    This is NOT the /check_deal intake gate: MANUAL_INTAKE_MIN_DISCOUNT
+    This is NOT the /walmart check intake gate: MANUAL_INTAKE_MIN_DISCOUNT
     (10%) in walmart_exact_verification_queue.py verifies that an exact
     item is worth queueing at all, and it never goes through this function.
     """

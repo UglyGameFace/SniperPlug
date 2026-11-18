@@ -4,14 +4,151 @@ import asyncio
 import inspect
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable, Mapping
 from uuid import uuid4
 
 import aiosqlite
 
 from sniperplug.models.deal import NormalizedDeal, utc_now_iso
 from sniperplug.services.routing import DEFAULT_ROUTE
+
+# Catalog batches persist through the bulk helpers below: multi-row
+# statements chunked at this many rows, one commit per batch (owned by the
+# caller), mirroring the exact-verification queue's bulk persistence.
+CATALOG_PERSIST_CHUNK_SIZE = 25
+
+
+@dataclass(frozen=True)
+class BulkPersistFailure:
+    """One row that failed even after the per-row chunk fallback."""
+
+    index: int
+    product_key: str
+    error: Exception
+
+
+@dataclass(frozen=True)
+class BulkPersistResult:
+    rows: int = 0
+    statements: int = 0
+    failures: tuple[BulkPersistFailure, ...] = ()
+
+
+_PRODUCT_IDENTITY_COLUMNS = (
+    "retailer",
+    "product_key",
+    "product_id",
+    "sku",
+    "upc",
+    "model",
+    "title",
+    "brand",
+    "canonical_url",
+    "image_url",
+    "last_seen_price",
+    "last_seen_at",
+    "created_at",
+    "updated_at",
+)
+
+_PRICE_OBSERVATION_COLUMNS = (
+    "observation_id",
+    "retailer",
+    "product_key",
+    "product_id",
+    "sku",
+    "upc",
+    "store_id",
+    "zip_code",
+    "title",
+    "product_url",
+    "current_price",
+    "reference_price",
+    "reference_source",
+    "source_key",
+    "observed_at",
+)
+
+
+def _product_identity_insert_sql(row_count: int) -> str:
+    values = ",".join(
+        "(" + ",".join("?" for _ in _PRODUCT_IDENTITY_COLUMNS) + ")"
+        for _ in range(row_count)
+    )
+    return f"""
+        INSERT INTO product_identity ({", ".join(_PRODUCT_IDENTITY_COLUMNS)})
+        VALUES {values}
+        ON CONFLICT(retailer, product_key) DO UPDATE SET
+            product_id = COALESCE(excluded.product_id, product_identity.product_id),
+            sku = COALESCE(excluded.sku, product_identity.sku),
+            upc = COALESCE(excluded.upc, product_identity.upc),
+            model = COALESCE(excluded.model, product_identity.model),
+            title = COALESCE(excluded.title, product_identity.title),
+            brand = COALESCE(excluded.brand, product_identity.brand),
+            canonical_url = COALESCE(excluded.canonical_url, product_identity.canonical_url),
+            image_url = COALESCE(excluded.image_url, product_identity.image_url),
+            last_seen_price = COALESCE(excluded.last_seen_price, product_identity.last_seen_price),
+            last_seen_at = excluded.last_seen_at,
+            updated_at = excluded.updated_at
+        """
+
+
+def _price_observation_insert_sql(row_count: int) -> str:
+    values = ",".join(
+        "(" + ",".join("?" for _ in _PRICE_OBSERVATION_COLUMNS) + ")"
+        for _ in range(row_count)
+    )
+    return f"""
+        INSERT INTO price_observations ({", ".join(_PRICE_OBSERVATION_COLUMNS)})
+        VALUES {values}
+        """
+
+
+def _product_identity_row(item: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Build the exact parameter tuple upsert_product_identity writes."""
+
+    now = utc_now_iso()
+    last_seen_price = item.get("last_seen_price")
+    return (
+        item.get("retailer"),
+        item.get("product_key"),
+        item.get("product_id"),
+        item.get("sku"),
+        item.get("upc"),
+        item.get("model"),
+        item.get("title"),
+        item.get("brand"),
+        item.get("canonical_url"),
+        item.get("image_url"),
+        last_seen_price,
+        now if last_seen_price is not None else None,
+        now,
+        now,
+    )
+
+
+def _price_observation_row(item: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Build the exact parameter tuple record_price_observation writes."""
+
+    return (
+        uuid4().hex,
+        item.get("retailer"),
+        item.get("product_key"),
+        item.get("product_id"),
+        item.get("sku"),
+        item.get("upc"),
+        item.get("store_id"),
+        item.get("zip_code"),
+        item.get("title"),
+        item.get("product_url"),
+        item.get("current_price"),
+        item.get("reference_price"),
+        item.get("reference_source"),
+        item.get("source_key"),
+        utc_now_iso(),
+    )
 
 
 class _LibsqlAsyncCursor:
@@ -926,6 +1063,111 @@ class Database:
             ),
         )
         await conn.commit()
+
+    async def upsert_product_identities_bulk(
+        self,
+        items: Iterable[Mapping[str, Any]],
+        *,
+        chunk_size: int = CATALOG_PERSIST_CHUNK_SIZE,
+    ) -> BulkPersistResult:
+        """Bulk form of :meth:`upsert_product_identity` for catalog batches.
+
+        Accepts the same keyword fields as the single-row helper (as
+        mappings), writes them as chunked multi-row upserts, and never
+        commits — the caller commits once per batch. Rows are built and the
+        connection is required before the first execute, so an exception from
+        this method means nothing was written by it; chunk-level failures are
+        isolated per row and reported in the result instead of raising.
+        """
+
+        indexed_rows: list[tuple[int, str, tuple[Any, ...]]] = []
+        for index, item in enumerate(items):
+            product_key = item.get("product_key")
+            if not product_key:
+                continue
+            indexed_rows.append((index, str(product_key), _product_identity_row(item)))
+        if not indexed_rows:
+            return BulkPersistResult()
+        conn = self.require_conn()
+        return await self._bulk_insert_chunked(
+            conn,
+            indexed_rows,
+            insert_sql=_product_identity_insert_sql,
+            chunk_size=chunk_size,
+        )
+
+    async def record_price_observations_bulk(
+        self,
+        items: Iterable[Mapping[str, Any]],
+        *,
+        chunk_size: int = CATALOG_PERSIST_CHUNK_SIZE,
+    ) -> BulkPersistResult:
+        """Bulk form of :meth:`record_price_observation` for catalog batches.
+
+        Same contract as :meth:`upsert_product_identities_bulk`: same fields,
+        same guards, chunked multi-row inserts, no commit, per-row failure
+        isolation reported in the result.
+        """
+
+        indexed_rows: list[tuple[int, str, tuple[Any, ...]]] = []
+        for index, item in enumerate(items):
+            product_key = item.get("product_key")
+            current_price = item.get("current_price")
+            if not product_key or current_price is None or current_price <= 0:
+                continue
+            indexed_rows.append((index, str(product_key), _price_observation_row(item)))
+        if not indexed_rows:
+            return BulkPersistResult()
+        conn = self.require_conn()
+        return await self._bulk_insert_chunked(
+            conn,
+            indexed_rows,
+            insert_sql=_price_observation_insert_sql,
+            chunk_size=chunk_size,
+        )
+
+    async def _bulk_insert_chunked(
+        self,
+        conn: Any,
+        indexed_rows: list[tuple[int, str, tuple[Any, ...]]],
+        *,
+        insert_sql: Callable[[int], str],
+        chunk_size: int,
+    ) -> BulkPersistResult:
+        """Execute multi-row inserts in chunks with a per-row fallback.
+
+        If a chunk statement fails, only that chunk is retried row by row, so
+        one bad row cannot fail or lose the rest of the batch — the same
+        isolation the old per-candidate loop had. Statements are counted so
+        callers can emit write telemetry in the exact queue's style.
+        """
+
+        written = 0
+        statements = 0
+        failures: list[BulkPersistFailure] = []
+        size = max(1, int(chunk_size))
+        for start in range(0, len(indexed_rows), size):
+            chunk = indexed_rows[start : start + size]
+            try:
+                await conn.execute(
+                    insert_sql(len(chunk)),
+                    tuple(value for _, _, params in chunk for value in params),
+                )
+                statements += 1
+                written += len(chunk)
+                continue
+            except Exception:
+                pass
+            for index, product_key, params in chunk:
+                try:
+                    await conn.execute(insert_sql(1), params)
+                    statements += 1
+                    written += 1
+                except Exception as exc:
+                    failures.append(
+                        BulkPersistFailure(index=index, product_key=product_key, error=exc)
+                    )
+        return BulkPersistResult(rows=written, statements=statements, failures=tuple(failures))
 
     async def get_price_reference(
         self,

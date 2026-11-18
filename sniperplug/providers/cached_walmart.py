@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import asdict, fields
 from typing import Any
 
@@ -31,6 +32,8 @@ _HARD_FAILURE_TERMS = (
     "disabled: set walmart_provider_enabled",
 )
 _LIGHTWEIGHT_SCAN_NOTE = "Autoscan lightweight scan: skipped per-route Turso cache, scan-run, identity, and price-observation writes."
+
+log = logging.getLogger("sniperplug.autoscan.write_telemetry")
 
 
 class CachedWalmartProvider(DealProvider):
@@ -187,6 +190,112 @@ class CachedWalmartProvider(DealProvider):
         return result
 
     async def _persist_candidates(self, candidates: tuple[SourceCandidate, ...]) -> list[str]:
+        """Persist one catalog batch in bulk instead of per candidate.
+
+        The per-candidate path cost ~2 lock acquisitions per write helper
+        (execute + commit each) on the single Turso connection — ~370 per
+        batch. This builds the same identity upserts and price observations,
+        writes them as chunked multi-row statements through the Database
+        bulk helpers (the exact queue's proven pattern), and commits ONCE.
+        A failed chunk falls back to per-row writes inside the helpers, so
+        failure isolation and the per-candidate error strings are unchanged.
+        """
+
+        identity_items: list[dict[str, Any]] = []
+        observation_items: list[dict[str, Any]] = []
+        observation_candidate_indexes: list[int] = []
+        candidate_keys: list[str] = []
+        for candidate in candidates:
+            product_key = _product_key(candidate)
+            if not product_key:
+                continue
+            candidate_keys.append(product_key)
+            identity_items.append(
+                {
+                    "retailer": "Walmart",
+                    "product_key": product_key,
+                    "product_id": candidate.product_id,
+                    "sku": candidate.sku,
+                    "upc": candidate.upc,
+                    "model": candidate.model,
+                    "title": candidate.title,
+                    "brand": (candidate.variant_attributes or {}).get("brand"),
+                    "canonical_url": candidate.product_url,
+                    "image_url": candidate.image_url,
+                    "last_seen_price": candidate.current_price,
+                }
+            )
+            if candidate.current_price is not None and candidate.current_price > 0:
+                observation_candidate_indexes.append(len(candidate_keys) - 1)
+                observation_items.append(
+                    {
+                        "retailer": "Walmart",
+                        "product_key": product_key,
+                        "current_price": float(candidate.current_price),
+                        "product_id": candidate.product_id,
+                        "sku": candidate.sku,
+                        "upc": candidate.upc,
+                        "title": candidate.title,
+                        "product_url": candidate.product_url,
+                        "reference_price": candidate.typical_price,
+                        "reference_source": (candidate.variant_attributes or {}).get("trustedReferenceSource")
+                        or (candidate.variant_attributes or {}).get("reference_price_source"),
+                        "source_key": candidate.source_key,
+                    }
+                )
+        if not identity_items:
+            return []
+
+        try:
+            identity_result = await self.db.upsert_product_identities_bulk(identity_items)
+            observation_result = await self.db.record_price_observations_bulk(observation_items)
+        except Exception:
+            # The bulk helpers raise only before writing anything (missing
+            # helper on a stub database, unconnected database, unbuildable
+            # row). Keep the legacy degrade-gracefully behavior for those
+            # cases: per-candidate writes with per-candidate errors.
+            return await self._persist_candidates_per_candidate(candidates)
+
+        commits = 0
+        commit_error: str | None = None
+        try:
+            await self.db.require_conn().commit()
+            commits = 1
+        except Exception as exc:
+            commit_error = f"catalog persist commit failed: {clean_warning_text(exc)}"
+
+        identity_failures = {failure.index: failure for failure in identity_result.failures}
+        observation_failures = {
+            observation_candidate_indexes[failure.index]: failure
+            for failure in observation_result.failures
+            if failure.index < len(observation_candidate_indexes)
+        }
+        errors: list[str] = []
+        for index, product_key in enumerate(candidate_keys):
+            failure = identity_failures.get(index)
+            if failure is not None:
+                errors.append(f"identity write failed for {product_key}: {clean_warning_text(failure.error)}")
+            failure = observation_failures.get(index)
+            if failure is not None:
+                errors.append(f"price observation failed for {product_key}: {clean_warning_text(failure.error)}")
+        if commit_error:
+            errors.append(commit_error)
+
+        log.info(
+            "Walmart catalog Turso write telemetry candidates=%s identity_rows=%s "
+            "observation_rows=%s persistence_statements=%s commits=%s",
+            len(identity_items),
+            identity_result.rows,
+            observation_result.rows,
+            identity_result.statements + observation_result.statements,
+            commits,
+        )
+        return errors
+
+    async def _persist_candidates_per_candidate(self, candidates: tuple[SourceCandidate, ...]) -> list[str]:
+        """The original per-candidate write loop, kept as the fallback for
+        databases that cannot run the bulk path (see _persist_candidates)."""
+
         errors: list[str] = []
         for candidate in candidates:
             product_key = _product_key(candidate)

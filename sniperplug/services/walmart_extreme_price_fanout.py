@@ -61,6 +61,14 @@ from sniperplug.services.stock_status import is_unavailable_stock
 # Only <=$10 substantial hardware qualifies without a trusted markdown.
 # Walmart's unverified MSRP cannot establish a price error.
 MAX_PRICE_CENTS = int(ABSOLUTE_EXTREME_MAX_PRICE * 100)
+# A tiny live move between verification and send is repricing noise, not a
+# dead deal. Tolerate moves up to $0.25 or 1% of the verified price,
+# whichever is larger; the eligibility re-check below still decides
+# whether the live price is an extreme lead, so a jump back toward the
+# list price still fails there. The displayed (snapshot) price is never
+# off by more than the tolerance.
+LIVE_PRICE_TOLERANCE_CENTS = 25
+LIVE_PRICE_TOLERANCE_RATIO = 0.01
 
 def extreme_rejection_reason(candidate: Any) -> str | None:
     """Explain the first failed gate without weakening exact-offer evidence.
@@ -147,8 +155,6 @@ def page_price_rejection_reason(candidate: Any) -> str | None:
     page_price = page_observed_price(candidate)
     if page_price is None:
         return "page_identity_not_verified"
-    if page_price > MAX_PRICE_CENTS / 100:
-        return "page_price_over_extreme_limit"
     attrs = getattr(candidate, "variant_attributes", None) or {}
     item_id = str(attrs.get("exactDetailItemId") or "")
     url = getattr(candidate, "direct_product_url", None) or getattr(candidate, "product_url", "")
@@ -174,9 +180,16 @@ def page_price_rejection_reason(candidate: Any) -> str | None:
     )
     if is_accessory_title(title):
         return "accessory_or_parts"
-    # A listed-price anomaly cannot be established from a page price alone
-    # (the page carries no trusted list price), so only the substantial
-    # primary-product signal qualifies, exactly as for sub-$10 API prices.
+    # Above $10 a page price qualifies only as an extreme anomaly against
+    # Walmart's own listed price, exactly as for API-priced rows (#322):
+    # the candidate snapshot may still carry the API's list/MSRP price
+    # even though the API returned no current price. The list price is
+    # never taken from the page itself. At or below $10 the substantial
+    # primary-product signal qualifies, as before.
+    if page_price > MAX_PRICE_CENTS / 100:
+        if listed_price_anomaly(candidate, current_price=page_price) is not None:
+            return None
+        return "page_price_over_extreme_limit"
     if primary_product_evidence(candidate, trusted_reference=None) is None:
         return "not_recognized_primary_product"
     return None
@@ -266,7 +279,13 @@ async def live_extreme_offer_rejection_reason(candidate: Any, *, page_price: boo
         return "page_offer_now_api_priced"
     if old is None or new is None:
         return "live_price_missing"
-    if abs(old - new) >= 0.01:
+    # A $1.00 glitch ticking to $1.01 is noise, not a dead deal. Only a
+    # move bigger than the tolerance kills the send here; the eligibility
+    # re-check below still verifies the live price is an extreme lead.
+    tolerance = max(
+        LIVE_PRICE_TOLERANCE_CENTS / 100, old * LIVE_PRICE_TOLERANCE_RATIO
+    )
+    if abs(old - new) > tolerance:
         return "live_price_changed"
     if page_price and not eligible_page_price_extreme_candidate(refreshed):
         return "live_page_proof_invalid"
@@ -381,6 +400,21 @@ def build_page_price_extreme_card(candidate: Any) -> Any | None:
         ),
         inline=False,
     )
+    page_anomaly = listed_price_anomaly(candidate, current_price=page_price)
+    if page_anomaly is not None:
+        # The list price is the reason this over-$10 page price is notable
+        # at all; state both numbers and that the list price is unverified,
+        # exactly as the API-priced anomaly lane does. No discount is claimed.
+        card.embed.add_field(
+            name="Walmart list price (unverified)",
+            value=(
+                "Walmart lists this item at $"
+                + f"{page_anomaly:,.2f}"
+                + ". That list price is unverified — it is not a was-price "
+                "and no discount percentage is claimed."
+            ),
+            inline=False,
+        )
     card.embed.set_footer(text="Page-observed price lead; API price unverified; verify checkout")
     card.page_price_candidate = candidate
     # Durable lane marker: survives even if the candidate proof is stripped,

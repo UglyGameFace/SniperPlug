@@ -154,6 +154,10 @@ CATEGORY_ROUTES: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
             "ssd rollback",
             "nvme ssd rollback",
             "external hard drive rollback",
+            # GPUs had zero broad-pool coverage (priority slot only): these
+            # two routes give them a broad safety net at ~140 min revisit.
+            "graphics card rollback",
+            "gpu rollback",
 
             # TVs / devices
             "4k tv rollback",

@@ -17,7 +17,8 @@ ACCESSORY = re.compile(
     r"\b(?:case|cover|protector|charger|cable|adapter|replacement|parts? only"
     r"|box only|mount|holder|remote control|display dummy|sticker|decal|"
     r"drill bits?|driver bits?|saw blades?|bit sets?|"
-    r"screen protector|refill|repair part|protective sleeve)\b",
+    r"screen protector|refill|repair part|protective sleeve|"
+    r"bags?|filters?|hoses?|belts?|brush\s*heads?|attachments?|nozzles?)\b",
     re.IGNORECASE,
 )
 
@@ -67,7 +68,7 @@ DURABLE_PRODUCT_TYPE = re.compile(
     r"\b(?:tablet|smartphone|cell\s*phone|mobile\s*phone|laptop|notebook|"
     r"desktop\s*(?:computer|pc)|computer|television|oled\s*tv|qled\s*tv|"
     r"monitor|gaming\s*console|game\s*console|handheld\s*console|"
-    r"graphics\s*card|gpu|camera|projector|drone|robot\s*vacuum|"
+    r"graphics\s*card|gpu|camera|projector|drone|robot\s*vacuum|vacuums?|"
     r"refrigerator|dishwasher|washing\s*machine|dryer|power\s*tool|"
     r"electric\s*bike|treadmill|smartwatch|headphones|earbuds|"
     r"coffee\s*maker|espresso\s*(?:machine|maker)|mixer|"
@@ -277,7 +278,9 @@ def is_walmart_first_party(candidate: Any) -> bool:
     return seller in WALMART_FIRST_PARTY_SELLERS
 
 
-def listed_price_anomaly(candidate: Any) -> float | None:
+def listed_price_anomaly(
+    candidate: Any, *, current_price: Any = None
+) -> float | None:
     """Return Walmart's listed price when the exact price is an extreme anomaly.
 
     Requirements, all fail-closed:
@@ -289,11 +292,21 @@ def listed_price_anomaly(candidate: Any) -> float | None:
       department where MSRP inflation is endemic (apparel, jewelry, shoes,
       beauty, decor/textiles, tableware). Inflated MSRPs on ordinary goods
       therefore cannot qualify.
+
+    ``current_price`` overrides the candidate's API price: the page-price
+    lane passes the verified page-observed price, so a page-only glitch
+    against a Walmart list price can qualify the same way an API-priced
+    row does. The list price itself always comes from the candidate's
+    snapshot (the API's msrp/list fields, copied into the proof
+    attributes regardless of whether a current price exists), never from
+    the page. No list price in the snapshot means no anomaly.
     """
 
     if candidate is None:
         return None
-    current = _positive_float(getattr(candidate, "api_current_price", None))
+    if current_price is None:
+        current_price = getattr(candidate, "api_current_price", None)
+    current = _positive_float(current_price)
     listed = walmart_listed_reference(candidate)
     if current is None or listed is None or not is_price_error_ratio(current, listed):
         return None
@@ -363,7 +376,7 @@ PUBLIC_HIGH_VALUE_HARDWARE = re.compile(
     r"all[-\s]?in[-\s]?one\s*(?:computer|pc)|television|oled\s*tv|qled\s*tv|"
     r"monitor|(?:video\s*game\s*|game\s*|gaming\s*|handheld\s*)?consoles?|"
     r"controllers?|gamepads?|joy[-\s]?cons?|graphics\s*card|gpu|projector|drone|"
-    r"robot\s*vacuum|refrigerator|"
+    r"robot\s*vacuum|vacuums?|refrigerator|"
     r"dishwasher|washing\s*machine|tumble\s*dryer|power\s*tool|"
     r"electric\s*bike|treadmill|(?:cordless|power|hammer)\s*drill|"
     r"drill\s*driver|impact\s*driver|"
@@ -379,7 +392,7 @@ PUBLIC_HIGH_VALUE_CATEGORY_LEAF = re.compile(
     r"televisions?|tvs?|consoles?|game\s*consoles?|gaming\s*consoles?|"
     r"video\s*game\s*consoles?|game\s*controllers?|gaming\s*controllers?|"
     r"gamepads?|joy[-\s]?cons?|graphics\s*cards?|projectors?|"
-    r"robot\s*vacuums?|refrigerators?|dishwashers?|washing\s*machines?|"
+    r"robot\s*vacuums?|vacuums?|vacuum\s*cleaners?|refrigerators?|dishwashers?|washing\s*machines?|"
     r"treadmills?|electric\s*bikes?|headsets?|processors?|cpus?|memory|"
     r"ssds?|solid\s*state\s*drives?|espresso\s*machines?|mixers?)$",
     re.IGNORECASE,

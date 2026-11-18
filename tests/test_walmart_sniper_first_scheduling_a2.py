@@ -69,12 +69,19 @@ def test_budget_still_exactly_four_searches_per_batch() -> None:
     assert DEFAULT_ROUTES_PER_BATCH == 2
     assert catalog.BROAD_ROUTES_PER_BATCH == 2
     assert catalog.SNIPER_SEARCHES_PER_BATCH == 2
-    for plan in simulate_batches(30):
+    for batch_number, plan in enumerate(simulate_batches(30)):
         assert len(plan) == 4
-        # Both broad routes, the first sniper, and any hot priority sniper
-        # always reach page one. A bounded fraction of ordinary second
-        # sniper slots probe page two to bypass page-one accessory clutter.
-        assert all(page == 1 for _query, page, _sort, _order in plan[:3])
+        # The first broad route and the first sniper always reach page one.
+        # The second broad route rotates into depth (2-40) except on
+        # bestseller-probe batches, where it keeps its page-1 request. A
+        # bounded fraction of ordinary second sniper slots probe page two
+        # to bypass page-one accessory clutter.
+        assert plan[0][1] == 1
+        assert plan[2][1] == 1
+        if catalog.is_bestseller_probe_batch(batch_number):
+            assert plan[1][1] == 1
+        else:
+            assert plan[1][1] == catalog.catalog_deep_page_for_batch(batch_number)
         assert plan[3][1] in (1, 2)
 
 
@@ -305,7 +312,7 @@ def test_page_two_probe_never_adds_calls_or_displaces_page_one_safety(monkeypatc
     assert all(batch % 2 == 1 for batch, _ in second_page)
     assert all(len(plan) == 4 for plan in plans)
     assert all(plan[2][1] == 1 for plan in plans)
-    assert all(plan[0][1] == plan[1][1] == 1 for plan in plans)
+    assert all(plan[0][1] == 1 for plan in plans)
     assert all(
         priority_sniper_query_for_batch(batch, avoid=plan[2][0]) is None
         for batch, plan in second_page
@@ -335,3 +342,41 @@ def test_cheap_speedups_pin_new_defaults(monkeypatch) -> None:
     monkeypatch.delenv("SNIPERPLUG_PRIORITY_SNIPER_EVERY_N_BATCHES", raising=False)
     monkeypatch.delenv("SNIPERPLUG_PRIORITY_SNIPER_MAX_PER_HOUR", raising=False)
     assert priority_sniper_env() == (3, 20)
+
+
+def test_broad_second_route_rotates_into_depth_without_extra_calls(monkeypatch) -> None:
+    """Deep-page rotation (deal-discovery improvement 1).
+
+    The second broad route samples a rotating deep page (2-40) instead of
+    repeating page 1, so a glitch below result 25 on a broad route is seen
+    within one full pass. The first broad route always stays on page 1 so
+    fresh listings are never missed, the bestseller probe keeps its own
+    page-1 request, and the 4-search budget never changes.
+    """
+    plans = simulate_batches(145)
+    assert all(len(plan) == 4 for plan in plans)
+    assert all(plan[0][1] == 1 for plan in plans)
+    deep = [
+        (batch, plan) for batch, plan in enumerate(plans)
+        if plan[1][1] > 1
+    ]
+    assert deep
+    assert all(
+        plan[1][1] == catalog.catalog_deep_page_for_batch(batch)
+        for batch, plan in deep
+    )
+    assert all(
+        2 <= plan[1][1] <= catalog.CATALOG_MAX_PAGE for _batch, plan in deep
+    )
+    assert all(
+        plan[1][1] == 1
+        for batch, plan in enumerate(plans)
+        if catalog.is_bestseller_probe_batch(batch)
+    )
+    # The deep page actually rotates across batches instead of sticking.
+    assert len({plan[1][1] for _batch, plan in deep}) > 1
+    # Kill switch: disabling the deep page puts the second broad route back
+    # on page 1 with no other change to the plan.
+    monkeypatch.setenv("SNIPERPLUG_BROAD_DEEP_PAGE_ENABLED", "false")
+    assert all(plan[1][1] == 1 for plan in simulate_batches(145))
+    assert all(len(plan) == 4 for plan in simulate_batches(145))

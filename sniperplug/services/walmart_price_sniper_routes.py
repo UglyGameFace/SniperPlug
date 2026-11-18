@@ -28,6 +28,11 @@ PRICE_SNIPER_ORDER = "ascending"
 # priority slot already covers. Every other hot query is also in the general
 # rotation, so priority is an extra check at a different phase, not its only
 # coverage.
+#
+# User wishlist terms (``extra_queries`` below) are appended after the hot
+# list in the same rotation: they share the existing priority slot — no
+# extra searches, no route removed — so a wishlisted item is price-checked
+# on the priority cadence instead of waiting for the general rotation.
 PRIORITY_SNIPER_QUERIES: tuple[str, ...] = (
     "iphone",
     "apple iphone",
@@ -79,12 +84,31 @@ def priority_sniper_interval_batches(
     return max(every, min_interval)
 
 
+def priority_pool(
+    extra_queries: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """The priority rotation: the hot list, then any steered extra terms.
+
+    Extras (user wishlist terms) are deduplicated and never repeat a hot
+    query — a term the hot list already covers keeps its hot-list slot.
+    With no extras the pool is exactly the hot list, as before.
+    """
+
+    pool = list(PRIORITY_SNIPER_QUERIES)
+    for extra in extra_queries:
+        query = str(extra or "").strip()
+        if query and query not in pool:
+            pool.append(query)
+    return tuple(pool)
+
+
 def priority_sniper_query_for_batch(
     batch_number: int,
     *,
     every_n_batches: int | None = None,
     max_per_hour: int | None = None,
     avoid: str | None = None,
+    extra_queries: tuple[str, ...] = (),
 ) -> str | None:
     """Hot-list query for this batch, or None when no priority slot is due.
 
@@ -99,6 +123,10 @@ def priority_sniper_query_for_batch(
     hot query collides, the next hot query is used instead — still
     deterministic, still one priority search, and the skipped hot query is
     picked up on the next priority firing.
+
+    ``extra_queries`` (user wishlist terms) extend the rotation pool after
+    the hot list; the slot, its cadence and its per-hour cap are unchanged,
+    so steering adds no searches — it only shares the slot that exists.
     """
 
     interval = priority_sniper_interval_batches(
@@ -108,10 +136,11 @@ def priority_sniper_query_for_batch(
     batch = max(0, int(batch_number))
     if batch % interval != 0:
         return None
-    index = (batch // interval) % len(PRIORITY_SNIPER_QUERIES)
-    query = PRIORITY_SNIPER_QUERIES[index]
+    pool = priority_pool(extra_queries)
+    index = (batch // interval) % len(pool)
+    query = pool[index]
     if avoid is not None and query == avoid:
-        query = PRIORITY_SNIPER_QUERIES[(index + 1) % len(PRIORITY_SNIPER_QUERIES)]
+        query = pool[(index + 1) % len(pool)]
     return query
 
 

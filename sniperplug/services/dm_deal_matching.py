@@ -29,7 +29,7 @@ from sniperplug.services.dm_product_interests import (
     match_product_preferences,
     split_product_preferences,
 )
-from sniperplug.services.user_wishlist import match_wishlist_items
+from sniperplug.services.user_wishlist import match_wishlist_entry
 
 
 def match_dm_deal(
@@ -51,7 +51,9 @@ def match_dm_deal(
     so a muted or unselected category cannot veto the exact item the user
     asked for. It never touches a hard guard — exact proof, discount/score/
     savings floors, max price, keywords, dedupe and daily limits all still
-    apply, and it never triggers its own scan.
+    apply. A wishlist item may also carry the user's own target price for
+    that exact item; that target is itself a hard guard — above it, the
+    deal is not DM'd at all, however it would otherwise have matched.
 
     Product interests are OR within their group, brands are OR within their group,
     and when both groups are configured a Walmart deal must satisfy both groups.
@@ -82,7 +84,11 @@ def match_dm_deal(
     product_interests, product_brands = split_product_preferences(pref.categories)
     selected_routes = split_dm_route_preferences(pref.categories)
     has_route_intent = bool(selected_routes)
-    wishlist_match = match_wishlist_items(wishlist_items, search_text)
+    wishlist_entry = match_wishlist_entry(wishlist_items, search_text)
+    wishlist_match = str(wishlist_entry) if wishlist_entry is not None else ""
+    wishlist_target_cents = (
+        wishlist_entry.target_price_cents if wishlist_entry is not None else None
+    )
     has_wishlist_match = bool(wishlist_match)
     has_specific_walmart_intent = bool(
         not has_route_intent and is_walmart and (product_interests or product_brands)
@@ -143,6 +149,17 @@ def match_dm_deal(
     # These remain hard even for product intent and Flip Override.
     if pref.max_price_cents is not None and current_cents > pref.max_price_cents:
         return DmDealMatchDecision(False, "price is above your maximum", category_key)
+    if wishlist_target_cents is not None and current_cents > wishlist_target_cents:
+        # The user priced this exact item themselves ("only tell me at or
+        # under $X"), so the target outranks every inclusion layer below.
+        return DmDealMatchDecision(
+            False,
+            (
+                f"wishlist: {wishlist_match} is ${current_cents / 100:,.2f}, "
+                f"above your ${wishlist_target_cents / 100:,.2f} target"
+            ),
+            category_key,
+        )
     if pref.walmart_cash_only and cash_cents <= 0:
         return DmDealMatchDecision(
             False,
@@ -329,7 +346,14 @@ def match_dm_deal(
     if has_specific_walmart_intent:
         reason += " • explicit product intent"
     if has_wishlist_match and not has_route_intent:
-        reason += f" • wishlist: {wishlist_match}"
+        if wishlist_target_cents is not None:
+            reason += (
+                f" • wishlist: {wishlist_match} • "
+                f"${current_cents / 100:,.2f} beat your "
+                f"${wishlist_target_cents / 100:,.2f} target"
+            )
+        else:
+            reason += f" • wishlist: {wishlist_match}"
 
     if is_walmart:
         personalize_dm_card_title(card)

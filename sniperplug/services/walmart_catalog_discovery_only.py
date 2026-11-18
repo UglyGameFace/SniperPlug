@@ -18,6 +18,7 @@ from sniperplug.services.walmart_global_catalog_autoscan import (
     GlobalCatalogClaim,
     load_global_catalog_state,
 )
+from sniperplug.services.user_wishlist import list_wishlist_steering_terms
 from sniperplug.services.walmart_price_sniper_routes import (
     PRICE_SNIPER_ORDER,
     PRICE_SNIPER_QUERIES,
@@ -180,6 +181,8 @@ CatalogRequest = tuple[str, int, "str | None", "str | None"]
 
 def catalog_request_plan_for_claim(
     claim: GlobalCatalogClaim,
+    *,
+    wishlist_terms: tuple[str, ...] = (),
 ) -> tuple[CatalogRequest, ...]:
     """Four bounded API searches: two fresh routes plus two price snipers.
 
@@ -205,6 +208,14 @@ def catalog_request_plan_for_claim(
     new persistent state is needed. The rotation advances only by rotation
     slots actually spent, so a query displaced by a priority search is
     deferred to the next rotation slot, never skipped.
+
+    ``wishlist_terms`` are the distinct items users put on their wishlists
+    (read fresh from the wishlist table by the caller each pass). They join
+    the priority rotation after the hot list, so a wishlisted item gets the
+    priority cadence instead of waiting for the general rotation. The plan
+    is still four searches: steering shares the existing priority slot, it
+    never adds a call and never displaces a broad route. With no wishlist
+    terms the plan is byte-for-byte the pre-steering plan.
     """
     routes = tuple(claim.queries)
     if not routes:
@@ -241,7 +252,7 @@ def catalog_request_plan_for_claim(
         PRICE_SNIPER_SORT, PRICE_SNIPER_ORDER,
     ))
     priority_query = priority_sniper_query_for_batch(
-        batch_number, avoid=plan[-1][0],
+        batch_number, avoid=plan[-1][0], extra_queries=wishlist_terms,
     )
     if priority_query is not None:
         second_sniper = priority_query
@@ -297,7 +308,9 @@ async def discover_walmart_catalog_candidates(
     freshly claimed routes plus two price-sorted (lowest first) searches for
     rotating high-value products, where price errors surface. The second
     sniper slot is the priority hot list (phones, consoles, GPUs) every 3rd
-    batch. Manual callers without a durable claim preserve the legacy
+    batch. Distinct user-wishlist terms are read fresh each claimed pass and
+    join that priority rotation after the hot list, inside the same budget.
+    Manual callers without a durable claim preserve the legacy
     two-page behavior.
     All scans stay global, independent of Discord server count.
 
@@ -313,10 +326,22 @@ async def discover_walmart_catalog_candidates(
     pages_checked = 0
     searches_attempted = 0
     preset_queries = tuple(hunt.dedupe_strings(preset.queries))
+    wishlist_terms: tuple[str, ...] = ()
     if catalog_claim is not None:
         if preset_queries != catalog_claim.queries:
             raise ValueError("Walmart catalog claim/preset routes differ")
-        request_plan = catalog_request_plan_for_claim(catalog_claim)
+        if db is not None:
+            try:
+                # Read fresh every pass, so an item added a minute ago
+                # steers the scan without a restart. A wishlist read
+                # failure must never fail discovery — it degrades to the
+                # unsteered plan, exactly today's behaviour.
+                wishlist_terms = await list_wishlist_steering_terms(db)
+            except Exception:
+                wishlist_terms = ()
+        request_plan = catalog_request_plan_for_claim(
+            catalog_claim, wishlist_terms=wishlist_terms
+        )
         completed_passes = catalog_claim.completed_passes_before
     else:
         catalog_pages, completed_passes = await _current_catalog_pages(db)
@@ -472,6 +497,15 @@ async def discover_walmart_catalog_candidates(
         f"items with multiple observed prices **{multi_price_item_ids}** • "
         f"usable item IDs **{item_id_count}** • foreground exact checks **0**."
     )
+    if wishlist_terms:
+        shown_terms = ", ".join(wishlist_terms[:5])
+        if len(wishlist_terms) > 5:
+            shown_terms += ", …"
+        warnings.append(
+            "Walmart wishlist steering: "
+            f"**{len(wishlist_terms)}** wishlist terms on the priority "
+            f"cadence • terms **{shown_terms}**."
+        )
     return WalmartCatalogDiscoveryResult(
         pages_checked=pages_checked,
         products_checked=len(all_candidates),

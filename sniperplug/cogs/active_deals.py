@@ -129,21 +129,6 @@ class ActiveDealsCog(commands.Cog):
             page_data,
         )
 
-    @app_commands.command(name="active_deals_cleanup", description="Mark deals stale when SniperPlug has not observed them again.")
-    @app_commands.describe(stale_after_hours="Mark deals stale if not observed again after this many hours.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def active_deals_cleanup(self, interaction: discord.Interaction, stale_after_hours: app_commands.Range[int, 1, 168] = DEFAULT_STALE_AFTER_HOURS) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which cache to clean.", ephemeral=True)
-            return
-        updated = await mark_stale_deals(self.bot.db, interaction.guild_id, stale_after_hours=int(stale_after_hours))
-        await interaction.followup.send(
-            f"Marked **{updated}** cached deal(s) stale because SniperPlug had not observed them again in **{stale_after_hours}h**. "
-            "Stale means the observation aged out; it does not prove the retailer listing is dead.",
-            ephemeral=True,
-        )
-
 
 class WalmartPageDealSelect(discord.ui.Select):
     def __init__(self, rows: list[dict[str, Any]]):
@@ -423,6 +408,7 @@ def build_active_deals_embed(guild_id: int, page_data: ActiveDealPage) -> discor
             f"Page: **{page_data.clamped_page}/{page_data.total_pages}** • Matching recent observations: **{page_data.total}**\n"
             f"Filters: {filter_text} • Sort: `{page_data.sort}`\n\n"
             f"Rows remain here only while SniperPlug has observed them within the last **{DEFAULT_STALE_AFTER_HOURS} hours**. "
+            "Stale means the observation aged out; it does not prove the retailer listing is dead. "
             "This cache is not a live retailer guarantee—open the listing and verify the current price, seller, variant, and stock before buying.\n\n"
             "Walmart rows on this page can be rechecked directly with the controls below. Default view hides 0% watchlist/review/scout junk. Use `min_discount:0` only for raw cache debugging."
         ),

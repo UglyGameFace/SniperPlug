@@ -176,47 +176,6 @@ class HomeDepotLocalCog(commands.Cog):
         finally:
             await scan_operation_locks.release(lock_key)
 
-    @app_commands.command(name="hd_penny_zip", description="Start a ZIP-anchored Home Depot penny/clearance scan using a safe default search.")
-    @app_commands.describe(zip_code="5-digit ZIP code to anchor the penny/clearance scan.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def hd_penny_zip(self, interaction: discord.Interaction, zip_code: str) -> None:
-        await interaction.response.defer(ephemeral=True)
-        cleaned_zip = _clean_zip(zip_code)
-        if not ZIP_RE.match(cleaned_zip):
-            await interaction.followup.send("Please enter a valid 5-digit ZIP code.", ephemeral=True)
-            return
-        provider = provider_registry.get("home_depot_serpapi")
-        if provider is None:
-            await interaction.followup.send("Home Depot SerpApi provider is not registered yet.", ephemeral=True)
-            return
-        health = await provider.healthcheck()
-        if health.status != ProviderStatus.READY:
-            await interaction.followup.send(health.message, ephemeral=True)
-            return
-        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hd_penny_zip", query="clearance", preset=cleaned_zip)
-        if not await scan_operation_locks.acquire(lock_key):
-            await interaction.followup.send("That Home Depot ZIP scan is already running. I blocked the duplicate tap so it does not spend another SerpApi credit.", ephemeral=True)
-            return
-        try:
-            quota = serpapi_quota_guard.check(interaction.user.id, cost=1)
-            if not quota.allowed:
-                await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
-                return
-            result = await provider.scan(
-                ProviderScanRequest(
-                    source_key="home_depot_serpapi",
-                    query="clearance",
-                    max_results=24,
-                    metadata={"zip_code": cleaned_zip, "requested_by": str(interaction.user.id), "scan_type": "hd_penny_zip", "db": self.bot.db},
-                )
-            )
-            quota_cost = 0 if result.metadata.get("cache_hit") else 1
-            quota_after = serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)
-            candidates = tuple(sorted(result.candidates, key=_penny_sort_key, reverse=True))[:8]
-            await interaction.followup.send(embed=build_hd_penny_zip_embed(cleaned_zip, candidates, result.warnings, quota_after.daily_used, quota_after.daily_limit), ephemeral=True)
-        finally:
-            await scan_operation_locks.release(lock_key)
-
 
 async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, store_id: str | None = None, db: Any = None) -> HomeDepotLocalScan:
     provider = provider_registry.get("home_depot_serpapi")
@@ -349,18 +308,6 @@ def build_hd_stock_embed(scan: HomeDepotLocalScan) -> discord.Embed:
     embed.set_footer(text=f"{scan.quota_text} • Product API detail lookup: {'yes' if scan.detail_lookup_used else 'no'} • ZIP-only stock proof is blocked unless a real store_id is used. Call/check before driving.")
     return embed
 
-
-def build_hd_penny_zip_embed(zip_code: str, candidates: tuple[SourceCandidate, ...], warnings: tuple[str, ...], used: int, limit: int) -> discord.Embed:
-    embed = discord.Embed(title=f"🟡 Home Depot Penny / Clearance ZIP Scan • {zip_code}", description="V1 scans a targeted Home Depot clearance query with ZIP context and ranks returned candidates by penny/clearance signals. This is **not** a locked ZIP penny database yet.", color=discord.Color.gold())
-    if not candidates:
-        embed.add_field(name="No candidates", value="No Home Depot products came back for the ZIP scan. Try `/home_depot_penny_hunt` with a tighter query like `faucet`, `vanity`, `ryobi`, or `milwaukee`.", inline=False)
-    else:
-        lines = [f"**{idx}. {trim_title(c.title, 55)}**\nPrice: **{money(c.current_price)}** • Score: `{score_penny_candidate(c, has_store_id=True).score}/100` • SKU: `{c.sku or c.product_id or 'n/a'}`" for idx, c in enumerate(candidates[:6], start=1)]
-        embed.add_field(name="Top candidates", value=_trim_field("\n\n".join(lines)), inline=False)
-    if warnings:
-        embed.add_field(name="Provider notes", value=_trim_field("\n".join(f"• {w}" for w in warnings[:5])), inline=False)
-    embed.set_footer(text=f"SerpApi used: {used}/{limit} today • Verify in store before posting.")
-    return embed
 
 
 async def _apply_price_history_reference(candidate: SourceCandidate, *, db: Any, store_id: str | None, zip_code: str | None) -> SourceCandidate:
@@ -598,9 +545,6 @@ def _safe_image_url(value: str | None) -> str | None:
 def _trim_field(value: str, limit: int = 1024) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
-
-def _penny_sort_key(candidate: SourceCandidate) -> tuple[int, int]:
-    return score_penny_candidate(candidate, has_store_id=True).score, 100 - int(candidate.current_price or 99)
 
 
 def _clean_sku(value: str) -> str:

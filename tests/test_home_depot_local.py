@@ -1,4 +1,4 @@
-from sniperplug.cogs.home_depot_local import build_hd_penny_zip_embed, build_hd_stock_embed, HomeDepotLocalScan
+from sniperplug.cogs.home_depot_local import build_hd_stock_embed, HomeDepotLocalScan
 from sniperplug.models.candidate import SourceCandidate
 
 
@@ -36,23 +36,3 @@ def test_hd_stock_embed_shows_local_proof_warning_and_product_data():
     assert "Public alert: **No" in fields["SniperPlug read"]
     assert "Call/check before driving" in embed.footer.text
 
-
-def test_hd_penny_zip_embed_lists_ranked_candidates():
-    candidate = SourceCandidate(
-        source_key="home_depot_serpapi",
-        retailer="Home Depot",
-        title="Clearance Faucet",
-        product_url="https://www.homedepot.com/p/123456789",
-        current_price=5.03,
-        product_id="123456789",
-        sku="123456789",
-        signals=["clearance price-ending signal: .03"],
-    )
-
-    embed = build_hd_penny_zip_embed("06610", (candidate,), (), used=2, limit=10)
-    fields = {field.name: field.value for field in embed.fields}
-
-    assert "06610" in embed.title
-    assert "Top candidates" in fields
-    assert "Clearance Faucet" in fields["Top candidates"]
-    assert "SerpApi used: 2/10 today" in embed.footer.text

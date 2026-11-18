@@ -4,7 +4,7 @@ Threshold authority: resolve_min_discount (guild setting, else 40) is the one
 place display/public thresholds come from. The public gate, the /deals finder,
 and the manual commands must all agree on it.
 
-Scan locks: /deals, /walmart_scan, /check_deal and /hunt (live override in
+Scan locks: /deals, /check_deal and /hunt (live override in
 VerifiedDealScannerCog, plus the base definition) refuse a second concurrent
 invocation politely instead of double-running.
 
@@ -243,7 +243,7 @@ def test_no_hardcoded_50_or_30_defaults_in_threshold_call_sites():
         assert "min_discount=50" not in source
     # /deals no longer passes a hardcoded 50 to the scan.
     assert "await self._send_walmart_scan(interaction, search, 50," not in scanner
-    # /walmart_scan no longer defaults to 30.
+    # No scan command carries a hardcoded 30 default.
     assert "app_commands.Range[int, 0, 95] = 30" not in scanner
     # The /deals fallback ladder no longer starts at a hardcoded 50.
     assert "BEGINNER_FALLBACK_DISCOUNTS = (50, 30, 10, 0)" not in scanner
@@ -290,32 +290,6 @@ async def test_deals_passes_guild_threshold_and_defaults_to_40():
         await scan_operation_locks.clear()
 
 
-@pytest.mark.asyncio
-async def test_walmart_scan_omitted_threshold_resolves_to_40_explicit_overrides():
-    await scan_operation_locks.clear()
-    conn, db = await open_db()
-    try:
-        cog = DealScannerCog(SimpleNamespace(db=db))
-        seen: dict = {}
-
-        async def fake_send(interaction, query, min_discount, *rest):
-            seen["min_discount"] = min_discount
-
-        cog._send_walmart_scan = fake_send  # type: ignore[method-assign]
-        await cog.walmart_scan.callback(
-            cog, FakeInteraction(guild_id=11), query="lego"
-        )
-        assert seen == {"min_discount": 40}
-
-        await cog.walmart_scan.callback(
-            cog, FakeInteraction(guild_id=11), query="lego", min_discount=25
-        )
-        assert seen == {"min_discount": 25}
-    finally:
-        await conn.close()
-        await scan_operation_locks.clear()
-
-
 # --- (3) Second concurrent invocation is refused, no double-run ------------
 
 
@@ -343,45 +317,6 @@ async def test_second_concurrent_deals_is_refused_and_does_not_double_run():
             cog, FakeInteraction(guild_id=11, user_id=7), search="oled tv"
         )
         assert len(calls) == 1
-    finally:
-        await scan_operation_locks.clear()
-
-
-@pytest.mark.asyncio
-async def test_second_concurrent_walmart_scan_is_refused():
-    await scan_operation_locks.clear()
-    try:
-        conn, db = await open_db()
-        try:
-            cog = DealScannerCog(SimpleNamespace(db=db))
-            calls: list = []
-
-            async def fake_send(*args, **kwargs):
-                calls.append(args)
-
-            cog._send_walmart_scan = fake_send  # type: ignore[method-assign]
-            key = ScanLockKey(
-                guild_id=11,
-                user_id=7,
-                action="walmart_scan",
-                query="lego",
-                page=1,
-                min_discount=None,
-            )
-            assert await scan_operation_locks.acquire(key) is True
-
-            interaction = FakeInteraction(guild_id=11, user_id=7)
-            await cog.walmart_scan.callback(cog, interaction, query="lego")
-            assert calls == []
-            assert DUPLICATE_SCAN_MESSAGE in interaction.sent_text()
-
-            await scan_operation_locks.release(key)
-            await cog.walmart_scan.callback(
-                cog, FakeInteraction(guild_id=11, user_id=7), query="lego"
-            )
-            assert len(calls) == 1
-        finally:
-            await conn.close()
     finally:
         await scan_operation_locks.clear()
 

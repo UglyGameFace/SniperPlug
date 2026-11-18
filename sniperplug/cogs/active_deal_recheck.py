@@ -66,48 +66,6 @@ class ActiveDealRecheckCog(commands.Cog):
 
         await interaction.followup.send(embed=build_recheck_embed(row, result), ephemeral=True)
 
-    @app_commands.command(name="active_deals_recheck", description="Safely recheck several recent Walmart observations with bounded API concurrency.")
-    @app_commands.describe(limit="How many recent Walmart observations to recheck. Maximum 10.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def active_deals_recheck(
-        self,
-        interaction: discord.Interaction,
-        limit: app_commands.Range[int, 1, BATCH_RECHECK_MAX_ITEMS] = 5,
-    ) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I know which deal cache to recheck.", ephemeral=True)
-            return
-
-        provider = provider_registry.get("walmart")
-        if provider is None:
-            await interaction.followup.send("The Walmart provider is not registered in this bot process.", ephemeral=True)
-            return
-
-        rows = await list_recent_walmart_observations(self.bot.db, interaction.guild_id, int(limit))
-        if not rows:
-            await interaction.followup.send("There are no recent Walmart observations to recheck. Run `/walmart find`, `/walmart hunt`, or `/walmart discover` first.", ephemeral=True)
-            return
-
-        results = await recheck_walmart_batch(
-            provider,
-            rows,
-            concurrency=BATCH_RECHECK_CONCURRENCY,
-            timeout_seconds=BATCH_RECHECK_TIMEOUT_SECONDS,
-        )
-        for row, result in results:
-            await record_recheck_attempt(
-                self.bot.db,
-                interaction,
-                row,
-                result,
-                trigger_source="slash_batch",
-            )
-            if result.status not in _NON_PERSISTED_STATUSES and result.status != "timeout":
-                await persist_walmart_recheck(self.bot.db, interaction.guild_id, str(row["active_key"]), result)
-
-        await interaction.followup.send(embed=build_batch_recheck_embed(results), ephemeral=True)
-
 
 async def record_recheck_attempt(db, interaction: discord.Interaction, row: dict, result, *, trigger_source: str) -> None:
     if interaction.guild_id is None:
@@ -142,23 +100,6 @@ async def find_cached_walmart_observation(db, guild_id: int, search: str) -> tup
     )
     rows = [dict(row) for row in await cursor.fetchall()]
     return (rows[0] if len(rows) == 1 else None, len(rows))
-
-
-async def list_recent_walmart_observations(db, guild_id: int, limit: int) -> list[dict]:
-    await ensure_public_post_tables(db)
-    conn = db.require_conn()
-    safe_limit = max(1, min(int(limit), BATCH_RECHECK_MAX_ITEMS))
-    cursor = await conn.execute(
-        """
-        SELECT active_key, retailer, title, url, current_price, discount, score, source_label, status, first_seen_at, last_seen_at
-        FROM guild_active_deal_cache
-        WHERE guild_id = ? AND retailer = 'walmart' AND status = 'active'
-        ORDER BY last_seen_at DESC
-        LIMIT ?
-        """,
-        (guild_id, safe_limit),
-    )
-    return [dict(row) for row in await cursor.fetchall()]
 
 
 async def recheck_walmart_batch(provider, rows: list[dict], *, concurrency: int, timeout_seconds: int):

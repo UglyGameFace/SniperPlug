@@ -7,10 +7,12 @@ BOT = Path("sniperplug/bot.py").read_text(encoding="utf-8")
 def test_deal_category_panels_use_timeout_none():
     dashboard_start = PUBLIC_ALERTS.index("class DealCategoryDashboardView")
     shortcut_start = PUBLIC_ALERTS.index("class DealCategoriesShortcutView")
-    cog_start = PUBLIC_ALERTS.index("class PublicAlertsCog")
+    # PublicAlertsCog was removed in the 2026-11-18 dead-feature cleanup;
+    # the module's helper functions now follow the views.
+    helpers_start = PUBLIC_ALERTS.index("def public_alert_channel_missing_permissions")
 
     dashboard_block = PUBLIC_ALERTS[dashboard_start:shortcut_start]
-    shortcut_block = PUBLIC_ALERTS[shortcut_start:cog_start]
+    shortcut_block = PUBLIC_ALERTS[shortcut_start:helpers_start]
 
     assert "super().__init__(timeout=None)" in dashboard_block
     assert "super().__init__(timeout=None)" in shortcut_block

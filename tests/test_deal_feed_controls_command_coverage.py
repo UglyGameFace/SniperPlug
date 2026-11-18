@@ -49,4 +49,7 @@ def test_command_names_still_exist():
     assert 'name="discover"' in DISCOVER
     assert "verified_hunt_button_callback" in HUNT
     assert 'name="deals"' in SCANNER
-    assert 'name="walmart_scan"' in SCANNER
+    # walmart_scan was removed in the 2026-11-18 dead-feature cleanup: the
+    # top-level command was retired/pruned and its cog was never loaded;
+    # /walmart find owns advanced Walmart ranking now.
+    assert 'name="walmart_scan"' not in SCANNER

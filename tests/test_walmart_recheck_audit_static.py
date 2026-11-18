@@ -44,10 +44,15 @@ def test_audit_preserves_source_actor_result_and_proof_values():
         assert token in AUDIT
 
 
-def test_single_and_batch_slash_rechecks_record_before_persistence():
+def test_single_slash_recheck_records_before_persistence():
+    # The batch slash recheck (trigger_source="slash_batch") was removed in
+    # the 2026-11-18 dead-feature cleanup: ActiveDealRecheckCog was never
+    # registered on the live bot, so the command never ran in prod. Batch
+    # recheck lives on as the /walmart active page picker button, which
+    # persists through the same selective gate in active_deals.py.
     assert 'trigger_source="slash_single"' in RECHECK
-    assert 'trigger_source="slash_batch"' in RECHECK
-    assert RECHECK.count("await record_recheck_attempt(") >= 2
+    assert 'trigger_source="slash_batch"' not in RECHECK
+    assert "await record_recheck_attempt(" in RECHECK
     single_audit = RECHECK.index('trigger_source="slash_single"')
     single_persist = RECHECK.index("await persist_walmart_recheck", single_audit)
     assert single_audit < single_persist
@@ -56,7 +61,11 @@ def test_single_and_batch_slash_rechecks_record_before_persistence():
 def test_audit_is_not_limited_to_persisted_statuses():
     assert "await record_recheck_attempt(" in RECHECK
     assert "if result.status not in _NON_PERSISTED_STATUSES" in RECHECK
-    assert "result.status != \"timeout\"" in RECHECK
+    # The audit record is written unconditionally, before the selective
+    # persistence gate, so non-persisted statuses are still audited.
+    record_at = RECHECK.index("await record_recheck_attempt(")
+    gate_at = RECHECK.index("if result.status not in _NON_PERSISTED_STATUSES")
+    assert record_at < gate_at
     assert "bool(getattr(result, \"reused\", False))" in AUDIT
 
 

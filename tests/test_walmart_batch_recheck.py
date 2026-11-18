@@ -58,9 +58,13 @@ def row(item_id: int) -> dict:
 def test_batch_limits_are_hard_coded_and_owner_triggered():
     assert BATCH_RECHECK_MAX_ITEMS == 10
     assert BATCH_RECHECK_CONCURRENCY == 2
-    assert 'name="active_deals_recheck"' in SOURCE
+    # The standalone /active_deals_recheck slash command was removed in the
+    # 2026-11-18 dead-feature cleanup: it was never registered on the live
+    # bot (retired/pruned surface). Batch recheck lives on as the /walmart
+    # active page picker button, which enforces the same hard-coded bounds
+    # through these constants.
+    assert 'name="active_deals_recheck"' not in SOURCE
     assert "has_permissions(manage_guild=True)" in SOURCE
-    assert "app_commands.Range[int, 1, BATCH_RECHECK_MAX_ITEMS]" in SOURCE
 
 
 def test_batch_never_exceeds_concurrency_limit():
@@ -93,13 +97,11 @@ def test_timeout_is_isolated_and_does_not_cancel_other_rows():
     assert "cached row was left unchanged" in results[0][1].message
 
 
-def test_batch_query_only_selects_active_walmart_rows():
-    assert "retailer = 'walmart' AND status = 'active'" in SOURCE
-    assert "ORDER BY last_seen_at DESC" in SOURCE
-    assert "LIMIT ?" in SOURCE
-
-
 def test_non_truthful_results_are_not_persisted():
-    assert 'result.status not in _NON_PERSISTED_STATUSES and result.status != "timeout"' in SOURCE
-    assert '"error", "identity_missing", "provider_unsupported"' in SOURCE
+    # The live batch path is the /walmart active page picker in
+    # active_deals.py: it persists only statuses outside its non-persisted
+    # set, which includes timeouts and provider errors.
+    active_deals_source = Path("sniperplug/cogs/active_deals.py").read_text()
+    assert '"error", "identity_missing", "provider_unsupported", "timeout"' in active_deals_source
+    assert "if result.status not in NON_PERSISTED_RECHECK_STATUSES:" in active_deals_source
     assert "never use SerpApi" in SOURCE

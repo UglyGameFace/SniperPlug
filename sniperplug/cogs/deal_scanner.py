@@ -37,15 +37,6 @@ from sniperplug.services.walmart_exact_verification_queue import (
 )
 
 
-SORT_CHOICES = [
-    app_commands.Choice(name="Relevance", value="relevance"),
-    app_commands.Choice(name="Price: low to high", value="price_ascending"),
-    app_commands.Choice(name="Price: high to low", value="price_descending"),
-    app_commands.Choice(name="Bestseller", value="bestseller"),
-    app_commands.Choice(name="Customer rating", value="customerRating"),
-    app_commands.Choice(name="New", value="new"),
-]
-
 # Rungs below the resolved starting threshold for /walmart find. The starting value
 # itself comes from resolve_min_discount (guild setting, else 40) and is
 # prepended by cards_with_fallback; these are only the relax steps, so the
@@ -176,25 +167,6 @@ class DealScannerCog(commands.Cog):
         if not await safe_defer(interaction, ephemeral=True, thinking=True):
             return
         await self._send_walmart_api_probe(interaction, query, int(max_results))
-
-    @app_commands.command(name="walmart_scan", description="Advanced Walmart deal scan for staff/admins.")
-    @app_commands.describe(query="Product search, like gaming monitor, tide detergent, lego, patio set.", min_discount="Only show deals at or above this percent off. Try 50 or 80.", page="Walmart result page to scan. Use page 2/3 if page 1 repeats weak deals.", max_results="How many Walmart results to inspect on this page. Max 25.", sort="Optional Walmart sorting mode.", alerts_only="Only show candidates SniperPlug would alert on.")
-    @app_commands.choices(sort=SORT_CHOICES)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def walmart_scan(self, interaction: discord.Interaction, query: str, min_discount: app_commands.Range[int, 0, 95] | None = None, page: app_commands.Range[int, 1, 40] = 1, max_results: app_commands.Range[int, 1, 25] = 10, sort: app_commands.Choice[str] | None = None, alerts_only: bool = False) -> None:
-        lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="walmart_scan", query=query, page=page, min_discount=min_discount)
-        if not await acquire_command_scan_lock(interaction, lock_key):
-            return
-        try:
-            db = getattr(self.bot, "db", None)
-            # No explicit min_discount: the single authority resolves the guild
-            # setting (else 40). An explicit value is a deliberate override.
-            resolved_discount = await resolve_min_discount(db, interaction.guild_id, explicit=min_discount)
-            await interaction.response.defer(ephemeral=True)
-            sort_value, order_value = parse_sort_choice(sort.value if sort else None)
-            await self._send_walmart_scan(interaction, query, resolved_discount, page, max_results, sort_value, order_value, alerts_only, False)
-        finally:
-            await scan_operation_locks.release(lock_key)
 
     @app_commands.command(name="check_deal", description="Check one Walmart product link or item ID directly, even when search never surfaces it.")
     @app_commands.describe(link="Walmart product link or bare item ID. Example: https://www.walmart.com/ip/AT-T-Apple-iPhone-11-64GB-Green/425031866 or 425031866")
@@ -494,10 +466,6 @@ class DealScannerCog(commands.Cog):
     @walmart_api_probe.error
     async def walmart_api_probe_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await send_command_error(interaction, "You need **Manage Server** permission to run the Walmart API probe." if isinstance(error, app_commands.MissingPermissions) else f"Walmart API probe hit an error: `{error}`")
-
-    @walmart_scan.error
-    async def walmart_scan_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        await send_command_error(interaction, "You need **Manage Server** permission to run advanced Walmart scans. Use `/walmart find` for the simple search." if isinstance(error, app_commands.MissingPermissions) else f"Walmart scan hit an error: `{error}`")
 
     @check_deal.error
     async def check_deal_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
@@ -1079,14 +1047,6 @@ def no_match_help(query: str, min_discount: int, page: int, simple_mode: bool) -
     if simple_mode:
         return "I checked the returned products and could not prove a useful markdown yet.\nTry **Next Page**, **Hunt 80%+**, or a tighter search like `iphone case`, `oled tv`, `lego`, `detergent`, or `ssd`."
     return f"Try one of these next:\n• `/walmart find query:{query} min_discount:{min_discount} page:{page + 1}`\n• `/walmart find query:{query} min_discount:{max(0, min_discount - 20)} page:{page}`\n• Try tighter terms like `oled tv`, `gaming monitor`, `lego`, `patio`, `ssd`."
-
-
-def parse_sort_choice(value: str | None) -> tuple[str | None, str | None]:
-    if value == "price_ascending":
-        return "price", "ascending"
-    if value == "price_descending":
-        return "price", "descending"
-    return value, None
 
 
 def discount_percent(current_price: float | None, typical_price: float | None) -> float | None:

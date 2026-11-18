@@ -4,183 +4,13 @@ import os
 from typing import Any
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
-from sniperplug.cogs.active_deals import active_deal_counts
-from sniperplug.cogs.public_alerts import format_auto_scan_status, get_public_alert_config, list_retailer_auto_scan_settings
 from sniperplug.providers import serpapi_home_depot as home_depot_search_cache_module
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services import embed_delivery as embed_delivery_module
 from sniperplug.services import home_depot_product_lookup as home_depot_detail_cache_module
-from sniperplug.services.command_catalog import COMMAND_AUDIENCE_ORDER, CommandCatalogEntry, entries_for_audience
-from sniperplug.services.deal_threshold_settings import get_starting_deal_percent, set_starting_deal_percent
-from sniperplug.services.error_logging import fetch_recent_error_events
-from sniperplug.services.public_posting import format_retailers
-from sniperplug.services.quota_guard import serpapi_quota_guard
-
-
-class SettingsDashboardCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-    @app_commands.command(name="sniperplug_dashboard", description="Show SniperPlug posting, auto-scan, provider, and cache status.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def sniperplug_dashboard(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I can show that server settings.", ephemeral=True)
-            return
-
-        public_config = await get_public_alert_config(self.bot.db, interaction.guild_id)
-        auto_scan = await list_retailer_auto_scan_settings(self.bot.db, interaction.guild_id)
-        provider_health = await provider_registry.healthchecks()
-        active_counts = await active_deal_counts(self.bot.db, interaction.guild_id)
-        starting_percent = await get_starting_deal_percent(self.bot.db, interaction.guild_id)
-        channel_id = public_config.get("channel_id")
-        channel_text = str(channel_id) if channel_id else "not set"
-
-        embed = discord.Embed(title="SniperPlug Dashboard", description="Settings that decide whether SniperPlug scans, caches, and posts deals.", color=discord.Color.blue())
-        embed.add_field(name="Deal finder threshold", value=f"Starting verified markdown: **{starting_percent}%+**\nChange with `/walmart threshold percent:30`.", inline=False)
-        embed.add_field(name="Public posting", value=f"Enabled: {'yes' if public_config['enabled'] else 'no'}\nChannel ID: {channel_text}\nRetailers: {format_retailers(public_config['retailers'])}", inline=False)
-        embed.add_field(name="Auto-scan retailers", value=format_auto_scan_status(auto_scan), inline=False)
-        embed.add_field(name="Active cache", value=format_active_counts(active_counts), inline=False)
-        embed.add_field(name="Provider health", value=format_provider_health(provider_health), inline=False)
-        embed.add_field(name="Recommended owner checks", value="Run `/sniperplug_doctor`, `/sniperplug_dashboard`, `/sniperplug_commands`, `/public_alerts_status`, `/walmart health`, and `/walmart active` after each deploy.", inline=False)
-        embed.set_footer(text="Manual commands can run even when auto-scan is off. Auto-scan only controls scheduled pulls.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="sniperplug_health", description="Show SniperPlug DB, cache, quota, and recent scan health.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def sniperplug_health(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I can show server-specific scan health.", ephemeral=True)
-            return
-
-        db = self.bot.db
-        try:
-            await db.prune_expired_cache()
-        except Exception:
-            pass
-
-        provider_health = await provider_registry.healthchecks()
-        health = await build_db_health_snapshot(db, interaction.guild_id)
-        quota = serpapi_quota_guard.check(interaction.user.id, cost=0)
-
-        backend = getattr(db, "backend", "unknown")
-        connected = "yes" if getattr(db, "conn", None) is not None else "no"
-        embed = discord.Embed(
-            title="SniperPlug Health",
-            description="Live backend/cache view so we can stop guessing from screenshots.",
-            color=discord.Color.green() if connected == "yes" else discord.Color.red(),
-        )
-        embed.add_field(name="Database", value=f"Backend: **{backend}**\nConnected: **{connected}**", inline=True)
-        embed.add_field(
-            name="SerpApi quota guard",
-            value=(
-                f"Daily: **{quota.daily_used}/{quota.daily_limit}**\n"
-                f"Hourly/user: **{quota.hourly_user_used}/{quota.hourly_user_limit}**\n"
-                f"Monthly safe: **{quota.monthly_used}/{quota.monthly_limit}**"
-            ),
-            inline=True,
-        )
-        embed.add_field(name="Providers", value=format_provider_health(provider_health), inline=False)
-        embed.add_field(name="Cache tables", value=format_cache_counts(health.get("counts", {})), inline=False)
-        embed.add_field(name="Recent scan runs", value=format_recent_scans(health.get("recent_scans", [])), inline=False)
-        embed.add_field(name="Top query memory", value=format_query_memory(health.get("top_queries", [])), inline=False)
-        embed.set_footer(text="Tip: run the same scan twice. Cache hits should rise and provider calls should not.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @sniperplug_health.error
-    async def sniperplug_health_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = "You need **Manage Server** permission to view SniperPlug health." if isinstance(error, app_commands.MissingPermissions) else f"SniperPlug health hit an error: `{error}`"
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-
-    @app_commands.command(name="sniperplug_doctor", description="Run a post-deploy SniperPlug self-check for DB, cache, providers, and safety checks.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def sniperplug_doctor(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I can run server-specific checks.", ephemeral=True)
-            return
-
-        db = self.bot.db
-        provider_health = await provider_registry.healthchecks()
-        health = await build_db_health_snapshot(db, interaction.guild_id)
-        errors = await fetch_recent_error_events(db, limit=5)
-        checks = await build_doctor_checks(self.bot, interaction.guild_id, provider_health, health)
-        failed = [check for check in checks if check[0] == "FAIL"]
-        warnings = [check for check in checks if check[0] == "WARN"]
-        color = discord.Color.red() if failed else discord.Color.orange() if warnings else discord.Color.green()
-        status = "FAIL" if failed else "WARN" if warnings else "PASS"
-
-        embed = discord.Embed(
-            title=f"SniperPlug Doctor • {status}",
-            description="Post-deploy smoke check for the stuff that keeps biting us: DB, cache, providers, slash commands, safety checks, and recent errors.",
-            color=color,
-        )
-        embed.add_field(name="Core checks", value=format_doctor_checks(checks), inline=False)
-        embed.add_field(name="Providers", value=format_provider_health(provider_health), inline=False)
-        embed.add_field(name="DB/cache counts", value=format_cache_counts(health.get("counts", {})), inline=False)
-        embed.add_field(name="Recent errors", value=format_recent_errors(errors), inline=False)
-        embed.add_field(name="Next action", value=doctor_next_action(failed, warnings), inline=False)
-        embed.set_footer(text="Run this after every deploy before testing deal commands.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @sniperplug_doctor.error
-    async def sniperplug_doctor_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = "You need **Manage Server** permission to run SniperPlug Doctor." if isinstance(error, app_commands.MissingPermissions) else f"SniperPlug Doctor hit an error: `{error}`"
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-
-    @app_commands.command(name="deal_threshold", description="Set the starting verified discount percent for /walmart find and /walmart hunt.")
-    @app_commands.describe(percent="Starting verified markdown percent. Lower shows more results. Try 20, 30, 40, or 50.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def deal_threshold(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 95]) -> None:
-        await interaction.response.defer(ephemeral=True)
-        if interaction.guild_id is None:
-            await interaction.followup.send("Use this in a server so I can save the server threshold.", ephemeral=True)
-            return
-        saved = await set_starting_deal_percent(self.bot.db, interaction.guild_id, int(percent))
-        embed = discord.Embed(
-            title="Deal threshold updated",
-            description=(
-                f"SniperPlug will now start `/walmart find` and `/walmart hunt` at **{saved}%+ verified markdown**.\n\n"
-                "Lower numbers show more results. Higher numbers are stricter and may hide profitable flip/value leads."
-            ),
-            color=discord.Color.green(),
-        )
-        embed.add_field(name="Recommended", value="Use **30–40%** for normal deal hunting. Use **50%+** only when you want stricter glitch-style markdowns.", inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @deal_threshold.error
-    async def deal_threshold_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        message = "You need **Manage Server** permission to change the deal threshold." if isinstance(error, app_commands.MissingPermissions) else f"Deal threshold hit an error: `{error}`"
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-
-    @app_commands.command(name="sniperplug_commands", description="Show what each SniperPlug command is for so nobody has to guess.")
-    @app_commands.describe(audience="Optional filter: everyone, staff, or owner.")
-    @app_commands.choices(
-        audience=[
-            app_commands.Choice(name="Everyone", value="everyone"),
-            app_commands.Choice(name="Staff", value="staff"),
-            app_commands.Choice(name="Owner", value="owner"),
-        ]
-    )
-    async def sniperplug_commands(self, interaction: discord.Interaction, audience: app_commands.Choice[str] | None = None) -> None:
-        await interaction.response.defer(ephemeral=True)
-        entries = entries_for_audience(audience.value if audience else None)
-        embed = build_command_guide_embed(entries, audience.value if audience else None)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+from sniperplug.services.command_catalog import CommandCatalogEntry
 
 
 async def build_db_health_snapshot(db: Any, guild_id: int) -> dict[str, Any]:
@@ -365,18 +195,12 @@ SPECIALIST_COMMANDS = {
     "/home_depot_search",
     "/home_depot_penny_hunt",
     "/hd_stock",
-    "/hd_penny_zip",
     "/local_check",
     "/seed_clearance",
     "/clearance_bank",
 }
 ADVANCED_COMMANDS = {
     "/walmart find",
-    "/active_deals_cleanup",
-    "/public_alerts_status",
-    "/setup_sniperplug_here_status",
-    "/retailer_autoscan",
-    "/retailer_autoscan_status",
     "/sniperplug_dashboard",
 }
 

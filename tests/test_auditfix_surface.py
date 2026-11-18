@@ -1,10 +1,11 @@
 """Regression tests for the audit-surface fixes (audit SS3 items 5, 12, 13, 14, 17).
 
 Every test in the ``test_*`` groups below FAILS on clean main (fb08fca) and
-PASSES with the fix. The ``test_dead_items_deliberately_left_in_place``
-group is the opposite: it pins items the audit found dead that are
-deliberately NOT deleted, with the reason in the assertion message, so a
-future deletion is a conscious decision instead of a drive-by.
+PASSES with the fix. The ``test_dead_items_removed_and_load_bearing_kept``
+test is the follow-through of the old pin test: the 2026-11-18 cleanup
+deleted the pinned dead items deliberately, and the test now guards the
+removal boundary instead — removed surface stays gone, load-bearing
+pieces stay present.
 """
 
 from __future__ import annotations
@@ -252,46 +253,56 @@ async def test_probe_delegate_calls_verified_scanner_handler() -> None:
     assert calls == [((), {"query": "detergent", "max_results": 3})]
 
 
-def test_dead_items_deliberately_left_in_place() -> None:
-    """Item 12: these dead items are NOT deleted, each for a stated reason.
-    A future deletion must update this test deliberately, not by accident."""
+def test_dead_items_removed_and_load_bearing_kept() -> None:
+    """Item 12 follow-through (2026-11-18 dead-feature cleanup): the items
+    this test used to pin in place were removed deliberately, one by one,
+    after repo-wide caller searches. What remains pinned here is the
+    boundary: the removed surface stays gone, and the pieces that turned
+    out to be load-bearing for live features stay present."""
 
+    import sniperplug.cogs.public_alerts as public_alerts_module
+    import sniperplug.cogs.settings_dashboard as settings_dashboard_module
     from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
     from sniperplug.cogs.active_deals import ActiveDealsCog
     from sniperplug.cogs.deal_scanner import DealScannerCog
     from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
-    from sniperplug.cogs.public_alerts import PublicAlertsCog
-    from sniperplug.cogs.settings_dashboard import SettingsDashboardCog
+    from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
 
-    # PublicAlertsCog: existing tests assert its commands exist
-    # (test_autoscan_cache_health_truth, test_persistent_public_panels_never_expire,
-    # test_scout_lane_memory_reset). Deleting it breaks those tests.
-    assert hasattr(PublicAlertsCog, "retailer_autoscan")
-    assert hasattr(PublicAlertsCog, "retailer_autoscan_status")
-    assert hasattr(PublicAlertsCog, "autoscan_clear_cache")
-    assert hasattr(PublicAlertsCog, "public_alerts_status")
-    # SettingsDashboardCog + its 3 commands: settings_dashboard.py is not
-    # owned by this fix; its content survives as dashboard views.
-    assert hasattr(SettingsDashboardCog, "sniperplug_health")
-    assert hasattr(SettingsDashboardCog, "sniperplug_doctor")
-    assert hasattr(SettingsDashboardCog, "sniperplug_commands")
-    # hd_penny_zip: home_depot_local.py is not owned by this fix.
-    assert hasattr(HomeDepotLocalCog, "hd_penny_zip")
-    # active_deals_cleanup: active_deals.py is not owned by this fix; its
-    # work auto-runs when Active Deals loads.
-    assert hasattr(ActiveDealsCog, "active_deals_cleanup")
-    # walmart_scan: deal_scanner.py is owned here for the probe method only.
-    assert hasattr(DealScannerCog, "walmart_scan")
-    # active_deals_recheck (batch): tests/test_walmart_batch_recheck.py
-    # asserts it exists, and its function lives on via the /walmart active
-    # picker button.
-    assert hasattr(ActiveDealRecheckCog, "active_deals_recheck")
-    # DealScannerCog itself: base class of the loaded VerifiedDealScannerCog.
-    assert DealScannerCog.__name__ == "DealScannerCog"
-    # Retired top-level names stay pruned even though the functions are
-    # restored as /walmart subcommands; only the group names are live.
+    # Removed: never-loaded cogs and pruned command handlers with no prod
+    # caller (verified by repo-wide search before each removal).
+    assert not hasattr(public_alerts_module, "PublicAlertsCog")
+    assert not hasattr(settings_dashboard_module, "SettingsDashboardCog")
+    assert not hasattr(HomeDepotLocalCog, "hd_penny_zip")
+    assert not hasattr(ActiveDealsCog, "active_deals_cleanup")
+    assert not hasattr(DealScannerCog, "walmart_scan")
+    assert not hasattr(ActiveDealRecheckCog, "active_deals_recheck")
+
+    # Kept because load-bearing for live features:
+    # - DealScannerCog is the base class of the loaded VerifiedDealScannerCog,
+    #   and its walmart_api_probe method is live via /walmart probe.
+    assert DealScannerCog in VerifiedDealScannerCog.__mro__
+    assert hasattr(VerifiedDealScannerCog, "walmart_api_probe")
+    # - ActiveDealRecheckCog.active_deal_recheck is live via /walmart recheck
+    #   (WalmartCommandCog instantiates the cog and delegates to the method).
+    assert hasattr(ActiveDealRecheckCog, "active_deal_recheck")
+    # - public_alerts module helpers/views are imported across the codebase.
+    assert hasattr(public_alerts_module, "register_persistent_public_panel_views")
+    assert hasattr(public_alerts_module, "set_retailer_auto_scan")
+    assert hasattr(public_alerts_module, "auto_scan_allowed")
+    # - settings_dashboard module helpers feed the canonical dashboard.
+    assert hasattr(settings_dashboard_module, "build_command_guide_embed")
+    assert hasattr(settings_dashboard_module, "build_doctor_checks")
+
+    # Retired top-level names stay pruned: the guard entries in
+    # RETIRED_COMMANDS are live machinery, not dead code.
     assert "active_deal_recheck" in RETIRED_COMMAND_NAMES
+    assert "active_deals_recheck" in RETIRED_COMMAND_NAMES
     assert "walmart_api_probe" in RETIRED_COMMAND_NAMES
+    assert "walmart_scan" in RETIRED_COMMAND_NAMES
+    assert "hd_penny_zip" in RETIRED_COMMAND_NAMES
+    assert "retailer_autoscan" in RETIRED_COMMAND_NAMES
+    assert "autoscan_clear_cache" in RETIRED_COMMAND_NAMES
+    assert "sniperplug_health" in RETIRED_COMMAND_NAMES
     assert "open_box_deals" in RETIRED_COMMAND_NAMES
     assert "setup_sniperplug_here_status" in RETIRED_COMMAND_NAMES
 

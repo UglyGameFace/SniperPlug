@@ -39,6 +39,7 @@ from sniperplug.cogs.walmart_command import (
     WalmartCheckModal,
     WalmartFindModal,
     WalmartMenuView,
+    _can_check_deal,
     build_walmart_menu_embed,
 )
 from sniperplug.services.menu_dashboard_state import (
@@ -645,7 +646,9 @@ class UnifiedBackButton(discord.ui.Button):
         )
 
 
-def _build_walmart_embed(state: MenuDashboardState) -> discord.Embed:
+def _build_walmart_embed(
+    state: MenuDashboardState, *, can_check: bool = False, manage_guild: bool = False
+) -> discord.Embed:
     """Walmart embed, passing the snapshot when that builder accepts one.
 
     The Walmart dashboard is another chunk's file and may still be the
@@ -653,7 +656,7 @@ def _build_walmart_embed(state: MenuDashboardState) -> discord.Embed:
     breaking the hub's Walmart category.
     """
     try:
-        return build_walmart_menu_embed(state)  # type: ignore[arg-type]
+        return build_walmart_menu_embed(state, can_check=can_check, manage_guild=manage_guild)  # type: ignore[arg-type]
     except TypeError:
         return build_walmart_menu_embed()
 
@@ -666,12 +669,13 @@ class _WalmartMenuViewWithBack(WalmartMenuView):
         walmart_cog,
         menu_cog: "UnifiedMenuCog",
         state: MenuDashboardState | None = None,
+        *,
+        manage_guild: bool = False,
+        can_check: bool = False,
     ) -> None:
-        try:
-            super().__init__(walmart_cog)
-        except TypeError:
-            # Walmart view may take the snapshot in the other chunk.
-            super().__init__(walmart_cog, state)  # type: ignore[call-arg]
+        super().__init__(
+            walmart_cog, state, manage_guild=manage_guild, can_check=can_check
+        )
         self.menu_cog = menu_cog
         self.add_item(_WalmartBackButton(menu_cog))
 
@@ -899,10 +903,22 @@ class UnifiedMenuCog(commands.Cog):
                     "That Walmart function isn't loaded right now. Try again after the next restart.",
                 )
                 return
+            # Same split as /walmart menu: decided once, from this
+            # interaction, and handed to the embed and the view together.
+            manage_guild = _has_manage_guild(interaction)
+            can_check = _can_check_deal(interaction)
             await self._edit_dashboard(
                 interaction,
-                embed=_build_walmart_embed(state),
-                view=_WalmartMenuViewWithBack(walmart_cog, self, state),
+                embed=_build_walmart_embed(
+                    state, can_check=can_check, manage_guild=manage_guild
+                ),
+                view=_WalmartMenuViewWithBack(
+                    walmart_cog,
+                    self,
+                    state,
+                    manage_guild=manage_guild,
+                    can_check=can_check,
+                ),
             )
             return
         await self._edit_dashboard(

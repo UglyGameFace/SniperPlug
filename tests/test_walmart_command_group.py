@@ -20,6 +20,9 @@ from discord import app_commands
 from sniperplug.cogs.deal_feedback_admin import normalize_reset_scope
 from sniperplug.cogs.dm_deal_alerts import DmDealAlertsCog
 from sniperplug.cogs.walmart_command import (
+    MENU_MEMBER_KEYS,
+    MENU_REMOVED_KEYS,
+    MENU_STAFF_KEYS,
     WALMART_SUBCOMMANDS,
     WalmartCheckModal,
     WalmartCommandCog,
@@ -136,13 +139,25 @@ def test_prune_removes_old_walmart_names_and_keeps_the_group() -> None:
     assert command_surface_issues(tree.get_commands()) == ()
 
 
-def test_menu_embed_lists_every_function() -> None:
-    embed = build_walmart_menu_embed()
+def test_menu_embed_lists_menu_functions_not_removed_ones() -> None:
+    # Staff embed: every menu function, none of the five that left the menu.
+    embed = build_walmart_menu_embed(manage_guild=True, can_check=True)
     text = (embed.description or "") + "\n" + "\n".join(
         (field.name or "") + "\n" + (field.value or "") for field in embed.fields
     )
-    for sub in WALMART_SUBCOMMANDS:
+    for sub in list(MENU_MEMBER_KEYS) + list(MENU_STAFF_KEYS):
         assert f"/walmart {sub}" in text
+    for sub in MENU_REMOVED_KEYS:
+        assert f"/walmart {sub}" not in text
+
+
+def test_all_walmart_subcommands_still_registered() -> None:
+    # The five functions left the MENU only — their slash subcommands
+    # still exist and still work.
+    cog = WalmartCommandCog(bot=None)
+    names = {command.name for command in cog.app_command.commands}
+    assert set(WALMART_SUBCOMMANDS).issubset(names)
+    assert set(MENU_REMOVED_KEYS).issubset(names)
 
 
 def test_scan_now_keeps_force_parameter() -> None:
@@ -153,20 +168,23 @@ def test_scan_now_keeps_force_parameter() -> None:
     assert [param.name for param in by_name["scan-now"].parameters] == ["force"]
 
 
-def test_menu_view_has_select_for_all_19_and_quick_buttons() -> None:
-    view = WalmartMenuView(WalmartCommandCog(bot=None))
+def test_staff_menu_view_has_staff_select_and_quick_buttons() -> None:
+    view = WalmartMenuView(
+        WalmartCommandCog(bot=None), manage_guild=True, can_check=True
+    )
     selects = [child for child in view.children if isinstance(child, discord.ui.Select)]
     assert len(selects) == 1
-    assert {option.value for option in selects[0].options} == set(WALMART_SUBCOMMANDS)
-    assert len(selects[0].options) == 19
+    assert {option.value for option in selects[0].options} == set(MENU_STAFF_KEYS)
+    assert len(selects[0].options) == 10
     buttons = [child for child in view.children if isinstance(child, discord.ui.Button)]
     # Dashboard controls (spec: threshold stepper, extreme toggle, DM toggle,
-    # Refresh) sit alongside the three quick buttons; with no snapshot the
+    # Refresh) sit alongside the four member buttons; with no snapshot the
     # stepper shows the 40% default and both toggles show OFF.
     assert {button.label for button in buttons} == {
         "Check a deal",
         "Find deals",
-        "Hunt",
+        "Hunt deals",
+        "My alerts",
         "−5%",
         "40%",
         "+5%",

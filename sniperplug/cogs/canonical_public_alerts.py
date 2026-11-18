@@ -7,10 +7,15 @@ from discord import app_commands
 from discord.ext import commands
 
 from sniperplug.cogs.public_alerts import (
+    WALMART_AUTOSCAN_SCAN_KEY,
     DealCategoriesShortcutView,
     DealCategoryDashboardView,
+    count_active_cached_deals,
+    count_public_posts_today,
+    latest_auto_scan_run,
     public_alert_channel_status,
 )
+from sniperplug.services.autoscan_history import latest_autoscan_health_context
 from sniperplug.services.autoscan_live_guild_reconciliation import (
     scheduler_membership_for_guild,
 )
@@ -631,7 +636,7 @@ async def build_global_autoscan_health_embed(
     )
     threshold = await get_starting_deal_percent(db, guild_id)
     category_preferences = await get_category_preferences(db, guild_id)
-    enrolled, enrollment_reason = await scheduler_membership_for_guild(
+    scheduler_enrolled, enrollment_reason = await scheduler_membership_for_guild(
         db,
         bot,
         guild_id,
@@ -657,6 +662,21 @@ async def build_global_autoscan_health_embed(
         guild_id,
         config.get("channel_id"),
     )
+    last_run = await latest_auto_scan_run(
+        db,
+        guild_id,
+        "walmart",
+        scan_key=WALMART_AUTOSCAN_SCAN_KEY,
+    )
+    report_context = await latest_autoscan_health_context(
+        db,
+        guild_id=guild_id,
+        retailer="walmart",
+        scan_key=WALMART_AUTOSCAN_SCAN_KEY,
+    )
+    last_run_has_route_error = report_context.last_run_has_route_error
+    posts_today = await count_public_posts_today(db, guild_id)
+    active_cached = await count_active_cached_deals(db, guild_id)
     routes = catalog_route_pool()
     retailers = set(config.get("retailers") or ())
     selected_retailers = retailers.intersection({"walmart", "hp", "target"})
@@ -669,7 +689,7 @@ async def build_global_autoscan_health_embed(
     walmart_delivery_ready = (
         public_route_ready
         and "walmart" in selected_retailers
-        and enrolled
+        and scheduler_enrolled
     )
     hp_delivery_ready = (
         public_route_ready
@@ -696,7 +716,11 @@ async def build_global_autoscan_health_embed(
     any_selected_ready = bool(selected_ready and any(selected_ready))
     all_selected_ready = bool(selected_ready and all(selected_ready))
 
-    if all_selected_ready and not delivery_health.has_delivery_problem:
+    if (
+        all_selected_ready
+        and not delivery_health.has_delivery_problem
+        and not last_run_has_route_error
+    ):
         color = discord.Color.green()
     elif any_selected_ready:
         color = discord.Color.orange()
@@ -758,7 +782,7 @@ async def build_global_autoscan_health_embed(
     embed.add_field(
         name="Live fanout enrollment",
         value=(
-            f"Walmart enrolled: **{'yes' if enrolled else 'no'}**\n"
+            f"Walmart enrolled: **{'yes' if scheduler_enrolled else 'no'}**\n"
             f"{enrollment_reason}"
         ),
         inline=False,
@@ -768,6 +792,52 @@ async def build_global_autoscan_health_embed(
         value=trim_field(
             delivery_health.summary_line(threshold=int(threshold)),
             1024,
+        ),
+        inline=False,
+    )
+    latest_report_source = (
+        "manual `/walmart scan-now` force test"
+        if report_context.is_manual
+        else "scheduled autoscan"
+    )
+    embed.add_field(
+        name="Recent memory",
+        value=(
+            f"Last scheduled execution: **{last_run or 'not logged yet'}**\n"
+            f"Latest detailed report source: **{latest_report_source}**\n"
+            f"Public posts today: **{posts_today}**\n"
+            f"Active cached deals: **{active_cached}**\n"
+            "Cache note: active cached deals are remembered product cards, not Discord posts. "
+            "A nonzero cache count does not mean those deals were posted to this server."
+        ),
+        inline=False,
+    )
+    if last_run_has_route_error:
+        embed.add_field(
+            name="🚨 Posting route problem",
+            value=(
+                "SniperPlug found candidates, but the last post attempt used a stale/ghost guild route. "
+                "SniperPlug now repairs saved routes automatically when a safe saved channel exists. "
+                "If this still appears, fix the exact channel/permission issue shown in the Channel "
+                "and Setup repair fields above."
+            ),
+            inline=False,
+        )
+    embed.add_field(
+        name=(
+            "Last manual test decision"
+            if report_context.is_manual
+            else "Last scheduled decision"
+        ),
+        value=trim_field(report_context.report_line, 1024),
+        inline=False,
+    )
+    embed.add_field(
+        name="How to read this",
+        value=(
+            "Green requires this server to be in the scheduler's real live guild set with no delivery "
+            "or posting-route problem. A manual `/walmart scan-now` report is labeled separately and "
+            "never counts as proof that the scheduled loop ran."
         ),
         inline=False,
     )

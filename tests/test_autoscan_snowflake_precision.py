@@ -15,7 +15,11 @@ REAL_GUILD_ID = 1514374173517152418
 ROUNDED_GUILD_ID = 1514374173517152512
 REAL_CHANNEL_ID = 1514374917594808392
 
-HEALTH_SOURCE = Path("sniperplug/cogs/public_alerts.py").read_text(encoding="utf-8")
+# The health display users actually see is the global autoscan health
+# embed in canonical_public_alerts.py (served by /walmart health). The
+# legacy per-guild embed in public_alerts.py was dead code and was
+# removed once its truthfulness behaviors moved to the live surface.
+HEALTH_SOURCE = Path("sniperplug/cogs/canonical_public_alerts.py").read_text(encoding="utf-8")
 RECONCILIATION_SOURCE = Path(
     "sniperplug/services/autoscan_live_guild_reconciliation.py"
 ).read_text(encoding="utf-8")
@@ -224,7 +228,11 @@ async def test_tombstone_loader_preserves_and_filters_exact_snowflake(monkeypatc
 def test_health_requires_real_scheduler_enrollment_and_labels_manual_report() -> None:
     assert "scheduler_membership_for_guild" in HEALTH_SOURCE
     assert "and scheduler_enrolled" in HEALTH_SOURCE
-    assert 'name="Scheduler enrollment"' in HEALTH_SOURCE
+    # The live surface's enrollment field is titled "Live fanout
+    # enrollment" (pinned under that name by the canonical-surface
+    # tests); it carries the same scheduler-membership read the legacy
+    # embed showed under "Scheduler enrollment".
+    assert "Live fanout enrollment" in HEALTH_SOURCE
     assert "Last scheduled execution" in HEALTH_SOURCE
     assert "Latest detailed report source" in HEALTH_SOURCE
     assert "Last manual test decision" in HEALTH_SOURCE

@@ -7,7 +7,11 @@ RECONCILIATION = Path(
     "sniperplug/services/autoscan_live_guild_reconciliation.py"
 ).read_text(encoding="utf-8")
 POSTS = Path("sniperplug/services/public_deal_posts.py").read_text(encoding="utf-8")
-HEALTH = Path("sniperplug/cogs/public_alerts.py").read_text(encoding="utf-8")
+# The health display users actually see is the global autoscan health
+# embed in canonical_public_alerts.py (served by /walmart health). The
+# legacy per-guild embed in public_alerts.py was dead code and was
+# removed once its route-error flag moved to the live surface.
+HEALTH = Path("sniperplug/cogs/canonical_public_alerts.py").read_text(encoding="utf-8")
 
 
 def test_resilient_autoscan_uses_single_owner_live_guild_loader():

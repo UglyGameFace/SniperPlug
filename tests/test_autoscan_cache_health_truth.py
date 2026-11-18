@@ -22,8 +22,13 @@ def test_watchlist_summary_uses_real_public_post_result():
 
 def test_health_explains_cache_and_clear_helper_exists():
     source = Path("sniperplug/cogs/public_alerts.py").read_text(encoding="utf-8")
+    # The cache explanation now lives on the health display users actually
+    # see: the global autoscan health embed in canonical_public_alerts.py
+    # (served by /walmart health). The legacy per-guild embed that used to
+    # carry it in public_alerts.py was dead code and has been removed.
+    health_source = Path("sniperplug/cogs/canonical_public_alerts.py").read_text(encoding="utf-8")
 
-    assert "active cached deals are remembered product cards, not Discord posts" in source
+    assert "active cached deals are remembered product cards, not Discord posts" in health_source
     # The /autoscan_clear_cache command was removed in the 2026-11-18
     # dead-feature cleanup: its cog was never loaded, so the command never
     # ran in prod. The clear helpers remain as module utilities.

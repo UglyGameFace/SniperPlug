@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -107,6 +108,42 @@ async def latest_autoscan_report(db, *, guild_id: int, retailer: str, scan_key: 
         return payload
     except Exception:
         return None
+
+
+ROUTE_ERROR_MARKERS = (
+    "public channel lookup failed",
+    "ghost guild",
+    "bot is not currently connected to guild",
+)
+
+
+@dataclass(frozen=True)
+class AutoscanHealthContext:
+    """Health-display view of the latest saved autoscan report.
+
+    ``last_run_has_route_error`` is True when the latest report's public
+    posting errors show the last post attempt used a stale/ghost guild
+    route. ``is_manual`` distinguishes a forced `/walmart scan-now` test
+    report from a scheduled autoscan report so health displays can label
+    the two separately.
+    """
+
+    report_line: str
+    is_manual: bool
+    last_run_has_route_error: bool
+
+
+async def latest_autoscan_health_context(db, *, guild_id: int, retailer: str, scan_key: str) -> AutoscanHealthContext:
+    report = await latest_autoscan_report(db, guild_id=guild_id, retailer=retailer, scan_key=scan_key)
+    settings = report.get("settings") if isinstance(report, dict) else {}
+    is_manual = bool(isinstance(settings, dict) and settings.get("forced"))
+    report_line = format_latest_report_line(report)
+    lowered = report_line.lower()
+    return AutoscanHealthContext(
+        report_line=report_line,
+        is_manual=is_manual,
+        last_run_has_route_error=any(marker in lowered for marker in ROUTE_ERROR_MARKERS),
+    )
 
 
 async def recent_autoscan_post_count(db, *, guild_id: int, retailer: str, scan_key: str, limit: int = 20) -> int:

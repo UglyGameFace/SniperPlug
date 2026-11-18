@@ -17,10 +17,11 @@ def test_catalog_route_pool_includes_every_open_box_preset_query() -> None:
     lowered = {query.lower() for query in pool}
     for query in OPEN_BOX_AUTOSCAN_QUERIES:
         assert query.lower() in lowered
-    # 268 routes + 9 preset queries not already in the pool (2 overlap).
+    # 268 routes + 9 preset queries not already in the pool (2 overlap),
+    # + 2 GPU broad routes (deal-discovery improvement 5).
     # The sweep-time comments in walmart_catalog_discovery_only.py and
     # global_auto_scan_runner.py must move with this number.
-    assert len(pool) == 277
+    assert len(pool) == 279
 
 
 def test_catalog_route_pool_spans_departments_and_walmart_cash() -> None:
@@ -34,6 +35,18 @@ def test_catalog_route_pool_spans_departments_and_walmart_cash() -> None:
     assert "tool clearance" in lowered
     assert any("walmart cash" in query for query in lowered)
     assert set(BROAD_DEPARTMENT_ROUTES).issubset(set(pool))
+
+
+def test_catalog_route_pool_covers_graphics_cards_in_broad_rotation() -> None:
+    """Deal-discovery improvement 5: GPUs had zero broad-pool coverage
+    (0 of 277 routes) and depended entirely on the priority slot. Two
+    rollback routes give them a broad safety net alongside the priority
+    checks; the pool grows by exactly those two routes."""
+    pool = catalog_route_pool()
+    lowered = {query.lower() for query in pool}
+    assert "graphics card rollback" in lowered
+    assert "gpu rollback" in lowered
+    assert len(pool) == 279
 
 
 def test_catalog_rotation_advances_without_repeating_same_slice() -> None:

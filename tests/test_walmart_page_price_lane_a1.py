@@ -325,6 +325,62 @@ async def test_page_price_lane_not_buyable_page_price_is_not_a_lead() -> None:
     assert extreme.eligible_page_price_extreme_candidate(accessory) is False
 
 
+def test_page_price_lane_over_ten_with_listed_price_anomaly_is_a_lead() -> None:
+    """Deal-discovery improvement 2: a $49 page price against a $599
+    Walmart list reaches the opt-in extreme lane, labelled like #322."""
+    candidate = page_price_candidate(
+        price=49.00, title="Samsung 65 inch 4K Smart Television",
+    )
+    candidate.variant_attributes["msrp"] = "599.00"
+    assert extreme.page_price_rejection_reason(candidate) is None
+    assert extreme.eligible_page_price_extreme_candidate(candidate)
+    card = extreme.build_page_price_extreme_card(candidate)
+    assert card is not None
+    assert extreme.valid_page_price_extreme_card(card)
+    text = str(card.embed.to_dict()).lower()
+    assert "page-observed price, not api-verified" in text
+    assert "$49.00" in text
+    assert "$599.00" in text
+    assert "unverified" in text
+    # No discount percentage is ever claimed for a page-observed price.
+    assert "99%" not in text
+    assert "% off" not in text
+    # The page-price card is not a public markdown candidate.
+    assert is_public_deal_candidate(card, min_discount=40) is False
+
+
+def test_page_price_lane_over_ten_without_list_price_stays_rejected() -> None:
+    candidate = page_price_candidate(
+        price=49.00, title="Samsung 65 inch 4K Smart Television",
+    )
+    assert (
+        extreme.page_price_rejection_reason(candidate)
+        == "page_price_over_extreme_limit"
+    )
+    assert extreme.eligible_page_price_extreme_candidate(candidate) is False
+    assert extreme.build_page_price_extreme_card(candidate) is None
+
+
+def test_page_price_lane_over_ten_weak_ratio_stays_rejected() -> None:
+    """$49 against a $100 list is 49%, not an extreme anomaly (needs <=20%)."""
+    candidate = page_price_candidate(
+        price=49.00, title="Samsung 65 inch 4K Smart Television",
+    )
+    candidate.variant_attributes["msrp"] = "100.00"
+    assert (
+        extreme.page_price_rejection_reason(candidate)
+        == "page_price_over_extreme_limit"
+    )
+
+
+def test_page_price_lane_over_ten_anomaly_rejects_accessories() -> None:
+    candidate = page_price_candidate(
+        price=49.00, title="Samsung 65 inch 4K Smart Television Remote Control",
+    )
+    candidate.variant_attributes["msrp"] = "599.00"
+    assert extreme.page_price_rejection_reason(candidate) == "accessory_or_parts"
+
+
 # --- Case 4: page price never becomes a verified markdown ---
 
 

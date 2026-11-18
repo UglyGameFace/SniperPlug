@@ -35,7 +35,7 @@ GLOBAL_CATALOG_REQUEST_BUDGET = 4
 # so the total rate never rises; the trade-off is explicit and deliberate:
 # sniper revisit 29 min -> ~17.4 min (29 rotation queries, ~8.3 rotation slots
 # per 5 batches once the priority slot displaces one), broad rotation
-# 89 min -> ~139 min (277 routes / 2 per batch). Money first: a $1 error on a
+# 89 min -> ~140 min (279 routes / 2 per batch). Money first: a $1 error on a
 # phone/console/GPU is worth far more than re-sweeping a department page an
 # hour sooner, and broad still advances every batch — it is slower, never
 # starved. The route count is pinned by
@@ -75,6 +75,25 @@ def is_bestseller_probe_batch(batch_number: int) -> bool:
         max(0, int(batch_number)) % BESTSELLER_PROBE_EVERY_N_BATCHES
         == BESTSELLER_PROBE_BATCH_OFFSET
     )
+
+
+def broad_deep_page_enabled() -> bool:
+    enabled = str(os.getenv("SNIPERPLUG_BROAD_DEEP_PAGE_ENABLED", "true")).strip().lower()
+    return enabled not in {"0", "false", "off", "no"}
+
+
+def catalog_deep_page_for_batch(batch_number: int) -> int:
+    """Rotating deep page (2-40) for one broad request per batch.
+
+    Driven by the durable batch number, so a retried or replayed claim
+    repeats exactly the same request. Rotating per batch (rather than one
+    page per full pass) samples a different depth for each route as the
+    pool turns over, instead of giving every route in a pass the same
+    deep page.
+    """
+    if CATALOG_MAX_PAGE <= 1:
+        return 1
+    return 2 + (max(0, int(batch_number)) % (CATALOG_MAX_PAGE - 1))
 
 
 
@@ -154,8 +173,7 @@ def catalog_pages_for_completed_passes(completed_passes: int) -> tuple[int, ...]
 
     if CATALOG_MAX_PAGE <= 1:
         return (1,)
-    deep_index = max(0, int(completed_passes)) % (CATALOG_MAX_PAGE - 1)
-    return (1, 2 + deep_index)
+    return (1, catalog_deep_page_for_batch(completed_passes))
 
 CatalogRequest = tuple[str, int, "str | None", "str | None"]
 
@@ -165,10 +183,15 @@ def catalog_request_plan_for_claim(
 ) -> tuple[CatalogRequest, ...]:
     """Four bounded API searches: two fresh routes plus two price snipers.
 
-    Page one of each claimed catalog route (relevance order) keeps broad
-    coverage, now at 2 routes/batch (~139 min for the 277-route pool instead
-    of ~89). The other two requests are price-sorted (lowest first) searches
-    for specific high-value products, where a price error appears at the top.
+    Page one of the first claimed catalog route (relevance order) keeps
+    broad coverage fresh, now at 2 routes/batch (~140 min for the 279-route
+    pool instead of ~89). The second broad route samples a rotating deep
+    page (2-40, one page per batch) instead of repeating page 1, so a
+    glitch sitting below result 25 on a broad route is seen within one
+    full pass. The bestseller probe keeps its own page-1 request on its
+    batches. The other two requests are price-sorted (lowest first)
+    searches for specific high-value products, where a price error appears
+    at the top.
 
     The first sniper slot always runs the general rotation (29 queries,
     ~17.4 min revisit once the priority slot displaces one slot per 3 batches).
@@ -198,6 +221,17 @@ def catalog_request_plan_for_claim(
         # Reuse the second broad request, preserving its query and cursor. Its
         # position in an Affiliate response is not validated sales volume.
         plan[1] = (routes[1], 1, "bestseller", None)
+    elif broad_deep_page_enabled():
+        # One of the two broad requests rotates into depth instead of
+        # repeating page 1. The first broad request always stays on page 1
+        # so fresh listings are never missed, and the 4-search budget never
+        # changes: one page is swapped, no call is added.
+        plan[1] = (
+            routes[1],
+            catalog_deep_page_for_batch(batch_number),
+            None,
+            None,
+        )
     rotation_slots_before = (
         SNIPER_SEARCHES_PER_BATCH * batch_number
         - priority_snipers_before_batch(batch_number)

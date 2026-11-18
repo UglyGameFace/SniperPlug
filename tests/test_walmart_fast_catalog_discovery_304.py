@@ -39,7 +39,11 @@ def test_catalog_plan_keeps_original_api_budget_but_checks_two_fresh_routes() ->
     claim = fake_claim()
     plan = catalog.catalog_request_plan_for_claim(claim)
     assert len(plan) == 4
-    assert plan[:2] == tuple((query, 1, None, None) for query in claim.queries)
+    assert plan[0] == (claim.queries[0], 1, None, None)
+    # The second broad route rotates into depth instead of repeating page 1.
+    assert plan[1] == (
+        claim.queries[1], catalog.catalog_deep_page_for_batch(0), None, None,
+    )
     assert plan[2] == (PRICE_SNIPER_QUERIES[0], 1, "price", "ascending")
     # Batch 0 is a priority batch: the second sniper slot is the hot list.
     assert plan[3] == ("iphone", 1, "price", "ascending")
@@ -69,9 +73,21 @@ def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> No
         )
         plan = catalog.catalog_request_plan_for_claim(claim)
         assert len(plan) == 4
+        batch_number = completed // 2
         expected_broad = tuple((query, 1, None, None) for query in claim.queries)
-        if catalog.is_bestseller_probe_batch(completed // 2):
+        if catalog.is_bestseller_probe_batch(batch_number):
             expected_broad = (expected_broad[0], (claim.queries[1], 1, "bestseller", None))
+        else:
+            # The second broad route rotates into depth instead of page 1.
+            expected_broad = (
+                expected_broad[0],
+                (
+                    claim.queries[1],
+                    catalog.catalog_deep_page_for_batch(batch_number),
+                    None,
+                    None,
+                ),
+            )
         assert plan[:2] == expected_broad
         for slot, (query, page, sort_value, order_value) in enumerate(plan[2:], start=2):
             expected_page = (
@@ -83,7 +99,6 @@ def test_price_sniper_rotation_visits_every_query_evenly(route_count: int) -> No
             assert (page, sort_value, order_value) == (expected_page, "price", "ascending")
         # First sniper slot is always the general rotation; the second is
         # the priority hot list on every 3rd batch, rotation otherwise.
-        batch_number = completed // 2
         counts[plan[2][0]] += 1
         expected_priority = catalog.priority_sniper_query_for_batch(
             batch_number, avoid=plan[2][0],
@@ -178,7 +193,8 @@ def test_catalog_scan_executes_exact_plan_not_unbounded_cartesian_product(monkey
         assert output.pages_checked == 4
         assert len(enqueued) == 4
         assert any(
-            "fresh routes **2**" in note
+            "fresh routes **1**" in note
+            and "rotating deep requests **1**" in note
             and "price-sorted sniper searches **2**" in note
             and "planned searches **4**" in note
             for note in output.warnings

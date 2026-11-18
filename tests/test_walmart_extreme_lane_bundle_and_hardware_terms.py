@@ -113,11 +113,12 @@ def test_bundle_tv_titles_reach_the_extreme_lane_with_retailer_category(title):
     assert card is not None and extreme.valid_extreme_price_card(card)
 
 
-def test_bundle_vacuum_title_passes_accessory_test_but_needs_hardware_term():
-    """The Dyson bundle is no longer an accessory, but "vacuum" is not a
-    hardware term in either extreme-lane list, so the public card still
-    needs a follow-up term addition. Discovery priority already applies
-    via the retailer category."""
+def test_bundle_vacuum_title_reaches_the_extreme_lane():
+    """Deal-discovery improvement 4: "vacuum" is now a hardware term, so
+    the Dyson bundle from the audit reaches the public card instead of
+    stopping at insufficient value evidence. The bundle exception is what
+    keeps it out of the accessory test; the hardware term is what lets it
+    through the value gate."""
     title = "Dyson V15 vacuum with replacement battery"
     assert not is_accessory_title(title)
     base = candidate(title=title, price=1.0)
@@ -129,7 +130,45 @@ def test_bundle_vacuum_title_passes_accessory_test_but_needs_hardware_term():
         },
     )
     assert primary_product_evidence(vacuum) == "walmart_category"
-    assert extreme.extreme_rejection_reason(vacuum) == "insufficient_value_evidence"
+    assert exact_price_lead_evidence(vacuum) == "high_value_hardware"
+    assert extreme.extreme_rejection_reason(vacuum) is None
+    card = extreme.build_extreme_price_card(vacuum)
+    assert card is not None and extreme.valid_extreme_price_card(card)
+
+
+# "vacuum" as a hardware term must not promote vacuum parts: bags, filters,
+# hoses, belts, brush heads, attachments and nozzles are accessories.
+VACUUM_PART_TITLES = (
+    "Dyson V15 Vacuum Bags 3 Pack",
+    "Shark Vacuum Hose Replacement",
+    "Vacuum Cleaner Filter",
+    "Dyson Vacuum Belt",
+)
+
+
+@pytest.mark.parametrize("title", VACUUM_PART_TITLES)
+def test_vacuum_parts_still_rejected(title):
+    assert is_accessory_title(title)
+    assert primary_product_evidence(candidate(title=title)) is None
+    assert (
+        extreme.extreme_rejection_reason(candidate(title=title))
+        == "accessory_or_parts"
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    (
+        "Dyson V15 Detect Absolute Cordless Vacuum",
+        "Shark Navigator Lift-Away Vacuum Cleaner",
+    ),
+)
+def test_plain_vacuum_titles_reach_the_extreme_lane(title):
+    product = candidate(title=title, price=1.0)
+    assert exact_price_lead_evidence(product) == "high_value_hardware"
+    assert extreme.extreme_rejection_reason(product) is None
+    card = extreme.build_extreme_price_card(product)
+    assert card is not None and extreme.valid_extreme_price_card(card)
 
 
 # Audit finding 6: hardware classes the extreme lane did not recognize.

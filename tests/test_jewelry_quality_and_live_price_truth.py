@@ -100,6 +100,8 @@ def test_listed_price_anomaly_creates_extreme_headset_lead():
 
 @pytest.mark.parametrize("kind,expected", [
     ("same", None),
+    ("price_tick", None),
+    ("price_beyond_tolerance", "live_price_changed"),
     ("price_changed", "live_price_changed"),
     ("offer_changed", "live_offer_or_variant_changed"),
     ("seller_changed", "live_seller_name_changed"),
@@ -111,7 +113,16 @@ def test_live_exact_recheck_refuses_stale_price_or_different_variant(
 ):
     base = candidate(title="Samsung Galaxy Tab S11 Tablet", price=1.0)
     updated = replace(base, variant_attributes=dict(base.variant_attributes))
-    if kind == "price_changed":
+    if kind == "price_tick":
+        # A $1.00 glitch ticking to $1.01 is repricing noise: tolerated,
+        # and the live price is still an extreme lead.
+        updated.api_current_price = 1.01
+        updated.current_price = 1.01
+    elif kind == "price_beyond_tolerance":
+        # A $0.50 move on a $1.00 lead is past the $0.25 / 1% tolerance.
+        updated.api_current_price = 1.50
+        updated.current_price = 1.50
+    elif kind == "price_changed":
         updated.api_current_price = 24.88
         updated.current_price = 24.88
     elif kind == "offer_changed":
@@ -140,3 +151,22 @@ def test_live_check_fails_closed_without_registered_walmart_provider(monkeypatch
     assert asyncio.run(
         extreme.live_extreme_offer_rejection_reason(candidate())
     ) == "live_provider_unavailable"
+
+
+def test_live_exact_recheck_tolerates_one_percent_move_on_pricier_lead(monkeypatch):
+    """Deal-discovery improvement 3: on a $49 anomaly lead the tolerance
+    is 1% ($0.49), not the $0.25 floor — a $49.00 -> $49.40 tick passes
+    the recheck and the live price still qualifies as an extreme lead."""
+    base = candidate(title="Samsung 990 Pro 2TB NVMe SSD", price=49.0)
+    base.variant_attributes["msrp"] = "599.00"
+    updated = replace(base, variant_attributes=dict(base.variant_attributes))
+    updated.api_current_price = 49.40
+    updated.current_price = 49.40
+
+    monkeypatch.setattr(extreme.provider_registry, "get", lambda key: object())
+
+    async def fake_fetch(provider, claim, *, timeout_seconds):
+        return updated, "verified", ""
+
+    monkeypatch.setattr(extreme, "_fetch_exact_candidate_off_loop", fake_fetch)
+    assert asyncio.run(extreme.live_extreme_offer_rejection_reason(base)) is None

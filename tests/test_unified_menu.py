@@ -472,3 +472,157 @@ async def test_confirm_no_keeps_everything() -> None:
     assert calls == []
     assert len(interaction.response.edited) == 2
     assert "nothing changed" in (interaction.response.edited[1]["embed"].description or "")
+
+
+# -- menu dashboard (redesign chunk 2, fail-first) ------------------------
+
+from sniperplug.services.menu_dashboard_state import MenuDashboardState
+
+
+def _fake_snapshot(**overrides):
+    values = dict(
+        state_available=True,
+        provider_status="READY",
+        provider_message="Ready: Walmart Affiliate API credentials are configured.",
+        threshold_percent=40,
+        extreme_enabled=True,
+        extreme_recent=3,
+        delivery_ready=True,
+        delivery_summary="Walmart delivery ready.",
+        dm_enabled=True,
+        dm_threshold=20,
+        dm_daily_cap=5,
+        wishlist_count=7,
+        wishlist_cap=20,
+        active_deals=[
+            {"title": "Dyson V15 vacuum", "price": 299.0, "discount": 50},
+            {"title": "LEGO Star Wars set", "price": 49.99, "discount": 44},
+        ],
+        active_deal_count=12,
+        deals_today=4,
+    )
+    values.update(overrides)
+    return MenuDashboardState(**values)
+
+
+def _embed_text(embed) -> str:
+    parts = [embed.title or "", embed.description or ""]
+    parts += [(f.name or "") + "\n" + (f.value or "") for f in embed.fields]
+    parts.append(embed.footer.text or "")
+    return "\n".join(parts)
+
+
+def test_hub_embed_status_strip_shows_live_values() -> None:
+    hub = build_unified_menu_embed(_fake_snapshot())
+    text = _embed_text(hub)
+    assert hub.color == discord.Color.orange()
+    assert "Ready: Walmart Affiliate API credentials are configured." in text
+    assert "40%" in text
+    assert "Extreme" in text and "ON" in text
+    assert "7/20" in text
+    assert "4" in text  # deals today
+    assert "12" in text  # active deal count
+    assert "Dyson V15 vacuum" in text
+
+
+def test_hub_embed_deals_today_none_shows_active_deals_instead() -> None:
+    hub = build_unified_menu_embed(_fake_snapshot(deals_today=None))
+    text = _embed_text(hub)
+    assert "active deals instead" in text
+    assert "12" in text
+
+
+def test_hub_category_fields_carry_live_summary() -> None:
+    hub = build_unified_menu_embed(_fake_snapshot())
+    fields = {f.name: f.value for f in hub.fields}
+    walmart = next(v for k, v in fields.items() if k.startswith("🛒 Walmart"))
+    assert "threshold 40%" in walmart
+    assert "12 active deals" in walmart
+    assert "delivery ready" in walmart
+    my_deals = next(v for k, v in fields.items() if k.startswith("🔔 My deals"))
+    assert "7/20" in my_deals
+
+
+def test_category_embed_uses_accent_color_and_live_summary() -> None:
+    # "walmart" has no ENTRIES_BY_CATEGORY entry — it reuses the Walmart
+    # menu — so its summary is checked via _category_summary, not the
+    # category embed (build_category_embed("walmart") is a KeyError on
+    # main too, by design).
+    from sniperplug.cogs.unified_menu import CATEGORY_COLORS, _category_summary
+
+    assert CATEGORY_COLORS["walmart"] == 0x0071DC  # Walmart blue
+    walmart_summary = _category_summary(_fake_snapshot(), "walmart")
+    assert "threshold 40%" in walmart_summary
+    assert "12 active deals" in walmart_summary
+    assert "delivery ready" in walmart_summary
+    embed = build_category_embed("my-deals", _fake_snapshot())
+    assert embed.color != discord.Color.orange()
+    assert embed.color.value == 0x9B59B6  # my-deals purple
+    text = _embed_text(embed)
+    assert "7/20" in text
+    for entry in ENTRIES_BY_CATEGORY["my-deals"]:
+        assert entry.usage in text
+    other = build_category_embed("stores", _fake_snapshot())
+    assert other.color != discord.Color.orange()
+    assert other.color.value == 0x1ABC9C  # stores teal
+    assert "off by design" in _embed_text(other)
+
+
+def test_state_unavailable_renders_fallback_with_function_list_intact() -> None:
+    unavailable = MenuDashboardState(state_available=False)
+    hub_text = _embed_text(build_unified_menu_embed(unavailable))
+    assert "Live state unavailable — the function list still works." in hub_text
+    for _key, label, _desc in MENU_CATEGORIES:
+        assert label in hub_text
+    embed = build_category_embed("my-deals", unavailable)
+    text = _embed_text(embed)
+    assert "Live state unavailable — the function list still works." in text
+    for entry in ENTRIES_BY_CATEGORY["my-deals"]:
+        assert entry.usage in text
+
+
+def test_category_view_has_refresh_button() -> None:
+    cog = UnifiedMenuCog(bot=None)
+    view = UnifiedCategoryView(cog, "my-deals", _fake_snapshot())
+    buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
+    assert {b.label for b in buttons} == {"← Back to menu", "🔄 Refresh"}
+    selects = [c for c in view.children if isinstance(c, discord.ui.Select)]
+    assert len(selects) == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_button_re_reads_state(monkeypatch) -> None:
+    import sniperplug.cogs.unified_menu as um
+
+    fresh = _fake_snapshot(wishlist_count=19, dm_enabled=False, dm_threshold=None)
+
+    async def _fake_load(bot, guild_id, user_id):
+        return fresh
+
+    monkeypatch.setattr(um, "load_menu_dashboard_state", _fake_load)
+    cog = UnifiedMenuCog(bot=None)
+    view = UnifiedCategoryView(cog, "my-deals", _fake_snapshot())
+    refresh = next(
+        c for c in view.children
+        if isinstance(c, discord.ui.Button) and c.label == "🔄 Refresh"
+    )
+    interaction = _FakeInteraction()
+    await refresh.callback(interaction)
+    assert len(interaction.response.edited) == 1
+    embed = interaction.response.edited[0]["embed"]
+    assert "19/20" in _embed_text(embed)
+    assert "DM alerts OFF" in _embed_text(embed)
+    assert isinstance(interaction.response.edited[0]["view"], UnifiedCategoryView)
+
+
+def test_every_new_control_resolves_to_a_real_handler() -> None:
+    cog = UnifiedMenuCog(bot=None)
+    for view in (
+        UnifiedMenuView(cog),
+        UnifiedCategoryView(cog, "my-deals", _fake_snapshot()),
+    ):
+        for child in view.children:
+            assert callable(getattr(child, "callback", None))
+            # Must be a real override, not the base discord.ui no-op.
+            assert type(child).callback is not discord.ui.Button.callback
+            assert type(child).callback is not discord.ui.Select.callback

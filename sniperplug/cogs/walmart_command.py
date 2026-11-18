@@ -21,6 +21,7 @@ listing every function, with quick buttons for the three most-used ones.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 import discord
 from discord import app_commands
@@ -29,11 +30,38 @@ from discord.ext import commands
 from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
 from sniperplug.cogs.auto_discovery import DISCOVERY_COVERAGE_CHOICES
 from sniperplug.cogs.dm_deal_alerts import ACTION_CHOICES, MODE_CHOICES
+from sniperplug.services.deal_threshold_settings import (
+    DEFAULT_STARTING_DEAL_PERCENT,
+    set_starting_deal_percent,
+)
+from sniperplug.services.dm_deal_alerts import (
+    get_dm_deal_alert_preference,
+    save_dm_deal_alert_preference,
+)
+from sniperplug.services.menu_dashboard_state import (
+    MenuDashboardState,
+    load_menu_dashboard_state,
+)
 from sniperplug.services.public_posting import SUPPORTED_RETAILERS
+from sniperplug.services.walmart_extreme_price_fanout import (
+    extreme_alerts_enabled,
+    set_extreme_alerts_enabled,
+)
 
 log = logging.getLogger("sniperplug")
 
 GROUP_DESCRIPTION = "Walmart deals: check, find, hunt, alerts, and server setup in one place."
+
+# Inline dashboard controls (menu redesign, 2026-11-17). The threshold
+# stepper writes through the same setter /walmart threshold uses, clamped
+# to the 10-90 band the stepper shows; the setter's own normalizer clamps
+# 0-95, so a value the stepper can produce is always accepted as-is.
+THRESHOLD_STEP_PERCENT = 5
+THRESHOLD_STEP_MIN = 10
+THRESHOLD_STEP_MAX = 90
+
+# Walmart brand blue, shared with the hub's Walmart category accent.
+_WALMART_BLUE = discord.Color(0x0071DC)
 
 _RETAILER_LABELS = {"hp": "HP", "bestbuy": "Best Buy"}
 
@@ -695,9 +723,18 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     @app_commands.command(name="menu", description="Open the Walmart menu: every Walmart function in one place.")
     async def menu(self, interaction: discord.Interaction) -> None:
+        state: MenuDashboardState | None = None
+        try:
+            state = await load_menu_dashboard_state(
+                self.bot, interaction.guild_id, interaction.user.id
+            )
+        except Exception:
+            # The loader never raises by contract; this only guards the
+            # call itself. A failed read renders the fallback line.
+            state = None
         await interaction.response.send_message(
-            embed=build_walmart_menu_embed(),
-            view=WalmartMenuView(self),
+            embed=build_walmart_menu_embed(state),
+            view=WalmartMenuView(self, state),
             ephemeral=True,
         )
 
@@ -757,13 +794,117 @@ _MENU_EMOJIS = {
 }
 
 
-def build_walmart_menu_embed() -> discord.Embed:
-    """The menu hub: every Walmart function, grouped by what it is for."""
+def _dashboard_color(state: MenuDashboardState | None) -> discord.Color:
+    """Embed color for the Walmart dashboard.
 
+    No snapshot (legacy callers that never asked for state): Walmart blue.
+    With a snapshot, the health-embed color language: green = ready,
+    orange = degraded / needs attention, red = down / not configured.
+    """
+    if state is None:
+        return _WALMART_BLUE
+    if not state.state_available:
+        return discord.Color.orange()
+    if state.provider_status in ("ERROR", "DISABLED"):
+        return discord.Color.red()
+    if state.provider_status == "READY" and state.delivery_ready:
+        return discord.Color.green()
+    return discord.Color.orange()
+
+
+def _provider_status_emoji(status: str) -> str:
+    return {"READY": "🟢", "ERROR": "🔴", "DISABLED": "🔴"}.get(status, "🟠")
+
+
+def _format_deal_line(deal: dict) -> str:
+    title = str(deal.get("title") or "Untitled deal").strip() or "Untitled deal"
+    if len(title) > 60:
+        title = title[:57] + "…"
+    bits: list[str] = []
+    price = deal.get("price")
+    if isinstance(price, (int, float)):
+        bits.append(f"${price:,.2f}")
+    discount = deal.get("discount")
+    if isinstance(discount, (int, float)):
+        bits.append(f"{discount:g}% off")
+    suffix = f" — {' · '.join(bits)}" if bits else ""
+    return f"• {title}{suffix}"
+
+
+def _status_field_value(state: MenuDashboardState, notice: str | None) -> str:
+    """The status strip: live state at the top, or the fallback line.
+
+    The snapshot's active_deals + deals_today are the last-scan / recent
+    summary — the snapshot carries no scan timestamp, so none is invented.
+    HP and Target are off by design here, never red: this menu is Walmart
+    only.
+    """
+    if not state.state_available:
+        lines = ["Live state unavailable — the function list still works."]
+    else:
+        lines = [
+            f"{_provider_status_emoji(state.provider_status)} Walmart provider: **{state.provider_status}** — {state.provider_message}",
+            (
+                "✅ Delivery ready."
+                if state.delivery_ready
+                else f"⚠️ {state.delivery_summary}"
+            ),
+            f"Public threshold: **{state.threshold_percent}%**",
+            f"Extreme leads: **{'ON' if state.extreme_enabled else 'OFF'}** · {state.extreme_recent} recent in the last 15 min",
+        ]
+        if state.deals_today is not None:
+            lines.append(
+                f"Deals posted today: **{state.deals_today}** · Active deals: **{state.active_deal_count}**"
+            )
+        else:
+            lines.append(
+                f"Active deals: **{state.active_deal_count}** (deals-today count unavailable — showing active deals instead)"
+            )
+        if state.active_deals:
+            lines.append("Recent deals:")
+            lines.extend(_format_deal_line(deal) for deal in state.active_deals[:3])
+        else:
+            lines.append("Recent deals: none active right now.")
+        dm_detail = ""
+        if state.dm_threshold is not None:
+            cap = (
+                "no daily cap"
+                if state.dm_daily_cap is None
+                else f"cap {state.dm_daily_cap}/day"
+            )
+            dm_detail = f" (min {state.dm_threshold}% · {cap})"
+        lines.append(
+            f"Your DM alerts: **{'ON' if state.dm_enabled else 'OFF'}**{dm_detail}"
+        )
+        lines.append("HP and Target: off by design — this menu is Walmart only.")
+    if notice:
+        lines.append("")
+        lines.append(notice)
+    return "\n".join(lines)
+
+
+def build_walmart_menu_embed(
+    state: MenuDashboardState | None = None, *, notice: str | None = None
+) -> discord.Embed:
+    """The Walmart dashboard: live state at the top, then every function.
+
+    ``state`` is the ``MenuDashboardState`` snapshot from
+    ``load_menu_dashboard_state``. The no-argument call keeps the old
+    behavior (Walmart blue, fallback status line) for callers that never
+    asked for state, e.g. the unified hub. The 4 function sections are
+    unchanged.
+    """
+
+    snapshot = state if state is not None else MenuDashboardState()
     embed = discord.Embed(
         title="🛒 Walmart — one menu for everything",
         description="Pick a function below, or use the quick buttons. Everything Walmart lives under `/walmart`.",
-        color=discord.Color.orange(),
+        color=_dashboard_color(state),
+    )
+    embed.add_field(
+        name="📊 Live status",
+        value=_status_field_value(snapshot, notice),
+        inline=False,
     )
     for section, keys in MENU_SECTIONS:
         lines = [
@@ -781,15 +922,199 @@ def _has_manage_guild(interaction: discord.Interaction) -> bool:
 
 
 class WalmartMenuView(discord.ui.View):
-    """Ephemeral menu hub. One tap runs a function or shows how to run it."""
+    """Ephemeral menu hub. One tap runs a function or shows how to run it.
 
-    def __init__(self, cog: "WalmartCommandCog") -> None:
+    Dashboard controls (threshold stepper, extreme toggle, DM toggle,
+    Refresh) act in place: they write through the same setters the slash
+    commands use, then re-render this same message with fresh state. A
+    failed write shows the existing ephemeral error pattern, never a
+    broken embed.
+    """
+
+    def __init__(self, cog: "WalmartCommandCog", state: MenuDashboardState | None = None) -> None:
         super().__init__(timeout=300)
         self.cog = cog
+        self.state = state
+        self._notice: str | None = None
         self.add_item(WalmartMenuSelect(cog))
         self.add_item(WalmartMenuCheckButton(cog))
         self.add_item(WalmartMenuFindButton(cog))
         self.add_item(WalmartMenuHuntButton(cog))
+        self._threshold_down = WalmartThresholdDownButton(cog)
+        self._threshold_value = WalmartThresholdValueButton(cog)
+        self._threshold_up = WalmartThresholdUpButton(cog)
+        self._extreme_toggle = WalmartExtremeToggleButton(cog)
+        self._dm_toggle = WalmartDmToggleButton(cog)
+        self._refresh_button = WalmartRefreshButton(cog)
+        for item in (
+            self._threshold_down,
+            self._threshold_value,
+            self._threshold_up,
+            self._extreme_toggle,
+            self._dm_toggle,
+            self._refresh_button,
+        ):
+            self.add_item(item)
+        self._sync_control_labels()
+
+    def _sync_control_labels(self) -> None:
+        """Button labels/styles follow the current snapshot (or defaults)."""
+        threshold = DEFAULT_STARTING_DEAL_PERCENT
+        extreme = False
+        dm_enabled = False
+        if self.state is not None:
+            threshold = self.state.threshold_percent
+            extreme = self.state.extreme_enabled
+            dm_enabled = self.state.dm_enabled
+        self._threshold_value.label = f"{threshold}%"
+        self._extreme_toggle.label = f"Extreme: {'ON' if extreme else 'OFF'}"
+        self._extreme_toggle.style = (
+            discord.ButtonStyle.success if extreme else discord.ButtonStyle.secondary
+        )
+        self._dm_toggle.label = f"DM alerts: {'ON' if dm_enabled else 'OFF'}"
+        self._dm_toggle.style = (
+            discord.ButtonStyle.success if dm_enabled else discord.ButtonStyle.secondary
+        )
+
+    def _db(self):
+        bot = getattr(self.cog, "bot", None)
+        return getattr(bot, "db", None) if bot is not None else None
+
+    async def _refresh_state(self, interaction: discord.Interaction) -> None:
+        """Re-read the dashboard snapshot; keep the old one if the read fails."""
+        bot = getattr(self.cog, "bot", None)
+        if bot is None:
+            return
+        try:
+            fresh = await load_menu_dashboard_state(
+                bot, interaction.guild_id, interaction.user.id
+            )
+        except Exception:
+            return
+        self.state = fresh
+
+    async def _rerender(
+        self, interaction: discord.Interaction, *, notice: str | None = None
+    ) -> None:
+        """Edit this same message with fresh numbers. Never a new message."""
+        await self._refresh_state(interaction)
+        self._notice = notice
+        self._sync_control_labels()
+        embed = build_walmart_menu_embed(self.state, notice=self._notice)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def adjust_threshold(
+        self, interaction: discord.Interaction, delta: int
+    ) -> None:
+        """Step the public threshold, clamped to 10–90, then re-render."""
+        if not _has_manage_guild(interaction):
+            await self._respond(
+                interaction,
+                "You need **Manage Server** permission to change the deal threshold.",
+            )
+            return
+        db = self._db()
+        if db is None or interaction.guild_id is None:
+            await self._respond(
+                interaction,
+                "Couldn't save the threshold — the bot database isn't available right now.",
+            )
+            return
+        current = (
+            self.state.threshold_percent
+            if self.state is not None
+            else DEFAULT_STARTING_DEAL_PERCENT
+        )
+        new = max(THRESHOLD_STEP_MIN, min(THRESHOLD_STEP_MAX, current + delta))
+        try:
+            saved = await set_starting_deal_percent(db, interaction.guild_id, new)
+        except Exception as error:
+            log.exception("Walmart menu threshold write failed", exc_info=error)
+            await self._respond(
+                interaction,
+                f"Couldn't save the threshold: `{type(error).__name__}`",
+            )
+            return
+        await self._rerender(interaction, notice=f"Threshold is now {saved}%.")
+
+    async def toggle_extreme(self, interaction: discord.Interaction) -> None:
+        """Flip the server's extreme-leads flag, then re-render."""
+        if not _has_manage_guild(interaction):
+            await self._respond(
+                interaction,
+                "You need **Manage Server** permission to change extreme leads.",
+            )
+            return
+        db = self._db()
+        if db is None or interaction.guild_id is None:
+            await self._respond(
+                interaction,
+                "Couldn't save the extreme-leads setting — the bot database isn't available right now.",
+            )
+            return
+        if self.state is not None:
+            current = self.state.extreme_enabled
+        else:
+            try:
+                current = await extreme_alerts_enabled(db, interaction.guild_id)
+            except Exception as error:
+                log.exception("Walmart menu extreme read failed", exc_info=error)
+                await self._respond(
+                    interaction,
+                    f"Couldn't read the extreme-leads setting: `{type(error).__name__}`",
+                )
+                return
+        new = not current
+        try:
+            await set_extreme_alerts_enabled(db, interaction.guild_id, new)
+        except Exception as error:
+            log.exception("Walmart menu extreme toggle failed", exc_info=error)
+            await self._respond(
+                interaction,
+                f"Couldn't save the extreme-leads setting: `{type(error).__name__}`",
+            )
+            return
+        await self._rerender(
+            interaction, notice=f"Extreme leads are now {'ON' if new else 'OFF'}."
+        )
+
+    async def toggle_dm_alerts(self, interaction: discord.Interaction) -> None:
+        """Flip only the tapping user's own DM preference, then re-render.
+
+        Same write path as /walmart my-alerts enable/disable: read the
+        opener's row, save it back with ``enabled`` flipped. No other
+        user's row is ever read or written here.
+        """
+        db = self._db()
+        if db is None:
+            await self._respond(
+                interaction,
+                "Couldn't save your DM alert setting — the bot database isn't available right now.",
+            )
+            return
+        try:
+            preference = await get_dm_deal_alert_preference(db, interaction.user.id)
+            saved = await save_dm_deal_alert_preference(
+                db, replace(preference, enabled=not preference.enabled)
+            )
+        except Exception as error:
+            log.exception("Walmart menu DM toggle failed", exc_info=error)
+            await self._respond(
+                interaction,
+                f"Couldn't save your DM alert setting: `{type(error).__name__}`",
+            )
+            return
+        await self._rerender(
+            interaction,
+            notice=f"Your DM alerts are now {'ON' if saved.enabled else 'OFF'}.",
+        )
+
+    async def refresh_dashboard(self, interaction: discord.Interaction) -> None:
+        """Re-read state and re-render. Read-only; anyone may refresh."""
+        await self._rerender(interaction)
 
     async def on_timeout(self) -> None:
         for item in self.children:
@@ -883,6 +1208,79 @@ class WalmartMenuHuntButton(discord.ui.Button):
         view = self.view
         assert isinstance(view, WalmartMenuView)
         await view.run_function(interaction, "hunt")
+
+
+class WalmartThresholdDownButton(discord.ui.Button):
+    def __init__(self, cog: "WalmartCommandCog") -> None:
+        self.cog = cog
+        super().__init__(label="−5%", style=discord.ButtonStyle.secondary, row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, WalmartMenuView)
+        await view.adjust_threshold(interaction, -THRESHOLD_STEP_PERCENT)
+
+
+class WalmartThresholdValueButton(discord.ui.Button):
+    """Display-only current threshold. Disabled, so it never fires."""
+
+    def __init__(self, cog: "WalmartCommandCog") -> None:
+        self.cog = cog
+        super().__init__(
+            label=f"{DEFAULT_STARTING_DEAL_PERCENT}%",
+            style=discord.ButtonStyle.secondary,
+            disabled=True,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, WalmartMenuView)
+        await view.refresh_dashboard(interaction)
+
+
+class WalmartThresholdUpButton(discord.ui.Button):
+    def __init__(self, cog: "WalmartCommandCog") -> None:
+        self.cog = cog
+        super().__init__(label="+5%", style=discord.ButtonStyle.secondary, row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, WalmartMenuView)
+        await view.adjust_threshold(interaction, THRESHOLD_STEP_PERCENT)
+
+
+class WalmartExtremeToggleButton(discord.ui.Button):
+    def __init__(self, cog: "WalmartCommandCog") -> None:
+        self.cog = cog
+        super().__init__(label="Extreme: OFF", style=discord.ButtonStyle.secondary, row=3)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, WalmartMenuView)
+        await view.toggle_extreme(interaction)
+
+
+class WalmartDmToggleButton(discord.ui.Button):
+    def __init__(self, cog: "WalmartCommandCog") -> None:
+        self.cog = cog
+        super().__init__(label="DM alerts: OFF", style=discord.ButtonStyle.secondary, row=3)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, WalmartMenuView)
+        await view.toggle_dm_alerts(interaction)
+
+
+class WalmartRefreshButton(discord.ui.Button):
+    def __init__(self, cog: "WalmartCommandCog") -> None:
+        self.cog = cog
+        super().__init__(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, row=4)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, WalmartMenuView)
+        await view.refresh_dashboard(interaction)
 
 
 class WalmartCheckModal(discord.ui.Modal, title="Check a Walmart deal"):

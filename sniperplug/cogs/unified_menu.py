@@ -41,6 +41,10 @@ from sniperplug.cogs.walmart_command import (
     WalmartMenuView,
     build_walmart_menu_embed,
 )
+from sniperplug.services.menu_dashboard_state import (
+    MenuDashboardState,
+    load_menu_dashboard_state,
+)
 
 log = logging.getLogger("sniperplug")
 
@@ -51,6 +55,126 @@ GROUP_DESCRIPTION = "One menu for everything SniperPlug can do."
 # the same limit itself instead of letting menu users spam the API.
 _COOLDOWN_LIMIT = 2
 _COOLDOWN_WINDOW_S = 60.0
+
+# Shown in place of the status strip when the live state read failed.
+# The function list still works; the menu never renders a broken embed.
+_STATE_UNAVAILABLE_LINE = "Live state unavailable — the function list still works."
+
+# Per-category accent colors (hub keeps the orange brand color).
+# Walmart blue is the real brand blue; the rest are distinct, muted
+# accents chosen to match the render's palette.
+CATEGORY_COLORS: dict[str, int] = {
+    "walmart": 0x0071DC,  # Walmart blue
+    "my-deals": 0x9B59B6,  # purple
+    "stores": 0x1ABC9C,  # teal
+    "movies-verizon": 0xE91E63,  # pink
+    "server": 0x607D8B,  # slate
+}
+
+# Color language (spec): green = ready/healthy, orange = degraded / needs
+# attention, red = down / not configured. HP and Target are off by design,
+# never red — that wording is used in the summaries below, not a red dot.
+_PROVIDER_EMOJI = {
+    "READY": "🟢",
+    "DISABLED": "🟠",
+    "ERROR": "🔴",
+    "UNKNOWN": "🟠",
+}
+
+
+def _format_deal_price(deal: dict) -> str:
+    price = deal.get("price")
+    discount = deal.get("discount")
+    parts: list[str] = []
+    if price is not None:
+        try:
+            parts.append(f"${float(price):,.2f}")
+        except (TypeError, ValueError):
+            parts.append(str(price))
+    if discount is not None:
+        parts.append(f"{discount}% off")
+    return " · ".join(parts) if parts else "active deal"
+
+
+def _dm_summary(state: MenuDashboardState) -> str:
+    if not state.dm_enabled:
+        return "DM alerts OFF"
+    detail = "DM alerts ON"
+    if state.dm_threshold is not None:
+        detail += f" (threshold {state.dm_threshold}%"
+        if state.dm_daily_cap is not None:
+            detail += f" · up to {state.dm_daily_cap}/day"
+        else:
+            detail += " · unlimited/day"
+        detail += ")"
+    return detail
+
+
+def _deals_today_line(state: MenuDashboardState) -> str:
+    if state.deals_today is not None:
+        return f"Deals today: {state.deals_today}"
+    return (
+        "Deals today: unavailable — showing active deals instead "
+        f"({state.active_deal_count} active)"
+    )
+
+
+def _status_strip(state: MenuDashboardState) -> str:
+    """Hub status strip: one line per live value, read from the snapshot."""
+    provider_emoji = _PROVIDER_EMOJI.get(state.provider_status, "🟠")
+    extreme = (
+        f"Extreme lane: ON ({state.extreme_recent} in last 15 min)"
+        if state.extreme_enabled
+        else "Extreme lane: OFF"
+    )
+    delivery = (
+        "Delivery: ready"
+        if state.delivery_ready
+        else f"Delivery: not ready — {state.delivery_summary}"
+    )
+    return "\n".join(
+        [
+            f"{provider_emoji} Provider {state.provider_status} — {state.provider_message}",
+            f"Public threshold: {state.threshold_percent}%",
+            extreme,
+            _dm_summary(state),
+            f"Wishlist: {state.wishlist_count}/{state.wishlist_cap}",
+            _deals_today_line(state),
+            f"Active deals: {state.active_deal_count}",
+            delivery,
+        ]
+    )
+
+
+def _category_summary(state: MenuDashboardState, category_key: str) -> str:
+    """One live summary line for a category, from the snapshot only.
+
+    No numbers are invented: categories with no dedicated reader in the
+    snapshot reuse the shared live values (provider, threshold, deals).
+    HP and Target say "off by design", never red.
+    """
+    if category_key == "walmart":
+        delivery = "delivery ready" if state.delivery_ready else "delivery not ready"
+        extreme = (
+            f"extreme ON ({state.extreme_recent} in last 15 min)"
+            if state.extreme_enabled
+            else "extreme OFF"
+        )
+        return (
+            f"threshold {state.threshold_percent}% · "
+            f"{state.active_deal_count} active deals · {delivery} · {extreme}"
+        )
+    if category_key == "my-deals":
+        return f"wishlist {state.wishlist_count}/{state.wishlist_cap} · {_dm_summary(state)}"
+    if category_key == "stores":
+        return (
+            f"provider {state.provider_status} · threshold {state.threshold_percent}% · "
+            f"{state.active_deal_count} active deals · HP and Target: off by design"
+        )
+    if category_key == "movies-verizon":
+        return f"provider {state.provider_status} · threshold {state.threshold_percent}% · {_deals_today_line(state).lower()}"
+    # server
+    return f"{state.delivery_summary} · HP and Target: off by design"
 
 
 @dataclass(frozen=True)
@@ -291,34 +415,72 @@ _MODAL_FIELDS: dict[str, tuple[_ModalField, ...]] = {
 _PRICE_FIELDS = frozenset({"local-check", "seed-clearance"})
 
 
-def build_unified_menu_embed() -> discord.Embed:
-    """The hub: every category, with a count and a one-liner each."""
+def build_unified_menu_embed(state: MenuDashboardState | None = None) -> discord.Embed:
+    """The hub: every category, with a count and a one-liner each.
+
+    With a live ``MenuDashboardState`` snapshot the top field is a status
+    strip read fresh at open time (provider health, public threshold,
+    extreme lane, the opener's DM alerts, wishlist n/20, deals today —
+    or active deals, said so, when the deals-today count is unavailable —
+    and the active deal count). Without one (or when the read failed) the
+    strip is the fallback line and the function list still works.
+    """
 
     embed = discord.Embed(
         title="📋 SniperPlug menu",
         description="Everything SniperPlug can do, in one place. Pick a category, then pick a function — it runs right there.",
         color=discord.Color.orange(),
     )
+    if state is not None and state.state_available:
+        embed.add_field(name="📊 Live status", value=_status_strip(state), inline=False)
+    else:
+        embed.add_field(
+            name="📊 Live status",
+            value=_STATE_UNAVAILABLE_LINE,
+            inline=False,
+        )
     counts = {
         "walmart": "18 functions",
         **{key: f"{len(ENTRIES_BY_CATEGORY[key])} functions" for key, _l, _d in MENU_CATEGORIES if key != "walmart"},
     }
     for key, label, desc in MENU_CATEGORIES:
-        embed.add_field(name=f"{label} ({counts[key]})", value=desc, inline=False)
+        value = desc
+        if state is not None and state.state_available:
+            value = f"{desc}\n{_category_summary(state, key)}"
+        embed.add_field(name=f"{label} ({counts[key]})", value=value, inline=False)
+    if state is not None and state.state_available and state.active_deals:
+        lines = [
+            f"• {deal.get('title', '')} — {_format_deal_price(deal)}"
+            for deal in state.active_deals
+        ]
+        embed.add_field(name="🔥 Latest active deals", value="\n".join(lines), inline=False)
     embed.set_footer(text="Admin functions need Manage Server. The old slash commands still work too.")
     return embed
 
 
-def build_category_embed(category_key: str) -> discord.Embed:
-    """One category: every function with its usage, so nobody has to guess."""
+def build_category_embed(
+    category_key: str, state: MenuDashboardState | None = None
+) -> discord.Embed:
+    """One category: every function with its usage, so nobody has to guess.
+
+    Per-category accent color (hub keeps orange), the category's live
+    summary line at the top when a snapshot is available, then the function
+    list as today. With no usable snapshot the top line is the fallback
+    and the function list is intact.
+    """
 
     label = dict((key, label) for key, label, _d in MENU_CATEGORIES)[category_key]
     entries = ENTRIES_BY_CATEGORY[category_key]
     embed = discord.Embed(
         title=label,
         description="Pick a function — it runs right there. Use ← Back to return to the full menu.",
-        color=discord.Color.orange(),
+        color=discord.Color(CATEGORY_COLORS[category_key]),
     )
+    if state is not None and state.state_available:
+        summary = _category_summary(state, category_key)
+    else:
+        summary = _STATE_UNAVAILABLE_LINE
+    embed.add_field(name="📊 Live status", value=summary, inline=False)
     lines = [f"`{entry.usage}` — {entry.description}" for entry in entries]
     embed.add_field(name="Functions", value="\n".join(lines), inline=False)
     embed.set_footer(text="Admin functions need Manage Server.")
@@ -335,9 +497,10 @@ def _has_manage_guild(interaction: discord.Interaction) -> bool:
 class UnifiedMenuView(discord.ui.View):
     """Hub view: one select for the category, quick buttons for the top 3."""
 
-    def __init__(self, cog: "UnifiedMenuCog") -> None:
+    def __init__(self, cog: "UnifiedMenuCog", state: MenuDashboardState | None = None) -> None:
         super().__init__(timeout=300)
         self.cog = cog
+        self.state = state
         self.add_item(UnifiedCategorySelect(cog))
         self.add_item(UnifiedFindButton(cog))
         self.add_item(UnifiedCheckButton(cog))
@@ -407,18 +570,44 @@ class UnifiedWishlistButton(_QuickButton):
 
 
 class UnifiedCategoryView(discord.ui.View):
-    """One category: a select for its functions, plus a Back button."""
+    """One category: a select for its functions, Refresh, plus a Back button."""
 
-    def __init__(self, cog: "UnifiedMenuCog", category_key: str) -> None:
+    def __init__(
+        self,
+        cog: "UnifiedMenuCog",
+        category_key: str,
+        state: MenuDashboardState | None = None,
+    ) -> None:
         super().__init__(timeout=300)
         self.cog = cog
         self.category_key = category_key
+        self.state = state
         self.add_item(UnifiedFunctionSelect(cog, category_key))
+        self.add_item(UnifiedRefreshButton(cog, category_key))
         self.add_item(UnifiedBackButton(cog))
 
     async def on_timeout(self) -> None:
         for item in self.children:
             item.disabled = True
+
+
+class UnifiedRefreshButton(discord.ui.Button):
+    """Re-read the dashboard state and re-render this category in place.
+
+    Read-only: anyone may refresh, no permission gate, no writes.
+    """
+
+    def __init__(self, cog: "UnifiedMenuCog", category_key: str) -> None:
+        self.cog = cog
+        self.category_key = category_key
+        super().__init__(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        state = await self.cog._load_state(interaction)
+        await interaction.response.edit_message(
+            embed=build_category_embed(self.category_key, state),
+            view=UnifiedCategoryView(self.cog, self.category_key, state),
+        )
 
 
 class UnifiedFunctionSelect(discord.ui.Select):
@@ -445,17 +634,40 @@ class UnifiedBackButton(discord.ui.Button):
         super().__init__(label="← Back to menu", style=discord.ButtonStyle.secondary, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        state = await self.cog._load_state(interaction)
         await interaction.response.edit_message(
-            embed=build_unified_menu_embed(),
-            view=UnifiedMenuView(self.cog),
+            embed=build_unified_menu_embed(state),
+            view=UnifiedMenuView(self.cog, state),
         )
+
+
+def _build_walmart_embed(state: MenuDashboardState) -> discord.Embed:
+    """Walmart embed, passing the snapshot when that builder accepts one.
+
+    The Walmart dashboard is another chunk's file and may still be the
+    old no-arg builder in this worktree; fall back to it rather than
+    breaking the hub's Walmart category.
+    """
+    try:
+        return build_walmart_menu_embed(state)  # type: ignore[arg-type]
+    except TypeError:
+        return build_walmart_menu_embed()
 
 
 class _WalmartMenuViewWithBack(WalmartMenuView):
     """The existing Walmart menu, with a way back to the unified hub."""
 
-    def __init__(self, walmart_cog, menu_cog: "UnifiedMenuCog") -> None:
-        super().__init__(walmart_cog)
+    def __init__(
+        self,
+        walmart_cog,
+        menu_cog: "UnifiedMenuCog",
+        state: MenuDashboardState | None = None,
+    ) -> None:
+        try:
+            super().__init__(walmart_cog)
+        except TypeError:
+            # Walmart view may take the snapshot in the other chunk.
+            super().__init__(walmart_cog, state)  # type: ignore[call-arg]
         self.menu_cog = menu_cog
         self.add_item(_WalmartBackButton(menu_cog))
 
@@ -466,9 +678,10 @@ class _WalmartBackButton(discord.ui.Button):
         super().__init__(label="← Back to menu", style=discord.ButtonStyle.secondary, row=2)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        state = await self.menu_cog._load_state(interaction)
         await interaction.response.edit_message(
-            embed=build_unified_menu_embed(),
-            view=UnifiedMenuView(self.menu_cog),
+            embed=build_unified_menu_embed(state),
+            view=UnifiedMenuView(self.menu_cog, state),
         )
 
 
@@ -617,19 +830,39 @@ class UnifiedMenuCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
+    # -- dashboard state -------------------------------------------------
+
+    async def _load_state(self, interaction: discord.Interaction) -> MenuDashboardState:
+        """Fresh dashboard snapshot for this opener, never raising.
+
+        A failed read returns an unavailable snapshot; the builders render
+        the fallback line instead of crashing.
+        """
+        try:
+            guild = getattr(interaction, "guild", None)
+            guild_id = getattr(interaction, "guild_id", None) or getattr(guild, "id", None)
+            user_id = getattr(getattr(interaction, "user", None), "id", None)
+            if guild_id is None or user_id is None:
+                return MenuDashboardState()
+            return await load_menu_dashboard_state(self.bot, int(guild_id), int(user_id))
+        except Exception:
+            return MenuDashboardState()
+
     # -- navigation ------------------------------------------------------
 
     @app_commands.command(name="menu", description="Open the SniperPlug menu: every function in one place.")
     async def menu(self, interaction: discord.Interaction) -> None:
+        state = await self._load_state(interaction)
         await interaction.response.send_message(
-            embed=build_unified_menu_embed(),
-            view=UnifiedMenuView(self),
+            embed=build_unified_menu_embed(state),
+            view=UnifiedMenuView(self, state),
             ephemeral=True,
         )
 
     async def open_category(self, interaction: discord.Interaction, category_key: str) -> None:
         """Swap the hub message for one category's view."""
 
+        state = await self._load_state(interaction)
         if category_key == "walmart":
             walmart_cog = self.bot.get_cog("WalmartCommandCog")
             if walmart_cog is None:
@@ -639,13 +872,13 @@ class UnifiedMenuCog(commands.Cog):
                 )
                 return
             await interaction.response.edit_message(
-                embed=build_walmart_menu_embed(),
-                view=_WalmartMenuViewWithBack(walmart_cog, self),
+                embed=_build_walmart_embed(state),
+                view=_WalmartMenuViewWithBack(walmart_cog, self, state),
             )
             return
         await interaction.response.edit_message(
-            embed=build_category_embed(category_key),
-            view=UnifiedCategoryView(self, category_key),
+            embed=build_category_embed(category_key, state),
+            view=UnifiedCategoryView(self, category_key, state),
         )
 
     # -- running entries ---------------------------------------------------

@@ -160,7 +160,20 @@ def test_menu_view_has_select_for_all_19_and_quick_buttons() -> None:
     assert {option.value for option in selects[0].options} == set(WALMART_SUBCOMMANDS)
     assert len(selects[0].options) == 19
     buttons = [child for child in view.children if isinstance(child, discord.ui.Button)]
-    assert {button.label for button in buttons} == {"Check a deal", "Find deals", "Hunt"}
+    # Dashboard controls (spec: threshold stepper, extreme toggle, DM toggle,
+    # Refresh) sit alongside the three quick buttons; with no snapshot the
+    # stepper shows the 40% default and both toggles show OFF.
+    assert {button.label for button in buttons} == {
+        "Check a deal",
+        "Find deals",
+        "Hunt",
+        "−5%",
+        "40%",
+        "+5%",
+        "Extreme: OFF",
+        "DM alerts: OFF",
+        "Refresh",
+    }
 
 
 class _FakeResponse:

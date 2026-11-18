@@ -204,12 +204,15 @@ class _FakeResponse:
         self.modal = None
         self.sent: list[tuple[tuple, dict]] = []
         self.edited: list[dict] = []
+        self.calls: list[str] = []
+        self._done = False
 
     def is_done(self) -> bool:
-        return False
+        return self._done
 
     async def defer(self, *, ephemeral: bool = False) -> None:
-        return None
+        self.calls.append("defer")
+        self._done = True
 
     async def send_modal(self, modal) -> None:
         self.modal = modal
@@ -244,6 +247,9 @@ class _FakeInteraction:
         self.message = None
         self.response = _FakeResponse()
         self.followup = _FakeFollowup()
+
+    async def edit_original_response(self, **kwargs) -> None:
+        self.response.edited.append(kwargs)
 
 
 def _fake_cog_with_plain_method(calls: list, method_name: str):
@@ -445,8 +451,11 @@ async def test_menu_command_sends_hub() -> None:
     cog = UnifiedMenuCog(bot=None)
     interaction = _FakeInteraction()
     await cog.menu.callback(cog, interaction)
-    assert len(interaction.response.sent) == 1
-    _args, kwargs = interaction.response.sent[0]
+    # Defer-first: the dashboard snapshot loads from Turso, which can take
+    # longer than Discord's 3s interaction window (10062 live 2026-11-17).
+    assert interaction.response.calls == ["defer"]
+    assert len(interaction.followup.sent) == 1
+    _args, kwargs = interaction.followup.sent[0]
     assert (kwargs["embed"].title or "") == "📋 SniperPlug menu"
     assert isinstance(kwargs["view"], UnifiedMenuView)
 
@@ -613,6 +622,92 @@ async def test_refresh_button_re_reads_state(monkeypatch) -> None:
     assert "19/20" in _embed_text(embed)
     assert "DM alerts OFF" in _embed_text(embed)
     assert isinstance(interaction.response.edited[0]["view"], UnifiedCategoryView)
+
+
+# -- defer-first (Unknown interaction 10062 fix, live 2026-11-17) --------
+
+# Every menu path that loads the dashboard snapshot must answer Discord
+# BEFORE the load: the snapshot reads Turso, and prod lock waits of 2.5-7.5s
+# blow past the 3s interaction window, so /menu died with 10062 twice and
+# /walmart menu once. These tests pin the order: defer, then load.
+
+
+@pytest.mark.asyncio
+async def test_menu_command_defers_before_loading_state(monkeypatch) -> None:
+    import sniperplug.cogs.unified_menu as um
+
+    interaction = _FakeInteraction()
+
+    async def _fake_load(bot, guild_id, user_id):
+        interaction.response.calls.append("load")
+        return _fake_snapshot()
+
+    monkeypatch.setattr(um, "load_menu_dashboard_state", _fake_load)
+    cog = UnifiedMenuCog(bot=None)
+    await cog.menu.callback(cog, interaction)
+    assert interaction.response.calls == ["defer", "load"]
+    assert len(interaction.followup.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_open_category_defers_before_loading_state(monkeypatch) -> None:
+    import sniperplug.cogs.unified_menu as um
+
+    interaction = _FakeInteraction()
+
+    async def _fake_load(bot, guild_id, user_id):
+        interaction.response.calls.append("load")
+        return _fake_snapshot()
+
+    monkeypatch.setattr(um, "load_menu_dashboard_state", _fake_load)
+    cog = UnifiedMenuCog(bot=None)
+    await cog.open_category(interaction, "my-deals")
+    assert interaction.response.calls == ["defer", "load"]
+    assert len(interaction.response.edited) == 1
+
+
+@pytest.mark.asyncio
+async def test_back_button_defers_before_loading_state(monkeypatch) -> None:
+    import sniperplug.cogs.unified_menu as um
+
+    interaction = _FakeInteraction()
+
+    async def _fake_load(bot, guild_id, user_id):
+        interaction.response.calls.append("load")
+        return _fake_snapshot()
+
+    monkeypatch.setattr(um, "load_menu_dashboard_state", _fake_load)
+    cog = UnifiedMenuCog(bot=None)
+    view = UnifiedCategoryView(cog, "my-deals")
+    back = next(
+        child for child in view.children
+        if isinstance(child, discord.ui.Button) and child.label == "← Back to menu"
+    )
+    await back.callback(interaction)
+    assert interaction.response.calls == ["defer", "load"]
+    assert len(interaction.response.edited) == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_button_defers_before_loading_state(monkeypatch) -> None:
+    import sniperplug.cogs.unified_menu as um
+
+    interaction = _FakeInteraction()
+
+    async def _fake_load(bot, guild_id, user_id):
+        interaction.response.calls.append("load")
+        return _fake_snapshot()
+
+    monkeypatch.setattr(um, "load_menu_dashboard_state", _fake_load)
+    cog = UnifiedMenuCog(bot=None)
+    view = UnifiedCategoryView(cog, "my-deals", _fake_snapshot())
+    refresh = next(
+        c for c in view.children
+        if isinstance(c, discord.ui.Button) and c.label == "🔄 Refresh"
+    )
+    await refresh.callback(interaction)
+    assert interaction.response.calls == ["defer", "load"]
+    assert len(interaction.response.edited) == 1
 
 
 def test_every_new_control_resolves_to_a_real_handler() -> None:

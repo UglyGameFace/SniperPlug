@@ -135,9 +135,15 @@ class _FakeResponse:
     def __init__(self) -> None:
         self.sent_message = None
         self.edited: list[dict] = []
+        self.calls: list[str] = []
+        self._done = False
 
     def is_done(self) -> bool:
-        return False
+        return self._done
+
+    async def defer(self, *, ephemeral: bool = False) -> None:
+        self.calls.append("defer")
+        self._done = True
 
     async def send_message(self, message: str, *, ephemeral: bool = False) -> None:
         self.sent_message = message
@@ -166,6 +172,9 @@ class _FakeInteraction:
         self.guild_id = GUILD
         self.response = _FakeResponse()
         self.followup = _FakeFollowup()
+
+    async def edit_original_response(self, **kwargs) -> None:
+        self.response.edited.append(kwargs)
 
 
 def _embed_text(embed: discord.Embed) -> str:
@@ -311,9 +320,12 @@ async def test_failed_threshold_write_shows_ephemeral_error_not_broken_embed(
     await _buttons(view)["+5%"].callback(interaction)
 
     assert await get_starting_deal_percent(db, GUILD) == 40
-    assert interaction.response.sent_message is not None
-    assert "threshold" in interaction.response.sent_message.lower()
+    # Deferred first, so the error reaches the user as an ephemeral
+    # follow-up, not a first response; the embed is not re-rendered.
+    assert interaction.response.sent_message is None
     assert interaction.response.edited == []
+    assert interaction.followup.sent
+    assert "threshold" in str(interaction.followup.sent[0]).lower()
 
 
 # -- extreme toggle ---------------------------------------------------------
@@ -584,3 +596,120 @@ async def test_dm_toggle_preserves_the_openers_other_settings() -> None:
     assert after.enabled is True
     assert after.min_discount == 50
     assert after.max_alerts_per_day == 10
+
+# -- defer-first (Unknown interaction 10062 fix, live 2026-11-17) --------
+
+# /menu and /walmart menu died live with 10062 because the dashboard
+# snapshot loads from Turso BEFORE the first response, and prod lock waits
+# of 2.5-7.5s blow past Discord's 3s interaction window. The same trap
+# sits in every inline control: the DB write/read runs before the re-render.
+# These tests pin the order: defer, then the slow work.
+
+
+@pytest.mark.asyncio
+async def test_menu_command_defers_before_loading_state(monkeypatch) -> None:
+    import sniperplug.cogs.walmart_command as wc
+
+    db, _conn = await _open_db()
+    bot = _fake_bot(db)
+    interaction = _FakeInteraction()
+
+    async def _fake_load(bot, guild_id, user_id):
+        interaction.response.calls.append("load")
+        return MenuDashboardState()
+
+    monkeypatch.setattr(wc, "load_menu_dashboard_state", _fake_load)
+    cog = WalmartCommandCog(bot=bot)
+    await cog.menu.callback(cog, interaction)
+    assert interaction.response.calls == ["defer", "load"]
+    assert len(interaction.followup.sent) == 1
+    assert isinstance(interaction.followup.sent[0][1]["view"], WalmartMenuView)
+
+
+@pytest.mark.asyncio
+async def test_threshold_stepper_defers_before_writing(monkeypatch) -> None:
+    import sniperplug.cogs.walmart_command as wc
+
+    db, _conn = await _open_db()
+    bot = _fake_bot(db)
+    await set_starting_deal_percent(db, GUILD, 40)
+    view = await _make_view(bot)
+    interaction = _FakeInteraction()
+
+    real_set = wc.set_starting_deal_percent
+
+    async def _logged_set(*args, **kwargs):
+        interaction.response.calls.append("write")
+        return await real_set(*args, **kwargs)
+
+    monkeypatch.setattr(wc, "set_starting_deal_percent", _logged_set)
+    await _buttons(view)["+5%"].callback(interaction)
+    assert interaction.response.calls == ["defer", "write"]
+    assert await get_starting_deal_percent(db, GUILD) == 45
+
+
+@pytest.mark.asyncio
+async def test_extreme_toggle_defers_before_writing(monkeypatch) -> None:
+    import sniperplug.cogs.walmart_command as wc
+
+    db, _conn = await _open_db()
+    bot = _fake_bot(db)
+    view = await _make_view(bot)
+    interaction = _FakeInteraction()
+
+    real_set = wc.set_extreme_alerts_enabled
+
+    async def _logged_set(*args, **kwargs):
+        interaction.response.calls.append("write")
+        return await real_set(*args, **kwargs)
+
+    monkeypatch.setattr(wc, "set_extreme_alerts_enabled", _logged_set)
+    await _buttons(view)["Extreme: OFF"].callback(interaction)
+    assert interaction.response.calls == ["defer", "write"]
+    assert await extreme_alerts_enabled(db, GUILD) is True
+
+
+@pytest.mark.asyncio
+async def test_dm_toggle_defers_before_reading(monkeypatch) -> None:
+    import sniperplug.cogs.walmart_command as wc
+
+    db, _conn = await _open_db()
+    bot = _fake_bot(db)
+    view = await _make_view(bot)
+    interaction = _FakeInteraction()
+
+    real_get = wc.get_dm_deal_alert_preference
+    real_save = wc.save_dm_deal_alert_preference
+
+    async def _logged_get(*args, **kwargs):
+        interaction.response.calls.append("read")
+        return await real_get(*args, **kwargs)
+
+    async def _logged_save(*args, **kwargs):
+        interaction.response.calls.append("write")
+        return await real_save(*args, **kwargs)
+
+    monkeypatch.setattr(wc, "get_dm_deal_alert_preference", _logged_get)
+    monkeypatch.setattr(wc, "save_dm_deal_alert_preference", _logged_save)
+    await _buttons(view)["DM alerts: OFF"].callback(interaction)
+    assert interaction.response.calls == ["defer", "read", "write"]
+    assert (await get_dm_deal_alert_preference(db, USER)).enabled is True
+
+
+@pytest.mark.asyncio
+async def test_refresh_defers_before_reloading(monkeypatch) -> None:
+    import sniperplug.cogs.walmart_command as wc
+
+    db, _conn = await _open_db()
+    bot = _fake_bot(db)
+    view = await _make_view(bot)
+    interaction = _FakeInteraction()
+
+    async def _fake_load(bot, guild_id, user_id):
+        interaction.response.calls.append("load")
+        return MenuDashboardState()
+
+    monkeypatch.setattr(wc, "load_menu_dashboard_state", _fake_load)
+    await _buttons(view)["Refresh"].callback(interaction)
+    assert interaction.response.calls == ["defer", "load"]
+    assert len(interaction.response.edited) == 1

@@ -18,6 +18,10 @@ when they are off — a wishlist that never DMs anyone is useless — but only
 after proving the DM can be delivered, the same probe-then-save pattern
 ``/walmart my-alerts`` uses. If DMs are closed, the item is still saved and
 the reply says plainly that alerts stay off until DMs are allowed.
+
+An item can carry a target price (``/wishlist add item target_price:150``):
+the DM then fires only at or under that price. Re-adding the same item
+with a new target updates it in place — that is how a target is changed.
 """
 
 from __future__ import annotations
@@ -36,9 +40,10 @@ from sniperplug.services.dm_deal_alerts import (
 from sniperplug.services.user_wishlist import (
     MAX_WISHLIST_ITEMS_PER_USER,
     WISHLIST_SCAN_NOTE,
+    WishlistEntry,
     add_user_wishlist_item,
     clear_user_wishlist,
-    list_user_wishlist,
+    list_user_wishlist_entries,
     remove_user_wishlist_item,
 )
 
@@ -47,11 +52,22 @@ GROUP_DESCRIPTION = (
     "as a verified deal."
 )
 
+MAX_TARGET_PRICE_DOLLARS = 1_000_000
 
-def _wishlist_lines(items: tuple[str, ...]) -> str:
+
+def _target_suffix(entry: WishlistEntry) -> str:
+    if entry.target_price_cents is None:
+        return ""
+    return f" — DM only at or under ${entry.target_price_cents / 100:,.2f}"
+
+
+def _wishlist_lines(items: tuple[WishlistEntry, ...]) -> str:
     if not items:
         return "Your wishlist is empty."
-    return "\n".join(f"{index}. {item}" for index, item in enumerate(items, 1))
+    return "\n".join(
+        f"{index}. {entry}{_target_suffix(entry)}"
+        for index, entry in enumerate(items, 1)
+    )
 
 
 def _dm_status_line(preference: DmDealAlertPreference) -> str:
@@ -72,11 +88,39 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
     # -- add -----------------------------------------------------------
 
     @app_commands.command(name="add", description="Add an item to your wishlist. I'll DM you if the bot's broad scan finds it as a verified deal.")
-    @app_commands.describe(item="Plain product name, for example: iphone 11, dyson airwrap, rtx 5070.")
-    async def add(self, interaction: discord.Interaction, item: str) -> None:
+    @app_commands.describe(
+        item="Plain product name, for example: iphone 11, dyson airwrap, rtx 5070.",
+        target_price="Optional: only DM me at or under this price, for example 150.",
+    )
+    async def add(
+        self,
+        interaction: discord.Interaction,
+        item: str,
+        target_price: float | None = None,
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
         user_id = int(interaction.user.id)
-        result = await add_user_wishlist_item(self.bot.db, user_id, item)
+        target_cents: int | None = None
+        if target_price is not None:
+            if not 0 < target_price <= MAX_TARGET_PRICE_DOLLARS:
+                await interaction.followup.send(
+                    "That target price doesn't look right — give a normal price "
+                    "above $0, like `target_price:150`, or leave it out entirely.",
+                    ephemeral=True,
+                )
+                return
+            target_cents = int(round(target_price * 100))
+        result = await add_user_wishlist_item(
+            self.bot.db, user_id, item, target_price_cents=target_cents
+        )
+        if result.updated:
+            await interaction.followup.send(
+                f"🔄 Updated **{result.item}** — I'll only DM you when the "
+                f"verified price is at or under "
+                f"${(result.target_price_cents or 0) / 100:,.2f}.",
+                ephemeral=True,
+            )
+            return
         if not result.added:
             if result.reason == "empty":
                 message = "Type the item you want — for example `/wishlist add item:iphone 11`."
@@ -87,6 +131,11 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
                 )
             elif result.reason == "duplicate":
                 message = f"**{result.item}** is already on your wishlist."
+                if result.target_price_cents is not None:
+                    message += (
+                        f" Its target is ${result.target_price_cents / 100:,.2f} — "
+                        "re-add with a new `target_price` to change it."
+                    )
             else:  # cap
                 message = (
                     f"Your wishlist is full ({MAX_WISHLIST_ITEMS_PER_USER} items). "
@@ -95,6 +144,12 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
             await interaction.followup.send(message, ephemeral=True)
             return
 
+        target_note = ""
+        if result.target_price_cents is not None:
+            target_note = (
+                f" Target set: I'll only DM you at or under "
+                f"${result.target_price_cents / 100:,.2f}."
+            )
         preference = await get_dm_deal_alert_preference(self.bot.db, user_id)
         dm_note = ""
         if not preference.enabled:
@@ -102,13 +157,13 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
             if not enabled:
                 await interaction.followup.send(
                     f"✅ Added **{result.item}** to your wishlist "
-                    f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).\n\n{dm_note}",
+                    f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).{target_note}\n\n{dm_note}",
                     ephemeral=True,
                 )
                 return
         await interaction.followup.send(
             f"✅ Added **{result.item}** to your wishlist "
-            f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).\n\n"
+            f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).{target_note}\n\n"
             "I'll DM you if the bot's broad scan finds it first as a verified deal "
             "(exact price proof, at least 20% off). "
             f"{WISHLIST_SCAN_NOTE} "
@@ -201,7 +256,7 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
     async def list_items(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         user_id = int(interaction.user.id)
-        items = await list_user_wishlist(self.bot.db, user_id)
+        items = await list_user_wishlist_entries(self.bot.db, user_id)
         preference = await get_dm_deal_alert_preference(self.bot.db, user_id)
         embed = discord.Embed(
             title="⭐ Your wishlist",

@@ -574,7 +574,7 @@ def test_category_embed_uses_accent_color_and_live_summary() -> None:
     other = build_category_embed("stores", _fake_snapshot())
     assert other.color != discord.Color.orange()
     assert other.color.value == 0x1ABC9C  # stores teal
-    assert "off by design" in _embed_text(other)
+    assert "watchers not running" in _embed_text(other)
 
 
 def test_state_unavailable_renders_fallback_with_function_list_intact() -> None:

@@ -41,6 +41,31 @@ REQUIRED_CHANNEL_PERMS = {
     "read_message_history": "Read Message History",
 }
 
+# The one not-configured message every Target lookup command shares, so a
+# missing RedSky key reads identically everywhere it can block a command.
+TARGET_NOT_CONFIGURED_MESSAGE = (
+    "Target store lookup is not available: the server owner has not set "
+    "`TARGET_REDSKY_API_KEY`. Nothing was saved. Ask the server owner "
+    "to set the key to enable Target store selection."
+)
+
+
+def target_setup_line(
+    *,
+    target_ready: bool,
+    display_name: str | None,
+    redsky_configured: bool,
+) -> str:
+    """The Target fragment of the setup embed, truthful about the key."""
+    if target_ready:
+        return f"**Target** at **{display_name}**"
+    if not redsky_configured:
+        return (
+            "**Target waiting for key** — the server owner needs to set "
+            "`TARGET_REDSKY_API_KEY`, then run `/target_location` to choose a store"
+        )
+    return "**Target paused** — run `/target_location` to choose a store"
+
 
 class CanonicalWorkflowCog(commands.Cog):
     """Canonical setup plus location-safe Target enrollment."""
@@ -145,11 +170,23 @@ class CanonicalWorkflowCog(commands.Cog):
         embed.add_field(
             name="Retailers",
             value=(
-                "**Walmart** global catalog + **HP Store** exact-price watcher + "
-                + (
-                    f"**Target** at **{target_location.display_name}**"
-                    if target_ready and target_location is not None
-                    else "**Target paused** — run `/target_location` to choose a store"
+                "**Walmart** global catalog + **HP Store** exact-price watcher "
+                "(delivery ready; watcher not running yet) + "
+                + target_setup_line(
+                    target_ready=target_ready,
+                    display_name=(
+                        target_location.display_name
+                        if target_location is not None
+                        else None
+                    ),
+                    redsky_configured=bool(
+                        str(
+                            getattr(
+                                self.bot.settings, "target_redsky_api_key", None
+                            )
+                            or ""
+                        ).strip()
+                    ),
                 )
             ),
             inline=False,
@@ -318,12 +355,7 @@ class CanonicalWorkflowCog(commands.Cog):
             getattr(self.bot.settings, "target_redsky_api_key", None) or ""
         ).strip()
         if not api_key:
-            return (
-                (),
-                "Target store lookup is not available: the server owner has not set "
-                "`TARGET_REDSKY_API_KEY`. Nothing was saved. Ask the server owner "
-                "to set the key to enable Target store selection.",
-            )
+            return (), TARGET_NOT_CONFIGURED_MESSAGE
         settings = TargetWatcherSettings(
             redsky_api_key=api_key,
             require_remote_database=False,

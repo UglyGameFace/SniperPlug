@@ -495,7 +495,7 @@ def test_dashboard_embed_shows_state_and_is_green_when_ready() -> None:
     assert "LEGO Star Wars Set" in text
     assert "$29.99" in text
     assert "Your DM alerts: **ON**" in text
-    assert "off by design" in text
+    assert "watchers not running" in text
     for _section, keys in MENU_MEMBER_SECTIONS + MENU_STAFF_SECTIONS:
         for key in keys:
             assert f"/walmart {key}" in text

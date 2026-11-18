@@ -900,8 +900,8 @@ def _status_field_value(state: MenuDashboardState, notice: str | None) -> str:
 
     The snapshot's active_deals + deals_today are the last-scan / recent
     summary — the snapshot carries no scan timestamp, so none is invented.
-    HP and Target are off by design here, never red: this menu is Walmart
-    only.
+    HP and Target watchers are not running, never red here: this menu is
+    Walmart only.
     """
     if not state.state_available:
         lines = ["Live state unavailable — the function list still works."]
@@ -940,7 +940,7 @@ def _status_field_value(state: MenuDashboardState, notice: str | None) -> str:
         lines.append(
             f"Your DM alerts: **{'ON' if state.dm_enabled else 'OFF'}**{dm_detail}"
         )
-        lines.append("HP and Target: off by design — this menu is Walmart only.")
+        lines.append("HP and Target: watchers not running — this menu is Walmart only.")
     if notice:
         lines.append("")
         lines.append(notice)

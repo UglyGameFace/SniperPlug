@@ -13,6 +13,7 @@ from sniperplug.cogs.movie_ticket_feedback import (
 )
 from sniperplug.cogs.movie_tickets import (
     MAX_LATEST_EMBEDS,
+    MOVIE_ALERT_CHANNEL_ENV,
     MOVIE_POLL_SECONDS,
     MovieScanOutcome,
     MovieTicketsCog as AtomMovieTicketsCog,
@@ -137,7 +138,7 @@ class MovieTicketsCog(AtomMovieTicketsCog):
         embed.add_field(name="Alerts", value="Enabled" if config.enabled else "Disabled", inline=True)
         embed.add_field(
             name="Channel",
-            value=f"<#{config.alert_channel_id}>" if config.alert_channel_id else "Not configured",
+            value=self._channel_field_value(config),
             inline=True,
         )
         embed.add_field(name="Reusable ticket codes", value=str(public_codes), inline=True)
@@ -407,23 +408,42 @@ class MovieTicketsCog(AtomMovieTicketsCog):
             configs = await self.store.list_enabled_configs()
         else:
             config = await self.store.get_config(int(target_guild_id))
-            configs = [config] if config.enabled and config.alert_channel_id else []
+            configs = [config] if config.enabled and self._effective_channel_id(config) else []
 
         delivered = 0
         for config in configs:
             channel = await self._configured_channel(config)
             if channel is None:
-                log.warning("Movie ticket destination missing guild=%s channel=%s", config.guild_id, config.alert_channel_id)
+                if self._destination_warning_due(
+                    "missing", config.guild_id, self._effective_channel_id(config)
+                ):
+                    log.warning(
+                        "Movie alerts cannot post: destination channel <#%s> was not found "
+                        "in guild %s. The channel may have been deleted, or %s points at "
+                        "another server's channel. This warning repeats at most once per day.",
+                        self._effective_channel_id(config),
+                        config.guild_id,
+                        MOVIE_ALERT_CHANNEL_ENV,
+                    )
                 continue
             missing = self._missing_bot_permissions(channel.guild, channel)
             if missing:
-                log.warning(
-                    "Movie ticket destination lacks permissions guild=%s channel=%s missing=%s",
-                    channel.guild.id,
-                    channel.id,
-                    missing,
-                )
+                if self._destination_warning_due(
+                    "permissions", channel.guild.id, channel.id
+                ):
+                    log.warning(
+                        "Movie alerts cannot post in <#%s> — missing %s "
+                        "(guild=%s channel=%s). Grant those channel permissions for "
+                        "the bot role, or point %s at a writable channel. "
+                        "This warning repeats at most once per day.",
+                        channel.id,
+                        ", ".join(missing),
+                        channel.guild.id,
+                        channel.id,
+                        MOVIE_ALERT_CHANNEL_ENV,
+                    )
                 continue
+            self._note_destination_healthy(channel.guild.id, channel.id)
 
             for drop in drops:
                 if drop.classification not in DELIVERABLE_CLASSIFICATIONS:

@@ -711,9 +711,10 @@ async def build_global_autoscan_health_embed(
         title="🩺 Global Autoscan Health",
         description=(
             "Walmart discovery and exact verification run inside SniperPlug. "
-            "HP Store and Target watchers are off by design — neither retailer "
-            "is scanned, so their panels below report the last known state, "
-            "not a missing setup. "
+            "HP Store and Target watchers are not running in this deployment "
+            "yet — neither retailer is being scanned right now, so their "
+            "panels below report the last known state. Their delivery routes "
+            "stay ready for the moment a watcher runs. "
             "One unhealthy retailer does not silently disable another retailer."
         ),
         color=color,
@@ -953,16 +954,20 @@ def _next_action(
         and (not target_location_ready or not target_delivery_ready)
     ):
         return (
-            "Target is selected but the Target watcher is off by design, so no "
-            "Target deals are scanned. Save a store with `/target_location` so "
-            "Target is ready if a watcher is ever enabled. "
+            "Target is selected but no Target watcher is running in this "
+            "deployment yet, so no Target deals are scanned. Save a store "
+            "with `/target_location` (store lookup needs "
+            "`TARGET_REDSKY_API_KEY`) so Target is ready the moment a "
+            "watcher runs. "
             "This does not block Walmart delivery."
         )
     if "hp" in selected_retailers and not hp_delivery_ready:
         return (
-            "HP Store is selected but the HP watcher is off by design, so no HP "
-            "deals are scanned. This does not block Walmart; turn HP off in "
-            "`/walmart setup` to hide this note."
+            "HP Store is selected but no HP watcher is running in this "
+            "deployment yet, so no HP deals are scanned. HP delivery is "
+            "ready — deals will post as soon as a watcher runs. This does "
+            "not block Walmart; turn HP off in `/walmart setup` to hide "
+            "this note."
         )
     if delivery_health.events_seen and not delivery_health.posted:
         return (

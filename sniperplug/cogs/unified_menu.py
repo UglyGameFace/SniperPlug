@@ -73,8 +73,9 @@ CATEGORY_COLORS: dict[str, int] = {
 }
 
 # Color language (spec): green = ready/healthy, orange = degraded / needs
-# attention, red = down / not configured. HP and Target are off by design,
-# never red — that wording is used in the summaries below, not a red dot.
+# attention, red = down / not configured. HP and Target watchers are not
+# running yet, never red — that wording is used in the summaries below,
+# not a red dot.
 _PROVIDER_EMOJI = {
     "READY": "🟢",
     "DISABLED": "🟠",
@@ -152,7 +153,7 @@ def _category_summary(state: MenuDashboardState, category_key: str) -> str:
 
     No numbers are invented: categories with no dedicated reader in the
     snapshot reuse the shared live values (provider, threshold, deals).
-    HP and Target say "off by design", never red.
+    HP and Target say "watchers not running", never red.
     """
     if category_key == "walmart":
         delivery = "delivery ready" if state.delivery_ready else "delivery not ready"
@@ -170,12 +171,12 @@ def _category_summary(state: MenuDashboardState, category_key: str) -> str:
     if category_key == "stores":
         return (
             f"provider {state.provider_status} · threshold {state.threshold_percent}% · "
-            f"{state.active_deal_count} active deals · HP and Target: off by design"
+            f"{state.active_deal_count} active deals · HP and Target: watchers not running"
         )
     if category_key == "movies-verizon":
         return f"provider {state.provider_status} · threshold {state.threshold_percent}% · {_deals_today_line(state).lower()}"
     # server
-    return f"{state.delivery_summary} · HP and Target: off by design"
+    return f"{state.delivery_summary} · HP and Target: watchers not running"
 
 
 @dataclass(frozen=True)

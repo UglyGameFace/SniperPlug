@@ -64,7 +64,10 @@ def test_my_alerts_has_no_cash_only_option() -> None:
     ]
 
 
-# -- item 4: HP/Target watcher copy says off by design --------------------
+# -- item 4: HP/Target watcher copy states the truthful lane state --------
+# (2026-11-18 kept-lanes upgrade supersedes the 2026-11-17 "off by design"
+# wording: the lanes are KEPT — HP is off because no watcher is running in
+# this deployment yet, and Target waits on TARGET_REDSKY_API_KEY first.)
 
 
 def _fake_delivery_health():
@@ -76,7 +79,7 @@ def _fake_delivery_health():
     )
 
 
-def test_hp_next_action_says_watcher_is_off_by_design() -> None:
+def test_hp_next_action_says_watcher_is_not_running() -> None:
     from sniperplug.cogs.canonical_public_alerts import _next_action
 
     action = _next_action(
@@ -90,12 +93,13 @@ def test_hp_next_action_says_watcher_is_off_by_design() -> None:
         threshold=30,
     )
     assert action is not None
-    assert "off by design" in action
+    assert "off by design" not in action
+    assert "no HP watcher is running" in action
     assert "repair the HP deployment" not in action
     assert "not healthy" not in action
 
 
-def test_target_next_action_says_watcher_is_off_by_design() -> None:
+def test_target_next_action_says_watcher_is_not_running() -> None:
     from sniperplug.cogs.canonical_public_alerts import _next_action
 
     action = _next_action(
@@ -109,19 +113,22 @@ def test_target_next_action_says_watcher_is_off_by_design() -> None:
         threshold=30,
     )
     assert action is not None
-    assert "off by design" in action
+    assert "off by design" not in action
+    assert "no Target watcher is running" in action
+    assert "TARGET_REDSKY_API_KEY" in action
 
 
-def test_hp_watcher_not_started_copy_says_off_by_design() -> None:
+def test_hp_watcher_not_started_copy_says_off() -> None:
     line = HPWatcherHealth().summary_line()
-    assert "off by design" in line
-    assert "Start/deploy" not in line
+    assert "off by design" not in line
+    assert "**off**" in line
 
 
-def test_target_watcher_not_started_copy_says_off_by_design() -> None:
+def test_target_watcher_not_started_copy_waits_for_key() -> None:
     line = TargetWatcherHealth().summary_line()
-    assert "off by design" in line
-    assert "Start/deploy" not in line
+    assert "off by design" not in line
+    assert "waiting for key" in line
+    assert "TARGET_REDSKY_API_KEY" in line
 
 
 # -- item 9: clearance-bank seeds get a live recheck ----------------------

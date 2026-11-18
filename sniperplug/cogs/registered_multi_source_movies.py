@@ -160,7 +160,7 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
         embed.add_field(name="Alerts", value="Enabled" if config.enabled else "Disabled", inline=True)
         embed.add_field(
             name="Channel",
-            value=f"<#{config.alert_channel_id}>" if config.alert_channel_id else "Not configured",
+            value=self._channel_field_value(config),
             inline=True,
         )
         embed.add_field(name="Reusable ticket codes", value=str(public_codes), inline=True)

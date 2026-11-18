@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 from sniperplug.models.local_inventory import (
     InventoryProofLevel,
@@ -60,7 +61,7 @@ class HomeDepotProvider(DealProvider):
             provider_key=self.provider_key,
             candidates=(),
             warnings=(
-                "Home Depot scan is staged only. Use /sniperplug local_check with SKU/store/ZIP and observed price for proof routing.",
+                "Home Depot scan is staged only. Use /local_check with SKU/store/ZIP and observed price for proof routing.",
             ),
             page=request.page,
             page_size=0,
@@ -72,6 +73,21 @@ class HomeDepotProvider(DealProvider):
             "Home Depot penny/clearance prices are store-specific and must be verified locally.",
             "Do not treat online data alone as a confirmed penny deal.",
         ]
+        # State the live-lane truth on every proof: whether the SerpApi
+        # lookup lane is configured decides what /home_depot_search and
+        # /hd_stock can do — this command records manual proof either way.
+        if os.getenv("SERPAPI_API_KEY", "").strip():
+            warnings.append(
+                "SerpApi Home Depot lookup is configured (SERPAPI_API_KEY is set); "
+                "/home_depot_search and /hd_stock give the live lookup — this "
+                "command still records manual proof only."
+            )
+        else:
+            warnings.append(
+                "Live Home Depot lookup is not configured: the server owner has "
+                "not set SERPAPI_API_KEY, so /home_depot_search and /hd_stock "
+                "are off. This command records manual proof only."
+            )
 
         proof_level = InventoryProofLevel.PRODUCT_SEEN
         availability_text = "Manual SKU/local proof record created. Live store inventory not confirmed."

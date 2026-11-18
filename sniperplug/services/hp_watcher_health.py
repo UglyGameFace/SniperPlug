@@ -35,11 +35,14 @@ class HPWatcherHealth:
     def summary_line(self) -> str:
         if self.status == "not_started":
             return (
-                "HP watcher **off by design** • the HP watcher is not enabled, so no "
-                "HP deals are scanned • catalog "
+                "HP watcher **off** • no HP watcher is running in this deployment "
+                "yet, so no HP deals are scanned • catalog "
                 f"**{self.identified_products}/{self.products} identified**. "
-                "Nothing is misconfigured: HP scanning stays off until it is "
-                "deliberately enabled."
+                "The delivery side is ready: HP deals post through the same "
+                "verified fanout as Walmart (server threshold + dedupe) as soon "
+                "as a watcher runs — the standalone HP watcher app on the shared "
+                "database, or embedded with `SNIPERPLUG_EMBED_HP_WATCHER=true` "
+                "in local-SQLite mode."
             )
         if self.status == "healthy" and self.stale:
             state = "stale"

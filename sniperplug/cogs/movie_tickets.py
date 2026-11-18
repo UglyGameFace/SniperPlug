@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,6 +41,30 @@ REQUIRED_CHANNEL_PERMS = {
     "embed_links": "Embed Links",
 }
 
+# Optional deployment override for the movie-alert destination channel.
+# When set to a channel ID, delivery for every guild uses that channel
+# (resolved inside each guild; a guild that does not contain it falls back
+# to its saved /movies setup channel). Lets the owner point alerts at a
+# writable channel without a code change or a new /movies setup run.
+MOVIE_ALERT_CHANNEL_ENV = "SNIPERPLUG_MOVIE_ALERT_CHANNEL_ID"
+
+# A broken movie destination used to log a warning on every 60-second
+# pump cycle. The same warning now repeats at most once per day per
+# destination; it re-arms immediately once delivery is healthy again.
+DESTINATION_WARNING_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def movie_alert_channel_override() -> int | None:
+    """Parse the SNIPERPLUG_MOVIE_ALERT_CHANNEL_ID override, if any."""
+    raw = os.getenv(MOVIE_ALERT_CHANNEL_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
 
 @dataclass(frozen=True, slots=True)
 class MovieScanOutcome:
@@ -59,6 +84,7 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
         self._source_lock = asyncio.Lock()
         self._poster_fetch_semaphore = asyncio.Semaphore(4)
         self._poster_cache: dict[str, tuple[float, str]] = {}
+        self._destination_warning_at: dict[tuple[str, int, int], float] = {}
 
     async def cog_load(self) -> None:
         await self.store.ensure_schema()
@@ -132,7 +158,7 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
         embed.add_field(name="Alerts", value="Enabled" if config.enabled else "Disabled", inline=True)
         embed.add_field(
             name="Channel",
-            value=f"<#{config.alert_channel_id}>" if config.alert_channel_id else "Not configured",
+            value=self._channel_field_value(config),
             inline=True,
         )
         embed.add_field(name="Active public codes", value=str(len(active)), inline=True)
@@ -341,19 +367,41 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
             configs = await self.store.list_enabled_configs()
         else:
             config = await self.store.get_config(int(target_guild_id))
-            configs = [config] if config.enabled and config.alert_channel_id else []
+            configs = [config] if config.enabled and self._effective_channel_id(config) else []
 
         delivered = 0
         for config in configs:
             channel = await self._configured_channel(config)
             if channel is None:
-                log.warning("Movie ticket destination missing guild=%s channel=%s", config.guild_id, config.alert_channel_id)
+                if self._destination_warning_due(
+                    "missing", config.guild_id, self._effective_channel_id(config)
+                ):
+                    log.warning(
+                        "Movie alerts cannot post: destination channel <#%s> was not found "
+                        "in guild %s. The channel may have been deleted, or %s points at "
+                        "another server's channel. This warning repeats at most once per day.",
+                        self._effective_channel_id(config),
+                        config.guild_id,
+                        MOVIE_ALERT_CHANNEL_ENV,
+                    )
                 continue
             guild = channel.guild
             missing = self._missing_bot_permissions(guild, channel)
             if missing:
-                log.warning("Movie ticket destination lacks permissions guild=%s channel=%s missing=%s", guild.id, channel.id, missing)
+                if self._destination_warning_due("permissions", guild.id, channel.id):
+                    log.warning(
+                        "Movie alerts cannot post in <#%s> — missing %s "
+                        "(guild=%s channel=%s). Grant those channel permissions for "
+                        "the bot role, or point %s at a writable channel. "
+                        "This warning repeats at most once per day.",
+                        channel.id,
+                        ", ".join(missing),
+                        guild.id,
+                        channel.id,
+                        MOVIE_ALERT_CHANNEL_ENV,
+                    )
                 continue
+            self._note_destination_healthy(guild.id, channel.id)
 
             for drop in drops:
                 if drop.classification != "public_reusable" or not drop.code:
@@ -437,20 +485,66 @@ class MovieTicketsCog(commands.GroupCog, name="movies"):
         self._poster_cache[movie_url] = (now + ttl, image_url)
         return image_url
 
+    def _effective_channel_id(self, config: MovieTicketConfig) -> int:
+        """The channel alerts actually post to: env override, else saved."""
+        override = movie_alert_channel_override()
+        if override:
+            return override
+        return int(config.alert_channel_id or 0)
+
+    def _channel_field_value(self, config: MovieTicketConfig) -> str:
+        """Status-embed channel text, truthful about the env override."""
+        effective = self._effective_channel_id(config)
+        if not effective:
+            return "Not configured"
+        if movie_alert_channel_override():
+            return f"<#{effective}> (via `{MOVIE_ALERT_CHANNEL_ENV}`)"
+        return f"<#{effective}>"
+
+    def _warning_state(self) -> dict[tuple[str, int, int], float]:
+        state = getattr(self, "_destination_warning_at", None)
+        if state is None:
+            state = {}
+            self._destination_warning_at = state
+        return state
+
+    def _destination_warning_due(self, kind: str, guild_id: int, channel_id: int) -> bool:
+        """True at most once per day per (kind, guild, channel) destination."""
+        key = (kind, int(guild_id), int(channel_id))
+        now = time.monotonic()
+        last = self._warning_state().get(key)
+        if last is not None and now - last < DESTINATION_WARNING_INTERVAL_SECONDS:
+            return False
+        self._warning_state()[key] = now
+        return True
+
+    def _note_destination_healthy(self, guild_id: int, channel_id: int) -> None:
+        """Re-arm destination warnings once delivery works again."""
+        state = self._warning_state()
+        state.pop(("permissions", int(guild_id), int(channel_id)), None)
+        state.pop(("missing", int(guild_id), int(channel_id)), None)
+
     async def _configured_channel(self, config: MovieTicketConfig) -> discord.TextChannel | None:
-        if not config.alert_channel_id:
-            return None
         guild = self.bot.get_guild(int(config.guild_id))
         if guild is None:
             return None
-        cached = guild.get_channel(int(config.alert_channel_id))
-        if isinstance(cached, discord.TextChannel):
-            return cached
-        try:
-            fetched = await guild.fetch_channel(int(config.alert_channel_id))
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            return None
-        return fetched if isinstance(fetched, discord.TextChannel) else None
+        candidate_ids: list[int] = []
+        override = movie_alert_channel_override()
+        if override:
+            candidate_ids.append(override)
+        if config.alert_channel_id and int(config.alert_channel_id) != override:
+            candidate_ids.append(int(config.alert_channel_id))
+        for channel_id in candidate_ids:
+            cached = guild.get_channel(channel_id)
+            if isinstance(cached, discord.TextChannel):
+                return cached
+            try:
+                fetched = await guild.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                continue
+            if isinstance(fetched, discord.TextChannel):
+                return fetched
+        return None
 
     def _missing_bot_permissions(self, guild: discord.Guild, channel: discord.TextChannel) -> list[str]:
         member = guild.me

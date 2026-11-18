@@ -113,13 +113,16 @@ class HomeDepotLocalCog(commands.Cog):
             return
 
         # Fail up front when SerpApi is not configured: the store picker below
-        # can only lead to a scan that fails closed, so do not offer it.
+        # can only lead to a scan that fails closed, so do not offer it. The
+        # reply is the same one every Home Depot command gives.
         provider = provider_registry.get("home_depot_serpapi")
-        if provider is not None:
-            health = await provider.healthcheck()
-            if health.status != ProviderStatus.READY:
-                await interaction.followup.send(health.message, ephemeral=True)
-                return
+        if provider is None:
+            await interaction.followup.send("Home Depot SerpApi provider is not registered yet.", ephemeral=True)
+            return
+        health = await provider.healthcheck()
+        if health.status != ProviderStatus.READY:
+            await interaction.followup.send(health.message, ephemeral=True)
+            return
 
         if not cleaned_store_id:
             stores = await find_home_depot_stores(cleaned_zip, max_results=8)

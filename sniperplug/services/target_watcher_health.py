@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import os
 from typing import Any
 
 from sniperplug.services.verified_retailer_events import (
@@ -29,6 +30,7 @@ class TargetWatcherHealth:
     product_failures: int = 0
     stale: bool = True
     last_error: str = ""
+    redsky_configured: bool = False
 
     @property
     def ok(self) -> bool:
@@ -36,12 +38,24 @@ class TargetWatcherHealth:
 
     def summary_line(self) -> str:
         if self.status == "not_started":
+            if not self.redsky_configured:
+                return (
+                    "Target watcher **waiting for key** • the server owner has not "
+                    "set `TARGET_REDSKY_API_KEY`, so Target store lookup is off and "
+                    "no Target deals are scanned • catalog "
+                    f"**{self.priced_products}/{self.products} priced**. "
+                    "Paste a RedSky key into `TARGET_REDSKY_API_KEY` and Target is "
+                    "ready as soon as a watcher runs (standalone app on the shared "
+                    "database, or embedded in local-SQLite mode)."
+                )
             return (
-                "Target watcher **off by design** • the Target watcher is not enabled, so no "
-                "Target deals are scanned • catalog "
+                "Target watcher **off** • `TARGET_REDSKY_API_KEY` is set, so store "
+                "lookup works, but no Target watcher is running in this deployment "
+                "yet, so no Target deals are scanned • catalog "
                 f"**{self.priced_products}/{self.products} priced**. "
-                "Nothing is misconfigured: Target scanning stays off until it is "
-                "deliberately enabled."
+                "Deals will post through the verified fanout as soon as a watcher "
+                "runs (standalone app on the shared database, or embedded in "
+                "local-SQLite mode)."
             )
         if self.status == "healthy" and self.stale:
             state = "stale"
@@ -109,6 +123,7 @@ async def load_target_watcher_health(db: Any) -> TargetWatcherHealth:
         product_failures=counts["product_failures"],
         stale=stale,
         last_error=(state.get("last_cycle_error", "") if status != "healthy" else ""),
+        redsky_configured=bool(os.getenv("TARGET_REDSKY_API_KEY", "").strip()),
     )
 
 

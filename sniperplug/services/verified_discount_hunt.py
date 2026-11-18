@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import discord
 
@@ -9,6 +9,7 @@ from sniperplug.cogs import deal_scanner
 from sniperplug.cogs.deal_scanner import DealCard, HuntPreset
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanResult
+from sniperplug.providers.registry import provider_registry
 from sniperplug.services.embed_delivery import batch_cards_for_limit, sanitize_embed
 from sniperplug.services.deal_finder_telemetry import SearchRouteStats, merge_route_stats, tag_candidates_with_route, top_route_lines
 from sniperplug.services.deal_ranking import rank_review_cards, rank_verified_cards
@@ -557,7 +558,36 @@ async def verified_hunt_button_callback(self, interaction: discord.Interaction) 
             category_preferences = await get_category_preferences(db, interaction.guild_id)
             posted_cards, category_suppressed_cards, category_notes = apply_category_preferences(posted_cards, category_preferences)
 
+        # Display-time re-verification, same standard as Find: this hunt
+        # presents its cards as verified deals, so each shown price is
+        # re-checked through the exact path first. When verification
+        # runs, only cards whose fresh price still holds are displayed
+        # or posted publicly, and the result counts follow the filtered
+        # set. When it cannot run, the search-proven cards are shown
+        # unchanged and no re-checked claim is made.
+        had_posted_cards = bool(posted_cards)
+        verification_ran = False
+        verification_dropped = 0
+        if had_posted_cards:
+            kept_cards, verification_ran, verification_dropped = await deal_scanner.verify_find_cards(
+                posted_cards,
+                provider=provider_registry.get("walmart"),
+                threshold=result.min_discount,
+                pool_size=deal_scanner.HUNT_VERIFY_POOL,
+                show_limit=12,
+            )
+            if verification_ran:
+                posted_cards = kept_cards
+                result = replace(result, cards=kept_cards, total_verified_cards=len(kept_cards))
+
         summary = build_verified_hunt_result_embed(result)
+        if had_posted_cards:
+            deal_scanner.add_find_verification_field(
+                summary,
+                verification_ran=verification_ran,
+                dropped=verification_dropped,
+                shown_count=len(posted_cards),
+            )
         if category_notes or category_suppressed_cards:
             lines = []
             if category_suppressed_cards:

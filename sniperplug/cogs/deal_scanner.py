@@ -525,7 +525,27 @@ class HuntPresetButton(discord.ui.Button):
                 await interaction.followup.send(health_error, ephemeral=True)
                 return
             cards, pages_checked, products_checked, warnings, shown_discount = await run_preset_hunt(self.preset, str(interaction.user.id))
-            summary = build_preset_hunt_summary(self.preset, pages_checked, products_checked, len(cards), tuple(warnings), shown_discount)
+            # Display-time re-verification, same standard as Find: the
+            # ranked pool is re-checked through the exact path and only
+            # cards whose fresh price still holds are shown or posted.
+            found_count = len(cards)
+            verification_ran = False
+            verification_dropped = 0
+            if cards:
+                cards, verification_ran, verification_dropped = await verify_find_cards(
+                    cards,
+                    provider=provider_registry.get("walmart"),
+                    threshold=shown_discount,
+                    pool_size=HUNT_VERIFY_POOL,
+                )
+            summary = build_preset_hunt_summary(self.preset, pages_checked, products_checked, found_count, tuple(warnings), shown_discount)
+            if found_count:
+                add_find_verification_field(
+                    summary,
+                    verification_ran=verification_ran,
+                    dropped=verification_dropped,
+                    shown_count=len(cards[:5]),
+                )
             if not cards:
                 summary.add_field(name="Nothing useful found yet", value="I checked multiple smart searches and still could not prove a useful markdown.\nTry another category, or use `/walmart find search:` with a specific item like `oled tv`, `lego`, `detergent`, or `ssd`.", inline=False)
                 await interaction.followup.send(embed=summary, view=HuntPresetMenuView(), ephemeral=True)
@@ -659,8 +679,29 @@ class DealSearchControlView(discord.ui.View):
                 cards = build_walmart_cards(aggregate, min_discount=min_discount, alerts_only=self.alerts_only)
                 if cards:
                     cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
-                    shown_cards = cards[:5]
+                    # Display-time re-verification, same standard as Find:
+                    # only cards whose fresh price still holds at the hunt
+                    # threshold may be shown. If the re-check empties the
+                    # page, keep paging while pages remain instead of
+                    # presenting prices that did not hold up.
+                    kept_cards, verification_ran, verification_dropped = await verify_find_cards(
+                        cards,
+                        provider=provider_registry.get("walmart"),
+                        threshold=min_discount,
+                        pool_size=HUNT_VERIFY_POOL,
+                    )
+                    if not kept_cards:
+                        if not result.has_next_page:
+                            break
+                        continue
+                    shown_cards = kept_cards[:5]
                     summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, len(cards), tuple(warnings), self.simple_mode)
+                    add_find_verification_field(
+                        summary,
+                        verification_ran=verification_ran,
+                        dropped=verification_dropped,
+                        shown_count=len(shown_cards),
+                    )
                     public_cards = select_public_deal_candidates(shown_cards, source_label="hunt_pages", min_discount=min_discount, limit=5)
                     public_result = await maybe_post_public_deal_cards(
                         bot=interaction.client,
@@ -684,7 +725,26 @@ class DealSearchControlView(discord.ui.View):
                     break
             aggregate = ProviderScanResult(provider_key="walmart", candidates=tuple(dedupe_candidates(all_candidates)), warnings=tuple(warnings), total_results=total_results, page=1, page_size=len(all_candidates), start_index=1, has_next_page=has_next_page)
             fallback_cards, shown_discount = cards_with_fallback(aggregate, 50, self.alerts_only, (50, 30, 10))
-            summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, len(fallback_cards), tuple(warnings), self.simple_mode)
+            # Same display-time re-verification for the relaxed matches:
+            # they are presented as deals, so their prices must hold too.
+            fallback_found = len(fallback_cards)
+            verification_ran = False
+            verification_dropped = 0
+            if fallback_cards:
+                fallback_cards, verification_ran, verification_dropped = await verify_find_cards(
+                    fallback_cards,
+                    provider=provider_registry.get("walmart"),
+                    threshold=shown_discount,
+                    pool_size=HUNT_VERIFY_POOL,
+                )
+            summary = build_hunt_summary(self.query, min_discount, pages_checked, len(all_candidates), total_results, fallback_found, tuple(warnings), self.simple_mode)
+            if fallback_found:
+                add_find_verification_field(
+                    summary,
+                    verification_ran=verification_ran,
+                    dropped=verification_dropped,
+                    shown_count=len(fallback_cards[:5]),
+                )
             if fallback_cards:
                 shown_cards = fallback_cards[:5]
                 public_cards = select_public_deal_candidates(shown_cards, source_label="hunt_pages_fallback", min_discount=shown_discount, limit=5)
@@ -768,17 +828,21 @@ async def run_preset_hunt(preset: HuntPreset, requested_by: str) -> tuple[list[D
     return cards, pages_checked, len(all_candidates), warnings, shown_discount
 
 
-# Display-time re-verification for Find (simple mode). Search data proves a
-# discount at scan time, but prices move; before Find shows a card, the
-# item's current price is re-checked through the same exact path
-# /walmart check uses (verify_single_exact_item with db=None: the same
-# fetch/classify machinery, without enqueueing the item or storing rows —
-# a display re-check must not pollute the exact queue). The work is
-# bounded so a Find call can never burn the Affiliate quota: at most
-# FIND_VERIFY_POOL cards are re-checked, in ranked order, stopping as soon
-# as FIND_VERIFY_SHOW_LIMIT cards hold.
+# Display-time re-verification for every user-facing deal display (Find,
+# hunt presets, the Hunt 80%+ button, the unified Find modes, and the
+# verified hunt). Search data proves a discount at scan time, but prices
+# move; before a card is shown, the item's current price is re-checked
+# through the same exact path /walmart check uses
+# (verify_single_exact_item with db=None: the same fetch/classify
+# machinery, without enqueueing the item or storing rows — a display
+# re-check must not pollute the exact queue). The work is bounded so a
+# display can never burn the Affiliate quota: at most pool_size cards are
+# re-checked, in ranked order, stopping as soon as show_limit cards hold.
+# Find uses FIND_VERIFY_POOL/FIND_VERIFY_SHOW_LIMIT; hunt surfaces pass
+# HUNT_VERIFY_POOL for a wider pool over their larger result sets.
 FIND_VERIFY_POOL = 8
 FIND_VERIFY_SHOW_LIMIT = 5
+HUNT_VERIFY_POOL = 12
 FIND_VERIFY_TIMEOUT_SECONDS = 5.0
 
 
@@ -856,23 +920,27 @@ async def verify_find_cards(
     provider: Any,
     threshold: int,
     verify_one: Callable[[str], Awaitable[Any]] | None = None,
+    pool_size: int = FIND_VERIFY_POOL,
+    show_limit: int = FIND_VERIFY_SHOW_LIMIT,
 ) -> tuple[list[DealCard], bool, int]:
-    """Re-verify Find cards at display time through the exact path.
+    """Re-verify display cards at display time through the exact path.
 
-    Returns (cards_to_show, verification_ran, dropped_count). When
-    verification is unavailable — the provider cannot run exact detail
-    checks, or every attempt fails — the search-proven cards are returned
-    unchanged (first FIND_VERIFY_SHOW_LIMIT) with verification_ran=False,
-    and callers must not claim prices were re-checked. When verification
-    ran, only cards whose fresh price still holds are returned, and
-    dropped_count reports how many pool cards the re-check removed.
+    This is the single display-time re-verification implementation for
+    every deal surface (Find, hunts, unified modes). Returns
+    (cards_to_show, verification_ran, dropped_count). When verification
+    is unavailable — the provider cannot run exact detail checks, or
+    every attempt fails — the search-proven cards are returned unchanged
+    (first show_limit) with verification_ran=False, and callers must not
+    claim prices were re-checked. When verification ran, only cards
+    whose fresh price still holds are returned, and dropped_count
+    reports how many pool cards the re-check removed.
     """
 
     if not cards:
         return [], False, 0
     if verify_one is None:
         if provider is None:
-            return list(cards[:FIND_VERIFY_SHOW_LIMIT]), False, 0
+            return list(cards[:show_limit]), False, 0
 
         async def _verify_via_exact_path(item_id: str) -> Any:
             return await verify_single_exact_item(
@@ -888,8 +956,8 @@ async def verify_find_cards(
     kept: list[DealCard] = []
     dropped = 0
     any_verified = False
-    for card in cards[:FIND_VERIFY_POOL]:
-        if len(kept) >= FIND_VERIFY_SHOW_LIMIT:
+    for card in cards[:pool_size]:
+        if len(kept) >= show_limit:
             break
         item_id = _card_item_id(card)
         outcome = None
@@ -911,7 +979,7 @@ async def verify_find_cards(
             # the same way. Stop spending calls and fall back below.
             break
     if not any_verified:
-        return list(cards[:FIND_VERIFY_SHOW_LIMIT]), False, 0
+        return list(cards[:show_limit]), False, 0
     return kept, True, dropped
 
 
@@ -922,7 +990,7 @@ def add_find_verification_field(
     dropped: int,
     shown_count: int,
 ) -> None:
-    """State the re-check outcome on a Find summary, honestly.
+    """State the re-check outcome on a deal-display summary, honestly.
 
     The "re-checked just now" claim appears only when verification
     actually ran for the shown cards; the fallback note makes no claim.

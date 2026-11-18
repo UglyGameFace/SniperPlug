@@ -40,8 +40,11 @@ from sniperplug.services.walmart_exact_verification_queue import (
 # Rungs below the resolved starting threshold for /walmart find. The starting value
 # itself comes from resolve_min_discount (guild setting, else 40) and is
 # prepended by cards_with_fallback; these are only the relax steps, so the
-# old hardcoded 50 start is gone.
-BEGINNER_FALLBACK_DISCOUNTS = (30, 10, 0)
+# old hardcoded 50 start is gone. The ladder floors at 10 — SniperPlug's
+# verify line — and never at 0: a 0 rung presented full-price products as
+# "best proven deals" (Felix's report, 2026-11-18), and discount_percent
+# clamps at 0.0 so even a price increase would have passed it.
+BEGINNER_FALLBACK_DISCOUNTS = (30, 10)
 PRESET_FALLBACK_DISCOUNTS = (60, 40, 25, 10)
 DUPLICATE_SCAN_MESSAGE = "That scan is already running. I blocked the duplicate click so SniperPlug cannot double-post results."
 

@@ -603,8 +603,10 @@ class UnifiedRefreshButton(discord.ui.Button):
         super().__init__(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         state = await self.cog._load_state(interaction)
-        await interaction.response.edit_message(
+        await self.cog._edit_dashboard(
+            interaction,
             embed=build_category_embed(self.category_key, state),
             view=UnifiedCategoryView(self.cog, self.category_key, state),
         )
@@ -634,8 +636,10 @@ class UnifiedBackButton(discord.ui.Button):
         super().__init__(label="← Back to menu", style=discord.ButtonStyle.secondary, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         state = await self.cog._load_state(interaction)
-        await interaction.response.edit_message(
+        await self.cog._edit_dashboard(
+            interaction,
             embed=build_unified_menu_embed(state),
             view=UnifiedMenuView(self.cog, state),
         )
@@ -678,8 +682,10 @@ class _WalmartBackButton(discord.ui.Button):
         super().__init__(label="← Back to menu", style=discord.ButtonStyle.secondary, row=2)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         state = await self.menu_cog._load_state(interaction)
-        await interaction.response.edit_message(
+        await self.menu_cog._edit_dashboard(
+            interaction,
             embed=build_unified_menu_embed(state),
             view=UnifiedMenuView(self.menu_cog, state),
         )
@@ -830,6 +836,22 @@ class UnifiedMenuCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
+    @staticmethod
+    async def _edit_dashboard(
+        interaction: discord.Interaction, embed: discord.Embed, view: discord.ui.View
+    ) -> None:
+        """Edit the dashboard message, whether or not we already deferred.
+
+        After ``response.defer()`` the first response must go through
+        ``edit_original_response``; before it, ``edit_message``. Every
+        dashboard path defers first (Unknown interaction 10062, live
+        2026-11-17), so this is the deferred branch in practice.
+        """
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=view)
+        else:
+            await interaction.response.edit_message(embed=embed, view=view)
+
     # -- dashboard state -------------------------------------------------
 
     async def _load_state(self, interaction: discord.Interaction) -> MenuDashboardState:
@@ -852,8 +874,13 @@ class UnifiedMenuCog(commands.Cog):
 
     @app_commands.command(name="menu", description="Open the SniperPlug menu: every function in one place.")
     async def menu(self, interaction: discord.Interaction) -> None:
+        # Defer FIRST: the dashboard snapshot reads Turso, and prod lock
+        # waits of 2.5-7.5s blow past Discord's 3s interaction window
+        # (Unknown interaction 10062, live 2026-11-17). The snapshot
+        # loads after the defer, then the menu arrives as a follow-up.
+        await interaction.response.defer(ephemeral=True)
         state = await self._load_state(interaction)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=build_unified_menu_embed(state),
             view=UnifiedMenuView(self, state),
             ephemeral=True,
@@ -862,6 +889,7 @@ class UnifiedMenuCog(commands.Cog):
     async def open_category(self, interaction: discord.Interaction, category_key: str) -> None:
         """Swap the hub message for one category's view."""
 
+        await interaction.response.defer()
         state = await self._load_state(interaction)
         if category_key == "walmart":
             walmart_cog = self.bot.get_cog("WalmartCommandCog")
@@ -871,12 +899,14 @@ class UnifiedMenuCog(commands.Cog):
                     "That Walmart function isn't loaded right now. Try again after the next restart.",
                 )
                 return
-            await interaction.response.edit_message(
+            await self._edit_dashboard(
+                interaction,
                 embed=_build_walmart_embed(state),
                 view=_WalmartMenuViewWithBack(walmart_cog, self, state),
             )
             return
-        await interaction.response.edit_message(
+        await self._edit_dashboard(
+            interaction,
             embed=build_category_embed(category_key, state),
             view=UnifiedCategoryView(self, category_key, state),
         )

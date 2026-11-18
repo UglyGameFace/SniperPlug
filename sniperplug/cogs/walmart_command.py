@@ -723,6 +723,11 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     @app_commands.command(name="menu", description="Open the Walmart menu: every Walmart function in one place.")
     async def menu(self, interaction: discord.Interaction) -> None:
+        # Defer FIRST: the dashboard snapshot reads Turso, and prod lock
+        # waits of 2.5-7.5s blow past Discord's 3s interaction window
+        # (Unknown interaction 10062, live 2026-11-17). The snapshot
+        # loads after the defer, then the menu arrives as a follow-up.
+        await interaction.response.defer(ephemeral=True)
         state: MenuDashboardState | None = None
         try:
             state = await load_menu_dashboard_state(
@@ -732,7 +737,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
             # The loader never raises by contract; this only guards the
             # call itself. A failed read renders the fallback line.
             state = None
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=build_walmart_menu_embed(state),
             view=WalmartMenuView(self, state),
             ephemeral=True,
@@ -980,6 +985,19 @@ class WalmartMenuView(discord.ui.View):
         bot = getattr(self.cog, "bot", None)
         return getattr(bot, "db", None) if bot is not None else None
 
+    @staticmethod
+    async def _defer(interaction: discord.Interaction) -> None:
+        """Answer Discord before the slow work starts.
+
+        Every control here reads or writes Turso before re-rendering, and
+        prod lock waits of 2.5-7.5s blow past the 3s interaction window
+        (Unknown interaction 10062, live 2026-11-17). Deferring first
+        buys 15 minutes; ``_rerender`` already edits the deferred
+        response via ``edit_original_response``.
+        """
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
     async def _refresh_state(self, interaction: discord.Interaction) -> None:
         """Re-read the dashboard snapshot; keep the old one if the read fails."""
         bot = getattr(self.cog, "bot", None)
@@ -1029,6 +1047,7 @@ class WalmartMenuView(discord.ui.View):
             else DEFAULT_STARTING_DEAL_PERCENT
         )
         new = max(THRESHOLD_STEP_MIN, min(THRESHOLD_STEP_MAX, current + delta))
+        await self._defer(interaction)
         try:
             saved = await set_starting_deal_percent(db, interaction.guild_id, new)
         except Exception as error:
@@ -1058,6 +1077,7 @@ class WalmartMenuView(discord.ui.View):
         if self.state is not None:
             current = self.state.extreme_enabled
         else:
+            await self._defer(interaction)
             try:
                 current = await extreme_alerts_enabled(db, interaction.guild_id)
             except Exception as error:
@@ -1068,6 +1088,7 @@ class WalmartMenuView(discord.ui.View):
                 )
                 return
         new = not current
+        await self._defer(interaction)
         try:
             await set_extreme_alerts_enabled(db, interaction.guild_id, new)
         except Exception as error:
@@ -1095,6 +1116,7 @@ class WalmartMenuView(discord.ui.View):
                 "Couldn't save your DM alert setting — the bot database isn't available right now.",
             )
             return
+        await self._defer(interaction)
         try:
             preference = await get_dm_deal_alert_preference(db, interaction.user.id)
             saved = await save_dm_deal_alert_preference(
@@ -1114,6 +1136,7 @@ class WalmartMenuView(discord.ui.View):
 
     async def refresh_dashboard(self, interaction: discord.Interaction) -> None:
         """Re-read state and re-render. Read-only; anyone may refresh."""
+        await self._defer(interaction)
         await self._rerender(interaction)
 
     async def on_timeout(self) -> None:

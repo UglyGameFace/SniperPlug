@@ -31,7 +31,11 @@ import discord
 import pytest
 
 from sniperplug.cogs.walmart_command import (
-    MENU_SECTIONS,
+    MENU_MEMBER_KEYS,
+    MENU_MEMBER_SECTIONS,
+    MENU_REMOVED_KEYS,
+    MENU_STAFF_KEYS,
+    MENU_STAFF_SECTIONS,
     WALMART_SUBCOMMANDS,
     WalmartCommandCog,
     WalmartMenuView,
@@ -196,11 +200,13 @@ async def _load_state(bot, user_id: int = USER) -> MenuDashboardState:
     return await load_menu_dashboard_state(bot, GUILD, user_id)
 
 
-async def _make_view(bot, *, state=None, user_id: int = USER) -> WalmartMenuView:
+async def _make_view(
+    bot, *, state=None, user_id: int = USER, manage_guild: bool = True, can_check: bool = True
+) -> WalmartMenuView:
     cog = WalmartCommandCog(bot=bot)
     if state is None:
         state = await _load_state(bot, user_id)
-    return WalmartMenuView(cog, state)
+    return WalmartMenuView(cog, state, manage_guild=manage_guild, can_check=can_check)
 
 
 def _edited_embed(interaction: _FakeInteraction) -> discord.Embed:
@@ -212,22 +218,26 @@ def _edited_embed(interaction: _FakeInteraction) -> discord.Embed:
 
 
 def test_view_contains_stepper_both_toggles_and_refresh() -> None:
-    view = WalmartMenuView(WalmartCommandCog(bot=None))
+    view = WalmartMenuView(
+        WalmartCommandCog(bot=None), manage_guild=True, can_check=True
+    )
     labels = _buttons(view)
     assert {"−5%", "40%", "+5%"} <= set(labels)
     assert "Extreme: OFF" in labels or "Extreme: ON" in labels
     assert "DM alerts: OFF" in labels or "DM alerts: ON" in labels
     assert "Refresh" in labels
-    # The select and the three original quick buttons are still there.
+    # The staff select and the four member buttons are still there.
     selects = [child for child in view.children if isinstance(child, discord.ui.Select)]
     assert len(selects) == 1
-    assert {option.value for option in selects[0].options} == set(WALMART_SUBCOMMANDS)
-    assert {"Check a deal", "Find deals", "Hunt"} <= set(labels)
+    assert {option.value for option in selects[0].options} == set(MENU_STAFF_KEYS)
+    assert {"Check a deal", "Find deals", "Hunt deals", "My alerts"} <= set(labels)
     assert view.timeout == 300
 
 
 def test_every_new_control_resolves_to_a_real_handler_method() -> None:
-    view = WalmartMenuView(WalmartCommandCog(bot=None))
+    view = WalmartMenuView(
+        WalmartCommandCog(bot=None), manage_guild=True, can_check=True
+    )
     labels = _buttons(view)
     for label in ("−5%", "40%", "+5%", "Extreme: OFF", "DM alerts: OFF", "Refresh"):
         button = labels[label]
@@ -474,7 +484,7 @@ def test_dashboard_embed_shows_state_and_is_green_when_ready() -> None:
         active_deal_count=12,
         deals_today=3,
     )
-    embed = build_walmart_menu_embed(state)
+    embed = build_walmart_menu_embed(state, manage_guild=True, can_check=True)
     text = _embed_text(embed)
     assert embed.color == discord.Color.green()
     assert "READY" in text
@@ -486,9 +496,11 @@ def test_dashboard_embed_shows_state_and_is_green_when_ready() -> None:
     assert "$29.99" in text
     assert "Your DM alerts: **ON**" in text
     assert "off by design" in text
-    for _section, keys in MENU_SECTIONS:
+    for _section, keys in MENU_MEMBER_SECTIONS + MENU_STAFF_SECTIONS:
         for key in keys:
             assert f"/walmart {key}" in text
+    for key in MENU_REMOVED_KEYS:
+        assert f"/walmart {key}" not in text
 
 
 def test_dashboard_embed_error_is_red() -> None:
@@ -529,12 +541,16 @@ def test_dashboard_embed_ready_but_delivery_not_ready_is_orange() -> None:
 
 def test_state_unavailable_renders_fallback_line_and_keeps_function_list() -> None:
     state = MenuDashboardState(state_available=False)
-    text = _embed_text(build_walmart_menu_embed(state))
+    text = _embed_text(
+        build_walmart_menu_embed(state, manage_guild=True, can_check=True)
+    )
     assert "Live state unavailable — the function list still works." in text
-    for _section, keys in MENU_SECTIONS:
+    for _section, keys in MENU_MEMBER_SECTIONS + MENU_STAFF_SECTIONS:
         for key in keys:
             assert f"/walmart {key}" in text
-    # The legacy no-argument call renders the same fallback.
+    for key in MENU_REMOVED_KEYS:
+        assert f"/walmart {key}" not in text
+    # The legacy no-argument call renders the same fallback (member view).
     assert (
         "Live state unavailable — the function list still works."
         in _embed_text(build_walmart_menu_embed())
@@ -562,9 +578,14 @@ def test_no_arg_embed_keeps_walmart_blue_and_function_list() -> None:
     embed = build_walmart_menu_embed()
     assert embed.color == discord.Color(0x0071DC)  # Walmart blue, same as the hub's category accent.
     text = _embed_text(embed)
-    for _section, keys in MENU_SECTIONS:
-        for key in keys:
-            assert f"/walmart {key}" in text
+    # No-argument call is the member view: member functions only.
+    for key in MENU_MEMBER_KEYS:
+        if key == "check":
+            continue  # Check needs the Deal Finder role; not in the member list.
+        assert f"/walmart {key}" in text
+    for key in list(MENU_STAFF_KEYS) + list(MENU_REMOVED_KEYS):
+        assert f"/walmart {key}" not in text
+    assert "Deal checks need the 🔍 Deal Finder role" in text
 
 
 @pytest.mark.asyncio

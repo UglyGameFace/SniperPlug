@@ -14,8 +14,11 @@ permissions the old commands had; the menu (``/walmart menu``) enforces
 those same gates itself before running a function in place, because menu
 interactions bypass command checks.
 
-``/walmart menu`` is the interactive front door: an embed plus a select menu
-listing every function, with quick buttons for the three most-used ones.
+``/walmart menu`` is the interactive front door for resellers: an embed
+plus four member buttons (Check a deal, Find deals, Hunt deals, My
+alerts) and, for staff only, a select with the server-setup functions.
+Five subcommands live only as slash commands now — recovery, history,
+trace, probe, feedback-reset — and appear in no menu surface.
 """
 
 from __future__ import annotations
@@ -119,9 +122,38 @@ _LOCAL_DELEGATES: dict[str, tuple[str, str]] = {
 # The 19 functions, in subcommand order (the 20th subcommand is the menu).
 WALMART_SUBCOMMANDS: tuple[str, ...] = tuple(_DELEGATES) + tuple(_LOCAL_DELEGATES)
 
+# Who sees what in the menu (reseller rebuild, 2026-11-17). Members get
+# four buttons; staff get those plus the staff select and the threshold /
+# extreme controls. Five subcommands left the menu entirely — recovery,
+# history, trace, probe, feedback-reset — and live only as /walmart
+# subcommands (see MENU_REMOVED_KEYS).
+MENU_MEMBER_KEYS: tuple[str, ...] = ("check", "find", "hunt", "my-alerts")
+MENU_STAFF_KEYS: tuple[str, ...] = (
+    "setup",
+    "threshold",
+    "categories",
+    "extreme",
+    "health",
+    "feedback",
+    "discover",
+    "scan-now",
+    "recheck",
+    "active",
+)
+MENU_REMOVED_KEYS = frozenset({"recovery", "history", "trace", "probe", "feedback-reset"})
+
+MENU_MEMBER_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("🔍 Find deals", ("check", "find", "hunt")),
+    ("🔔 Your alerts", ("my-alerts",)),
+)
+MENU_STAFF_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("🛠️ Server setup", ("setup", "threshold", "categories", "extreme", "feedback")),
+    ("🏥 Health & more", ("health", "discover", "scan-now", "recheck", "active")),
+)
+
 # Subcommands the menu runs in place (no required input). Everything else
 # either opens a modal (check/find) or shows guidance with the exact
-# subcommand to run (trace/threshold/extreme/my-alerts/feedback-reset).
+# subcommand to run (trace/threshold/extreme/feedback-reset/recheck).
 _MENU_RUN_IN_PLACE = frozenset(
     {
         "hunt",
@@ -135,17 +167,19 @@ _MENU_RUN_IN_PLACE = frozenset(
         "history",
         "setup",
         "probe",
+        "my-alerts",
     }
 )
 _MENU_MODAL = frozenset({"check", "find"})
-_MENU_GUIDANCE = frozenset({"trace", "threshold", "extreme", "my-alerts", "feedback-reset", "recheck"})
+_MENU_GUIDANCE = frozenset({"trace", "threshold", "extreme", "feedback-reset", "recheck"})
 
 # Subcommands that require Manage Server (same gate as the old commands).
 # The menu enforces this itself before running one in place or opening a
-# modal, because menu interactions bypass command checks.
+# modal, because menu interactions bypass command checks. "check" is NOT
+# here: it has its own gate (Deal Finder role OR Manage Server, see
+# _can_check_deal).
 _MENU_MANAGE_GUILD = frozenset(
     {
-        "check",
         "health",
         "threshold",
         "categories",
@@ -162,6 +196,30 @@ _MENU_MANAGE_GUILD = frozenset(
         "probe",
     }
 )
+
+
+# Deal Finder role (The 420 Lobby, "🔍 Deal Finder", 6 members 2026-11-17).
+# The check gate is by role ID, so in a guild without that role it simply
+# never matches and Manage Server is the only way in.
+DEAL_FINDER_ROLE_ID = 1517181991412302025
+
+
+def _has_manage_guild(interaction: discord.Interaction) -> bool:
+    permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
+    return bool(permissions is not None and getattr(permissions, "manage_guild", False))
+
+
+def _can_check_deal(interaction: discord.Interaction) -> bool:
+    """Deal Finder role OR Manage Server. Guards DMs / missing roles."""
+    if _has_manage_guild(interaction):
+        return True
+    roles = getattr(getattr(interaction, "user", None), "roles", None)
+    if not roles:
+        return False
+    try:
+        return any(getattr(role, "id", None) == DEAL_FINDER_ROLE_ID for role in roles)
+    except TypeError:
+        return False
 
 
 class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_description=GROUP_DESCRIPTION):
@@ -247,15 +305,15 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     @app_commands.command(name="check", description="Check one Walmart product link or item ID directly, even when search never surfaces it.")
     @app_commands.describe(link="Walmart product link or bare item ID. Example: https://www.walmart.com/ip/AT-T-Apple-iPhone-11-64GB-Green/425031866 or 425031866")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.check(_can_check_deal)
     async def check(self, interaction: discord.Interaction, link: str) -> None:
         await self._delegate(interaction, "check", link=link)
 
     @check.error
     async def check_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         message = (
-            "You need **Manage Server** permission to run direct deal checks. Use `/walmart find` for the simple search."
-            if isinstance(error, app_commands.MissingPermissions)
+            "You need the 🔍 Deal Finder role or Manage Server to check deals."
+            if isinstance(error, (app_commands.CheckFailure, app_commands.MissingPermissions))
             else f"Direct deal check hit an error: `{self._type_only_error(error)}`"
         )
         await self._send_error(interaction, message)
@@ -737,9 +795,17 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
             # The loader never raises by contract; this only guards the
             # call itself. A failed read renders the fallback line.
             state = None
+        # The split is decided once, from this interaction, and handed to
+        # the embed and the view together — never re-derived later.
+        manage_guild = _has_manage_guild(interaction)
+        can_check = _can_check_deal(interaction)
         await interaction.followup.send(
-            embed=build_walmart_menu_embed(state),
-            view=WalmartMenuView(self, state),
+            embed=build_walmart_menu_embed(
+                state, manage_guild=manage_guild, can_check=can_check
+            ),
+            view=WalmartMenuView(
+                self, state, manage_guild=manage_guild, can_check=can_check
+            ),
             ephemeral=True,
         )
 
@@ -768,13 +834,6 @@ MENU_FUNCTIONS: dict[str, tuple[str, str, str]] = {
     "feedback": ("Feedback", "What the bot learned from feedback buttons.", "/walmart feedback"),
     "feedback-reset": ("Reset feedback", "Clear feedback learning for this server.", "/walmart feedback-reset scope:all confirm:true"),
 }
-
-MENU_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("🔍 Find deals", ("check", "find", "hunt", "discover", "scan-now", "recheck")),
-    ("🔔 Your alerts", ("my-alerts",)),
-    ("🛠️ Server setup", ("setup", "threshold", "categories", "extreme")),
-    ("🏥 Health & history", ("health", "recovery", "active", "history", "trace", "probe", "feedback", "feedback-reset")),
-)
 
 _MENU_EMOJIS = {
     "check": "🔍",
@@ -888,16 +947,36 @@ def _status_field_value(state: MenuDashboardState, notice: str | None) -> str:
     return "\n".join(lines)
 
 
+def _menu_sections(
+    *, manage_guild: bool, can_check: bool
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Embed sections for this opener: members see Find deals + Your
+    alerts (Check only when they can check); staff also see the two
+    staff sections. The five removed keys appear nowhere."""
+    find_keys = (("check",) if can_check else ()) + ("find", "hunt")
+    sections: list[tuple[str, tuple[str, ...]]] = [
+        ("🔍 Find deals", find_keys),
+        ("🔔 Your alerts", ("my-alerts",)),
+    ]
+    if manage_guild:
+        sections.extend(MENU_STAFF_SECTIONS)
+    return tuple(sections)
+
+
 def build_walmart_menu_embed(
-    state: MenuDashboardState | None = None, *, notice: str | None = None
+    state: MenuDashboardState | None = None,
+    *,
+    notice: str | None = None,
+    can_check: bool = False,
+    manage_guild: bool = False,
 ) -> discord.Embed:
-    """The Walmart dashboard: live state at the top, then every function.
+    """The Walmart dashboard: live state at the top, then the functions
+    this opener can actually use.
 
     ``state`` is the ``MenuDashboardState`` snapshot from
     ``load_menu_dashboard_state``. The no-argument call keeps the old
     behavior (Walmart blue, fallback status line) for callers that never
-    asked for state, e.g. the unified hub. The 4 function sections are
-    unchanged.
+    asked for state, e.g. the unified hub — it renders the member view.
     """
 
     snapshot = state if state is not None else MenuDashboardState()
@@ -911,19 +990,18 @@ def build_walmart_menu_embed(
         value=_status_field_value(snapshot, notice),
         inline=False,
     )
-    for section, keys in MENU_SECTIONS:
+    for section, keys in _menu_sections(manage_guild=manage_guild, can_check=can_check):
         lines = [
             f"`/walmart {key}` — {MENU_FUNCTIONS[key][1]}"
             for key in keys
         ]
         embed.add_field(name=section, value="\n".join(lines), inline=False)
-    embed.set_footer(text="Admin functions need Manage Server. Personal alerts work for everyone.")
+    if can_check:
+        footer = "Admin functions need Manage Server. Personal alerts work for everyone."
+    else:
+        footer = "Deal checks need the 🔍 Deal Finder role — ask staff. Admin functions need Manage Server."
+    embed.set_footer(text=footer)
     return embed
-
-
-def _has_manage_guild(interaction: discord.Interaction) -> bool:
-    permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
-    return bool(permissions is not None and getattr(permissions, "manage_guild", False))
 
 
 class WalmartMenuView(discord.ui.View):
@@ -936,30 +1014,45 @@ class WalmartMenuView(discord.ui.View):
     broken embed.
     """
 
-    def __init__(self, cog: "WalmartCommandCog", state: MenuDashboardState | None = None) -> None:
+    def __init__(
+        self,
+        cog: "WalmartCommandCog",
+        state: MenuDashboardState | None = None,
+        *,
+        manage_guild: bool = False,
+        can_check: bool = False,
+    ) -> None:
+        """Member view by default: Find / Hunt deals / My alerts + DM +
+        Refresh. Staff openers (``manage_guild``) also get the staff
+        select, the threshold stepper and the extreme toggle; openers
+        who can check (Deal Finder role or Manage Server) also get the
+        Check button. The flags are decided once by the caller, from
+        the opening interaction, and stored — never re-derived."""
         super().__init__(timeout=300)
         self.cog = cog
         self.state = state
+        self.manage_guild = manage_guild
+        self.can_check = can_check
         self._notice: str | None = None
-        self.add_item(WalmartMenuSelect(cog))
-        self.add_item(WalmartMenuCheckButton(cog))
+        if can_check:
+            self.add_item(WalmartMenuCheckButton(cog))
         self.add_item(WalmartMenuFindButton(cog))
         self.add_item(WalmartMenuHuntButton(cog))
+        self.add_item(WalmartMenuMyAlertsButton(cog))
         self._threshold_down = WalmartThresholdDownButton(cog)
         self._threshold_value = WalmartThresholdValueButton(cog)
         self._threshold_up = WalmartThresholdUpButton(cog)
         self._extreme_toggle = WalmartExtremeToggleButton(cog)
         self._dm_toggle = WalmartDmToggleButton(cog)
         self._refresh_button = WalmartRefreshButton(cog)
-        for item in (
-            self._threshold_down,
-            self._threshold_value,
-            self._threshold_up,
-            self._extreme_toggle,
-            self._dm_toggle,
-            self._refresh_button,
-        ):
-            self.add_item(item)
+        if manage_guild:
+            self.add_item(WalmartStaffSelect(cog))
+            self.add_item(self._threshold_down)
+            self.add_item(self._threshold_value)
+            self.add_item(self._threshold_up)
+            self.add_item(self._extreme_toggle)
+        self.add_item(self._dm_toggle)
+        self.add_item(self._refresh_button)
         self._sync_control_labels()
 
     def _sync_control_labels(self) -> None:
@@ -1018,7 +1111,12 @@ class WalmartMenuView(discord.ui.View):
         await self._refresh_state(interaction)
         self._notice = notice
         self._sync_control_labels()
-        embed = build_walmart_menu_embed(self.state, notice=self._notice)
+        embed = build_walmart_menu_embed(
+            self.state,
+            notice=self._notice,
+            can_check=self.can_check,
+            manage_guild=self.manage_guild,
+        )
         if interaction.response.is_done():
             await interaction.edit_original_response(embed=embed, view=self)
         else:
@@ -1147,7 +1245,16 @@ class WalmartMenuView(discord.ui.View):
         """Run one menu function from a select or button interaction."""
 
         label, description, usage = MENU_FUNCTIONS[key]
-        if key in _MENU_MANAGE_GUILD and not _has_manage_guild(interaction):
+        if key == "check":
+            # Own gate: Deal Finder role OR Manage Server. The slash
+            # command enforces the same gate via its app_commands.check.
+            if not _can_check_deal(interaction):
+                await self._respond(
+                    interaction,
+                    "You need the 🔍 Deal Finder role or Manage Server to check deals.",
+                )
+                return
+        elif key in _MENU_MANAGE_GUILD and not _has_manage_guild(interaction):
             await self._respond(interaction, "You need **Manage Server** permission to use that Walmart function.")
             return
         if key in _MENU_MODAL:
@@ -1161,6 +1268,17 @@ class WalmartMenuView(discord.ui.View):
                 color=discord.Color.orange(),
             )
             await interaction.response.edit_message(embed=embed, view=self)
+            return
+        if key == "my-alerts":
+            # Opens the personalization menu in place. dm_deals defers
+            # itself first, so no defer here — and the action is required.
+            await self.cog._delegate(
+                interaction,
+                "my-alerts",
+                action=app_commands.Choice(
+                    name="Open personalization menu", value="menu"
+                ),
+            )
             return
         try:
             await self.cog._delegate(interaction, key)
@@ -1179,7 +1297,10 @@ class WalmartMenuView(discord.ui.View):
             await interaction.response.send_message(message, ephemeral=True)
 
 
-class WalmartMenuSelect(discord.ui.Select):
+class WalmartStaffSelect(discord.ui.Select):
+    """Staff-only select: the 10 server functions. Only added to the
+    view for Manage Server openers, so regular members never see it."""
+
     def __init__(self, cog: "WalmartCommandCog") -> None:
         self.cog = cog
         options = [
@@ -1189,10 +1310,9 @@ class WalmartMenuSelect(discord.ui.Select):
                 value=key,
                 emoji=_MENU_EMOJIS.get(key),
             )
-            for _section, keys in MENU_SECTIONS
-            for key in keys
+            for key in MENU_STAFF_KEYS
         ]
-        super().__init__(placeholder="Choose a Walmart function…", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Server setup…", min_values=1, max_values=1, options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
@@ -1225,12 +1345,23 @@ class WalmartMenuFindButton(discord.ui.Button):
 class WalmartMenuHuntButton(discord.ui.Button):
     def __init__(self, cog: "WalmartCommandCog") -> None:
         self.cog = cog
-        super().__init__(label="Hunt", emoji="🎯", style=discord.ButtonStyle.success, row=1)
+        super().__init__(label="Hunt deals", emoji="🎯", style=discord.ButtonStyle.success, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
         assert isinstance(view, WalmartMenuView)
         await view.run_function(interaction, "hunt")
+
+
+class WalmartMenuMyAlertsButton(discord.ui.Button):
+    def __init__(self, cog: "WalmartCommandCog") -> None:
+        self.cog = cog
+        super().__init__(label="My alerts", emoji="🔔", style=discord.ButtonStyle.primary, row=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, WalmartMenuView)
+        await view.run_function(interaction, "my-alerts")
 
 
 class WalmartThresholdDownButton(discord.ui.Button):

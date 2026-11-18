@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 import discord
 
@@ -133,6 +134,27 @@ class UnifiedDealScannerCog(DealScannerCog):
             guild_id=interaction.guild_id,
             force_refresh=force_refresh,
         )
+        # Display-time re-verification, same standard as Find: these cards
+        # are presented as "Verified Walmart deal", so each shown price is
+        # re-checked through the exact path first and only cards whose
+        # fresh price still holds may be displayed. When verification
+        # runs, the filtered set replaces the result's verified cards
+        # before ranking, so mode switches, public posting, and the New
+        # Since Scan embed all inherit the same re-checked set. When it
+        # cannot run, the search result is shown unchanged and no
+        # re-checked claim is made.
+        had_verified_cards = bool(result.verified_cards)
+        verification: tuple[bool, int] | None = None
+        if had_verified_cards:
+            kept_cards, verification_ran, verification_dropped = await deal_scanner.verify_find_cards(
+                list(result.verified_cards),
+                provider=provider,
+                threshold=starting_discount,
+                pool_size=deal_scanner.HUNT_VERIFY_POOL,
+            )
+            verification = (verification_ran, verification_dropped)
+            if verification_ran:
+                result = replace(result, verified_cards=kept_cards)
         ranked = rank_for_search_mode(result.verified_cards, result.review_candidates.cards, mode, limit=5)
         category_suppressed_cards: list[DealCard] = []
         category_notes: list[str] = []
@@ -143,6 +165,13 @@ class UnifiedDealScannerCog(DealScannerCog):
         freshness = classify_scan_freshness([*result.verified_cards, *result.review_candidates.cards], cached_before, fallback_retailer="walmart")
         summary = build_deal_finder_summary(result, ranked=ranked, freshness=freshness)
         add_deal_feed_controls_field(summary, suppressed_count=len(category_suppressed_cards), notes=category_notes)
+        if had_verified_cards and verification is not None:
+            deal_scanner.add_find_verification_field(
+                summary,
+                verification_ran=verification[0],
+                dropped=verification[1],
+                shown_count=len(ranked.verified),
+            )
         view = DealSearchModeView(
             cog=self,
             query=query,
@@ -157,6 +186,7 @@ class UnifiedDealScannerCog(DealScannerCog):
             ranked=ranked,
             cached_rows=cached_rows,
             freshness=freshness,
+            verification=verification,
             menu_token=menu_token,
             owner_id=owner_id,
         )
@@ -210,6 +240,7 @@ class DealSearchModeView(discord.ui.View):
         ranked: ModeRankedCards | None = None,
         cached_rows: list[CachedDealRow] | None = None,
         freshness: ScanFreshness | None = None,
+        verification: tuple[bool, int] | None = None,
         menu_token: str | None = None,
         owner_id: int | None = None,
     ):
@@ -227,6 +258,10 @@ class DealSearchModeView(discord.ui.View):
         self.ranked = ranked
         self.cached_rows = cached_rows or []
         self.freshness = freshness
+        # (verification_ran, dropped_count) from the display-time
+        # re-check of the stored result, so mode switches keep stating
+        # the re-check outcome for the same filtered card set.
+        self.verification = verification
         self.menu_token = menu_token or "legacy"
         self.owner_id = owner_id
         self.add_item(DealModeButton(MODE_BEST, row=0, active=self.mode == MODE_BEST, menu_token=self.menu_token))
@@ -325,6 +360,13 @@ class DealSearchModeView(discord.ui.View):
             ranked = ModeRankedCards(ranked.mode, category_allowed_verified, ranked.review, ranked.note)
         summary = build_deal_finder_summary(self.result, ranked=ranked, freshness=self.freshness)
         add_deal_feed_controls_field(summary, suppressed_count=len(category_suppressed_cards), notes=category_notes)
+        if self.verification is not None and self.result.verified_cards:
+            deal_scanner.add_find_verification_field(
+                summary,
+                verification_ran=self.verification[0],
+                dropped=self.verification[1],
+                shown_count=len(ranked.verified),
+            )
         view = DealSearchModeView(
             cog=self.cog,
             query=self.query,
@@ -339,6 +381,7 @@ class DealSearchModeView(discord.ui.View):
             ranked=ranked,
             cached_rows=self.cached_rows,
             freshness=self.freshness,
+            verification=self.verification,
             menu_token=self.menu_token,
             owner_id=self.owner_id,
         )

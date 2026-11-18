@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 import discord
 from discord import app_commands
@@ -28,6 +29,11 @@ from sniperplug.services.walmart_cash_pipeline import (
     run_walmart_api_probe,
     run_walmart_cash_discovery,
 )
+from sniperplug.services.walmart_exact_price_enrichment import (
+    _percent_off,
+    _positive_number,
+    _trusted_reference,
+)
 from sniperplug.services.walmart_exact_verification_queue import (
     MANUAL_INTAKE_MIN_DISCOUNT,
     VERIFIED_PAGE_PRICE_STATUS,
@@ -35,6 +41,7 @@ from sniperplug.services.walmart_exact_verification_queue import (
     parse_walmart_item_id,
     verify_single_exact_item,
 )
+
 
 
 # Rungs below the resolved starting threshold for /walmart find. The starting value
@@ -409,7 +416,21 @@ class DealScannerCog(commands.Cog):
             return
         result = await run_walmart_scan(query, page, max_results, sort_value, order_value, str(interaction.user.id))
         cards, shown_discount = cards_with_fallback(result, min_discount, alerts_only, BEGINNER_FALLBACK_DISCOUNTS) if simple_mode else (build_walmart_cards(result, min_discount, alerts_only), min_discount)
+        verification_ran = False
+        verification_dropped = 0
+        had_cards = bool(cards)
+        if simple_mode and cards:
+            cards, verification_ran, verification_dropped = await verify_find_cards(
+                cards, provider=provider, threshold=shown_discount
+            )
         summary = build_scan_summary(result, query, min_discount, shown_discount, alerts_only, simple_mode)
+        if simple_mode and had_cards:
+            add_find_verification_field(
+                summary,
+                verification_ran=verification_ran,
+                dropped=verification_dropped,
+                shown_count=len(cards),
+            )
         if cards:
             shown_cards = cards[:5]
             category_suppressed_cards = []
@@ -571,7 +592,21 @@ class DealSearchControlView(discord.ui.View):
         try:
             result = await run_walmart_scan(self.query, page, self.max_results, self.sort_value, self.order_value, str(interaction.user.id))
             cards, shown_discount = cards_with_fallback(result, min_discount, self.alerts_only, BEGINNER_FALLBACK_DISCOUNTS) if self.simple_mode else (build_walmart_cards(result, min_discount, self.alerts_only), min_discount)
+            verification_ran = False
+            verification_dropped = 0
+            had_cards = bool(cards)
+            if self.simple_mode and cards:
+                cards, verification_ran, verification_dropped = await verify_find_cards(
+                    cards, provider=provider_registry.get("walmart"), threshold=shown_discount
+                )
             summary = build_scan_summary(result, self.query, min_discount, shown_discount, self.alerts_only, self.simple_mode)
+            if self.simple_mode and had_cards:
+                add_find_verification_field(
+                    summary,
+                    verification_ran=verification_ran,
+                    dropped=verification_dropped,
+                    shown_count=len(cards),
+                )
             if cards:
                 shown_cards = cards[:5]
                 public_cards = select_public_deal_candidates(
@@ -731,6 +766,193 @@ async def run_preset_hunt(preset: HuntPreset, requested_by: str) -> tuple[list[D
     cards, shown_discount = cards_with_fallback(aggregate, preset.min_discount, alerts_only=False, fallback_discounts=fallback_chain)
     cards.sort(key=lambda card: (card.discount, card.score), reverse=True)
     return cards, pages_checked, len(all_candidates), warnings, shown_discount
+
+
+# Display-time re-verification for Find (simple mode). Search data proves a
+# discount at scan time, but prices move; before Find shows a card, the
+# item's current price is re-checked through the same exact path
+# /walmart check uses (verify_single_exact_item with db=None: the same
+# fetch/classify machinery, without enqueueing the item or storing rows —
+# a display re-check must not pollute the exact queue). The work is
+# bounded so a Find call can never burn the Affiliate quota: at most
+# FIND_VERIFY_POOL cards are re-checked, in ranked order, stopping as soon
+# as FIND_VERIFY_SHOW_LIMIT cards hold.
+FIND_VERIFY_POOL = 8
+FIND_VERIFY_SHOW_LIMIT = 5
+FIND_VERIFY_TIMEOUT_SECONDS = 5.0
+
+
+def _card_item_id(card: DealCard) -> str | None:
+    for value in (getattr(card, "sku", None), getattr(card, "selected_offer_id", None)):
+        text = str(value or "").strip()
+        if text.isdigit():
+            return text
+    return parse_walmart_item_id(
+        getattr(card, "direct_product_url", None) or getattr(card, "url", None)
+    )
+
+
+def _verified_price_holds(card: DealCard, outcome: Any, threshold: int) -> bool:
+    """Decide whether a card survives its exact re-check.
+
+    The fresh discount (verified current price vs the trusted reference)
+    must still meet the threshold the card was built at. A rise inside the
+    existing pre-send recheck tolerance — max($0.25, 1%) of the search
+    price, the standard from walmart_extreme_price_fanout — is repricing
+    noise and still holds, mirroring that fanout's rule that the displayed
+    price is never off by more than the tolerance.
+    """
+
+    candidate = getattr(outcome, "candidate", None)
+    if candidate is None:
+        return False
+    if getattr(outcome, "classification", None) == "not_buyable":
+        return False
+    fresh_current = _positive_number(
+        getattr(candidate, "api_current_price", None)
+        or getattr(candidate, "current_price", None)
+    )
+    if fresh_current is None:
+        # Page-price-only or price-less exact results cannot prove a
+        # markdown, so they cannot hold a Find card.
+        return False
+    reference = _trusted_reference(candidate)
+    if reference is None:
+        # The reference (list/MSRP) is the stable side of the proof and was
+        # already established by the search data; the re-check's job is the
+        # volatile current price.
+        reference = _positive_number(
+            getattr(card, "api_reference_price", None)
+            or getattr(card, "typical_price", None)
+        )
+    if reference is None:
+        return False
+    discount = _percent_off(fresh_current, reference)
+    if discount is not None and discount >= threshold:
+        return True
+    search_current = _positive_number(
+        getattr(card, "api_current_price", None)
+        or getattr(card, "current_price", None)
+    )
+    if search_current is None:
+        return False
+    # Lazy import: the fanout module reaches low_price_scout, which imports
+    # DealCard from this module — a top-level import here would cycle.
+    from sniperplug.services.walmart_extreme_price_fanout import (
+        LIVE_PRICE_TOLERANCE_CENTS,
+        LIVE_PRICE_TOLERANCE_RATIO,
+    )
+
+    tolerance = max(
+        LIVE_PRICE_TOLERANCE_CENTS / 100,
+        search_current * LIVE_PRICE_TOLERANCE_RATIO,
+    )
+    return fresh_current - search_current <= tolerance
+
+
+async def verify_find_cards(
+    cards: list[DealCard],
+    *,
+    provider: Any,
+    threshold: int,
+    verify_one: Callable[[str], Awaitable[Any]] | None = None,
+) -> tuple[list[DealCard], bool, int]:
+    """Re-verify Find cards at display time through the exact path.
+
+    Returns (cards_to_show, verification_ran, dropped_count). When
+    verification is unavailable — the provider cannot run exact detail
+    checks, or every attempt fails — the search-proven cards are returned
+    unchanged (first FIND_VERIFY_SHOW_LIMIT) with verification_ran=False,
+    and callers must not claim prices were re-checked. When verification
+    ran, only cards whose fresh price still holds are returned, and
+    dropped_count reports how many pool cards the re-check removed.
+    """
+
+    if not cards:
+        return [], False, 0
+    if verify_one is None:
+        if provider is None:
+            return list(cards[:FIND_VERIFY_SHOW_LIMIT]), False, 0
+
+        async def _verify_via_exact_path(item_id: str) -> Any:
+            return await verify_single_exact_item(
+                None,
+                provider,
+                item_id,
+                min_discount=MANUAL_INTAKE_MIN_DISCOUNT,
+                timeout_seconds=FIND_VERIFY_TIMEOUT_SECONDS,
+            )
+
+        verify_one = _verify_via_exact_path
+
+    kept: list[DealCard] = []
+    dropped = 0
+    any_verified = False
+    for card in cards[:FIND_VERIFY_POOL]:
+        if len(kept) >= FIND_VERIFY_SHOW_LIMIT:
+            break
+        item_id = _card_item_id(card)
+        outcome = None
+        if item_id is not None:
+            try:
+                outcome = await verify_one(item_id)
+            except Exception:  # noqa: BLE001 - one bad re-check must not sink the search.
+                outcome = None
+        if outcome is not None and getattr(outcome, "candidate", None) is not None:
+            any_verified = True
+            if _verified_price_holds(card, outcome, threshold):
+                kept.append(card)
+                continue
+            dropped += 1
+            continue
+        dropped += 1
+        if outcome is not None and getattr(outcome, "status", None) == "provider_unavailable":
+            # The exact path itself is down; further attempts would fail
+            # the same way. Stop spending calls and fall back below.
+            break
+    if not any_verified:
+        return list(cards[:FIND_VERIFY_SHOW_LIMIT]), False, 0
+    return kept, True, dropped
+
+
+def add_find_verification_field(
+    summary: discord.Embed,
+    *,
+    verification_ran: bool,
+    dropped: int,
+    shown_count: int,
+) -> None:
+    """State the re-check outcome on a Find summary, honestly.
+
+    The "re-checked just now" claim appears only when verification
+    actually ran for the shown cards; the fallback note makes no claim.
+    """
+
+    if verification_ran:
+        lines = []
+        if shown_count:
+            lines.append(
+                "Every price shown here was re-checked against Walmart just now, "
+                "before this message was sent."
+            )
+        if dropped:
+            lines.append(
+                f"**{dropped}** search result(s) didn't hold up on re-check and were removed."
+            )
+        summary.add_field(
+            name="✅ Prices re-checked just now",
+            value="\n".join(lines)[:1024],
+            inline=False,
+        )
+    else:
+        summary.add_field(
+            name="Price re-check unavailable",
+            value=(
+                "I couldn't re-check prices just now, so these are the search "
+                "results as found — double-check the price after opening a card."
+            ),
+            inline=False,
+        )
 
 
 def cards_with_fallback(result: ProviderScanResult, requested_min_discount: int, alerts_only: bool, fallback_discounts: tuple[int, ...]) -> tuple[list[DealCard], int]:

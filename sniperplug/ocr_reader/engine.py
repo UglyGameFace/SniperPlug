@@ -71,10 +71,68 @@ def preprocess_image(image: object) -> object:
     return img
 
 
-def _default_engine_factory() -> object:
+def _import_rapidocr() -> object:
     from rapidocr_onnxruntime import RapidOCR
 
-    return RapidOCR(
+    return RapidOCR
+
+
+def _repair_opencv_headless() -> None:
+    """Install the headless OpenCV build over the bundled one.
+
+    Discloud's Python image ships no libGL, and the opencv-python
+    wheel rapidocr depends on links against it, so ``import cv2``
+    dies with "libGL.so.1: cannot open shared object file" — proven
+    live in this app's own container on 2026-11-19, where swapping in
+    opencv-python-headless (the same library without the GUI parts)
+    made the import work in the same container. Discloud's BUILD step
+    runs a single command with no shell chaining, so the swap cannot
+    be sequenced at build time; it happens here, once, the first time
+    the import fails. If the in-process retry still fails, the
+    service exits and the app's auto-restart gets a fresh process in
+    which the headless build is already installed.
+    """
+
+    import subprocess
+    import sys
+
+    log.warning(
+        "rapidocr import failed (the bundled OpenCV needs libGL, which "
+        "this host does not have) — installing opencv-python-headless "
+        "and retrying"
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-deps",
+            "opencv-python-headless",
+        ],
+        check=True,
+        timeout=600,
+    )
+
+
+def _load_rapidocr_class(import_fn=None, repair_fn=None) -> object:
+    """Import RapidOCR, repairing the OpenCV build once if needed."""
+
+    import importlib
+
+    importer = import_fn or _import_rapidocr
+    try:
+        return importer()
+    except ImportError:
+        (repair_fn or _repair_opencv_headless)()
+        importlib.invalidate_caches()
+        return importer()
+
+
+def _default_engine_factory() -> object:
+    rapidocr = _load_rapidocr_class()
+    return rapidocr(  # type: ignore[operator]
         intra_op_num_threads=1,
         inter_op_num_threads=1,
         det_limit_side_len=DET_LIMIT_SIDE_LEN,

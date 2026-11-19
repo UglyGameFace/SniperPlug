@@ -8,6 +8,12 @@
 # The libsql/aiosqlite/dotenv pins match requirements.txt — the
 # reader uses the repo's shared runtime database layer, same as the
 # HP watcher.
+# Note (2026-11-19): rapidocr pulls in opencv-python, whose wheel
+# needs libGL — absent on Discloud. The engine swaps in
+# opencv-python-headless itself at first import (see
+# sniperplug/ocr_reader/engine.py), so it is deliberately NOT pinned
+# here: two opencv distributions in one resolve fight over the cv2
+# package and the winner is not deterministic.
 aiohttp==3.14.3
 aiosqlite==0.22.1
 libsql==0.1.11; platform_machine != "aarch64"

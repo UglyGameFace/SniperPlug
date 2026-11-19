@@ -267,11 +267,11 @@ def public_alert_channel_missing_permissions(channel: discord.TextChannel, membe
 
 
 def public_alert_channel_missing_permissions_message(channel: discord.TextChannel, missing: list[str]) -> str:
-    return f"SniperPlug cannot post in {channel.mention} yet.\n\nMissing channel permissions:\n" + "\n".join(f"• {perm}" for perm in missing) + "\n\nGive the SniperPlug bot/role those permissions, then run `/walmart setup` in that channel."
+    return f"SniperPlug cannot post in {channel.mention} yet.\n\nMissing channel permissions:\n" + "\n".join(f"• {perm}" for perm in missing) + "\n\nGive the SniperPlug bot/role those permissions, then run `/staff channel` in that channel."
 
 
 def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], channel_id: int | str | None, auto_scan: dict[str, dict] | None = None, threshold: int | None = None) -> discord.Embed:
-    embed = discord.Embed(title="📣 Public Alert Settings", description="This is the simple view. Use `/walmart setup` for one-step setup, `/walmart categories` for boost/mute categories, `/walmart threshold` to adjust markdown, and `/walmart health` to diagnose posting.", color=discord.Color.green() if enabled else discord.Color.dark_gold())
+    embed = discord.Embed(title="📣 Public Alert Settings", description="This is the simple view. Use `/staff channel` for one-step setup, `/staff categories` for boost/mute categories, `/staff threshold` to adjust markdown, and `/staff health` to diagnose posting.", color=discord.Color.green() if enabled else discord.Color.dark_gold())
     embed.add_field(name="Enabled", value="Yes" if enabled else "No", inline=True)
     embed.add_field(name="Public stores", value=format_retailers(retailers), inline=True)
     embed.add_field(name="Channel", value=f"<#{channel_id}>" if channel_id else "not set", inline=True)
@@ -286,16 +286,16 @@ def public_alert_status_embed(*, enabled: bool, retailers: tuple[str, ...], chan
 
 def public_alert_channel_status(bot: commands.Bot, guild_id: int, channel_id: int | str | None) -> str:
     if not channel_id:
-        return "⛔ No public channel saved. Run `/walmart setup` only for first install, or fix the saved channel/permission issue shown by `/walmart health`."
+        return "⛔ No public channel saved. Run `/staff channel` only for first install, or fix the saved channel/permission issue shown by `/staff health`."
     guild = bot.get_guild(guild_id)
     if guild is None:
         return f"⛔ Bot is not connected to guild `{guild_id}` right now."
     decoded = decode_channel_id(channel_id)
     if decoded is None:
-        return f"⛔ Saved channel ID is invalid: `{channel_id}`. `/walmart health` will try to repair from the saved default route."
+        return f"⛔ Saved channel ID is invalid: `{channel_id}`. `/staff health` will try to repair from the saved default route."
     channel = guild.get_channel(decoded)
     if channel is None:
-        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. `/walmart health` will try to repair from another saved route."
+        return f"⛔ Saved channel <#{decoded}> is not visible in this guild cache. `/staff health` will try to repair from another saved route."
     if not hasattr(channel, "send"):
         return f"⛔ Saved channel <#{decoded}> is not a sendable text channel."
     me = getattr(guild, "me", None)

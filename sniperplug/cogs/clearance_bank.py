@@ -84,7 +84,7 @@ class ClearanceBankCog(commands.Cog):
             embed.add_field(name="Price signal", value=value, inline=False)
         if notes:
             embed.add_field(name="Notes", value=notes[:500], inline=False)
-        embed.set_footer(text="Next: use /clearance_bank recheck:true to recheck Walmart seeds against live item detail.")
+        embed.set_footer(text="Next: open Clearance bank in /menu with recheck on to recheck Walmart seeds against live item detail.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="clearance_bank", description="List saved clearance/penny leads for this server.")
@@ -110,7 +110,7 @@ class ClearanceBankCog(commands.Cog):
         retailer_key = normalize_retailer_key(retailer) if retailer else None
         seeds = await self.bot.db.list_clearance_seeds(interaction.guild_id, retailer=retailer_key, limit=limit)
         if not seeds:
-            await interaction.followup.send("No clearance seeds saved yet. Add one with `/seed_clearance`.", ephemeral=True)
+            await interaction.followup.send("No clearance seeds saved yet. Add one with Save a clearance lead in /menu.", ephemeral=True)
             return
 
         provider = provider_registry.get("walmart") if recheck else None

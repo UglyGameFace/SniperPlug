@@ -10,7 +10,7 @@ CANONICAL = Path("sniperplug/cogs/canonical_public_alerts.py").read_text(encodin
 def test_category_summary_shows_empty_state():
     text = summarize_category_preferences({})
     assert "No category preferences saved yet" in text
-    assert "/walmart categories" in text
+    assert "/staff categories" in text
 
 
 def test_category_summary_shows_priority_and_muted():
@@ -30,7 +30,7 @@ def test_status_and_health_show_category_preferences():
     # persistent panels) shows the current settings summary.
     assert "Current category settings" in PUBLIC_ALERTS
     assert "summarize_category_preferences" in PUBLIC_ALERTS
-    assert "/walmart categories" in PUBLIC_ALERTS
+    assert "/staff categories" in PUBLIC_ALERTS
     # The canonical health path reads the preferences for delivery decisions.
     assert "get_category_preferences" in CANONICAL
     # The 'name="Category preferences"' field belonged to PublicAlertsCog's

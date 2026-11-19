@@ -183,7 +183,7 @@ def parse_confidence_ready(value: Any) -> int:
 
 def format_latest_report_line(payload: dict[str, Any] | None) -> str:
     if not payload:
-        return "No detailed auto-scan report saved yet. Wait for the next scheduled run or use `/walmart scan-now`."
+        return "No detailed auto-scan report saved yet. Wait for the next scheduled run or use Scan now in the Walmart menu."
 
     parts = [
         f"Saved: `{payload.get('saved_at', 'unknown')}`",

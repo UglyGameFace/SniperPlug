@@ -120,7 +120,7 @@ def test_target_setup_line_states() -> None:
     paused = target_setup_line(
         target_ready=False, display_name=None, redsky_configured=True
     )
-    assert "/target_location" in paused
+    assert "pick a Target store in /menu" in paused
     assert "waiting for key" not in paused
 
 

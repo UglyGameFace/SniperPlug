@@ -419,7 +419,7 @@ def test_prune_removes_ebay_consent_and_server_from_the_group() -> None:
         names = {command.name for command in group.commands}
         assert "consent" not in names
         assert "server" not in names
-        assert {"status", "research", "review_sample"} <= names
+        assert {"status", "research", "preview"} <= names
     finally:
         # Restore the shared group so other tests see the full cog again.
         current = {command.name for command in group.commands}

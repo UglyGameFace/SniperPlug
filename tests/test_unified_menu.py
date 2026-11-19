@@ -38,26 +38,14 @@ from sniperplug.cogs.walmart_command import (
 from sniperplug.services.command_surface import REQUIRED_CANONICAL_COMMANDS
 
 
-# The 21 top-level commands on the live bot (startup log on 7a6308c).
+# Consolidation PR 2 (2026-11-19): the live tree is exactly 7
+# top-levels. The /menu hub itself is the entry point, so coverage is
+# asserted for the other six: every one of them must be reachable from
+# the menu (directly, or — for Walmart — through the Walmart menu).
 LIVE_TOP_LEVEL = {
-    "clearance_bank",
     "ebay",
-    "hd_stock",
-    "home_depot_penny_hunt",
-    "home_depot_search",
-    "local_check",
     "movies",
-    "movies-help",
-    "movies-panel",
-    "seed_clearance",
-    "sniperplug",
-    "sniperplug_dashboard",
-    "storage_health",
-    "storage_maintenance_now",
-    "target_dm_location",
-    "target_dm_location_clear",
-    "target_location",
-    "target_location_clear",
+    "staff",
     "verizon",
     "walmart",
     "wishlist",
@@ -72,7 +60,7 @@ def test_menu_command_registers() -> None:
 
 def test_menu_entries_are_well_formed() -> None:
     keys = [entry.key for entry in MENU_ENTRIES]
-    assert len(keys) == len(set(keys)) == 49
+    assert len(keys) == len(set(keys)) == 45
     assert set(MENU_DELEGATES) == set(keys)
     for entry in MENU_ENTRIES:
         assert entry.mode in {"run", "modal", "choice", "channel", "special"}
@@ -92,7 +80,8 @@ def test_menu_entries_are_well_formed() -> None:
 def test_menu_covers_every_top_level_command() -> None:
     covered: set[str] = {"walmart"}  # Walmart category reuses the Walmart menu.
     for entry in MENU_ENTRIES:
-        covered.add(entry.usage[1:].split()[0].strip())
+        if entry.usage.startswith("/"):
+            covered.add(entry.usage[1:].split()[0].strip())
     assert covered == LIVE_TOP_LEVEL
 
 

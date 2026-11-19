@@ -158,7 +158,7 @@ class HomeDepotLocalCog(commands.Cog):
                 value=(
                     f"Open the Home Depot store finder:\n{store_search_url}\n\n"
                     "Pick your actual store, copy the store number from the store page, then run:\n"
-                    f"`/hd_stock sku:{cleaned_sku} zip_code:{cleaned_zip} store_id:STORE_NUMBER`"
+                    f"`/staff hd-stock sku:{cleaned_sku} zip_code:{cleaned_zip} store_id:STORE_NUMBER`"
                 ),
                 inline=False,
             )

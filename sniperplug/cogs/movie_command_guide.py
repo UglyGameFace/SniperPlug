@@ -620,7 +620,7 @@ def _build_user_section() -> discord.Embed:
     )
     embed.add_field(
         name="Advanced fallback",
-        value="`/movies latest` refreshes results with the same action buttons and `/movies sources` explains source coverage.",
+        value="`/movies latest` refreshes results with the same action buttons and `/movies status` explains source coverage.",
         inline=False,
     )
     return embed

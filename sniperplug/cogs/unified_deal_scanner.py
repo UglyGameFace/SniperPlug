@@ -798,7 +798,7 @@ def build_deal_finder_summary(
 
     embed.set_footer(
         text=(
-            f"Cache hits: {cache_hits} • Change starting markdown with /walmart threshold • "
+            f"Cache hits: {cache_hits} • Change starting markdown with /staff threshold • "
             "Fresh Scan spends another live pass."
         )
     )

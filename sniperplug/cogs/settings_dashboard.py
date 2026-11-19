@@ -175,7 +175,7 @@ def doctor_next_action(failed: list[tuple[str, str, str]], warnings: list[tuple[
         return "Fix the ❌ checks before testing `/walmart find` or auto-scan. Start with the first failed line."
     if warnings:
         return "Safe to test manually, but review the ⚠️ checks before turning on auto-scan/public posting."
-    return "Looks clean. Test `/walmart find search:lego` twice, then rerun `/sniperplug_dashboard` to confirm scan/run data updates."
+    return "Looks clean. Test `/walmart find search:lego` twice, then rerun `/staff dashboard` to confirm scan/run data updates."
 
 
 def check(name: str, passed: bool, detail: str, *, warn: bool = False) -> tuple[str, str, str]:
@@ -190,18 +190,19 @@ def check_env(name: str, *, required: bool, label: str) -> tuple[str, str, str]:
     return status, label, detail
 
 
-PRIMARY_COMMANDS = {"/walmart find", "/walmart hunt", "/walmart discover"}
+PRIMARY_COMMANDS = {"/walmart find", "/walmart hunt", "/menu"}
 SPECIALIST_COMMANDS = {
-    "/home_depot_search",
-    "/home_depot_penny_hunt",
-    "/hd_stock",
-    "/local_check",
-    "/seed_clearance",
-    "/clearance_bank",
+    "/staff hd-search",
+    "/staff hd-penny",
+    "/staff hd-stock",
+    "/menu → Local proof check",
+    "/menu → Save a clearance lead",
+    "/menu → Clearance bank",
 }
 ADVANCED_COMMANDS = {
     "/walmart find",
-    "/sniperplug_dashboard",
+    "/staff dashboard",
+    "/menu → Broad sweep",
 }
 
 
@@ -220,7 +221,7 @@ def command_guide_section(entry: CommandCatalogEntry) -> str:
 def build_command_guide_embed(entries: tuple[CommandCatalogEntry, ...], audience: str | None = None) -> discord.Embed:
     title = "SniperPlug Command Guide"
     description = (
-        "Start with **`/walmart find`**, **`/walmart hunt`**, or **`/walmart discover`**. "
+        "Start with **`/walmart find`**, **`/walmart hunt`**, or **`/menu`**. "
         "Specialist and diagnostic commands are grouped separately so you do not have to understand the whole bot first."
     )
     if audience:
@@ -242,7 +243,7 @@ def build_command_guide_embed(entries: tuple[CommandCatalogEntry, ...], audience
             lines.append(f"**{entry.name}** — {entry.purpose}\nUse when: {entry.when_to_use}{credit}")
         embed.add_field(name=section, value=truncate("\n\n".join(lines), 1024), inline=False)
 
-    embed.set_footer(text="Not sure? Run /sniperplug_workflow. Owners: use /sniperplug_dashboard when something feels wrong.")
+    embed.set_footer(text="Not sure? Open /menu. Staff: use /staff dashboard when something feels wrong.")
     return embed
 
 

@@ -37,7 +37,18 @@ DASHBOARD_VIEW_CHOICES = [
     app_commands.Choice(name="Overview", value="overview"),
     app_commands.Choice(name="Doctor / post-deploy checks", value="doctor"),
     app_commands.Choice(name="Command guide", value="commands"),
+    app_commands.Choice(name="Routes", value="routes"),
+    app_commands.Choice(name="Storage", value="storage"),
 ]
+
+# Dashboard pages absorbed from retired standalone commands (PR 2):
+# view:Routes is the old /sniperplug routes, view:Storage is the old
+# /storage_health. Both handlers answer the interaction themselves, so
+# they are delegated BEFORE this command defers.
+_DASHBOARD_PAGE_DELEGATES: dict[str, tuple[str, str]] = {
+    "routes": ("SniperPlugCog", "routes"),
+    "storage": ("StorageAdminCog", "storage_health"),
+}
 
 AUDIENCE_CHOICES = [
     app_commands.Choice(name="Everyone", value="everyone"),
@@ -68,6 +79,13 @@ class CanonicalSettingsCog(commands.Cog):
         view: app_commands.Choice[str] | None = None,
         audience: app_commands.Choice[str] | None = None,
     ) -> None:
+        selected = view.value if view is not None else "overview"
+        if selected in _DASHBOARD_PAGE_DELEGATES:
+            # The absorbed page handlers answer the interaction
+            # themselves (routes sends its own embed; storage defers
+            # itself), so delegate before this command defers.
+            await self._delegate_page(interaction, selected)
+            return
         await interaction.response.defer(ephemeral=True)
         if interaction.guild_id is None:
             await interaction.followup.send(
@@ -75,8 +93,6 @@ class CanonicalSettingsCog(commands.Cog):
                 ephemeral=True,
             )
             return
-
-        selected = view.value if view is not None else "overview"
         if selected == "doctor":
             embed = await build_doctor_dashboard(self.bot, int(interaction.guild_id))
         elif selected == "commands":
@@ -93,6 +109,26 @@ class CanonicalSettingsCog(commands.Cog):
             embed = await build_overview_dashboard(self.bot, int(interaction.guild_id))
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _delegate_page(
+        self, interaction: discord.Interaction, selected: str
+    ) -> None:
+        """Run an absorbed dashboard page's original handler."""
+
+        cog_name, method_name = _DASHBOARD_PAGE_DELEGATES[selected]
+        cog = self.bot.get_cog(cog_name)
+        command = getattr(cog, method_name, None) if cog is not None else None
+        if command is None:
+            await interaction.response.send_message(
+                "That dashboard page isn't loaded right now. Try again after the next restart.",
+                ephemeral=True,
+            )
+            return
+        callback = getattr(command, "callback", None)
+        if callback is not None:
+            await callback(cog, interaction)
+        else:
+            await command(interaction)
 
     @app_commands.command(
         name="deal_threshold",
@@ -239,12 +275,14 @@ async def build_overview_dashboard(
         value=(
             "• `view:Overview` — this page\n"
             "• `view:Doctor` — checks after an update, and recent errors\n"
-            "• `view:Commands` — the current command guide"
+            "• `view:Commands` — the current command guide\n"
+            "• `view:Routes` — where each kind of alert posts\n"
+            "• `view:Storage` — storage and delivery counts"
         ),
         inline=False,
     )
     embed.set_footer(
-        text="Members' own DM settings are separate from this server's. Full detail: /walmart health."
+        text="Members' own DM settings are separate from this server's. Full detail: /staff health."
     )
     return embed
 

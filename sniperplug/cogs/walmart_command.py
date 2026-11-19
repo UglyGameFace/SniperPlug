@@ -10,15 +10,20 @@ from the tree at startup.
 Delegation uses the same ``command.callback(cog, interaction, ...)`` pattern
 the test suite already uses (see ``test_single_threshold_and_scan_locks_b4``).
 The group's own ``@app_commands.checks`` decorators enforce the same
-permissions the old commands had; the menu (``/walmart menu``) enforces
-those same gates itself before running a function in place, because menu
-interactions bypass command checks.
+permissions the old commands had; the menu enforces those same gates
+itself before running a function in place, because menu interactions
+bypass command checks.
 
-``/walmart menu`` is the interactive front door for resellers: an embed
-plus four member buttons (Check a link, Find deals, Browse, My
-alerts) and, for staff only, a select with the server-setup functions.
-Five subcommands live only as slash commands now — recovery, history,
-trace, probe, feedback-reset — and appear in no menu surface.
+Consolidation PR 2 (2026-11-19): only check / find / hunt / my-alerts
+stay in the slash picker. The server-setup subcommands moved to the
+``/staff`` group; the rest were retired from the picker (see
+``command_surface.py``) and live behind this menu, which the ``/menu``
+hub opens with a Back button. The old ``/walmart menu`` slash command
+is retired — this view is the Walmart screen now. Recovery, history,
+trace, probe, and feedback-reset are staff-menu functions (trace and
+recheck ask for their input by modal; feedback-reset asks for a
+confirm), and discover is staff-gated here just like the other staff
+functions.
 """
 
 from __future__ import annotations
@@ -122,11 +127,12 @@ _LOCAL_DELEGATES: dict[str, tuple[str, str]] = {
 # The 19 functions, in subcommand order (the 20th subcommand is the menu).
 WALMART_SUBCOMMANDS: tuple[str, ...] = tuple(_DELEGATES) + tuple(_LOCAL_DELEGATES)
 
-# Who sees what in the menu (reseller rebuild, 2026-11-17). Members get
-# four buttons; staff get those plus the staff select and the threshold /
-# extreme controls. Five subcommands left the menu entirely — recovery,
-# history, trace, probe, feedback-reset — and live only as /walmart
-# subcommands (see MENU_REMOVED_KEYS).
+# Who sees what in the menu (reseller rebuild, 2026-11-17; PR 2,
+# 2026-11-19). Members get four buttons; staff get those plus the staff
+# select and the threshold / extreme controls. Since PR 2 the menu is
+# the only door for the retired diagnostics — recovery, history, trace,
+# probe, feedback-reset are staff-menu functions again, so nothing lost
+# its slash command without keeping a menu door.
 MENU_MEMBER_KEYS: tuple[str, ...] = ("check", "find", "hunt", "my-alerts")
 MENU_STAFF_KEYS: tuple[str, ...] = (
     "setup",
@@ -139,8 +145,13 @@ MENU_STAFF_KEYS: tuple[str, ...] = (
     "scan-now",
     "recheck",
     "active",
+    "recovery",
+    "history",
+    "trace",
+    "probe",
+    "feedback-reset",
 )
-MENU_REMOVED_KEYS = frozenset({"recovery", "history", "trace", "probe", "feedback-reset"})
+MENU_REMOVED_KEYS = frozenset()
 
 MENU_MEMBER_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("🔍 Find deals", ("check", "find", "hunt")),
@@ -148,12 +159,15 @@ MENU_MEMBER_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 MENU_STAFF_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("🛠️ Server setup", ("setup", "threshold", "categories", "extreme", "feedback")),
-    ("🏥 Health & more", ("health", "discover", "scan-now", "recheck", "active")),
+    ("🏥 Health & more", ("health", "active", "recovery", "history", "discover", "scan-now", "recheck")),
+    ("🧪 Diagnostics", ("trace", "probe", "feedback-reset")),
 )
 
 # Subcommands the menu runs in place (no required input). Everything else
-# either opens a modal (check/find) or shows guidance with the exact
-# subcommand to run (trace/threshold/extreme/feedback-reset/recheck).
+# either opens a modal (check/find/recheck/trace), asks for a confirm
+# (feedback-reset), or shows guidance naming the /staff command that
+# does the same job (threshold/extreme — both also have in-place
+# controls on this menu).
 _MENU_RUN_IN_PLACE = frozenset(
     {
         "hunt",
@@ -170,14 +184,17 @@ _MENU_RUN_IN_PLACE = frozenset(
         "my-alerts",
     }
 )
-_MENU_MODAL = frozenset({"check", "find"})
-_MENU_GUIDANCE = frozenset({"trace", "threshold", "extreme", "feedback-reset", "recheck"})
+_MENU_MODAL = frozenset({"check", "find", "recheck", "trace"})
+_MENU_GUIDANCE = frozenset({"threshold", "extreme"})
+_MENU_CONFIRM = frozenset({"feedback-reset"})
 
 # Subcommands that require Manage Server (same gate as the old commands).
 # The menu enforces this itself before running one in place or opening a
 # modal, because menu interactions bypass command checks. "check" is NOT
 # here: it has its own gate (Deal Finder role OR Manage Server, see
-# _can_check_deal).
+# _can_check_deal). "discover" IS here since PR 2: the broad sweep used
+# to be open to everyone as a slash command; behind the staff menu it
+# takes the staff gate like every other staff function.
 _MENU_MANAGE_GUILD = frozenset(
     {
         "health",
@@ -194,6 +211,7 @@ _MENU_MANAGE_GUILD = frozenset(
         "scan-now",
         "recheck",
         "probe",
+        "discover",
     }
 )
 
@@ -817,22 +835,22 @@ MENU_FUNCTIONS: dict[str, tuple[str, str, str]] = {
     "check": ("Check a link", "Check one link or item ID, even when search misses it.", "/walmart check link:<Walmart link or item ID>"),
     "find": ("Find deals", "Search deals by typing what you want.", "/walmart find search:<what you want>"),
     "hunt": ("Browse deals", "Pick a category — every price is checked before it's shown.", "/walmart hunt"),
-    "discover": ("Broad sweep", "Start a broad sweep for deals (Quick, Deep, or Full).", "/walmart discover"),
-    "scan-now": ("Scan now", "Run the automatic scan now and show why it did or didn't post.", "/walmart scan-now"),
-    "recheck": ("Recheck a deal", "Check one recent deal's price again.", "/walmart recheck search:<title, URL, or cache key>"),
-    "probe": ("API probe", "Staff diagnostic: check the price-proof paths.", "/walmart probe"),
+    "discover": ("Broad sweep", "Start a broad sweep for deals (Quick, Deep, or Full).", ""),
+    "scan-now": ("Scan now", "Run the automatic scan now and show why it did or didn't post.", ""),
+    "recheck": ("Recheck a deal", "Check one recent deal's price again.", ""),
+    "probe": ("API probe", "Staff diagnostic: check the price-proof paths.", ""),
     "my-alerts": ("My alerts", "Your personal DM alerts: menu, filters, pause, delete.", "/walmart my-alerts action:Open personalization menu"),
-    "setup": ("Setup", "Set (or move) this server's deal-alert channel.", "/walmart setup"),
-    "threshold": ("Threshold", "Set the smallest discount for public deals.", "/walmart threshold percent:35"),
-    "categories": ("Categories", "Choose which deal categories this server receives.", "/walmart categories"),
-    "extreme": ("Extreme leads", "Turn extreme price leads on or off.", "/walmart extreme enabled:true"),
-    "health": ("Health", "Coverage and delivery check for this server.", "/walmart health"),
-    "recovery": ("Recovery", "Review and recover deals that never posted.", "/walmart recovery"),
-    "active": ("Active deals", "Page through deals seen recently.", "/walmart active"),
-    "history": ("History", "What changed on recent deals, and rechecks.", "/walmart history"),
-    "trace": ("Trace an item", "See everything the bot knows about one item.", "/walmart trace item_id:425031866"),
-    "feedback": ("Feedback", "What the bot learned from feedback buttons.", "/walmart feedback"),
-    "feedback-reset": ("Reset feedback", "Clear feedback learning for this server.", "/walmart feedback-reset scope:all confirm:true"),
+    "setup": ("Setup", "Set (or move) this server's deal-alert channel.", "/staff channel"),
+    "threshold": ("Threshold", "Set the smallest discount for public deals.", "/staff threshold percent:35"),
+    "categories": ("Categories", "Choose which deal categories this server receives.", "/staff categories"),
+    "extreme": ("Extreme leads", "Turn extreme price leads on or off.", "/staff extreme enabled:true"),
+    "health": ("Health", "Coverage and delivery check for this server.", "/staff health"),
+    "recovery": ("Recovery", "Review and recover deals that never posted.", "/staff recovery"),
+    "active": ("Active deals", "Page through deals seen recently.", "/staff active"),
+    "history": ("History", "What changed on recent deals, and rechecks.", ""),
+    "trace": ("Trace an item", "See everything the bot knows about one item.", ""),
+    "feedback": ("Feedback", "What the bot learned from feedback buttons.", ""),
+    "feedback-reset": ("Reset feedback", "Clear feedback learning for this server.", ""),
 }
 
 _MENU_EMOJIS = {
@@ -958,7 +976,11 @@ def build_walmart_menu_embed(
     )
     for section, keys in _menu_sections(manage_guild=manage_guild, can_check=can_check):
         lines = [
-            f"`/walmart {key}` — {MENU_FUNCTIONS[key][1]}"
+            (
+                f"`{MENU_FUNCTIONS[key][2]}` — {MENU_FUNCTIONS[key][1]}"
+                if MENU_FUNCTIONS[key][2]
+                else MENU_FUNCTIONS[key][1]
+            )
             for key in keys
         ]
         embed.add_field(name=section, value="\n".join(lines), inline=False)
@@ -1224,8 +1246,26 @@ class WalmartMenuView(discord.ui.View):
             await self._respond(interaction, "You need **Manage Server** permission to use that Walmart function.")
             return
         if key in _MENU_MODAL:
-            modal = WalmartCheckModal(self.cog) if key == "check" else WalmartFindModal(self.cog)
-            await interaction.response.send_modal(modal)
+            modal_cls = {
+                "check": WalmartCheckModal,
+                "find": WalmartFindModal,
+                "recheck": WalmartRecheckModal,
+                "trace": WalmartTraceModal,
+            }[key]
+            await interaction.response.send_modal(modal_cls(self.cog))
+            return
+        if key in _MENU_CONFIRM:
+            embed = discord.Embed(
+                title=f"{label}",
+                description=(
+                    f"{description}\n\nThis clears what the bot learned from "
+                    "feedback buttons for this server. It cannot be undone."
+                ),
+                color=discord.Color.orange(),
+            )
+            await interaction.response.edit_message(
+                embed=embed, view=WalmartFeedbackResetConfirmView(self.cog)
+            )
             return
         if key in _MENU_GUIDANCE:
             embed = discord.Embed(
@@ -1442,3 +1482,113 @@ class WalmartFindModal(discord.ui.Modal, title="Find deals"):
             )
             return
         await self.cog._delegate(interaction, "find", search=search)
+
+
+class WalmartRecheckModal(discord.ui.Modal, title="Recheck a deal"):
+    search = discord.ui.TextInput(
+        label="Part of the title, the URL, or the cache key",
+        placeholder="dyson v15, https://www.walmart.com/ip/...",
+        required=True,
+        min_length=1,
+        max_length=300,
+    )
+
+    def __init__(self, cog: WalmartCommandCog) -> None:
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.cog._delegate(
+            interaction, "recheck", search=str(self.search.value).strip()
+        )
+
+
+class WalmartTraceModal(discord.ui.Modal, title="Trace an item"):
+    item_id = discord.ui.TextInput(
+        label="Item number (digits only)",
+        placeholder="425031866",
+        required=True,
+        min_length=1,
+        max_length=32,
+    )
+
+    def __init__(self, cog: WalmartCommandCog) -> None:
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.cog._delegate(
+            interaction, "trace", item_id=str(self.item_id.value).strip()
+        )
+
+
+class WalmartFeedbackResetConfirmView(discord.ui.View):
+    """Yes/no for the feedback reset: destructive + rare, so the menu
+    asks first (the old slash command demanded confirm:true instead)."""
+
+    def __init__(self, cog: WalmartCommandCog) -> None:
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.consumed = False
+        self.add_item(_FeedbackResetButton(cog, True))
+        self.add_item(_FeedbackResetButton(cog, False))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+
+class _FeedbackResetButton(discord.ui.Button):
+    def __init__(self, cog: WalmartCommandCog, yes: bool) -> None:
+        self.cog = cog
+        self.yes = yes
+        super().__init__(
+            label="Reset it" if yes else "Keep it",
+            style=discord.ButtonStyle.danger if yes else discord.ButtonStyle.secondary,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, WalmartFeedbackResetConfirmView)
+        if view.consumed:
+            await WalmartMenuView._respond(
+                interaction, "Already handled — open the menu again if you need it."
+            )
+            return
+        view.consumed = True
+        for item in view.children:
+            item.disabled = True
+        if not self.yes:
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="Reset feedback",
+                    description="Kept it — nothing changed.",
+                    color=discord.Color.orange(),
+                ),
+                view=view,
+            )
+            return
+        # The gate was already enforced by run_function before this view
+        # opened; re-check anyway because menu interactions bypass
+        # command checks and the tapper is what matters.
+        if not _has_manage_guild(interaction):
+            await WalmartMenuView._respond(
+                interaction,
+                "You need **Manage Server** permission to use that Walmart function.",
+            )
+            return
+        # Delegate first: the handler defers/responds itself, so the
+        # response must still be fresh. Disable the buttons after, best
+        # effort — the menu message is ephemeral, so its edit may fail.
+        await self.cog._delegate(
+            interaction,
+            "feedback-reset",
+            scope=app_commands.Choice(name="Everything", value="all"),
+            confirm=True,
+        )
+        message = interaction.message
+        if message is not None:
+            try:
+                await message.edit(view=view)
+            except discord.HTTPException:
+                log.exception("Feedback-reset confirm: could not disable the spent buttons")

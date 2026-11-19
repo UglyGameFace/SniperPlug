@@ -307,51 +307,33 @@ def test_dead_items_removed_and_load_bearing_kept() -> None:
     assert "setup_sniperplug_here_status" in RETIRED_COMMAND_NAMES
 
 
-# -- item 13: static/demo labelling --------------------------------------
+# -- item 13: static/demo commands ---------------------------------------
+# Item 13 originally required the three demo commands to label
+# themselves static. Consolidation PR 2 (2026-11-19, Felix's call)
+# deleted them outright instead — invented data, labeled or not, is
+# worse than no command — so the pins below assert the stronger state:
+# the handlers, the menu entries, and the slash names are all gone,
+# and the retired-names registry keeps them from coming back.
 
 
-def test_static_commands_labelled_static_in_description() -> None:
-    """Item 13: snipe-plan / monitor-plan / scan-test must say in their
-    command description that they are static/demo, not live data."""
-
+def test_static_demo_commands_are_deleted() -> None:
     for name in ("snipe_plan", "monitor_plan", "scan_test"):
-        description = getattr(SniperPlugCog, name).description or ""
-        assert "static" in description.lower(), f"{name}: {description!r}"
-        assert "not live data" in description.lower(), f"{name}: {description!r}"
+        assert not hasattr(SniperPlugCog, name), name
+    for full_name in (
+        "sniperplug snipe_plan",
+        "sniperplug monitor_plan",
+        "sniperplug scan_test",
+    ):
+        assert full_name in RETIRED_COMMAND_NAMES
 
 
-@pytest.mark.asyncio
-async def test_static_embeds_carry_static_preview_line() -> None:
-    """Item 13: each static command's embed carries the explicit
-    'static preview / demo — not live data' line."""
-
-    cog = SniperPlugCog(bot=SimpleNamespace())
-    interaction = _FakeInteraction()
-
-    await SniperPlugCog.snipe_plan.callback(cog, interaction)
-    await SniperPlugCog.monitor_plan.callback(cog, interaction)
-    await SniperPlugCog.scan_test.callback(cog, interaction)
-
-    embeds = [
-        kwargs["embed"]
-        for _args, kwargs in interaction.response.sent + interaction.followup.sent
-        if "embed" in kwargs
-    ]
-    assert len(embeds) == 3
-    for embed in embeds:
-        assert STATIC_LINE in (embed.description or ""), (
-            f"embed {embed.title!r} is missing the static-preview line"
-        )
-
-
-def test_menu_entries_for_static_commands_say_static_not_live() -> None:
-    """Item 13: the /menu copy advertising these commands must not call
-    them live either."""
-
-    by_key = {entry.key: entry for entry in MENU_ENTRIES}
-    for key in ("sniperplug-snipe-plan", "sniperplug-monitor-plan", "sniperplug-scan-test"):
-        assert "static" in by_key[key].description.lower(), f"{key}: {by_key[key].description!r}"
-        assert "live" not in by_key[key].description.lower(), f"{key}: {by_key[key].description!r}"
+def test_menu_entries_for_static_commands_are_gone() -> None:
+    keys = {entry.key for entry in MENU_ENTRIES}
+    assert not {
+        "sniperplug-snipe-plan",
+        "sniperplug-monitor-plan",
+        "sniperplug-scan-test",
+    }.intersection(keys)
 
 
 # -- item 14: /movies menu gaps ------------------------------------------
@@ -446,7 +428,8 @@ def test_ebay_catalog_entry_no_longer_advertises_consent_commands() -> None:
     assert "/ebay consent" not in entry.when_to_use
     assert "consent opts in or out" not in entry.when_to_use
     assert "/ebay status" in entry.when_to_use
-    assert "review_sample" in entry.when_to_use
+    assert "/ebay preview" in entry.when_to_use
+    assert "review_sample" not in entry.when_to_use
 
 
 # -- follow-up: retired /walmart cash must not be catalog-advertised ------

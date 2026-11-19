@@ -21,8 +21,8 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     ),
     RetiredCommand(
         "walmart_api_probe",
-        "/sniperplug provider_scan",
-        "Raw provider proof diagnostics belong under the owner-only SniperPlug group.",
+        "/menu (Server setup & health → Provider scan)",
+        "Raw provider proof diagnostics live behind the menu's staff screen.",
     ),
     RetiredCommand(
         "open_box_deals",
@@ -31,62 +31,62 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     ),
     RetiredCommand(
         "sniperplug_workflow",
-        "/sniperplug_dashboard view:Commands",
+        "/staff dashboard view:Commands",
         "The dashboard now contains the one canonical command guide.",
     ),
     RetiredCommand(
         "sniperplug_health",
-        "/sniperplug_dashboard view:Doctor",
+        "/staff dashboard view:Doctor",
         "Health and post-deploy diagnostics were overlapping views of the same runtime.",
     ),
     RetiredCommand(
         "sniperplug_doctor",
-        "/sniperplug_dashboard view:Doctor",
+        "/staff dashboard view:Doctor",
         "Post-deploy diagnostics now live inside the dashboard instead of a second command.",
     ),
     RetiredCommand(
         "sniperplug_commands",
-        "/sniperplug_dashboard view:Commands",
+        "/staff dashboard view:Commands",
         "The command reference now lives inside the dashboard.",
     ),
     RetiredCommand(
         "retailer_autoscan",
-        "/walmart setup",
+        "/staff channel",
         "Walmart discovery is global; per-server interval and daily scan gates are obsolete.",
     ),
     RetiredCommand(
         "retailer_autoscan_status",
-        "/walmart health",
+        "/staff health",
         "Global catalog coverage and per-server delivery health are shown together.",
     ),
     RetiredCommand(
         "public_alerts_status",
-        "/sniperplug_dashboard",
+        "/staff dashboard",
         "Public delivery settings are already part of the canonical dashboard.",
     ),
     RetiredCommand(
         "autoscan_clear_cache",
-        "/walmart active",
+        "/staff active",
         "Destructive duplicate-memory clearing is no longer a routine user command.",
     ),
     RetiredCommand(
         "active_deal_recheck",
-        "/walmart active",
+        "/staff active",
         "The Active Deals picker can recheck one exact Walmart item safely.",
     ),
     RetiredCommand(
         "active_deals_recheck",
-        "/walmart active",
+        "/staff active",
         "The Active Deals page already includes a bounded batch recheck button.",
     ),
     RetiredCommand(
         "active_deals_cleanup",
-        "/walmart active",
+        "/staff active",
         "Stale cache maintenance runs automatically when Active Deals is loaded.",
     ),
     RetiredCommand(
         "hd_penny_zip",
-        "/home_depot_penny_hunt",
+        "/staff hd-penny",
         "The targeted Home Depot penny command already accepts a ZIP and product query.",
     ),
     # Walmart commands folded into the /walmart group (2026-11-17). Each
@@ -115,43 +115,43 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     ),
     RetiredCommand(
         "discover",
-        "/walmart discover",
-        "One Walmart command now holds every Walmart function.",
+        "/menu → Broad sweep",
+        "Broad sweeps are a staff menu function now, not a slash command.",
     ),
     RetiredCommand(
         "autoscan_now",
-        "/walmart scan-now",
-        "One Walmart command now holds every Walmart function.",
+        "/menu → Scan now",
+        "Manual scans run from the Walmart staff menu now.",
     ),
     RetiredCommand(
         "autoscan_health",
-        "/walmart health",
-        "One Walmart command now holds every Walmart function.",
+        "/staff health",
+        "Health lives in the one staff group now.",
     ),
     RetiredCommand(
         "deal_threshold",
-        "/walmart threshold",
-        "One Walmart command now holds every Walmart function.",
+        "/staff threshold",
+        "Server settings live in the one staff group now.",
     ),
     RetiredCommand(
         "deal_categories",
-        "/walmart categories",
-        "One Walmart command now holds every Walmart function.",
+        "/staff categories",
+        "Server settings live in the one staff group now.",
     ),
     RetiredCommand(
         "walmart_extreme_alerts",
-        "/walmart extreme",
-        "One Walmart command now holds every Walmart function.",
+        "/staff extreme",
+        "Server settings live in the one staff group now.",
     ),
     RetiredCommand(
         "walmart_recovery",
-        "/walmart recovery",
-        "One Walmart command now holds every Walmart function.",
+        "/staff recovery",
+        "Server tools live in the one staff group now.",
     ),
     RetiredCommand(
         "deal_trace",
-        "/walmart trace",
-        "One Walmart command now holds every Walmart function.",
+        "/menu → Trace an item",
+        "Item traces run from the Walmart staff menu now.",
     ),
     RetiredCommand(
         "dm_deals",
@@ -160,34 +160,34 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
     ),
     RetiredCommand(
         "feedback_learning_status",
-        "/walmart feedback",
-        "One Walmart command now holds every Walmart function.",
+        "/menu → Feedback",
+        "Feedback learning is a staff menu function now.",
     ),
     RetiredCommand(
         "feedback_learning_reset",
-        "/walmart feedback-reset",
-        "One Walmart command now holds every Walmart function.",
+        "/menu → Reset feedback",
+        "Feedback resets run from the Walmart staff menu, behind a confirm.",
     ),
     RetiredCommand(
         "active_deals",
-        "/walmart active",
-        "One Walmart command now holds every Walmart function.",
+        "/staff active",
+        "Recent deals live in the one staff group now.",
     ),
     RetiredCommand(
         "active_deal_history",
-        "/walmart history",
-        "One Walmart command now holds every Walmart function.",
+        "/menu → History",
+        "Deal history is a staff menu function now.",
     ),
     RetiredCommand(
         "setup_sniperplug_here",
-        "/walmart setup",
-        "One Walmart command now holds every Walmart function.",
+        "/staff channel",
+        "Channel setup lives in the one staff group now.",
     ),
     # Historical/nonexistent catalog entries are listed so documentation tests
     # cannot accidentally advertise them again.
     RetiredCommand(
         "setup_sniperplug_here_status",
-        "/sniperplug_dashboard",
+        "/staff dashboard",
         "This legacy status alias was never part of the canonical runtime.",
     ),
     # eBay consent subcommands (2026-11-17 audit §3 item 10). Research and
@@ -206,6 +206,281 @@ RETIRED_COMMANDS: tuple[RetiredCommand, ...] = (
         "/ebay status",
         "No eBay promotional sender consumes stored server consent; research works without it.",
     ),
+    # Consolidation PR 2 (2026-11-19): the picker keeps 7 top-levels —
+    # menu, walmart, wishlist, movies, verizon, ebay, staff. Staff tools
+    # moved under /staff; everything else below is menu-only (handlers
+    # untouched, reachable from /menu). The three /sniperplug demo
+    # commands were deleted outright instead (static fake data).
+    RetiredCommand(
+        "home_depot_search",
+        "/staff hd-search",
+        "Home Depot tools live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "home_depot_penny_hunt",
+        "/staff hd-penny",
+        "Home Depot tools live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "hd_stock",
+        "/staff hd-stock",
+        "Home Depot tools live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "sniperplug_dashboard",
+        "/staff dashboard",
+        "The owner dashboard lives in the one staff group now.",
+    ),
+    RetiredCommand(
+        "storage_health",
+        "/staff dashboard view:Storage",
+        "Storage counts are a page of the staff dashboard now.",
+    ),
+    RetiredCommand(
+        "storage_maintenance_now",
+        "/menu (Server setup & health → Storage cleanup)",
+        "Storage cleanup runs from the menu's server screen, behind a confirm.",
+    ),
+    RetiredCommand(
+        "local_check",
+        "/menu (eBay & Home Depot → Local proof check)",
+        "Local proof recording is a menu function now.",
+    ),
+    RetiredCommand(
+        "seed_clearance",
+        "/menu (eBay & Home Depot → Save a clearance lead)",
+        "Saving clearance leads is a menu function now.",
+    ),
+    RetiredCommand(
+        "clearance_bank",
+        "/menu (eBay & Home Depot → Clearance bank)",
+        "The clearance bank is a menu function now.",
+    ),
+    RetiredCommand(
+        "target_location",
+        "/menu (Server setup & health → Target store)",
+        "The server Target store is a set-once menu setting now.",
+    ),
+    RetiredCommand(
+        "target_location_clear",
+        "/menu (Server setup & health → Clear Target store)",
+        "Clearing the server Target store is a menu function now.",
+    ),
+    RetiredCommand(
+        "target_dm_location",
+        "/menu (My deals → My Target store)",
+        "Your Target store for DMs is a set-once menu setting now.",
+    ),
+    RetiredCommand(
+        "target_dm_location_clear",
+        "/menu (My deals → Clear my Target store)",
+        "Clearing your Target store is a menu function now.",
+    ),
+    RetiredCommand(
+        "movies-help",
+        "/menu (Movies & Verizon → Movie guide)",
+        "The movie guide opens from the menu now; the panel itself is unchanged.",
+    ),
+    RetiredCommand(
+        "movies-panel",
+        "/menu (Movies & Verizon → Post movie panel)",
+        "Posting the permanent movie panel is a staff menu act now.",
+    ),
+    RetiredCommand(
+        "sniperplug",
+        "/staff",
+        "The owner group was dissolved: staff tools live under /staff, the rest behind /menu.",
+    ),
+    RetiredCommand(
+        "sniperplug routes",
+        "/staff dashboard view:Routes",
+        "Alert routing is a page of the staff dashboard now.",
+    ),
+    RetiredCommand(
+        "sniperplug provider_scan",
+        "/menu (Server setup & health → Provider scan)",
+        "Provider scans run from the menu's server screen now.",
+    ),
+    RetiredCommand(
+        "sniperplug test_alert",
+        "/staff test-alert",
+        "Test alerts live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "sniperplug snipe_plan",
+        "Deleted — no replacement",
+        "Static demo with invented priorities; deleted outright 2026-11-19.",
+    ),
+    RetiredCommand(
+        "sniperplug monitor_plan",
+        "Deleted — no replacement",
+        "Static demo with invented targets; deleted outright 2026-11-19.",
+    ),
+    RetiredCommand(
+        "sniperplug scan_test",
+        "Deleted — no replacement",
+        "Static demo with invented candidates; deleted outright 2026-11-19.",
+    ),
+    RetiredCommand(
+        "walmart setup",
+        "/staff channel",
+        "Channel setup lives in the one staff group now.",
+    ),
+    RetiredCommand(
+        "walmart threshold",
+        "/staff threshold",
+        "Server settings live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "walmart categories",
+        "/staff categories",
+        "Server settings live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "walmart extreme",
+        "/staff extreme",
+        "Server settings live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "walmart health",
+        "/staff health",
+        "Health lives in the one staff group now.",
+    ),
+    RetiredCommand(
+        "walmart active",
+        "/staff active",
+        "Recent deals live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "walmart recovery",
+        "/staff recovery",
+        "Server tools live in the one staff group now.",
+    ),
+    RetiredCommand(
+        "walmart discover",
+        "/menu → Broad sweep",
+        "Broad sweeps are a staff menu function now, and staff-gated there.",
+    ),
+    RetiredCommand(
+        "walmart scan-now",
+        "/menu → Scan now",
+        "Manual scans run from the Walmart staff menu now.",
+    ),
+    RetiredCommand(
+        "walmart recheck",
+        "/menu → Recheck a deal",
+        "Rechecks run from the Walmart staff menu now.",
+    ),
+    RetiredCommand(
+        "walmart probe",
+        "/menu → API probe",
+        "The API probe is a staff menu diagnostic now.",
+    ),
+    RetiredCommand(
+        "walmart trace",
+        "/menu → Trace an item",
+        "Item traces run from the Walmart staff menu now.",
+    ),
+    RetiredCommand(
+        "walmart history",
+        "/menu → History",
+        "Deal history is a staff menu function now.",
+    ),
+    RetiredCommand(
+        "walmart feedback",
+        "/menu → Feedback",
+        "Feedback learning is a staff menu function now.",
+    ),
+    RetiredCommand(
+        "walmart feedback-reset",
+        "/menu → Reset feedback",
+        "Feedback resets run from the Walmart staff menu, behind a confirm.",
+    ),
+    RetiredCommand(
+        "walmart menu",
+        "/menu",
+        "Two menus was the core complaint; /menu embeds the Walmart screen with a Back button.",
+    ),
+    RetiredCommand(
+        "movies setup",
+        "/menu (Movies & Verizon → Movie alerts setup)",
+        "Movie alert setup is a staff menu function now.",
+    ),
+    RetiredCommand(
+        "movies scan",
+        "/menu (Movies & Verizon → Scan movie sources)",
+        "Movie source scans run from the menu now.",
+    ),
+    RetiredCommand(
+        "movies test-alert",
+        "/menu (Movies & Verizon → Movie test alert)",
+        "Movie test alerts run from the menu now.",
+    ),
+    RetiredCommand(
+        "movies disable",
+        "/menu (Movies & Verizon → Disable movie alerts)",
+        "Turning movie alerts off is a staff menu function now.",
+    ),
+    RetiredCommand(
+        "movies sources",
+        "/movies status",
+        "Sources merged into status: it already reports source health.",
+    ),
+    RetiredCommand(
+        "verizon setup",
+        "/menu (Movies & Verizon → Verizon setup)",
+        "Verizon setup is a staff menu function now.",
+    ),
+    RetiredCommand(
+        "verizon scan",
+        "/menu (Movies & Verizon → Verizon scan)",
+        "Pasting reward text is a staff menu function now.",
+    ),
+    RetiredCommand(
+        "verizon test-alert",
+        "/menu (Movies & Verizon → Verizon test alert)",
+        "Verizon test alerts run from the menu now.",
+    ),
+    RetiredCommand(
+        "verizon add-keyword",
+        "/menu (Movies & Verizon → Add Verizon keyword)",
+        "Keyword edits run from the menu now.",
+    ),
+    RetiredCommand(
+        "verizon remove-keyword",
+        "/menu (Movies & Verizon → Remove Verizon keyword)",
+        "Keyword edits run from the menu now.",
+    ),
+    RetiredCommand(
+        "verizon reminders",
+        "/menu (Movies & Verizon → Verizon reminders)",
+        "Reminder toggles run from the menu now.",
+    ),
+    RetiredCommand(
+        "verizon ntfy-setup",
+        "/menu (Movies & Verizon → Phone alerts setup)",
+        "Phone alerts are one menu entry now, not three commands.",
+    ),
+    RetiredCommand(
+        "verizon ntfy-status",
+        "/menu (Movies & Verizon → Phone alerts status)",
+        "Phone alerts are one menu entry now, not three commands.",
+    ),
+    RetiredCommand(
+        "verizon ntfy-disable",
+        "/menu (Movies & Verizon → Phone alerts off)",
+        "Phone alerts are one menu entry now, not three commands.",
+    ),
+    RetiredCommand(
+        "verizon list-keywords",
+        "/verizon keywords",
+        "Renamed: 'list-' was a programmer prefix.",
+    ),
+    RetiredCommand(
+        "ebay review_sample",
+        "/ebay preview",
+        "Renamed: underscore and 'sample' were jargon.",
+    ),
 )
 
 RETIRED_COMMAND_NAMES = frozenset(item.name for item in RETIRED_COMMANDS)
@@ -217,15 +492,11 @@ REQUIRED_CANONICAL_COMMANDS = frozenset(
     {
         "menu",
         "walmart",
-        "home_depot_search",
-        "home_depot_penny_hunt",
-        "hd_stock",
-        "local_check",
-        "seed_clearance",
-        "clearance_bank",
-        "sniperplug_dashboard",
-        "sniperplug",
+        "wishlist",
+        "movies",
+        "verizon",
         "ebay",
+        "staff",
     }
 )
 

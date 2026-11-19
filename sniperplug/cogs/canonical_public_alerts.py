@@ -188,7 +188,7 @@ class CanonicalPublicAlertsCog(commands.Cog):
         if enabled and not route_ready:
             message += (
                 "\nYour Walmart public alert channel is not fully configured yet. "
-                "Run /walmart setup in the destination channel."
+                "Run /staff channel in the destination channel."
             )
         await interaction.followup.send(message, ephemeral=True)
 
@@ -251,7 +251,7 @@ class WalmartRecoveryView(discord.ui.View):
         if int(interaction.user.id) == self.requester_id:
             return True
         await interaction.response.send_message(
-            "Open your own `/walmart recovery` panel to use these controls.",
+            "Open your own `/staff recovery` panel to use these controls.",
             ephemeral=True,
         )
         return False
@@ -772,7 +772,7 @@ async def build_global_autoscan_health_embed(
         embed.add_field(
             name="This server's Target store",
             value=(
-                "Not configured. Target remains off until `/target_location` "
+                "Not configured. Target remains off until a Target store is picked in /menu "
                 "saves an exact local store."
             ),
             inline=False,
@@ -796,7 +796,7 @@ async def build_global_autoscan_health_embed(
         inline=False,
     )
     latest_report_source = (
-        "manual `/walmart scan-now` force test"
+        "manual Scan now (Walmart menu) force test"
         if report_context.is_manual
         else "scheduled autoscan"
     )
@@ -836,7 +836,7 @@ async def build_global_autoscan_health_embed(
         name="How to read this",
         value=(
             "Green requires this server to be in the scheduler's real live guild set with no delivery "
-            "or posting-route problem. A manual `/walmart scan-now` report is labeled separately and "
+            "or posting-route problem. A manual Scan now report is labeled separately and "
             "never counts as proof that the scheduled loop ran."
         ),
         inline=False,
@@ -858,7 +858,7 @@ async def build_global_autoscan_health_embed(
             "Optional, separate alerts for exact API offers at $10 or less on recognizable "
             "primary products, even without a verified original price. "
             "Not a claimed 40% markdown; check local checkout. "
-            "Use /walmart extreme to change this setting.\n"
+            "Use /staff extreme to change this setting.\n"
             f"{extreme_summary}"
         ),
         inline=False,
@@ -911,7 +911,7 @@ async def build_global_autoscan_health_embed(
             "A running catalog or exact queue does not guarantee a public post. "
             "A Walmart item posts only after exact item/offer/seller/variant proof, "
             f"the server's **{threshold}%+** threshold, category rules, and duplicate "
-            "guards all pass. Use `/walmart recovery` to inspect and act on a specific "
+            "guards all pass. Use `/staff recovery` to inspect and act on a specific "
             "no-post reason without weakening automatic delivery."
         ),
         inline=False,
@@ -982,7 +982,7 @@ def _next_action(
 ) -> str | None:
     if not public_route_ready or not selected_retailers:
         return (
-            "Run `/walmart setup` in the exact channel that should receive "
+            "Run `/staff channel` in the exact channel that should receive "
             "deals, then reopen this panel."
         )
     if quota_snapshot is not None and not quota_snapshot.allowed:
@@ -1007,16 +1007,16 @@ def _next_action(
     if "walmart" in selected_retailers and not walmart_delivery_ready:
         return (
             "Walmart is selected but is not enrolled in the live fanout set. "
-            "Run `/walmart setup` once in the saved public channel."
+            "Run `/staff channel` once in the saved public channel."
         )
     if delivery_health.eligible_without_post:
         return (
-            "Run `/walmart recovery`. The audit found an exact event that currently "
+            "Run `/staff recovery`. The audit found an exact event that currently "
             "passes the server rules without a durable public-post receipt."
         )
     if delivery_health.events_with_errors:
         return (
-            "Run `/walmart recovery` to retry the affected event under current rules. "
+            "Run `/staff recovery` to retry the affected event under current rules. "
             "The global fanout table contains a recent error."
         )
     if (
@@ -1026,7 +1026,7 @@ def _next_action(
         return (
             "Target is selected but no Target watcher is running in this "
             "deployment yet, so no Target deals are scanned. Save a store "
-            "with `/target_location` (store lookup needs "
+            "with the Target store picker in /menu (store lookup needs "
             "`TARGET_REDSKY_API_KEY`) so Target is ready the moment a "
             "watcher runs. "
             "This does not block Walmart delivery."
@@ -1036,12 +1036,12 @@ def _next_action(
             "HP Store is selected but no HP watcher is running in this "
             "deployment yet, so no HP deals are scanned. HP delivery is "
             "ready — deals will post as soon as a watcher runs. This does "
-            "not block Walmart; turn HP off in `/walmart setup` to hide "
+            "not block Walmart; turn HP off in `/staff channel` to hide "
             "this note."
         )
     if delivery_health.events_seen and not delivery_health.posted:
         return (
-            "Run `/walmart recovery` to inspect recent exact events. Safe retry keeps "
+            "Run `/staff recovery` to inspect recent exact events. Safe retry keeps "
             f"the **{threshold}%+** threshold; the server owner may post one soft-blocked "
             "event without changing automatic settings."
         )

@@ -31,6 +31,7 @@ from discord import app_commands
 from sniperplug.cogs.unified_menu import UnifiedMenuCog
 from sniperplug.cogs.walmart_command import (
     DEAL_FINDER_ROLE_ID,
+    MENU_FUNCTIONS,
     MENU_MEMBER_KEYS,
     MENU_REMOVED_KEYS,
     MENU_STAFF_KEYS,
@@ -207,7 +208,7 @@ def test_staff_view_shows_staff_select_stepper_and_extreme() -> None:
     selects = _selects(view)
     assert len(selects) == 1
     assert {option.value for option in selects[0].options} == set(MENU_STAFF_KEYS)
-    assert len(selects[0].options) == 10
+    assert len(selects[0].options) == 15
     labels = _buttons(view)
     assert {"Check a link", "Find deals", "Browse", "My alerts"} <= set(labels)
     assert {"−5%", "40%", "+5%", "Extreme: OFF", "DM alerts: OFF", "Refresh"} <= set(labels)
@@ -294,9 +295,11 @@ def test_staff_embed_lists_menu_functions_and_not_removed_ones() -> None:
     embed = build_walmart_menu_embed(manage_guild=True, can_check=True)
     text = _embed_text(embed)
     for key in list(MENU_MEMBER_KEYS) + list(MENU_STAFF_KEYS):
-        assert f"/walmart {key}" in text
-    for key in MENU_REMOVED_KEYS:
-        assert f"/walmart {key}" not in text
+        usage = MENU_FUNCTIONS[key][2]
+        if usage:
+            assert usage in text
+        assert MENU_FUNCTIONS[key][1] in text
+    assert MENU_REMOVED_KEYS == frozenset()
     assert "Deal checks need" not in text
 
 

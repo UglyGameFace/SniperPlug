@@ -26,7 +26,7 @@ def explain_public_post_result(result: Any) -> str:
 
     lines.append(f"Tried: **{attempted}** • Posted: **{posted}** • Cached active: **{cached}**")
     if disabled:
-        lines.append(f"• **{disabled}** skipped because public alerts are off or no alert channel is set. Run `/walmart setup`.")
+        lines.append(f"• **{disabled}** skipped because public alerts are off or no alert channel is set. Run `/staff channel`.")
     if wrong_retailer:
         lines.append(f"• **{wrong_retailer}** skipped because that retailer is not enabled for public posting.")
     if duplicate:
@@ -43,7 +43,7 @@ def explain_public_post_result(result: Any) -> str:
     if errors:
         lines.append("• Errors: " + "; ".join(clean_text(str(error), 160) for error in errors[:3]))
     if posted == 0 and cached and not (disabled or wrong_retailer or duplicate or not_alertable or errors):
-        lines.append("• Cached but not posted. Check `/walmart health` and `/walmart active` for config/proof state.")
+        lines.append("• Cached but not posted. Check `/staff health` and `/staff active` for config/proof state.")
     return "\n".join(lines[:8])
 
 

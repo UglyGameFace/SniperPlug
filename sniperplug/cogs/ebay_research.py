@@ -180,7 +180,7 @@ class EbayResearchCog(commands.GroupCog, group_name="ebay", group_description="e
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="review_sample", description="Privately preview an actual eBay listing and opt-out controls.")
+    @app_commands.command(name="preview", description="Privately preview an actual eBay listing and opt-out controls.")
     @app_commands.describe(query="Search term used to fetch a real product for review.")
     @app_commands.checks.cooldown(2, 60.0, key=lambda interaction: interaction.user.id)
     async def review_sample(self, interaction: discord.Interaction, query: app_commands.Range[str, 2, 100]) -> None:

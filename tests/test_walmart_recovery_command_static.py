@@ -18,9 +18,9 @@ SURFACE = (ROOT / "sniperplug/services/command_surface.py").read_text(
 
 def test_recovery_command_is_canonical_and_visible() -> None:
     assert 'name="walmart_recovery"' in COG
-    assert "/walmart recovery" in CATALOG
+    assert "/staff recovery" in CATALOG
     assert '"walmart_recovery"' in SURFACE
-    assert "Use `/walmart recovery`" in COG
+    assert "Use `/staff recovery`" in COG
 
 
 def test_actual_server_owner_controls_every_bypass_action() -> None:

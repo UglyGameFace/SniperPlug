@@ -454,7 +454,7 @@ async def post_walmart_owner_override(
     if not config.get("enabled") or not channel_id:
         return WalmartRecoveryActionResult(
             False,
-            "No public deal channel is configured. Run `/walmart setup` first.",
+            "No public deal channel is configured. Run `/staff channel` first.",
         )
     if "walmart" not in set(config.get("retailers") or ()):
         return WalmartRecoveryActionResult(

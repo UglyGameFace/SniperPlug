@@ -85,7 +85,8 @@ def test_command_catalog_only_advertises_canonical_commands() -> None:
     assert not RETIRED_COMMAND_NAMES.intersection(advertised)
     assert {
         "walmart",
-        "sniperplug_dashboard",
+        "staff",
+        "menu",
     }.issubset(advertised)
 
 

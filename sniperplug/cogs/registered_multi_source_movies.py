@@ -138,7 +138,7 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
 
     @app_commands.command(
         name="status",
-        description="Show movie-ticket destination, connected-source health, and delivery totals.",
+        description="Show movie-ticket destination, source health, the source list, and delivery totals.",
     )
     async def status(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id:
@@ -179,6 +179,18 @@ class MovieTicketsCog(MultiSourceMovieTicketsCog, name="movies"):
         embed.add_field(
             name="Connected source health",
             value="\n".join(self._source_health_lines(states))[:1024],
+            inline=False,
+        )
+        # The old /movies sources list lives here now (PR 2 merge): one
+        # field naming which sources exist and how much each is trusted.
+        embed.add_field(
+            name="Sources",
+            value=(
+                "✅ **Direct** (automatic alerts): Atom Promotions, Fandango Offers, Gofobo\n"
+                "🔎 **Supplemental discovery**: SeeItEarly — labeled, never auto-posted as an issuer alert\n"
+                "🌐 **Manual directories**: AdvanceScreenings, 1iota — linked for manual checking\n"
+                "🔒 **Private/account sources** are never scraped or republished."
+            ),
             inline=False,
         )
         embed.set_footer(

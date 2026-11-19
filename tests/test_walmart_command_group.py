@@ -20,6 +20,7 @@ from discord import app_commands
 from sniperplug.cogs.deal_feedback_admin import normalize_reset_scope
 from sniperplug.cogs.dm_deal_alerts import DmDealAlertsCog
 from sniperplug.cogs.walmart_command import (
+    MENU_FUNCTIONS,
     MENU_MEMBER_KEYS,
     MENU_REMOVED_KEYS,
     MENU_STAFF_KEYS,
@@ -38,24 +39,27 @@ from sniperplug.services.command_surface import (
 )
 
 
+# Old top-level name -> where its retirement message points now.
+# Consolidation PR 2 (2026-11-19): staff functions moved under /staff
+# and the menu-only functions point at their /menu entries.
 OLD_TO_NEW = {
-    "check_deal": "check",
-    "deals": "find",
-    "hunt": "hunt",
-    "discover": "discover",
-    "autoscan_health": "health",
-    "deal_threshold": "threshold",
-    "deal_categories": "categories",
-    "walmart_extreme_alerts": "extreme",
-    "walmart_recovery": "recovery",
-    "deal_trace": "trace",
-    "dm_deals": "my-alerts",
-    "feedback_learning_status": "feedback",
-    "feedback_learning_reset": "feedback-reset",
-    "active_deals": "active",
-    "active_deal_history": "history",
-    "setup_sniperplug_here": "setup",
-    "autoscan_now": "scan-now",
+    "check_deal": "/walmart check",
+    "deals": "/walmart find",
+    "hunt": "/walmart hunt",
+    "discover": "/menu → Broad sweep",
+    "autoscan_health": "/staff health",
+    "deal_threshold": "/staff threshold",
+    "deal_categories": "/staff categories",
+    "walmart_extreme_alerts": "/staff extreme",
+    "walmart_recovery": "/staff recovery",
+    "deal_trace": "/menu → Trace an item",
+    "dm_deals": "/walmart my-alerts",
+    "feedback_learning_status": "/menu → Feedback",
+    "feedback_learning_reset": "/menu → Reset feedback",
+    "active_deals": "/staff active",
+    "active_deal_history": "/menu → History",
+    "setup_sniperplug_here": "/staff channel",
+    "autoscan_now": "/menu → Scan now",
 }
 
 
@@ -106,9 +110,9 @@ def test_check_and_find_keep_their_parameters() -> None:
 
 
 def test_old_walmart_names_are_retired_with_new_paths() -> None:
-    for old, sub in OLD_TO_NEW.items():
+    for old, replacement in OLD_TO_NEW.items():
         assert old in RETIRED_COMMAND_NAMES
-        assert replacement_for(old) == f"/walmart {sub}"
+        assert replacement_for(old) == replacement
     # /walmart cash was retired 2026-11-17 (no Cash offer feed exists), so
     # its old top-level name now points at /walmart find instead.
     assert "walmart_cash" in RETIRED_COMMAND_NAMES
@@ -140,15 +144,22 @@ def test_prune_removes_old_walmart_names_and_keeps_the_group() -> None:
 
 
 def test_menu_embed_lists_menu_functions_not_removed_ones() -> None:
-    # Staff embed: every menu function, none of the five that left the menu.
+    # Staff embed: every menu function is listed. Since consolidation
+    # PR 2 the embed prints each function's real home (a /staff command
+    # or nothing for menu-only functions) instead of a fake /walmart
+    # subcommand, and the five diagnostics that once left the menu are
+    # back in the staff sections.
     embed = build_walmart_menu_embed(manage_guild=True, can_check=True)
     text = (embed.description or "") + "\n" + "\n".join(
         (field.name or "") + "\n" + (field.value or "") for field in embed.fields
     )
     for sub in list(MENU_MEMBER_KEYS) + list(MENU_STAFF_KEYS):
-        assert f"/walmart {sub}" in text
-    for sub in MENU_REMOVED_KEYS:
-        assert f"/walmart {sub}" not in text
+        usage = MENU_FUNCTIONS[sub][2]
+        if usage:
+            assert usage in text
+        assert MENU_FUNCTIONS[sub][1] in text
+    assert "🧪 Diagnostics" in text
+    assert MENU_REMOVED_KEYS == frozenset()
 
 
 def test_all_walmart_subcommands_still_registered() -> None:
@@ -175,7 +186,7 @@ def test_staff_menu_view_has_staff_select_and_quick_buttons() -> None:
     selects = [child for child in view.children if isinstance(child, discord.ui.Select)]
     assert len(selects) == 1
     assert {option.value for option in selects[0].options} == set(MENU_STAFF_KEYS)
-    assert len(selects[0].options) == 10
+    assert len(selects[0].options) == 15
     buttons = [child for child in view.children if isinstance(child, discord.ui.Button)]
     # Dashboard controls (spec: threshold stepper, extreme toggle, DM toggle,
     # Refresh) sit alongside the four member buttons; with no snapshot the
@@ -248,7 +259,7 @@ async def test_menu_guidance_shows_the_exact_subcommand() -> None:
     await WalmartMenuView(WalmartCommandCog(bot=None)).run_function(interaction, "threshold")
     assert len(interaction.response.edited) == 1
     embed = interaction.response.edited[0]["embed"]
-    assert "/walmart threshold" in (embed.title or "") + (embed.description or "")
+    assert "/staff threshold" in (embed.title or "") + (embed.description or "")
 
 
 @pytest.mark.asyncio

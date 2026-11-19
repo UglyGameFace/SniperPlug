@@ -60,8 +60,8 @@ def test_storage_maintenance_keeps_price_history_and_prunes_only_expired_recreat
 def test_owner_catalog_uses_active_deals_controls_and_keeps_history():
     assert 'name="/active_deals"' not in CATALOG
     assert 'name="/active_deal_history"' not in CATALOG
-    assert 'name="/walmart active"' in CATALOG
-    assert 'name="/walmart history"' in CATALOG
+    assert 'name="/staff active"' in CATALOG
+    assert 'name="/menu → History"' in CATALOG
     assert 'audience="Owner"' in CATALOG
     assert "single-item rechecks" in CATALOG
     assert "historical evidence" in CATALOG

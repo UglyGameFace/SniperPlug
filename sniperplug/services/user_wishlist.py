@@ -72,7 +72,7 @@ MAX_WISHLIST_STEERING_TERMS = 50
 WISHLIST_SCAN_NOTE = (
     "Your wishlist items also get priority checks in the bot's broad scan, "
     "but a DM can only fire after the broad scan finds the item as a "
-    "verified deal."
+    "price-checked deal."
 )
 _SCHEMA_READY = False
 _SCHEMA_LOCK = asyncio.Lock()

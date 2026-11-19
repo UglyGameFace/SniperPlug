@@ -72,111 +72,67 @@ CATEGORY_COLORS: dict[str, int] = {
     "server": 0x607D8B,  # slate
 }
 
-# Color language (spec): green = ready/healthy, orange = degraded / needs
-# attention, red = down / not configured. HP and Target watchers are not
-# running yet, never red — that wording is used in the summaries below,
-# not a red dot.
-_PROVIDER_EMOJI = {
-    "READY": "🟢",
-    "DISABLED": "🟠",
-    "ERROR": "🔴",
-    "UNKNOWN": "🟠",
-}
-
-
-def _format_deal_price(deal: dict) -> str:
-    price = deal.get("price")
-    discount = deal.get("discount")
-    parts: list[str] = []
-    if price is not None:
-        try:
-            parts.append(f"${float(price):,.2f}")
-        except (TypeError, ValueError):
-            parts.append(str(price))
-    if discount is not None:
-        parts.append(f"{discount}% off")
-    return " · ".join(parts) if parts else "active deal"
-
-
 def _dm_summary(state: MenuDashboardState) -> str:
     if not state.dm_enabled:
-        return "DM alerts OFF"
-    detail = "DM alerts ON"
+        return "Your alerts: OFF"
+    detail = "Your alerts: ON"
     if state.dm_threshold is not None:
-        detail += f" (threshold {state.dm_threshold}%"
+        detail += f" · {state.dm_threshold}% off or better"
         if state.dm_daily_cap is not None:
-            detail += f" · up to {state.dm_daily_cap}/day"
+            detail += f" · up to {state.dm_daily_cap} a day"
         else:
-            detail += " · unlimited/day"
-        detail += ")"
+            detail += " · no daily limit"
     return detail
 
 
-def _deals_today_line(state: MenuDashboardState) -> str:
+def _home_status_line(state: MenuDashboardState) -> str:
+    """The hub's one status line: working?, how much today, your alerts.
+
+    Plain words only — no provider, lane, or delivery vocabulary. When
+    the deals-today count is unavailable the line falls back to the
+    active-deal count, said plainly.
+    """
+    if state.provider_status in ("ERROR", "DISABLED"):
+        working = "🔴 Not working"
+    elif state.provider_status == "READY" and state.delivery_ready:
+        working = "🟢 Working"
+    elif state.provider_status == "READY":
+        working = "🟠 On — not posting here yet"
+    else:
+        working = "🟠 Starting up"
     if state.deals_today is not None:
-        return f"Deals today: {state.deals_today}"
-    return (
-        "Deals today: unavailable — showing active deals instead "
-        f"({state.active_deal_count} active)"
-    )
-
-
-def _status_strip(state: MenuDashboardState) -> str:
-    """Hub status strip: one line per live value, read from the snapshot."""
-    provider_emoji = _PROVIDER_EMOJI.get(state.provider_status, "🟠")
-    extreme = (
-        f"Extreme lane: ON ({state.extreme_recent} in last 15 min)"
-        if state.extreme_enabled
-        else "Extreme lane: OFF"
-    )
-    delivery = (
-        "Delivery: ready"
-        if state.delivery_ready
-        else f"Delivery: not ready — {state.delivery_summary}"
-    )
-    return "\n".join(
-        [
-            f"{provider_emoji} Provider {state.provider_status} — {state.provider_message}",
-            f"Public threshold: {state.threshold_percent}%",
-            extreme,
-            _dm_summary(state),
-            f"Wishlist: {state.wishlist_count}/{state.wishlist_cap}",
-            _deals_today_line(state),
-            f"Active deals: {state.active_deal_count}",
-            delivery,
-        ]
-    )
+        deals = f"{state.deals_today} deals today"
+    else:
+        deals = f"{state.active_deal_count} active deals"
+    alerts = "ON" if state.dm_enabled else "OFF"
+    return f"{working} · {deals} · Your alerts: **{alerts}**"
 
 
 def _category_summary(state: MenuDashboardState, category_key: str) -> str:
     """One live summary line for a category, from the snapshot only.
 
     No numbers are invented: categories with no dedicated reader in the
-    snapshot reuse the shared live values (provider, threshold, deals).
-    HP and Target say "watchers not running", never red.
+    snapshot reuse the shared live values (threshold, deals).
     """
     if category_key == "walmart":
         delivery = "delivery ready" if state.delivery_ready else "delivery not ready"
-        extreme = (
-            f"extreme ON ({state.extreme_recent} in last 15 min)"
-            if state.extreme_enabled
-            else "extreme OFF"
-        )
         return (
-            f"threshold {state.threshold_percent}% · "
-            f"{state.active_deal_count} active deals · {delivery} · {extreme}"
+            f"{state.active_deal_count} active deals · public posts at "
+            f"{state.threshold_percent}% off or better · {delivery}"
         )
     if category_key == "my-deals":
         return f"wishlist {state.wishlist_count}/{state.wishlist_cap} · {_dm_summary(state)}"
     if category_key == "stores":
         return (
-            f"provider {state.provider_status} · threshold {state.threshold_percent}% · "
-            f"{state.active_deal_count} active deals · HP and Target: watchers not running"
+            f"{state.active_deal_count} active deals · public posts at "
+            f"{state.threshold_percent}% off or better"
         )
     if category_key == "movies-verizon":
-        return f"provider {state.provider_status} · threshold {state.threshold_percent}% · {_deals_today_line(state).lower()}"
+        if state.deals_today is not None:
+            return f"{state.deals_today} deals today"
+        return f"{state.active_deal_count} active deals"
     # server
-    return f"{state.delivery_summary} · HP and Target: watchers not running"
+    return state.delivery_summary
 
 
 @dataclass(frozen=True)
@@ -216,16 +172,16 @@ class _Entry:
 
 
 MENU_CATEGORIES: tuple[tuple[str, str, str], ...] = (
-    ("walmart", "🛒 Walmart", "Check, find, hunt, alerts, and server setup."),
+    ("walmart", "🛒 Walmart", "Find, browse, check, alerts, and server setup."),
     ("my-deals", "🔔 My deals", "Your wishlist and personal DM alerts."),
     ("stores", "🏪 eBay & Home Depot", "Research, stock checks, and clearance leads."),
-    ("movies-verizon", "🎬 Movies & Verizon", "Free movie tickets and Verizon Shine rewards."),
+    ("movies-verizon", "🎬 Movies & Verizon", "Free movie tickets and Verizon rewards."),
     ("server", "🛠️ Server setup & health", "Dashboard, storage, diagnostics, Target store."),
 )
 
 MENU_ENTRIES: tuple[_Entry, ...] = (
     # -- My deals -------------------------------------------------------
-    _Entry("wishlist-add", "Add to wishlist", "Get a DM when one exact item becomes a verified deal.",
+    _Entry("wishlist-add", "Add to wishlist", "Get a DM when an item you name becomes a deal.",
            "/wishlist add", "my-deals", "modal", "WishlistCog", "add"),
     _Entry("wishlist-list", "My wishlist", "Show your wishlist and whether deal DMs are on.",
            "/wishlist list", "my-deals", "run", "WishlistCog", "list_items"),
@@ -249,13 +205,13 @@ MENU_ENTRIES: tuple[_Entry, ...] = (
            "/ebay review-sample", "stores", "modal", "EbayResearchCog", "review_sample", cooldown=True),
     _Entry("ebay-status", "eBay status", "Check eBay integration and your opt-in status.",
            "/ebay status", "stores", "run", "EbayResearchCog", "status"),
-    _Entry("home-depot-search", "Home Depot search", "Search Home Depot with quota protection.",
+    _Entry("home-depot-search", "Home Depot search", "Search Home Depot.",
            "/home_depot_search", "stores", "modal", "HomeDepotSearchCog", "home_depot_search", manage_guild=True),
     _Entry("home-depot-penny-hunt", "Home Depot penny hunt", "Hunt penny and clearance candidates.",
            "/home_depot_penny_hunt", "stores", "modal", "HomeDepotSearchCog", "home_depot_penny_hunt", manage_guild=True),
     _Entry("hd-stock", "Home Depot stock", "Check one SKU at a nearby store.",
            "/hd_stock", "stores", "modal", "HomeDepotLocalCog", "hd_stock", manage_guild=True),
-    _Entry("local-check", "Local proof check", "Record a local-inventory proof \u2014 no live stock confirmation.",
+    _Entry("local-check", "Local proof check", "Record a price you saw in a store — no live stock lookup.",
            "/local_check", "stores", "modal", "LocalInventoryCog", "local_check", manage_guild=True),
     _Entry("seed-clearance", "Save a clearance lead", "Save a clearance lead you found to the review bank.",
            "/seed_clearance", "stores", "modal", "ClearanceBankCog", "seed_clearance", manage_guild=True),
@@ -264,16 +220,16 @@ MENU_ENTRIES: tuple[_Entry, ...] = (
     # -- Movies & Verizon -----------------------------------------------
     _Entry("movies-latest", "Latest movie tickets", "Refresh and show current free-ticket codes.",
            "/movies latest", "movies-verizon", "run", "MovieTicketsCog", "latest"),
-    _Entry("movies-status", "Movie alerts status", "Show movie-ticket destination and source health.",
+    _Entry("movies-status", "Movie alerts status", "Show movie alert status.",
            "/movies status", "movies-verizon", "run", "MovieTicketsCog", "status"),
-    _Entry("movies-sources", "Movie sources", "Show which official movie sources are connected.",
+    _Entry("movies-sources", "Movie sources", "Show which movie sources are connected.",
            "/movies sources", "movies-verizon", "run", "MovieTicketsCog", "sources"),
     _Entry("movies-setup", "Movie alerts setup", "Enable free movie-ticket alerts in this channel.",
            "/movies setup", "movies-verizon", "channel", "MovieTicketsCog", "setup",
            manage_guild=True, channel_param="alert_channel"),
     _Entry("movies-scan", "Scan movie sources", "Check every movie source now.",
            "/movies scan", "movies-verizon", "run", "MovieTicketsCog", "scan", manage_guild=True),
-    _Entry("movies-test-alert", "Movie test alert", "Post a clearly labeled demo movie alert.",
+    _Entry("movies-test-alert", "Movie test alert", "Post a clearly labeled test movie alert.",
            "/movies test-alert", "movies-verizon", "run", "MovieTicketsCog", "test_alert", manage_guild=True),
     _Entry("movies-disable", "Disable movie alerts", "Turn off automatic movie-ticket alerts for this server.",
            "/movies disable", "movies-verizon", "run", "MovieTicketsCog", "disable", manage_guild=True),
@@ -303,7 +259,7 @@ MENU_ENTRIES: tuple[_Entry, ...] = (
            manage_guild=True, channel_param="alert_channel"),
     _Entry("verizon-scan", "Verizon scan", "Paste reward text to save or test an alert.",
            "/verizon scan", "movies-verizon", "modal", "VerizonShineCog", "scan", manage_guild=True),
-    _Entry("verizon-test-alert", "Verizon test alert", "Post a safe demo Verizon alert.",
+    _Entry("verizon-test-alert", "Verizon test alert", "Post a safe test Verizon alert.",
            "/verizon test-alert", "movies-verizon", "run", "VerizonShineCog", "test_alert", manage_guild=True),
     _Entry("verizon-ntfy-setup", "Phone alerts setup", "Create a private ntfy topic for phone alerts.",
            "/verizon ntfy-setup", "movies-verizon", "run", "VerizonShineCog", "ntfy_setup", manage_guild=True),
@@ -353,7 +309,9 @@ ENTRIES_BY_CATEGORY: dict[str, tuple[_Entry, ...]] = {
 # Modal fields per entry key: (field key, label, placeholder, required, style, max length).
 _MODAL_FIELDS: dict[str, tuple[_ModalField, ...]] = {
     "wishlist-add": (
-        _ModalField("item", "Item", "iphone 11, dyson airwrap, rtx 5070", True),
+        _ModalField("item", "Item", "iphone 11, dyson airwrap", True),
+        _ModalField("target_price", "Only tell me at or under this price", "150", False),
+        _ModalField("size", "Size", "10, 10.5, 3Y, XL", False),
     ),
     "wishlist-remove": (
         _ModalField("item", "Item", "iphone 11", True),
@@ -416,48 +374,33 @@ _MODAL_FIELDS: dict[str, tuple[_ModalField, ...]] = {
 # Modal keys whose observed_price field must parse as a float.
 _PRICE_FIELDS = frozenset({"local-check", "seed-clearance"})
 
+# Modal keys whose target_price field must parse as a float (dollars).
+# The wishlist handler takes a float; an empty field stays None, which
+# the handler already treats as "no target price".
+_TARGET_PRICE_FIELDS = frozenset({"wishlist-add"})
+
 
 def build_unified_menu_embed(state: MenuDashboardState | None = None) -> discord.Embed:
-    """The hub: every category, with a count and a one-liner each.
+    """The home screen: three short lines and nothing else.
 
-    With a live ``MenuDashboardState`` snapshot the top field is a status
-    strip read fresh at open time (provider health, public threshold,
-    extreme lane, the opener's DM alerts, wishlist n/20, deals today —
-    or active deals, said so, when the deals-today count is unavailable —
-    and the active deal count). Without one (or when the read failed) the
-    strip is the fallback line and the function list still works.
+    A tagline, then one status line read fresh at open time (working?,
+    deals today — or the active-deal count when today's count is
+    unavailable — and the opener's own alerts). Without a usable
+    snapshot the status line is the fallback and the buttons/select
+    still work. Everything else lives behind the buttons and the
+    More… select; the categories no longer repeat themselves as
+    fields here.
     """
 
-    embed = discord.Embed(
-        title="📋 SniperPlug menu",
-        description="Everything SniperPlug can do, in one place. Pick a category, then pick a function — it runs right there.",
+    if state is not None and state.state_available:
+        status = _home_status_line(state)
+    else:
+        status = _STATE_UNAVAILABLE_LINE
+    return discord.Embed(
+        title="SniperPlug",
+        description=f"Find deals. Check links. Get alerts.\n\n{status}",
         color=discord.Color.orange(),
     )
-    if state is not None and state.state_available:
-        embed.add_field(name="📊 Live status", value=_status_strip(state), inline=False)
-    else:
-        embed.add_field(
-            name="📊 Live status",
-            value=_STATE_UNAVAILABLE_LINE,
-            inline=False,
-        )
-    counts = {
-        "walmart": "18 functions",
-        **{key: f"{len(ENTRIES_BY_CATEGORY[key])} functions" for key, _l, _d in MENU_CATEGORIES if key != "walmart"},
-    }
-    for key, label, desc in MENU_CATEGORIES:
-        value = desc
-        if state is not None and state.state_available:
-            value = f"{desc}\n{_category_summary(state, key)}"
-        embed.add_field(name=f"{label} ({counts[key]})", value=value, inline=False)
-    if state is not None and state.state_available and state.active_deals:
-        lines = [
-            f"• {deal.get('title', '')} — {_format_deal_price(deal)}"
-            for deal in state.active_deals
-        ]
-        embed.add_field(name="🔥 Latest active deals", value="\n".join(lines), inline=False)
-    embed.set_footer(text="Admin functions need Manage Server. The old slash commands still work too.")
-    return embed
 
 
 def build_category_embed(
@@ -497,7 +440,9 @@ def _has_manage_guild(interaction: discord.Interaction) -> bool:
 # -- views -------------------------------------------------------------------
 
 class UnifiedMenuView(discord.ui.View):
-    """Hub view: one select for the category, quick buttons for the top 3."""
+    """Hub view: one More… select for the categories, four quick buttons
+    for the jobs members actually come for (find, browse, wishlist,
+    check a link)."""
 
     def __init__(self, cog: "UnifiedMenuCog", state: MenuDashboardState | None = None) -> None:
         super().__init__(timeout=300)
@@ -505,8 +450,9 @@ class UnifiedMenuView(discord.ui.View):
         self.state = state
         self.add_item(UnifiedCategorySelect(cog))
         self.add_item(UnifiedFindButton(cog))
-        self.add_item(UnifiedCheckButton(cog))
+        self.add_item(UnifiedBrowseButton(cog))
         self.add_item(UnifiedWishlistButton(cog))
+        self.add_item(UnifiedCheckButton(cog))
 
     async def on_timeout(self) -> None:
         for item in self.children:
@@ -524,7 +470,7 @@ class UnifiedCategorySelect(discord.ui.Select):
             )
             for key, label, desc in MENU_CATEGORIES
         ]
-        super().__init__(placeholder="Choose a category…", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="More…", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         await self.cog.open_category(interaction, self.values[0])
@@ -548,13 +494,32 @@ class UnifiedFindButton(_QuickButton):
         await interaction.response.send_modal(WalmartFindModal(walmart_cog))
 
 
-class UnifiedCheckButton(_QuickButton):
-    def __init__(self, cog: "UnifiedMenuCog") -> None:
-        super().__init__(cog, label="Check a deal", emoji="🔍", style=discord.ButtonStyle.primary)
+class UnifiedBrowseButton(_QuickButton):
+    def __init__(self, cog: UnifiedMenuCog) -> None:
+        super().__init__(cog, label="Browse", emoji="🎯", style=discord.ButtonStyle.secondary)
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if not _has_manage_guild(interaction):
-            await self.cog._send_error(interaction, "You need **Manage Server** permission to run direct deal checks. Use Find deals for the simple search.")
+        walmart_cog = self.cog.bot.get_cog("WalmartCommandCog")
+        if walmart_cog is None:
+            await self.cog._send_error(interaction, "That Walmart function isn't loaded right now. Try again after the next restart.")
+            return
+        # Same delegation the Walmart menu's Browse button uses: the
+        # hunt handler opens the category screen itself.
+        await walmart_cog._delegate(interaction, "hunt")
+
+
+class UnifiedCheckButton(_QuickButton):
+    def __init__(self, cog: "UnifiedMenuCog") -> None:
+        super().__init__(cog, label="Check a link", emoji="🔍", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        # Same gate as /walmart check and the Walmart menu's Check
+        # button: Deal Finder role OR Manage Server (_can_check_deal).
+        # This button previously demanded Manage Server only and told
+        # Deal Finder holders they lacked a permission they were never
+        # supposed to need.
+        if not _can_check_deal(interaction):
+            await self.cog._send_error(interaction, "You need the 🔍 Deal Finder role or Manage Server to check deals.")
             return
         walmart_cog = self.cog.bot.get_cog("WalmartCommandCog")
         if walmart_cog is None:
@@ -1005,8 +970,26 @@ class UnifiedMenuCog(commands.Cog):
                         f"That price doesn't look like a number: `{price_text}`. Try 49.00.",
                     )
                     return
+        if key in _TARGET_PRICE_FIELDS:
+            target_text = values.get("target_price")
+            if target_text:
+                try:
+                    kwargs["target_price"] = float(
+                        target_text.replace("$", "").replace(",", "")
+                    )
+                except ValueError:
+                    await self._send_error(
+                        interaction,
+                        f"That price doesn't look like a number: `{target_text}`. Try 150.",
+                    )
+                    return
         for field in _MODAL_FIELDS[key]:
             if field.key == "observed_price":
+                continue
+            if field.key == "target_price" and key in _TARGET_PRICE_FIELDS:
+                # Parsed above when filled; an empty field means no
+                # target, which the handler already accepts as None.
+                kwargs.setdefault("target_price", None)
                 continue
             kwargs[field.key] = values.get(field.key)
         await self._delegate(interaction, key, **kwargs)

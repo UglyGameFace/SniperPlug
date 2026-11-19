@@ -29,7 +29,7 @@ def test_menu_has_guided_home_products_categories_rules_and_flip_controls() -> N
     assert "Products & brands" in MENU
     assert "Choose specific products" in MENU
     assert "Category preferences" in MENU
-    assert "Flip Override:" in MENU
+    assert "Price mistakes:" in MENU
     assert "compose_category_preferences(" in MENU
     assert "muted=self.muted_categories" in MENU
 
@@ -51,8 +51,8 @@ def test_dm_deals_exposes_favorite_category_options() -> None:
 
 
 def test_dm_deals_exposes_strict_flip_controls() -> None:
-    assert 'flip_alerts="Allow exceptional price-error/resell alerts' in SOURCE
-    assert 'flip_min_profit="Minimum conservative estimated net profit' in SOURCE
+    assert 'flip_alerts="Allow big price-mistake alerts' in SOURCE
+    assert 'flip_min_profit="Smallest estimated profit' in SOURCE
     assert "flip_alerts: bool | None" in SOURCE
     assert "flip_min_profit: app_commands.Range[float, 10.0, 100000.0] | None" in SOURCE
     assert "update_flip_settings(" in SOURCE

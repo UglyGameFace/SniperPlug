@@ -531,7 +531,7 @@ async def test_cog_add_with_target_then_list_shows_it() -> None:
         _, kwargs = interaction.followup.sent[0]
         embed = kwargs["embed"]
         assert "iphone 11" in (embed.description or "")
-        assert "$150.00" in (embed.description or "")
+        assert "iphone 11 — under $150" in (embed.description or "")
 
 
 @pytest.mark.asyncio

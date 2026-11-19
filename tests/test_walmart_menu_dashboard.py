@@ -230,7 +230,7 @@ def test_view_contains_stepper_both_toggles_and_refresh() -> None:
     selects = [child for child in view.children if isinstance(child, discord.ui.Select)]
     assert len(selects) == 1
     assert {option.value for option in selects[0].options} == set(MENU_STAFF_KEYS)
-    assert {"Check a deal", "Find deals", "Hunt deals", "My alerts"} <= set(labels)
+    assert {"Check a link", "Find deals", "Browse", "My alerts"} <= set(labels)
     assert view.timeout == 300
 
 
@@ -353,14 +353,16 @@ async def test_extreme_toggle_flips_stored_flag_both_ways() -> None:
     assert await extreme_alerts_enabled(db, GUILD) is True
     assert "Extreme: ON" in _buttons(view)
     assert _buttons(view)["Extreme: ON"].style is discord.ButtonStyle.success
-    assert "Extreme leads: **ON**" in _embed_text(_edited_embed(interaction))
+    # The one-line status no longer carries an extreme line; the new
+    # state reaches the user through the rerender notice instead.
+    assert "Extreme leads are now ON." in _embed_text(_edited_embed(interaction))
 
     interaction = _FakeInteraction()
     await _buttons(view)["Extreme: ON"].callback(interaction)
     assert await extreme_alerts_enabled(db, GUILD) is False
     assert "Extreme: OFF" in _buttons(view)
     assert _buttons(view)["Extreme: OFF"].style is discord.ButtonStyle.secondary
-    assert "Extreme leads: **OFF**" in _embed_text(_edited_embed(interaction))
+    assert "Extreme leads are now OFF." in _embed_text(_edited_embed(interaction))
 
 
 @pytest.mark.asyncio
@@ -393,7 +395,7 @@ async def test_dm_toggle_flips_opener_on_and_updates_line() -> None:
     saved = await get_dm_deal_alert_preference(db, USER)
     assert saved.enabled is True
     assert "DM alerts: ON" in _buttons(view)
-    assert "Your DM alerts: **ON**" in _embed_text(_edited_embed(interaction))
+    assert "Your alerts: **ON**" in _embed_text(_edited_embed(interaction))
 
 
 @pytest.mark.asyncio
@@ -487,15 +489,13 @@ def test_dashboard_embed_shows_state_and_is_green_when_ready() -> None:
     embed = build_walmart_menu_embed(state, manage_guild=True, can_check=True)
     text = _embed_text(embed)
     assert embed.color == discord.Color.green()
-    assert "READY" in text
-    assert "40%" in text
-    assert "Extreme leads: **ON**" in text
-    assert "Deals posted today: **3**" in text
-    assert "Active deals: **12**" in text
-    assert "LEGO Star Wars Set" in text
-    assert "$29.99" in text
-    assert "Your DM alerts: **ON**" in text
-    assert "watchers not running" in text
+    # The plan's one-line header replaces the 11-line status strip.
+    assert "🟢 Working · Deals post at **40% off** or better · Your alerts: **ON**" in text
+    assert "Extreme leads" not in text
+    assert "Deals posted today" not in text
+    assert "LEGO Star Wars Set" not in text
+    assert "HP and Target" not in text
+    assert "watchers not running" not in text
     for _section, keys in MENU_MEMBER_SECTIONS + MENU_STAFF_SECTIONS:
         for key in keys:
             assert f"/walmart {key}" in text
@@ -512,7 +512,7 @@ def test_dashboard_embed_error_is_red() -> None:
     )
     embed = build_walmart_menu_embed(state)
     assert embed.color == discord.Color.red()
-    assert "ERROR" in _embed_text(embed)
+    assert "Not working" in _embed_text(embed)
 
 
 def test_dashboard_embed_disabled_provider_is_red() -> None:
@@ -557,7 +557,7 @@ def test_state_unavailable_renders_fallback_line_and_keeps_function_list() -> No
     )
 
 
-def test_deals_today_none_shows_active_deals_instead() -> None:
+def test_deals_today_none_still_renders_one_line_status() -> None:
     state = MenuDashboardState(
         state_available=True,
         provider_status="READY",
@@ -569,8 +569,10 @@ def test_deals_today_none_shows_active_deals_instead() -> None:
         deals_today=None,
     )
     text = _embed_text(build_walmart_menu_embed(state))
-    assert "Active deals: **7**" in text
-    assert "showing active deals instead" in text
+    # The header no longer reports counts at all, so a missing
+    # deals-today count changes nothing the member sees.
+    assert "🟢 Working · Deals post at **40% off** or better" in text
+    assert "Active deals:" not in text
     assert "Deals posted today" not in text
 
 

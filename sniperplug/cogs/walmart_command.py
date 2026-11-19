@@ -15,7 +15,7 @@ those same gates itself before running a function in place, because menu
 interactions bypass command checks.
 
 ``/walmart menu`` is the interactive front door for resellers: an embed
-plus four member buttons (Check a deal, Find deals, Hunt deals, My
+plus four member buttons (Check a link, Find deals, Browse, My
 alerts) and, for staff only, a select with the server-setup functions.
 Five subcommands live only as slash commands now — recovery, history,
 trace, probe, feedback-reset — and appear in no menu surface.
@@ -53,7 +53,7 @@ from sniperplug.services.walmart_extreme_price_fanout import (
 
 log = logging.getLogger("sniperplug")
 
-GROUP_DESCRIPTION = "Walmart deals: check, find, hunt, alerts, and server setup in one place."
+GROUP_DESCRIPTION = "Walmart deals: find, browse, check, alerts, and server setup in one place."
 
 # Inline dashboard controls (menu redesign, 2026-11-17). The threshold
 # stepper writes through the same setter /walmart threshold uses, clamped
@@ -335,7 +335,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
     async def find_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await self._send_error(interaction, f"Deal search hit an error: `{self._type_only_error(error)}`")
 
-    @app_commands.command(name="hunt", description="Pick a Walmart category and let SniperPlug hunt verified deals.")
+    @app_commands.command(name="hunt", description="Pick a category and browse deals — every price is checked first.")
     async def hunt(self, interaction: discord.Interaction) -> None:
         await self._delegate(interaction, "hunt")
 
@@ -348,7 +348,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     # -- discovery -----------------------------------------------------
 
-    @app_commands.command(name="discover", description="Start a broad exact-verified Walmart catalog discovery job.")
+    @app_commands.command(name="discover", description="Start a broad sweep for deals.")
     @app_commands.describe(
         coverage="Quick: 16 routes. Deep: 64. Full: every route in a durable background job. Default: Deep.",
         public_posts="Also publish verified finds to the server deal channel. Off keeps this run private.",
@@ -374,7 +374,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
     async def discover_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         await self._send_error(interaction, f"Discovery hit an error: `{self._type_only_error(error)}`")
 
-    @app_commands.command(name="scan-now", description="Run the Walmart auto-scan now and show why it did or did not post.")
+    @app_commands.command(name="scan-now", description="Run the automatic scan now and show why it did or didn't post.")
     @app_commands.describe(force="Bypass interval/daily gate for this manual test. Public alerts still must be configured.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def scan_now(
@@ -395,7 +395,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     # -- recheck & diagnostics (restored, audit SS3 item 12) -------------
 
-    @app_commands.command(name="recheck", description="Recheck one cached Walmart deal through the official item-detail provider.")
+    @app_commands.command(name="recheck", description="Check one recent deal's price again.")
     @app_commands.describe(search="Part of the cached title, Walmart URL, or exact active-cache key.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def recheck(self, interaction: discord.Interaction, search: str) -> None:
@@ -410,7 +410,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
         )
         await self._send_error(interaction, message)
 
-    @app_commands.command(name="probe", description="Owner diagnostic: check Walmart API promo proof paths.")
+    @app_commands.command(name="probe", description="Staff diagnostic: check the price-proof paths.")
     @app_commands.describe(
         query="Product/category to inspect. Example: detergent, personal care, baby.",
         max_results="Small bounded probe size.",
@@ -440,9 +440,9 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
     async def health(self, interaction: discord.Interaction) -> None:
         await self._delegate(interaction, "health")
 
-    @app_commands.command(name="threshold", description="Set this server's public deal-channel minimum markdown.")
+    @app_commands.command(name="threshold", description="Set this server's smallest public discount.")
     @app_commands.describe(
-        percent="Public channel only. 30-40 normal, 50+ stricter. 0 means no markdown filter.",
+        percent="Public channel only. 30-40 normal, 50+ stricter. 0 means no discount filter.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
     async def threshold(
@@ -452,13 +452,13 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
     ) -> None:
         await self._delegate(interaction, "threshold", percent=percent)
 
-    @app_commands.command(name="categories", description="Choose which verified deal categories this server receives.")
+    @app_commands.command(name="categories", description="Choose which deal categories this server receives.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def categories(self, interaction: discord.Interaction) -> None:
         await self._delegate(interaction, "categories")
 
-    @app_commands.command(name="extreme", description="Turn exact-price Walmart leads on or off for this server.")
-    @app_commands.describe(enabled="Receive separately labeled extreme exact-price leads")
+    @app_commands.command(name="extreme", description="Turn extreme price leads on or off for this server.")
+    @app_commands.describe(enabled="Receive separately labeled extreme price leads")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def extreme(self, interaction: discord.Interaction, enabled: bool) -> None:
         await self._delegate(interaction, "extreme", enabled=enabled)
@@ -491,7 +491,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     # -- evidence -------------------------------------------------------
 
-    @app_commands.command(name="trace", description="Read-only evidence trace for one exact Walmart item.")
+    @app_commands.command(name="trace", description="See the evidence trail for one Walmart item.")
     @app_commands.describe(item_id="Digits only — the number after /ip/ in the link, not the full link.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def trace(self, interaction: discord.Interaction, item_id: str) -> None:
@@ -512,14 +512,14 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     # -- personal alerts -------------------------------------------------
 
-    @app_commands.command(name="my-alerts", description="Set personal exact-verified deal alerts in your DMs.")
+    @app_commands.command(name="my-alerts", description="Set your personal deal alerts in DMs.")
     @app_commands.describe(
         action="Open the menu, inspect, test, pause, or update your personal alerts.",
         mode="Smart adapts quality rules to price; All and Custom use hard filters.",
-        min_discount="Lowest exact Walmart markdown percentage you want.",
-        max_price="Do not DM products above this current price, including flips.",
-        min_score="Minimum Sniper score from 0 to 250.",
-        min_savings="Minimum exact dollar savings from Walmart's was price.",
+        min_discount="Smallest discount you want, in percent.",
+        max_price="Do not DM products above this current price, including price mistakes.",
+        min_score="Minimum deal score from 0 to 250.",
+        min_savings="Minimum dollar savings from the was price.",
         categories="Optional hard allowlist. Leave empty to keep all categories eligible.",
         favorite_categories="Prioritize interests without excluding other great deals: tech, gaming, PC, smart home.",
         unfavorite_categories="Remove categories from your personal favorites.",
@@ -528,11 +528,11 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
         brands="Add brand filters such as Anker, Versace, Dior, YSL, Belkin, or LEGO.",
         remove_brands="Remove brands from your personal DM filter.",
         keywords="Advanced comma list: at least one of these words must match.",
-        exclude="Comma list of words that always block a product, including flips.",
+        exclude="Comma list of words that always block a product, including price mistakes.",
         mute_categories="Hide categories from normal DMs, such as baby, toys, pets, or beauty.",
         unmute_categories="Restore personally muted categories, such as baby or toys.",
-        flip_alerts="Allow exceptional price-error/resell alerts across category mutes.",
-        flip_min_profit="Minimum conservative estimated net profit for a flip alert.",
+        flip_alerts="Allow big price-mistake alerts even in muted categories.",
+        flip_min_profit="Smallest estimated profit for a price-mistake alert.",
         daily_cap="Daily DM limit: 1-100, or type unlimited for no cap.",
     )
     @app_commands.choices(action=ACTION_CHOICES, mode=MODE_CHOICES)
@@ -703,7 +703,7 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
         )
         await self._send_error(interaction, message)
 
-    @app_commands.command(name="history", description="Review cached deal lifecycle changes or Walmart recheck attempts.")
+    @app_commands.command(name="history", description="See what changed on recent deals, or the recheck history.")
     @app_commands.describe(
         view="Choose lifecycle changes or the Walmart recheck audit.",
         retailer="Optional store filter for lifecycle history.",
@@ -748,8 +748,8 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
     @app_commands.command(name="setup", description="Set (or move) this server's deal-alert channel.")
     @app_commands.describe(
-        public_alerts="Allow exact-verified retailer deals in this channel.",
-        threshold="Minimum exact markdown for this server. Recommended: 30-40. Omit to keep the saved threshold.",
+        public_alerts="Allow price-checked retailer deals in this channel.",
+        threshold="Smallest discount for this server. Recommended: 30-40. Omit to keep the saved threshold.",
         best_categories="Apply broad Deal Week and Walmart Cash category coverage.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -814,23 +814,23 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
 
 # key -> (label, short description, exact usage shown when it needs input)
 MENU_FUNCTIONS: dict[str, tuple[str, str, str]] = {
-    "check": ("Check a deal", "Check one link or item ID, even when search misses it.", "/walmart check link:<Walmart link or item ID>"),
-    "find": ("Find deals", "Search Walmart deals by typing what you want.", "/walmart find search:<what you want>"),
-    "hunt": ("Hunt deals", "Pick a category and hunt verified deals.", "/walmart hunt"),
-    "discover": ("Discover", "Run a broad catalog sweep (Quick, Deep, or Full).", "/walmart discover"),
-    "scan-now": ("Scan now", "Run the Walmart auto-scan now and show why it did or did not post.", "/walmart scan-now"),
-    "recheck": ("Recheck a deal", "Recheck one cached Walmart deal through the official provider.", "/walmart recheck search:<title, URL, or cache key>"),
-    "probe": ("API probe", "Owner diagnostic: check Walmart API promo proof paths.", "/walmart probe"),
+    "check": ("Check a link", "Check one link or item ID, even when search misses it.", "/walmart check link:<Walmart link or item ID>"),
+    "find": ("Find deals", "Search deals by typing what you want.", "/walmart find search:<what you want>"),
+    "hunt": ("Browse deals", "Pick a category — every price is checked before it's shown.", "/walmart hunt"),
+    "discover": ("Broad sweep", "Start a broad sweep for deals (Quick, Deep, or Full).", "/walmart discover"),
+    "scan-now": ("Scan now", "Run the automatic scan now and show why it did or didn't post.", "/walmart scan-now"),
+    "recheck": ("Recheck a deal", "Check one recent deal's price again.", "/walmart recheck search:<title, URL, or cache key>"),
+    "probe": ("API probe", "Staff diagnostic: check the price-proof paths.", "/walmart probe"),
     "my-alerts": ("My alerts", "Your personal DM alerts: menu, filters, pause, delete.", "/walmart my-alerts action:Open personalization menu"),
     "setup": ("Setup", "Set (or move) this server's deal-alert channel.", "/walmart setup"),
-    "threshold": ("Threshold", "Set the server's minimum markdown for public deals.", "/walmart threshold percent:35"),
+    "threshold": ("Threshold", "Set the smallest discount for public deals.", "/walmart threshold percent:35"),
     "categories": ("Categories", "Choose which deal categories this server receives.", "/walmart categories"),
-    "extreme": ("Extreme leads", "Turn exact-price leads with no verified price on or off.", "/walmart extreme enabled:true"),
+    "extreme": ("Extreme leads", "Turn extreme price leads on or off.", "/walmart extreme enabled:true"),
     "health": ("Health", "Coverage and delivery check for this server.", "/walmart health"),
     "recovery": ("Recovery", "Review and recover deals that never posted.", "/walmart recovery"),
     "active": ("Active deals", "Page through deals seen recently.", "/walmart active"),
-    "history": ("History", "Lifecycle changes and recheck attempts.", "/walmart history"),
-    "trace": ("Trace an item", "Evidence trace for one exact Walmart item.", "/walmart trace item_id:425031866"),
+    "history": ("History", "What changed on recent deals, and rechecks.", "/walmart history"),
+    "trace": ("Trace an item", "See everything the bot knows about one item.", "/walmart trace item_id:425031866"),
     "feedback": ("Feedback", "What the bot learned from feedback buttons.", "/walmart feedback"),
     "feedback-reset": ("Reset feedback", "Clear feedback learning for this server.", "/walmart feedback-reset scope:all confirm:true"),
 }
@@ -880,67 +880,33 @@ def _provider_status_emoji(status: str) -> str:
     return {"READY": "🟢", "ERROR": "🔴", "DISABLED": "🔴"}.get(status, "🟠")
 
 
-def _format_deal_line(deal: dict) -> str:
-    title = str(deal.get("title") or "Untitled deal").strip() or "Untitled deal"
-    if len(title) > 60:
-        title = title[:57] + "…"
-    bits: list[str] = []
-    price = deal.get("price")
-    if isinstance(price, (int, float)):
-        bits.append(f"${price:,.2f}")
-    discount = deal.get("discount")
-    if isinstance(discount, (int, float)):
-        bits.append(f"{discount:g}% off")
-    suffix = f" — {' · '.join(bits)}" if bits else ""
-    return f"• {title}{suffix}"
-
-
 def _status_field_value(state: MenuDashboardState, notice: str | None) -> str:
-    """The status strip: live state at the top, or the fallback line.
+    """One status line, or the fallback line when the read failed.
 
-    The snapshot's active_deals + deals_today are the last-scan / recent
-    summary — the snapshot carries no scan timestamp, so none is invented.
-    HP and Target watchers are not running, never red here: this menu is
-    Walmart only.
+    Working?, the public discount, and the opener's own alerts — the
+    three things a person opening this menu wants to know. Delivery
+    trouble still gets its own warning line, because "Working" alone
+    would hide it. Everything else (counts, recent deals, other
+    stores) lives one tap deeper, not in this header.
     """
     if not state.state_available:
         lines = ["Live state unavailable — the function list still works."]
     else:
+        if state.provider_status == "READY":
+            working = "Working"
+        elif state.provider_status in ("ERROR", "DISABLED"):
+            working = "Not working"
+        else:
+            working = "Starting up"
         lines = [
-            f"{_provider_status_emoji(state.provider_status)} Walmart provider: **{state.provider_status}** — {state.provider_message}",
             (
-                "✅ Delivery ready."
-                if state.delivery_ready
-                else f"⚠️ {state.delivery_summary}"
-            ),
-            f"Public threshold: **{state.threshold_percent}%**",
-            f"Extreme leads: **{'ON' if state.extreme_enabled else 'OFF'}** · {state.extreme_recent} recent in the last 15 min",
+                f"{_provider_status_emoji(state.provider_status)} {working} · "
+                f"Deals post at **{state.threshold_percent}% off** or better · "
+                f"Your alerts: **{'ON' if state.dm_enabled else 'OFF'}**"
+            )
         ]
-        if state.deals_today is not None:
-            lines.append(
-                f"Deals posted today: **{state.deals_today}** · Active deals: **{state.active_deal_count}**"
-            )
-        else:
-            lines.append(
-                f"Active deals: **{state.active_deal_count}** (deals-today count unavailable — showing active deals instead)"
-            )
-        if state.active_deals:
-            lines.append("Recent deals:")
-            lines.extend(_format_deal_line(deal) for deal in state.active_deals[:3])
-        else:
-            lines.append("Recent deals: none active right now.")
-        dm_detail = ""
-        if state.dm_threshold is not None:
-            cap = (
-                "no daily cap"
-                if state.dm_daily_cap is None
-                else f"cap {state.dm_daily_cap}/day"
-            )
-            dm_detail = f" (min {state.dm_threshold}% · {cap})"
-        lines.append(
-            f"Your DM alerts: **{'ON' if state.dm_enabled else 'OFF'}**{dm_detail}"
-        )
-        lines.append("HP and Target: watchers not running — this menu is Walmart only.")
+        if not state.delivery_ready:
+            lines.append(f"⚠️ {state.delivery_summary}")
     if notice:
         lines.append("")
         lines.append(notice)
@@ -981,8 +947,8 @@ def build_walmart_menu_embed(
 
     snapshot = state if state is not None else MenuDashboardState()
     embed = discord.Embed(
-        title="🛒 Walmart — one menu for everything",
-        description="Pick a function below, or use the quick buttons. Everything Walmart lives under `/walmart`.",
+        title="🛒 Walmart",
+        description="Pick a function below, or use the quick buttons.",
         color=_dashboard_color(state),
     )
     embed.add_field(
@@ -1022,7 +988,7 @@ class WalmartMenuView(discord.ui.View):
         manage_guild: bool = False,
         can_check: bool = False,
     ) -> None:
-        """Member view by default: Find / Hunt deals / My alerts + DM +
+        """Member view by default: Find / Browse / My alerts + DM +
         Refresh. Staff openers (``manage_guild``) also get the staff
         select, the threshold stepper and the extreme toggle; openers
         who can check (Deal Finder role or Manage Server) also get the
@@ -1323,7 +1289,7 @@ class WalmartStaffSelect(discord.ui.Select):
 class WalmartMenuCheckButton(discord.ui.Button):
     def __init__(self, cog: "WalmartCommandCog") -> None:
         self.cog = cog
-        super().__init__(label="Check a deal", emoji="🔍", style=discord.ButtonStyle.primary, row=1)
+        super().__init__(label="Check a link", emoji="🔍", style=discord.ButtonStyle.primary, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
@@ -1345,7 +1311,7 @@ class WalmartMenuFindButton(discord.ui.Button):
 class WalmartMenuHuntButton(discord.ui.Button):
     def __init__(self, cog: "WalmartCommandCog") -> None:
         self.cog = cog
-        super().__init__(label="Hunt deals", emoji="🎯", style=discord.ButtonStyle.success, row=1)
+        super().__init__(label="Browse", emoji="🎯", style=discord.ButtonStyle.success, row=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         view = self.view
@@ -1437,9 +1403,9 @@ class WalmartRefreshButton(discord.ui.Button):
         await view.refresh_dashboard(interaction)
 
 
-class WalmartCheckModal(discord.ui.Modal, title="Check a Walmart deal"):
+class WalmartCheckModal(discord.ui.Modal, title="Check a link"):
     link = discord.ui.TextInput(
-        label="Walmart link or item ID",
+        label="Paste the Walmart link or item number",
         placeholder="https://www.walmart.com/ip/.../425031866",
         required=True,
         min_length=1,
@@ -1454,10 +1420,10 @@ class WalmartCheckModal(discord.ui.Modal, title="Check a Walmart deal"):
         await self.cog._delegate(interaction, "check", link=str(self.link.value).strip())
 
 
-class WalmartFindModal(discord.ui.Modal, title="Find Walmart deals"):
+class WalmartFindModal(discord.ui.Modal, title="Find deals"):
     search = discord.ui.TextInput(
-        label="What are you shopping for?",
-        placeholder="oled tv, lego, detergent, ssd",
+        label="What are you looking for?",
+        placeholder="oled tv, lego, detergent",
         required=True,
         min_length=1,
         max_length=100,

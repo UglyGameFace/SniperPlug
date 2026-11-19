@@ -79,15 +79,15 @@ class DmDealAlertsCog(commands.Cog):
 
     @app_commands.command(
         name="dm_deals",
-        description="Set personal exact-verified deal alerts in your DMs.",
+        description="Set your personal deal alerts in DMs.",
     )
     @app_commands.describe(
         action="Open the menu, inspect, test, pause, or update your personal alerts.",
         mode="Smart adapts quality rules to price; All and Custom use hard filters.",
-        min_discount="Lowest exact Walmart markdown percentage you want.",
-        max_price="Do not DM products above this current price, including flips.",
-        min_score="Minimum Sniper score from 0 to 250.",
-        min_savings="Minimum exact dollar savings from Walmart's was price.",
+        min_discount="Smallest discount you want, in percent.",
+        max_price="Do not DM products above this current price, including price mistakes.",
+        min_score="Minimum deal score from 0 to 250.",
+        min_savings="Minimum dollar savings from the was price.",
         categories="Optional hard allowlist. Leave empty to keep all categories eligible.",
         favorite_categories="Prioritize interests without excluding other great deals: tech, gaming, PC, smart home.",
         unfavorite_categories="Remove categories from your personal favorites.",
@@ -96,11 +96,11 @@ class DmDealAlertsCog(commands.Cog):
         brands="Add brand filters such as Anker, Versace, Dior, YSL, Belkin, or LEGO.",
         remove_brands="Remove brands from your personal DM filter.",
         keywords="Advanced comma list: at least one of these words must match.",
-        exclude="Comma list of words that always block a product, including flips.",
+        exclude="Comma list of words that always block a product, including price mistakes.",
         mute_categories="Hide categories from normal DMs, such as baby, toys, pets, or beauty.",
         unmute_categories="Restore personally muted categories, such as baby or toys.",
-        flip_alerts="Allow exceptional price-error/resell alerts across category mutes.",
-        flip_min_profit="Minimum conservative estimated net profit for a flip alert.",
+        flip_alerts="Allow big price-mistake alerts even in muted categories.",
+        flip_min_profit="Smallest estimated profit for a price-mistake alert.",
         daily_cap="Daily DM limit: 1-100, or type unlimited for no cap.",
     )
     @app_commands.choices(action=ACTION_CHOICES, mode=MODE_CHOICES)
@@ -456,7 +456,7 @@ def build_dm_settings_embed(
     flip_enabled, flip_min_profit_cents = flip_settings(normalized.categories)
     selected_routes = split_dm_route_preferences(normalized.categories)
     route_names = dict(route_labels())
-    route_text = ", ".join(route_names[key] for key in selected_routes) if selected_routes else "all verified types"
+    route_text = ", ".join(route_names[key] for key in selected_routes) if selected_routes else "all types"
 
     muted_text = (
         ", ".join(category_label(category) for category in muted_categories)
@@ -488,19 +488,19 @@ def build_dm_settings_embed(
     summary: list[str] = []
     for line in normalized.summary_lines():
         if line.startswith("Categories:"):
-            summary.append(f"DM deal routes: **{route_text}**")
+            summary.append(f"Kinds of deals: **{route_text}**")
             if selected_routes:
-                summary.append("Routes are active: old product/category inclusion filters are bypassed.")
+                summary.append("Kinds of deals are on, so product/category picks are paused.")
             summary.append(f"Allowed categories: **{selected_text}**")
             summary.append(f"Favorite DM categories: **{favorite_text}**")
             summary.append(f"Specific products: **{interest_text}**")
             summary.append(f"Brand filter: **{brand_text}**")
             summary.append(
-                "Price-error / flip override: "
+                "Price mistakes: "
                 f"**{'enabled' if flip_enabled else 'disabled'}**"
             )
             summary.append(
-                "Minimum estimated flip profit: "
+                "Smallest price-mistake profit: "
                 f"**${flip_min_profit_cents / 100:,.2f}**"
             )
         elif line.startswith("Exclude:"):
@@ -517,10 +517,10 @@ def build_dm_settings_embed(
     embed.add_field(
         name="🎯 Specific product filters",
         value=(
-            "Without a route subscription, specific products narrow broad categories. "
+            "Without kinds of deals picked, specific products narrow broad categories. "
             "Multiple product interests are **OR**; "
             "multiple brands are **OR**. If you set both products and brands, a deal must match "
-            "**one selected product AND one selected brand**. A selected deal route takes priority "
+            "**one selected product AND one selected brand**. Picked kinds of deals take priority "
             "over these product/category filters; other hard limits stay enforced.\n"
             "Run `/walmart my-alerts action:Show specific product catalog` for the supported product profiles."
         ),
@@ -530,7 +530,7 @@ def build_dm_settings_embed(
         name="Open the complete menu",
         value=(
             "Run `/walmart my-alerts action:Open personalization menu` for the paginated, searchable "
-            "deal route selector, products, categories and saved personal controls."
+            "kinds-of-deals picker, products, categories and saved personal controls."
         ),
         inline=False,
     )
@@ -544,24 +544,21 @@ def build_dm_settings_embed(
         inline=False,
     )
     embed.add_field(
-        name="Price-error / flip override",
+        name="Price mistakes",
         value=(
-            "When enabled, a significant cross-category price error may break through a category mute. "
-            "Without recent sold comps, SniperPlug uses a strict conservative resale haircut, fee reserve, "
-            "shipping reserve, minimum ROI, and your profit floor—and labels it **estimated**. When exact "
-            "recent eBay sold evidence is connected, the alert shows sold count, median sold price, and "
-            "estimated net profit. Active eBay listing prices never count as sold proof."
+            "When enabled, a big price mistake may DM you even if its category is muted. "
+            "The profit is always labeled **estimated**: it is worked out from recent sold "
+            "prices when those are connected, with selling costs taken off. Prices from "
+            "active eBay listings never count as sold proof."
         ),
         inline=False,
     )
     embed.add_field(
         name="Built-in safety",
         value=(
-            "Only exact-item, exact-offer, buyable Walmart deals with trusted current and was prices enter this stream. "
-            "Your active inclusion choice (routes or products/categories), floors, maximum price, "
-            "required/excluded words, dedupe, and your saved "
-            "daily-limit policy remain hard. Broad Smart alerts with a finite limit also reserve room for category "
-            "variety; Unlimited removes both the total cap and automatic family quota."
+            "Only buyable deals whose current and was prices were both checked can DM you. "
+            "Your picks (kinds of deals, or products/categories), minimums, maximum price, "
+            "required/excluded words, and your saved daily limit all stay enforced."
         ),
         inline=False,
     )
@@ -625,7 +622,7 @@ def build_product_interest_catalog_embed(
             inline=False,
         )
     embed.set_footer(
-        text="Product filters are hard. Brand filters narrow them further; Flip Override does not bypass them."
+        text="Product filters are hard. Brand filters narrow them further; price mistakes do not bypass them."
     )
     return embed
 

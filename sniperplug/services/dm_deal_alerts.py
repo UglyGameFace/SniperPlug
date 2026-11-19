@@ -102,15 +102,15 @@ class DmDealAlertPreference:
         return (
             f"Enabled: **{'yes' if normalized.enabled else 'no'}**",
             f"Mode: **{normalized.mode}**",
-            f"Minimum markdown: **{normalized.min_discount}%**",
-            f"Minimum Sniper score: **{normalized.min_score}/250**",
+            f"Minimum discount: **{normalized.min_discount}%**",
+            f"Minimum deal score: **{normalized.min_score}/250**",
             f"Minimum dollar savings: **${normalized.min_savings_cents / 100:,.2f}**",
             f"Maximum price: **{price}**",
             f"Categories: **{categories}**",
             f"Must contain: **{keywords}**",
             f"Exclude: **{excluded}**",
             f"Walmart Cash only: **{'yes' if normalized.walmart_cash_only else 'no'}**",
-            f"Daily safety cap: **{daily_cap_label(normalized.max_alerts_per_day)}**",
+            f"Daily limit: **{daily_cap_label(normalized.max_alerts_per_day)}**",
         )
 
 

@@ -28,7 +28,6 @@ from sniperplug.services.deal_threshold_settings import (
 )
 from sniperplug.services.error_logging import fetch_recent_error_events
 from sniperplug.services.public_alert_config import get_public_alert_config
-from sniperplug.services.public_posting import format_retailers
 from sniperplug.services.walmart_catalog_coverage import catalog_route_pool
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
 from sniperplug.services.walmart_global_catalog_autoscan import load_global_catalog_state
@@ -86,9 +85,9 @@ class CanonicalSettingsCog(commands.Cog):
                 entries_for_audience(audience_value),
                 audience_value,
             )
-            embed.title = "SniperPlug Canonical Command Guide"
+            embed.title = "SniperPlug Command Guide"
             embed.description = (
-                "Only current commands are listed. Retired aliases and obsolete per-server autoscan controls are intentionally excluded."
+                "Only current commands are listed. Old names that were removed on purpose are not shown."
             )
         else:
             embed = await build_overview_dashboard(self.bot, int(interaction.guild_id))
@@ -97,7 +96,7 @@ class CanonicalSettingsCog(commands.Cog):
 
     @app_commands.command(
         name="deal_threshold",
-        description="Set this server's public deal-channel minimum markdown.",
+        description="Set this server's smallest public discount.",
     )
     @app_commands.describe(
         percent="Public channel only. Recommended: 30-40 for normal deals; 50+ for stricter alerts.",
@@ -123,15 +122,15 @@ class CanonicalSettingsCog(commands.Cog):
         embed = discord.Embed(
             title="✅ Public Deal Threshold updated",
             description=(
-                f"Public deal channel minimum: **{saved}%+ markdown**.\n\n"
+                f"Smallest public discount: **{saved}% off**.\n\n"
                 "This controls this server's **public SniperPlug deal posts only**. "
                 "It does **not** change anyone's personal `/walmart my-alerts` threshold.\n\n"
-                "The global catalog scanner still checks every configured route; this setting filters public delivery only."
+                "The automatic scan still checks everything — this setting only filters what posts publicly."
             ),
             color=discord.Color.green(),
         )
         embed.add_field(
-            name="Public-feed guidance",
+            name="Which to pick",
             value="Use **30-40%** for normal public coverage. Use **50%+** only for stricter glitch/clearance alerts.",
             inline=False,
         )
@@ -179,46 +178,59 @@ async def build_overview_dashboard(
         and bool(public_config.get("channel_id"))
         and enrolled
     )
+    channel_id = public_config.get("channel_id")
+    if ready:
+        headline = (
+            f"Is SniperPlug posting deals? 🟢 Yes — to <#{channel_id}>, "
+            f"{threshold}% off or better."
+        )
+    else:
+        headline = (
+            "Is SniperPlug posting deals? 🟠 Not yet — "
+            "the fields below show what's missing."
+        )
     embed = discord.Embed(
         title="🎛️ SniperPlug Dashboard",
-        description=(
-            "One canonical owner view for public delivery, global Walmart coverage, exact verification, providers, and cache."
-        ),
+        description=headline,
         color=discord.Color.green() if ready else discord.Color.orange(),
     )
-    channel_id = public_config.get("channel_id")
+    store_names = {"walmart": "Walmart", "hp": "HP", "target": "Target", "bestbuy": "Best Buy"}
+    stores = ", ".join(
+        store_names.get(key, key.replace("_", " ").title())
+        for key in (public_config.get("retailers") or ())
+    ) or "none"
     embed.add_field(
         name="This server",
         value=(
-            f"Public delivery: **{'on' if public_config.get('enabled') else 'off'}**\n"
+            f"Deal posts: **{'on' if public_config.get('enabled') else 'off'}**\n"
             f"Channel: {f'<#{channel_id}>' if channel_id else '**not set**'}\n"
-            f"Retailers: {format_retailers(public_config.get('retailers') or ())}\n"
-            f"Public Deal Threshold: **{threshold}%+**\n"
-            "Personal `/walmart my-alerts` thresholds: **separate per user**"
+            f"Stores: {stores}\n"
+            f"Smallest public discount: **{threshold}%**\n"
+            "Members' own DM settings: **separate**"
         ),
         inline=False,
     )
     embed.add_field(
-        name="Global autoscan",
+        name="Automatic scans",
         value=(
-            f"Live server fanout: **{'enrolled' if enrolled else 'blocked'}**\n"
+            f"**{'Running · this server gets every public deal that passes' if enrolled else 'Not running for this server'}**\n"
             f"{enrollment_reason}\n"
             f"{global_state.summary_line(total_routes=route_count)}"
         ),
         inline=False,
     )
     embed.add_field(
-        name="Exact verification",
+        name="Price checks",
         value=queue_health.summary_line(),
         inline=False,
     )
     embed.add_field(
-        name="Active deal cache",
+        name="Deals we've seen",
         value=format_active_counts(active_counts),
         inline=False,
     )
     embed.add_field(
-        name="Providers",
+        name="Stores",
         value=format_provider_health(provider_health),
         inline=False,
     )
@@ -226,13 +238,13 @@ async def build_overview_dashboard(
         name="Dashboard pages",
         value=(
             "• `view:Overview` — this page\n"
-            "• `view:Doctor` — post-deploy checks and recent errors\n"
+            "• `view:Doctor` — checks after an update, and recent errors\n"
             "• `view:Commands` — the current command guide"
         ),
         inline=False,
     )
     embed.set_footer(
-        text="Public autoscan and personal DM thresholds are separate. Use /walmart health for detailed public-delivery diagnosis."
+        text="Members' own DM settings are separate from this server's. Full detail: /walmart health."
     )
     return embed
 
@@ -251,7 +263,7 @@ async def build_doctor_dashboard(
     checks.append(
         (
             "PASS" if not surface_issues else "FAIL",
-            "Canonical slash-command surface",
+            "Slash-command list",
             "clean" if not surface_issues else " | ".join(surface_issues),
         )
     )
@@ -269,7 +281,7 @@ async def build_doctor_dashboard(
     embed = discord.Embed(
         title=f"🩺 SniperPlug Doctor • {status}",
         description=(
-            "Post-deploy checks for database, providers, cache, global autoscan, command conflicts, and recent errors."
+            "Checks after an update: database, stores, saved deals, automatic scans, command conflicts, and recent errors."
         ),
         color=color,
     )

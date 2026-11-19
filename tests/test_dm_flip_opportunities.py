@@ -295,7 +295,7 @@ def test_settings_show_flip_state_without_internal_tokens() -> None:
     embed = build_dm_settings_embed(preference)
     description = embed.description or ""
 
-    assert "Price-error / flip override: **enabled**" in description
-    assert "Minimum estimated flip profit: **$75.00**" in description
+    assert "Price mistakes: **enabled**" in description
+    assert "Smallest price-mistake profit: **$75.00**" in description
     assert "flip:enabled" not in description
     assert "flip_profit:7500" not in description

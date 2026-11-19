@@ -109,18 +109,20 @@ def test_hub_view_has_category_select_and_quick_buttons() -> None:
     view = UnifiedMenuView(UnifiedMenuCog(bot=None))
     selects = [child for child in view.children if isinstance(child, discord.ui.Select)]
     assert len(selects) == 1
+    assert selects[0].placeholder == "More…"
     assert {option.value for option in selects[0].options} == {key for key, _l, _d in MENU_CATEGORIES}
     buttons = [child for child in view.children if isinstance(child, discord.ui.Button)]
-    assert {button.label for button in buttons} == {"Find deals", "Check a deal", "Add to wishlist"}
+    assert {button.label for button in buttons} == {"Find deals", "Browse", "Add to wishlist", "Check a link"}
 
 
 def test_menu_embeds_list_every_function() -> None:
-    hub = build_unified_menu_embed()
-    hub_text = (hub.title or "") + "\n" + "\n".join(
-        (field.name or "") + "\n" + (field.value or "") for field in hub.fields
-    )
+    # The home screen no longer lists categories as embed fields; the
+    # categories live in the view's More… select options.
+    view = UnifiedMenuView(UnifiedMenuCog(bot=None))
+    select = next(child for child in view.children if isinstance(child, discord.ui.Select))
+    option_labels = {option.label for option in select.options}
     for _key, label, _desc in MENU_CATEGORIES:
-        assert label in hub_text
+        assert label in option_labels
     for key, entries in ENTRIES_BY_CATEGORY.items():
         embed = build_category_embed(key)
         text = (embed.title or "") + "\n" + "\n".join(
@@ -360,7 +362,9 @@ async def test_modal_submit_calls_handler_with_values() -> None:
     modal.children[0]._value = "iphone 11"
     interaction = _FakeInteraction()
     await modal.on_submit(interaction)
-    assert calls == [((), {"item": "iphone 11"})]
+    # The modal now also carries the optional price/size fields; left
+    # blank they reach the handler as None (no target, no size).
+    assert calls == [((), {"item": "iphone 11", "target_price": None, "size": None})]
 
 
 @pytest.mark.asyncio
@@ -443,7 +447,7 @@ async def test_back_button_returns_to_hub() -> None:
     await back.callback(interaction)
     assert len(interaction.response.edited) == 1
     embed = interaction.response.edited[0]["embed"]
-    assert (embed.title or "") == "📋 SniperPlug menu"
+    assert (embed.title or "") == "SniperPlug"
 
 
 @pytest.mark.asyncio
@@ -456,7 +460,7 @@ async def test_menu_command_sends_hub() -> None:
     assert interaction.response.calls == ["defer"]
     assert len(interaction.followup.sent) == 1
     _args, kwargs = interaction.followup.sent[0]
-    assert (kwargs["embed"].title or "") == "📋 SniperPlug menu"
+    assert (kwargs["embed"].title or "") == "SniperPlug"
     assert isinstance(kwargs["view"], UnifiedMenuView)
 
 
@@ -521,35 +525,31 @@ def _embed_text(embed) -> str:
     return "\n".join(parts)
 
 
-def test_hub_embed_status_strip_shows_live_values() -> None:
+def test_hub_embed_status_line_shows_live_values() -> None:
     hub = build_unified_menu_embed(_fake_snapshot())
     text = _embed_text(hub)
     assert hub.color == discord.Color.orange()
-    assert "Ready: Walmart Affiliate API credentials are configured." in text
-    assert "40%" in text
-    assert "Extreme" in text and "ON" in text
-    assert "7/20" in text
-    assert "4" in text  # deals today
-    assert "12" in text  # active deal count
-    assert "Dyson V15 vacuum" in text
+    # The plan's one status line: working, deals today, your alerts.
+    assert "🟢 Working · 4 deals today · Your alerts: **ON**" in text
+    # The old strip's mechanism copy and data fields are gone from home.
+    assert "Provider" not in text
+    assert "Extreme" not in text
+    assert "7/20" not in text
+    assert "Dyson V15 vacuum" not in text
 
 
-def test_hub_embed_deals_today_none_shows_active_deals_instead() -> None:
+def test_hub_embed_deals_today_none_falls_back_to_active_count() -> None:
     hub = build_unified_menu_embed(_fake_snapshot(deals_today=None))
     text = _embed_text(hub)
-    assert "active deals instead" in text
-    assert "12" in text
+    assert "12 active deals" in text
+    assert "showing active deals instead" not in text
 
 
-def test_hub_category_fields_carry_live_summary() -> None:
+def test_hub_embed_has_no_category_fields() -> None:
     hub = build_unified_menu_embed(_fake_snapshot())
-    fields = {f.name: f.value for f in hub.fields}
-    walmart = next(v for k, v in fields.items() if k.startswith("🛒 Walmart"))
-    assert "threshold 40%" in walmart
-    assert "12 active deals" in walmart
-    assert "delivery ready" in walmart
-    my_deals = next(v for k, v in fields.items() if k.startswith("🔔 My deals"))
-    assert "7/20" in my_deals
+    assert hub.fields == []
+    assert (hub.title or "") == "SniperPlug"
+    assert "Find deals. Check links. Get alerts." in (hub.description or "")
 
 
 def test_category_embed_uses_accent_color_and_live_summary() -> None:
@@ -561,7 +561,7 @@ def test_category_embed_uses_accent_color_and_live_summary() -> None:
 
     assert CATEGORY_COLORS["walmart"] == 0x0071DC  # Walmart blue
     walmart_summary = _category_summary(_fake_snapshot(), "walmart")
-    assert "threshold 40%" in walmart_summary
+    assert "40% off or better" in walmart_summary
     assert "12 active deals" in walmart_summary
     assert "delivery ready" in walmart_summary
     embed = build_category_embed("my-deals", _fake_snapshot())
@@ -574,15 +574,21 @@ def test_category_embed_uses_accent_color_and_live_summary() -> None:
     other = build_category_embed("stores", _fake_snapshot())
     assert other.color != discord.Color.orange()
     assert other.color.value == 0x1ABC9C  # stores teal
-    assert "watchers not running" in _embed_text(other)
+    # The HP/Target watcher sentence is deleted from member copy.
+    assert "watchers not running" not in _embed_text(other)
 
 
 def test_state_unavailable_renders_fallback_with_function_list_intact() -> None:
     unavailable = MenuDashboardState(state_available=False)
     hub_text = _embed_text(build_unified_menu_embed(unavailable))
     assert "Live state unavailable — the function list still works." in hub_text
+    # Categories moved to the view's More… select; they survive a
+    # failed state read exactly like the function list does.
+    view = UnifiedMenuView(UnifiedMenuCog(bot=None))
+    select = next(child for child in view.children if isinstance(child, discord.ui.Select))
+    option_labels = {option.label for option in select.options}
     for _key, label, _desc in MENU_CATEGORIES:
-        assert label in hub_text
+        assert label in option_labels
     embed = build_category_embed("my-deals", unavailable)
     text = _embed_text(embed)
     assert "Live state unavailable — the function list still works." in text
@@ -620,7 +626,7 @@ async def test_refresh_button_re_reads_state(monkeypatch) -> None:
     assert len(interaction.response.edited) == 1
     embed = interaction.response.edited[0]["embed"]
     assert "19/20" in _embed_text(embed)
-    assert "DM alerts OFF" in _embed_text(embed)
+    assert "Your alerts: OFF" in _embed_text(embed)
     assert isinstance(interaction.response.edited[0]["view"], UnifiedCategoryView)
 
 

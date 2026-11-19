@@ -149,7 +149,12 @@ def test_route_selection_round_trips_through_discord_menu_save(monkeypatch):
         "price_glitch", "hot_deals",
     )
     assert view.dirty is False
-    assert "Price Glitches" in response.embed.description
+    # Selected kinds are listed in the Kinds of deals field now that the
+    # description leads with the plan's one-line state summary.
+    embed_text = (response.embed.description or "") + "\n" + "\n".join(
+        f"{field.name}\n{field.value}" for field in response.embed.fields
+    )
+    assert "Price Glitches" in embed_text
     assert response.view is view
 
 

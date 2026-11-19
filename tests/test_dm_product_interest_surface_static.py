@@ -27,7 +27,7 @@ def test_personalization_menu_uses_guided_product_select_instead_of_product_text
     assert 'SCREEN_CATEGORIES = "categories"' in MENU
     assert "class _ProductPageSelect(" in MENU
     assert 'placeholder="Select the specific products you want"' in MENU
-    assert 'label="Dashboard"' in MENU
+    assert 'label="Back"' in MENU
     assert 'label="Product catalog"' not in MENU
     assert "class _ProductInterestModal(" not in MENU
     assert "replace_interests=self.product_interests" in MENU

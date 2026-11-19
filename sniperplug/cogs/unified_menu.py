@@ -185,6 +185,8 @@ MENU_ENTRIES: tuple[_Entry, ...] = (
            "/wishlist add", "my-deals", "modal", "WishlistCog", "add"),
     _Entry("wishlist-list", "My wishlist", "Show your wishlist and whether deal DMs are on.",
            "/wishlist list", "my-deals", "run", "WishlistCog", "list_items"),
+    _Entry("my-list", "My list", "Items you sent the bot in DMs — pictures and links, kept in one list.",
+           "DM the bot a picture or links", "my-deals", "run", "DmListIntakeCog", "open_my_list"),
     _Entry("wishlist-remove", "Remove from wishlist", "Stop DM alerts about one item.",
            "/wishlist remove", "my-deals", "modal", "WishlistCog", "remove"),
     _Entry("wishlist-clear", "Clear wishlist", "Remove every item from your wishlist.",

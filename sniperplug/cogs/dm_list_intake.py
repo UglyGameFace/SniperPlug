@@ -35,6 +35,20 @@ Guardrails (all cheap, all in this module):
   finish the job later; the reply says when the budget ran out.
 * Text-only DMs get one short helpful reply, throttled per user so a
   burst of messages earns one reply, not five.
+* Picture reading itself runs in the standalone SniperPlug-Reader
+  app (the OCR engine provably cannot fit this bot's container; see
+  ``sniperplug.services.dm_list_ocr``). When the reader's heartbeat
+  is fresh, a picture is handed to it by URL — never downloaded
+  here — and the intake replies at once with the link results plus
+  a "Reading your picture…" note; a background task settles the
+  picture when the read returns (same search → verify pipeline,
+  same budgets), writes its rows, and edits the reply into the
+  final list. A read that times out, fails, or loses the reader
+  mid-flight settles exactly like the no-engine path: an unreadable
+  row and the plain "isn't switched on yet" copy. When the
+  heartbeat is stale or absent, intake behavior is the pre-reader
+  behavior, unchanged — the heartbeat is the switch; there is no
+  env flag for it on the bot.
 
 The reopen door is ``/menu`` → My deals → **My list**
 (``open_my_list``, delegated by the unified menu — no new slash
@@ -62,6 +76,7 @@ from sniperplug.services.dm_deal_alerts import (
 )
 from sniperplug.services.dm_list_ocr import (
     OcrEngine,
+    RemoteOcrEngine,
     extract_candidate_lines,
     get_ocr_engine,
 )
@@ -111,6 +126,34 @@ HELP_TEXT_WRONG_FILE = (
     "I can only read pictures (png, jpg, webp) and Walmart links. "
     "Send one of those and I'll add the items to your list."
 )
+
+# Reply notes shared by the immediate path and the background task
+# that settles a remote picture read, so both say the same words.
+TOO_BIG_NOTE = (
+    "One picture was too big for me to read (over 10 MB) — "
+    "it isn't on your list."
+)
+OCR_OFF_NOTE = (
+    "Picture reading isn't switched on yet, so I saved that "
+    "picture to your list but couldn't read it. Links work "
+    "today — paste them and I'll check every one."
+)
+VERIFY_BUDGET_NOTE = (
+    f"I checked the first {MAX_VERIFICATIONS_PER_MESSAGE} "
+    "items live — the rest are saved, and **Check prices "
+    "now** will check them."
+)
+LIST_FULL_NOTE = (
+    f"Your list is full ({MAX_DM_LIST_ITEMS_PER_USER} items), "
+    "so some couldn't be added."
+)
+
+
+def reading_picture_note(count: int) -> str:
+    """The interim note while the reader app works on a picture."""
+
+    noun = "pictures" if count > 1 else "picture"
+    return f"📖 Reading your {noun}… I'll update this message with what I find."
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -639,10 +682,17 @@ class DmListIntakeCog(commands.Cog):
         config: DmListIntakeConfig | None = None,
         *,
         ocr_engine: OcrEngine | None = None,
+        remote_ocr_engine: RemoteOcrEngine | None = None,
     ) -> None:
         self.bot = bot
         self.config = config or DmListIntakeConfig.from_env()
         self.ocr_engine = ocr_engine if ocr_engine is not None else get_ocr_engine()
+        self.remote_ocr = (
+            remote_ocr_engine if remote_ocr_engine is not None else RemoteOcrEngine()
+        )
+        # Background tasks settling remote picture reads; kept so the
+        # tasks are not garbage-collected mid-flight.
+        self._pending_tasks: set[asyncio.Task] = set()
         # user id -> monotonic timestamp of the last text-only help reply.
         self._help_replied_at: dict[int, float] = {}
 
@@ -739,8 +789,15 @@ class DmListIntakeCog(commands.Cog):
             return
         notes = _IntakeNotes()
         provider = provider_registry.get("walmart")
+        # The remote reader only matters when a picture might use it:
+        # pictures present and no local engine. Its heartbeat is the
+        # switch — stale or absent, and everything below is exactly
+        # the pre-reader behavior.
+        reader_available = False
+        if images and not self.ocr_engine.available:
+            reader_available = await self.remote_ocr.available(db)
         needs_provider = bool(item_ids) or (
-            bool(images) and self.ocr_engine.available
+            bool(images) and (self.ocr_engine.available or reader_available)
         )
         if needs_provider:
             gate = await self._provider_gate(provider)
@@ -763,7 +820,19 @@ class DmListIntakeCog(commands.Cog):
                     page_price_item_ids=page_price_item_ids,
                 )
             )
+        deferred: list[tuple[object, int]] = []
         for index, attachment in enumerate(images[:MAX_ATTACHMENTS_PER_MESSAGE]):
+            if reader_available:
+                # Remote path: the size gate applies now (the same
+                # rule the local path uses); the read itself settles
+                # in the background, so the reply is not held hostage
+                # to it. The picture is never downloaded here — the
+                # reader fetches it from the attachment URL.
+                if int(getattr(attachment, "size", 0) or 0) > MAX_ATTACHMENT_BYTES:
+                    notes.add("too_big", TOO_BIG_NOTE)
+                    continue
+                deferred.append((attachment, index))
+                continue
             candidates.extend(
                 await self._image_candidates(
                     message,
@@ -783,14 +852,73 @@ class DmListIntakeCog(commands.Cog):
                 f"I only read the first {MAX_ATTACHMENTS_PER_MESSAGE} "
                 "pictures in a message — send the rest in another one.",
             )
-        if budget.ran_out:
-            notes.add(
-                "verify_budget",
-                f"I checked the first {MAX_VERIFICATIONS_PER_MESSAGE} "
-                "items live — the rest are saved, and **Check prices "
-                "now** will check them.",
+        if not deferred:
+            await self._finish_intake(
+                message,
+                author_id=author_id,
+                db=db,
+                candidates=candidates,
+                notes=notes,
+                budget=budget,
+                page_price_item_ids=page_price_item_ids,
             )
+            return
 
+        # Remote reads pending: save and show what is already known
+        # (the links), say the pictures are being read, and let the
+        # background task settle them into the same reply.
+        if budget.ran_out:
+            notes.add("verify_budget", VERIFY_BUDGET_NOTE)
+        first_outcome = await add_dm_list_items(db, author_id, candidates)
+        notes.add("reading_picture", reading_picture_note(len(deferred)))
+        view = DmListView(
+            self.bot,
+            author_id,
+            first_outcome.added,
+            title="Added to your list",
+            notes=notes.lines,
+            page_price_item_ids=frozenset(page_price_item_ids),
+        )
+        sent = None
+        try:
+            sent = await message.reply(
+                embed=view.current_embed(), view=view, mention_author=False
+            )
+        except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+            log.exception("DM list intake could not reply in DM")
+        task = asyncio.create_task(
+            self._settle_remote_pictures(
+                message=message,
+                sent=sent,
+                author_id=author_id,
+                db=db,
+                provider=provider,
+                deferred=deferred,
+                budget=budget,
+                searches=searches,
+                notes=notes,
+                first_outcome=first_outcome,
+                page_price_item_ids=page_price_item_ids,
+            )
+        )
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+
+    async def _finish_intake(
+        self,
+        message: discord.Message,
+        *,
+        author_id: int,
+        db: object,
+        candidates: list[DmListCandidate],
+        notes: _IntakeNotes,
+        budget: _Budget,
+        page_price_item_ids: set[str],
+    ) -> None:
+        """Save the candidates and send the list reply (immediate path)."""
+
+        if budget.ran_out:
+            notes.add("verify_budget", VERIFY_BUDGET_NOTE)
         outcome = await add_dm_list_items(db, author_id, candidates)
         if outcome.duplicates:
             notes.add(
@@ -798,11 +926,7 @@ class DmListIntakeCog(commands.Cog):
                 f"{outcome.duplicates} of those were already on your list.",
             )
         if outcome.cap_reached:
-            notes.add(
-                "list_full",
-                f"Your list is full ({MAX_DM_LIST_ITEMS_PER_USER} items), "
-                "so some couldn't be added.",
-            )
+            notes.add("list_full", LIST_FULL_NOTE)
         if not outcome.added:
             text = " ".join(notes.lines) or (
                 "Those are already on your list — see it under "
@@ -824,6 +948,138 @@ class DmListIntakeCog(commands.Cog):
             )
         except (discord.NotFound, discord.HTTPException, discord.Forbidden):
             log.exception("DM list intake could not reply in DM")
+
+    async def _settle_remote_pictures(
+        self,
+        *,
+        message: discord.Message,
+        sent: object,
+        author_id: int,
+        db: object,
+        provider: object,
+        deferred: list[tuple[object, int]],
+        budget: _Budget,
+        searches: _Budget,
+        notes: _IntakeNotes,
+        first_outcome: object,
+        page_price_item_ids: set[str],
+    ) -> None:
+        """Settle deferred picture reads, then edit the reply to final.
+
+        Each picture's text runs the same candidate pipeline the
+        local engine feeds, under the intake's original budgets —
+        the per-message caps cover links and pictures together, no
+        matter when the picture finishes. A failed, timed-out, or
+        reader-less read settles exactly like the no-engine path:
+        an unreadable row plus the "isn't switched on yet" note.
+        """
+
+        try:
+            await self._settle_remote_pictures_inner(
+                message=message,
+                sent=sent,
+                author_id=author_id,
+                db=db,
+                provider=provider,
+                deferred=deferred,
+                budget=budget,
+                searches=searches,
+                notes=notes,
+                first_outcome=first_outcome,
+                page_price_item_ids=page_price_item_ids,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a background settle must not die loud.
+            log.exception("DM list remote picture settle failed")
+
+    async def _settle_remote_pictures_inner(
+        self,
+        *,
+        message: discord.Message,
+        sent: object,
+        author_id: int,
+        db: object,
+        provider: object,
+        deferred: list[tuple[object, int]],
+        budget: _Budget,
+        searches: _Budget,
+        notes: _IntakeNotes,
+        first_outcome: object,
+        page_price_item_ids: set[str],
+    ) -> None:
+        pic_candidates: list[DmListCandidate] = []
+        read_failed = False
+        for attachment, index in deferred:
+            source_ref = f"{getattr(message, 'id', 0)}:{index}"
+            url = str(getattr(attachment, "url", "") or "")
+            text: str | None = None
+            if url:
+                try:
+                    text = await self.remote_ocr.read_text(
+                        db, user_id=author_id, attachment_url=url
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - one bad read, one unreadable row.
+                    log.exception("DM list remote picture read failed")
+                    text = None
+            if text:
+                pic_candidates.extend(
+                    await self._candidates_from_text(
+                        text,
+                        db=db,
+                        provider=provider,
+                        budget=budget,
+                        searches=searches,
+                        page_price_item_ids=page_price_item_ids,
+                        source_ref=source_ref,
+                    )
+                )
+                continue
+            # The reader was up at intake but the read itself failed,
+            # timed out, or lost the reader mid-flight.
+            read_failed = True
+            pic_candidates.append(
+                DmListCandidate(
+                    name="",
+                    status=STATUS_UNREADABLE,
+                    source="photo",
+                    source_ref=source_ref,
+                )
+            )
+        if read_failed:
+            notes.add("ocr_off", OCR_OFF_NOTE)
+        if budget.ran_out:
+            notes.add("verify_budget", VERIFY_BUDGET_NOTE)
+        outcome = await add_dm_list_items(db, author_id, pic_candidates)
+        duplicates = int(getattr(first_outcome, "duplicates", 0) or 0) + int(
+            outcome.duplicates or 0
+        )
+        if duplicates:
+            notes.add(
+                "duplicates",
+                f"{duplicates} of those were already on your list.",
+            )
+        if getattr(first_outcome, "cap_reached", False) or outcome.cap_reached:
+            notes.add("list_full", LIST_FULL_NOTE)
+        if sent is None:
+            return
+        reading_note = reading_picture_note(len(deferred))
+        final_notes = [line for line in notes.lines if line != reading_note]
+        rows = list(getattr(first_outcome, "added", ()) or ()) + list(outcome.added)
+        view = DmListView(
+            self.bot,
+            author_id,
+            rows,
+            title="Added to your list",
+            notes=final_notes,
+            page_price_item_ids=frozenset(page_price_item_ids),
+        )
+        try:
+            await sent.edit(embed=view.current_embed(), view=view)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - the rows are saved either way.
+            log.exception("DM list: could not update the reply after picture reading")
 
     # -- pieces ---------------------------------------------------------
 
@@ -928,19 +1184,10 @@ class DmListIntakeCog(commands.Cog):
         )
         size = int(getattr(attachment, "size", 0) or 0)
         if size > MAX_ATTACHMENT_BYTES:
-            notes.add(
-                "too_big",
-                "One picture was too big for me to read (over 10 MB) — "
-                "it isn't on your list.",
-            )
+            notes.add("too_big", TOO_BIG_NOTE)
             return []
         if not self.ocr_engine.available:
-            notes.add(
-                "ocr_off",
-                "Picture reading isn't switched on yet, so I saved that "
-                "picture to your list but couldn't read it. Links work "
-                "today — paste them and I'll check every one.",
-            )
+            notes.add("ocr_off", OCR_OFF_NOTE)
             return [unreadable]
         try:
             data = await attachment.read()  # type: ignore[attr-defined]
@@ -948,11 +1195,7 @@ class DmListIntakeCog(commands.Cog):
             log.exception("DM list intake could not download a picture")
             return [unreadable]
         if data is None or len(data) > MAX_ATTACHMENT_BYTES:
-            notes.add(
-                "too_big",
-                "One picture was too big for me to read (over 10 MB) — "
-                "it isn't on your list.",
-            )
+            notes.add("too_big", TOO_BIG_NOTE)
             return []
         try:
             text = await asyncio.to_thread(self.ocr_engine.extract_text, bytes(data))
@@ -961,6 +1204,40 @@ class DmListIntakeCog(commands.Cog):
             text = None
         if not text:
             return [unreadable]
+        return await self._candidates_from_text(
+            text,
+            db=db,
+            provider=provider,
+            budget=budget,
+            searches=searches,
+            page_price_item_ids=page_price_item_ids,
+            source_ref=source_ref,
+        )
+
+    async def _candidates_from_text(
+        self,
+        text: str,
+        *,
+        db: object,
+        provider: object,
+        budget: _Budget,
+        searches: _Budget,
+        page_price_item_ids: set[str],
+        source_ref: str,
+    ) -> list[DmListCandidate]:
+        """Raw OCR text → searched, verified rows (or one unreadable).
+
+        Shared by the local-engine path and the remote reader path:
+        whichever engine produced the text, the lines go through the
+        same search → verify pipeline under the same budgets.
+        """
+
+        unreadable = DmListCandidate(
+            name="",
+            status=STATUS_UNREADABLE,
+            source="photo",
+            source_ref=source_ref,
+        )
         lines = extract_candidate_lines(text)
         if not lines:
             return [unreadable]

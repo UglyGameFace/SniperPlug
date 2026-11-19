@@ -243,6 +243,14 @@ class SniperPlugBot(commands.Bot):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         await super().close()
+        # Release the database connection setup_hook opened. The
+        # aiosqlite worker thread behind it is non-daemon, so leaving
+        # the connection open keeps the whole process alive after
+        # shutdown (the consolidation live-tree test exposed this by
+        # hanging CI at the pytest step until the job timeout).
+        db = getattr(self, "db", None)
+        if db is not None:
+            await db.close()
 
     async def _sync_commands(self) -> None:
         store = getattr(self, "command_surface_hash_store", None)

@@ -162,6 +162,21 @@ def test_live_tree_is_exactly_the_consolidated_surface(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_bot_close_releases_the_database_connection(tmp_path: Path) -> None:
+    """Regression pin for the CI hang this file exposed: loading the
+    real bot opens an aiosqlite connection whose worker thread is
+    non-daemon, so bot.close() must release it — otherwise the test
+    process (and CI's pytest step) can never exit after passing."""
+
+    async def run() -> None:
+        bot = await _load_bot(tmp_path)
+        assert bot.db.conn is not None
+        await bot.close()
+        assert bot.db.conn is None
+
+    asyncio.run(run())
+
+
 def test_retired_names_are_absent_but_registered_for_pruning() -> None:
     for name in (
         "sniperplug",

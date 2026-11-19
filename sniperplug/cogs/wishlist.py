@@ -22,6 +22,9 @@ the reply says plainly that alerts stay off until DMs are allowed.
 An item can carry a target price (``/wishlist add item target_price:150``):
 the DM then fires only at or under that price. Re-adding the same item
 with a new target updates it in place — that is how a target is changed.
+An item can likewise carry a size (``size:10.5``): the DM then fires only
+when the deal's proven variant size is that size, and a deal whose size
+is not proven does not DM at all.
 """
 
 from __future__ import annotations
@@ -61,11 +64,17 @@ def _target_suffix(entry: WishlistEntry) -> str:
     return f" — DM only at or under ${entry.target_price_cents / 100:,.2f}"
 
 
+def _size_suffix(entry: WishlistEntry) -> str:
+    if entry.size_text is None:
+        return ""
+    return f" — size {entry.size_text} only"
+
+
 def _wishlist_lines(items: tuple[WishlistEntry, ...]) -> str:
     if not items:
         return "Your wishlist is empty."
     return "\n".join(
-        f"{index}. {entry}{_target_suffix(entry)}"
+        f"{index}. {entry}{_target_suffix(entry)}{_size_suffix(entry)}"
         for index, entry in enumerate(items, 1)
     )
 
@@ -91,12 +100,14 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
     @app_commands.describe(
         item="Plain product name, for example: iphone 11, dyson airwrap, rtx 5070.",
         target_price="Optional: only DM me at or under this price, for example 150.",
+        size="Optional: only DM me for this size, for example 10, 10.5, 3Y, XL.",
     )
     async def add(
         self,
         interaction: discord.Interaction,
         item: str,
         target_price: float | None = None,
+        size: str | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         user_id = int(interaction.user.id)
@@ -111,13 +122,25 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
                 return
             target_cents = int(round(target_price * 100))
         result = await add_user_wishlist_item(
-            self.bot.db, user_id, item, target_price_cents=target_cents
+            self.bot.db,
+            user_id,
+            item,
+            target_price_cents=target_cents,
+            size_text=size,
         )
         if result.updated:
+            conditions = []
+            if result.target_price_cents is not None:
+                conditions.append(
+                    "the verified price is at or under "
+                    f"${result.target_price_cents / 100:,.2f}"
+                )
+            if result.size_text is not None:
+                conditions.append(f"the proven size is {result.size_text}")
             await interaction.followup.send(
-                f"🔄 Updated **{result.item}** — I'll only DM you when the "
-                f"verified price is at or under "
-                f"${(result.target_price_cents or 0) / 100:,.2f}.",
+                f"🔄 Updated **{result.item}** — I'll only DM you when "
+                + " and ".join(conditions)
+                + ".",
                 ephemeral=True,
             )
             return
@@ -136,6 +159,11 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
                         f" Its target is ${result.target_price_cents / 100:,.2f} — "
                         "re-add with a new `target_price` to change it."
                     )
+                if result.size_text is not None:
+                    message += (
+                        f" Its size is {result.size_text} — "
+                        "re-add with a new `size` to change it."
+                    )
             else:  # cap
                 message = (
                     f"Your wishlist is full ({MAX_WISHLIST_ITEMS_PER_USER} items). "
@@ -150,6 +178,11 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
                 f" Target set: I'll only DM you at or under "
                 f"${result.target_price_cents / 100:,.2f}."
             )
+        size_note = ""
+        if result.size_text is not None:
+            size_note = (
+                f" Size set: I'll only DM you for size {result.size_text}."
+            )
         preference = await get_dm_deal_alert_preference(self.bot.db, user_id)
         dm_note = ""
         if not preference.enabled:
@@ -157,13 +190,13 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
             if not enabled:
                 await interaction.followup.send(
                     f"✅ Added **{result.item}** to your wishlist "
-                    f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).{target_note}\n\n{dm_note}",
+                    f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).{target_note}{size_note}\n\n{dm_note}",
                     ephemeral=True,
                 )
                 return
         await interaction.followup.send(
             f"✅ Added **{result.item}** to your wishlist "
-            f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).{target_note}\n\n"
+            f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).{target_note}{size_note}\n\n"
             "I'll DM you if the bot's broad scan finds it first as a verified deal "
             "(exact price proof, at least 20% off). "
             f"{WISHLIST_SCAN_NOTE} "

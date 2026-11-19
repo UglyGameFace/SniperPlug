@@ -110,6 +110,12 @@ async def test_bulk_fanout_applies_guild_feedback_to_public_card(monkeypatch) ->
         async def _fake_superseded(_db, _events):
             return {}
 
+        async def _fake_live_rechecks(_events):
+            # This test is about feedback learning, not delivery gating:
+            # stub the live pre-send recheck seam the same way the
+            # superseded seam above is stubbed.
+            return {}
+
         async def _fake_enrolled(_db, _bot, _result):
             return []
 
@@ -132,6 +138,7 @@ async def test_bulk_fanout_applies_guild_feedback_to_public_card(monkeypatch) ->
         monkeypatch.setattr(bulk, "_ingest_verified_queue_events_bulk", _fake_ingest)
         monkeypatch.setattr(bulk, "_claim_pending_events_bulk", _fake_claim)
         monkeypatch.setattr(bulk, "_superseded_event_keys", _fake_superseded)
+        monkeypatch.setattr(bulk, "_live_pre_send_recheck_reasons", _fake_live_rechecks)
         monkeypatch.setattr(bulk, "_enrolled_walmart_guilds_not_live", _fake_enrolled)
         monkeypatch.setattr(bulk, "list_live_public_alert_guilds", fake_live)
         monkeypatch.setattr(bulk, "get_starting_deal_percent", lambda _db, _gid: _as_40())

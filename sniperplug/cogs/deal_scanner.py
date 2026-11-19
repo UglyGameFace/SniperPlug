@@ -15,7 +15,10 @@ from sniperplug.services.candidate_pipeline import evaluate_candidate
 from sniperplug.services.deal_threshold_settings import resolve_min_discount
 from sniperplug.services.embed_delivery import send_summary_and_card_batches
 from sniperplug.services.public_deal_posts import maybe_post_public_deal_cards
-from sniperplug.services.public_deal_quality import select_public_deal_candidates
+from sniperplug.services.public_deal_quality import (
+    normalized_condition,
+    select_public_deal_candidates,
+)
 from sniperplug.services.routing import route_label
 from sniperplug.services.safe_links import LinkChoice, product_link_choices
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
@@ -856,6 +859,41 @@ def _card_item_id(card: DealCard) -> str | None:
     )
 
 
+def _fresh_verification_prices(card: DealCard, outcome: Any) -> tuple[float, float] | None:
+    """(fresh current price, trusted reference) proven by an exact re-check.
+
+    The reference is the fresh candidate's trusted reference; when the
+    re-check carries none, the card's search-established reference stands
+    (the reference is the stable side of the proof — the re-check's job
+    is the volatile current price). Returns None when the re-check
+    cannot prove a current price at all: no candidate, not buyable, a
+    page-price-only or price-less result, or no reference anywhere.
+    """
+
+    candidate = getattr(outcome, "candidate", None)
+    if candidate is None:
+        return None
+    if getattr(outcome, "classification", None) == "not_buyable":
+        return None
+    fresh_current = _positive_number(
+        getattr(candidate, "api_current_price", None)
+        or getattr(candidate, "current_price", None)
+    )
+    if fresh_current is None:
+        # Page-price-only or price-less exact results cannot prove a
+        # markdown, so they cannot hold a Find card.
+        return None
+    reference = _trusted_reference(candidate)
+    if reference is None:
+        reference = _positive_number(
+            getattr(card, "api_reference_price", None)
+            or getattr(card, "typical_price", None)
+        )
+    if reference is None:
+        return None
+    return fresh_current, reference
+
+
 def _verified_price_holds(card: DealCard, outcome: Any, threshold: int) -> bool:
     """Decide whether a card survives its exact re-check.
 
@@ -867,30 +905,10 @@ def _verified_price_holds(card: DealCard, outcome: Any, threshold: int) -> bool:
     price is never off by more than the tolerance.
     """
 
-    candidate = getattr(outcome, "candidate", None)
-    if candidate is None:
+    prices = _fresh_verification_prices(card, outcome)
+    if prices is None:
         return False
-    if getattr(outcome, "classification", None) == "not_buyable":
-        return False
-    fresh_current = _positive_number(
-        getattr(candidate, "api_current_price", None)
-        or getattr(candidate, "current_price", None)
-    )
-    if fresh_current is None:
-        # Page-price-only or price-less exact results cannot prove a
-        # markdown, so they cannot hold a Find card.
-        return False
-    reference = _trusted_reference(candidate)
-    if reference is None:
-        # The reference (list/MSRP) is the stable side of the proof and was
-        # already established by the search data; the re-check's job is the
-        # volatile current price.
-        reference = _positive_number(
-            getattr(card, "api_reference_price", None)
-            or getattr(card, "typical_price", None)
-        )
-    if reference is None:
-        return False
+    fresh_current, reference = prices
     discount = _percent_off(fresh_current, reference)
     if discount is not None and discount >= threshold:
         return True
@@ -914,6 +932,64 @@ def _verified_price_holds(card: DealCard, outcome: Any, threshold: int) -> bool:
     return fresh_current - search_current <= tolerance
 
 
+def _rebuild_card_from_verification(card: DealCard, outcome: Any) -> DealCard:
+    """Rebuild a held card from its fresh exact-verification result.
+
+    Until now a held card was shown with its search-time numbers, so the
+    displayed price (and %) could be stale by up to the recheck
+    tolerance. The rebuilt card is assembled from the fresh candidate
+    exactly the way a search card is, with the verification's own numbers
+    pinned on top: the shown price is the price the re-check just proved,
+    and the shown discount is computed from that price against the same
+    reference the verification used.
+
+    When the fresh values are identical to the card's, the card is
+    returned unchanged. When no fresh discount can be computed (the
+    reference itself moved under the fresh price — a hold the tolerance
+    rule still grants) or the fresh candidate cannot be re-assembled,
+    the original card is returned: it was verified to hold, so showing
+    it is the previous behavior, never a wronger one.
+    """
+
+    prices = _fresh_verification_prices(card, outcome)
+    if prices is None:
+        return card
+    fresh_current, reference = prices
+    search_current = _positive_number(
+        getattr(card, "api_current_price", None)
+        or getattr(card, "current_price", None)
+    )
+    card_reference = _positive_number(
+        getattr(card, "api_reference_price", None)
+        or getattr(card, "typical_price", None)
+    )
+    if fresh_current == search_current and reference == card_reference:
+        return card
+    candidate = getattr(outcome, "candidate", None)
+    if not isinstance(candidate, SourceCandidate):
+        return card
+    fresh_discount = _percent_off(fresh_current, reference)
+    if fresh_discount is None:
+        return card
+    try:
+        decision = evaluate_candidate(candidate)
+        deal = decision.deal
+        # The verification's numbers are authoritative for what the user
+        # sees, even where the pipeline would normalize differently.
+        deal.current_price = fresh_current
+        deal.typical_price = reference
+        deal.recalculate_prices()
+        rebuilt = _assemble_deal_card(candidate, decision, fresh_discount)
+    except Exception:  # noqa: BLE001 - a held card must survive a rebuild hiccup.
+        return card
+    rebuilt.api_current_price = fresh_current
+    rebuilt.api_reference_price = reference
+    rebuilt.api_discount_percent = fresh_discount
+    rebuilt.current_price = fresh_current
+    rebuilt.typical_price = reference
+    return rebuilt
+
+
 async def verify_find_cards(
     cards: list[DealCard],
     *,
@@ -932,8 +1008,10 @@ async def verify_find_cards(
     every attempt fails — the search-proven cards are returned unchanged
     (first show_limit) with verification_ran=False, and callers must not
     claim prices were re-checked. When verification ran, only cards
-    whose fresh price still holds are returned, and dropped_count
-    reports how many pool cards the re-check removed.
+    whose fresh price still holds are returned — each rebuilt from the
+    fresh verification result, so the price and discount shown are the
+    ones the re-check just proved, not the search-time numbers — and
+    dropped_count reports how many pool cards the re-check removed.
     """
 
     if not cards:
@@ -969,7 +1047,7 @@ async def verify_find_cards(
         if outcome is not None and getattr(outcome, "candidate", None) is not None:
             any_verified = True
             if _verified_price_holds(card, outcome, threshold):
-                kept.append(card)
+                kept.append(_rebuild_card_from_verification(card, outcome))
                 continue
             dropped += 1
             continue
@@ -1105,89 +1183,100 @@ def build_walmart_cards(result: ProviderScanResult, min_discount: int, alerts_on
             continue
         if alerts_only and not decision.should_alert:
             continue
-
-        choices = product_link_choices(
-            retailer=deal.retailer,
-            product_url=deal.product_url,
-            title=deal.title,
-            product_id=candidate.product_id,
-            sku=deal.sku,
-            asin=deal.asin,
-        )
-        variant_attributes = _deal_card_variant_attributes(candidate, deal)
-        condition_value = _first_present(
-            getattr(candidate, "api_condition", None),
-            getattr(candidate, "condition", None),
-            getattr(deal, "condition", None),
-            variant_attributes.get("apiCondition"),
-            variant_attributes.get("condition"),
-        )
-        current_value = _first_present(
-            getattr(candidate, "api_current_price", None),
-            getattr(deal, "current_price", None),
-            variant_attributes.get("apiCurrentPrice"),
-        )
-        reference_value = _first_present(
-            getattr(candidate, "api_reference_price", None),
-            getattr(deal, "typical_price", None),
-            variant_attributes.get("apiReferencePrice"),
-            variant_attributes.get("trustedReferencePrice"),
-        )
-        direct_url = _first_present(
-            getattr(candidate, "direct_product_url", None),
-            variant_attributes.get("directProductUrl"),
-            getattr(deal, "product_url", None),
-        )
-
-        card = DealCard(
-            embed=build_deal_card_embed(candidate, deal, decision, discount, choices),
-            url=deal.product_url,
-            label=short_button_label(deal.title),
-            score=decision.anomaly.score,
-            discount=discount,
-            link_choices=choices,
-            deal_lane=_first_present(getattr(candidate, "deal_lane", None), variant_attributes.get("dealLane")),
-            api_current_price=current_value,
-            api_reference_price=reference_value,
-            api_discount_percent=_first_present(
-                getattr(candidate, "api_discount_percent", None),
-                variant_attributes.get("apiDiscountPercent"),
-                discount,
-            ),
-            api_condition=condition_value,
-            api_condition_path=_first_present(
-                getattr(candidate, "api_condition_path", None),
-                variant_attributes.get("apiConditionPath"),
-                variant_attributes.get("conditionPath"),
-                "condition" if condition_value else None,
-            ),
-            api_reference_path=_first_present(
-                getattr(candidate, "api_reference_path", None),
-                variant_attributes.get("apiReferencePath"),
-                variant_attributes.get("trustedReferenceSource"),
-            ),
-            api_price_path=_first_present(
-                getattr(candidate, "api_price_path", None),
-                variant_attributes.get("apiPricePath"),
-                variant_attributes.get("currentPriceSource"),
-            ),
-            seller_name=_first_present(getattr(candidate, "seller_name", None), getattr(deal, "seller_name", None)),
-            fulfillment_type=_first_present(getattr(candidate, "fulfillment_type", None), getattr(deal, "fulfillment_type", None)),
-            direct_product_url=direct_url,
-            variant_attributes=variant_attributes,
-        )
-
-        # Compatibility attributes used by older posting/dedupe helpers.
-        card.retailer = deal.retailer
-        card.deal = deal  # Shared route authority for personal DM subscriptions.
-        card.should_alert = decision.should_alert
-        card.current_price = deal.current_price
-        card.typical_price = deal.typical_price
-        card.selected_offer_id = deal.selected_offer_id
-        card.sku = deal.sku
-        card.upc = deal.upc
-        cards.append(card)
+        cards.append(_assemble_deal_card(candidate, decision, discount))
     return cards
+
+
+def _assemble_deal_card(candidate: SourceCandidate, decision, discount: float) -> DealCard:
+    """Build the display card for one evaluated candidate.
+
+    Shared by build_walmart_cards (search-time cards) and the display-time
+    verification rebuild, so a card rebuilt from a fresh exact check is
+    assembled exactly the way a search card is.
+    """
+
+    deal = decision.deal
+    choices = product_link_choices(
+        retailer=deal.retailer,
+        product_url=deal.product_url,
+        title=deal.title,
+        product_id=candidate.product_id,
+        sku=deal.sku,
+        asin=deal.asin,
+    )
+    variant_attributes = _deal_card_variant_attributes(candidate, deal)
+    condition_value = _first_present(
+        getattr(candidate, "api_condition", None),
+        getattr(candidate, "condition", None),
+        getattr(deal, "condition", None),
+        variant_attributes.get("apiCondition"),
+        variant_attributes.get("condition"),
+    )
+    current_value = _first_present(
+        getattr(candidate, "api_current_price", None),
+        getattr(deal, "current_price", None),
+        variant_attributes.get("apiCurrentPrice"),
+    )
+    reference_value = _first_present(
+        getattr(candidate, "api_reference_price", None),
+        getattr(deal, "typical_price", None),
+        variant_attributes.get("apiReferencePrice"),
+        variant_attributes.get("trustedReferencePrice"),
+    )
+    direct_url = _first_present(
+        getattr(candidate, "direct_product_url", None),
+        variant_attributes.get("directProductUrl"),
+        getattr(deal, "product_url", None),
+    )
+
+    card = DealCard(
+        embed=build_deal_card_embed(candidate, deal, decision, discount, choices),
+        url=deal.product_url,
+        label=short_button_label(deal.title),
+        score=decision.anomaly.score,
+        discount=discount,
+        link_choices=choices,
+        deal_lane=_first_present(getattr(candidate, "deal_lane", None), variant_attributes.get("dealLane")),
+        api_current_price=current_value,
+        api_reference_price=reference_value,
+        api_discount_percent=_first_present(
+            getattr(candidate, "api_discount_percent", None),
+            variant_attributes.get("apiDiscountPercent"),
+            discount,
+        ),
+        api_condition=condition_value,
+        api_condition_path=_first_present(
+            getattr(candidate, "api_condition_path", None),
+            variant_attributes.get("apiConditionPath"),
+            variant_attributes.get("conditionPath"),
+            "condition" if condition_value else None,
+        ),
+        api_reference_path=_first_present(
+            getattr(candidate, "api_reference_path", None),
+            variant_attributes.get("apiReferencePath"),
+            variant_attributes.get("trustedReferenceSource"),
+        ),
+        api_price_path=_first_present(
+            getattr(candidate, "api_price_path", None),
+            variant_attributes.get("apiPricePath"),
+            variant_attributes.get("currentPriceSource"),
+        ),
+        seller_name=_first_present(getattr(candidate, "seller_name", None), getattr(deal, "seller_name", None)),
+        fulfillment_type=_first_present(getattr(candidate, "fulfillment_type", None), getattr(deal, "fulfillment_type", None)),
+        direct_product_url=direct_url,
+        variant_attributes=variant_attributes,
+    )
+
+    # Compatibility attributes used by older posting/dedupe helpers.
+    card.retailer = deal.retailer
+    card.deal = deal  # Shared route authority for personal DM subscriptions.
+    card.should_alert = decision.should_alert
+    card.current_price = deal.current_price
+    card.typical_price = deal.typical_price
+    card.selected_offer_id = deal.selected_offer_id
+    card.sku = deal.sku
+    card.upc = deal.upc
+    return card
 
 
 def _deal_card_variant_attributes(candidate: SourceCandidate, deal: NormalizedDeal) -> dict[str, object]:
@@ -1214,6 +1303,15 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
     if deal.image_url:
         embed.set_thumbnail(url=deal.image_url)
     embed.add_field(name="💰 Price", value=price_block(deal.current_price, deal.typical_price), inline=False)
+    condition_text = " ".join(str(deal.condition or "").split())
+    if condition_text and normalized_condition(condition_text) not in {"", "new"}:
+        # Non-new offers must say so on the card itself, not only in small
+        # print: a used/open-box/refurbished price is not a new-item price.
+        embed.add_field(
+            name="🏷️ Condition",
+            value=f"**{condition_text}** — this offer is not brand new. Check the listing's condition notes before buying.",
+            inline=False,
+        )
     link_block = product_link_block(link_choices, fallback_url=deal.product_url)
     if link_block:
         embed.add_field(name="🔗 Product links", value=link_block, inline=False)

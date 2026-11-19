@@ -29,7 +29,10 @@ from sniperplug.services.dm_product_interests import (
     match_product_preferences,
     split_product_preferences,
 )
-from sniperplug.services.user_wishlist import match_wishlist_entry
+from sniperplug.services.user_wishlist import (
+    match_wishlist_entry,
+    normalize_wishlist_size,
+)
 
 
 def match_dm_deal(
@@ -53,7 +56,10 @@ def match_dm_deal(
     savings floors, max price, keywords, dedupe and daily limits all still
     apply. A wishlist item may also carry the user's own target price for
     that exact item; that target is itself a hard guard — above it, the
-    deal is not DM'd at all, however it would otherwise have matched.
+    deal is not DM'd at all, however it would otherwise have matched. A
+    wishlist item may likewise carry the user's size for that item; that
+    size is a hard guard of the same kind — the DM fires only when the
+    deal's proven variant size matches, and an unproven size never DMs.
 
     Product interests are OR within their group, brands are OR within their group,
     and when both groups are configured a Walmart deal must satisfy both groups.
@@ -88,6 +94,9 @@ def match_dm_deal(
     wishlist_match = str(wishlist_entry) if wishlist_entry is not None else ""
     wishlist_target_cents = (
         wishlist_entry.target_price_cents if wishlist_entry is not None else None
+    )
+    wishlist_size = (
+        wishlist_entry.size_text if wishlist_entry is not None else None
     )
     has_wishlist_match = bool(wishlist_match)
     has_specific_walmart_intent = bool(
@@ -160,6 +169,23 @@ def match_dm_deal(
             ),
             category_key,
         )
+    if wishlist_size is not None:
+        # The user sized this exact item themselves ("only tell me about
+        # size 10"), so the size is a hard guard with the same fail-closed
+        # philosophy as the target above: the deal's size must be the
+        # proven variant size — structured variant proof, never embed
+        # text — and an unproven size does not DM at all.
+        deal_size = _proven_card_size(card)
+        if deal_size != wishlist_size:
+            return DmDealMatchDecision(
+                False,
+                (
+                    f"wishlist: {wishlist_match} — you asked for size "
+                    f"{wishlist_size}, but this deal's proven size is "
+                    f"{deal_size or 'unknown'}"
+                ),
+                category_key,
+            )
     if pref.walmart_cash_only and cash_cents <= 0:
         return DmDealMatchDecision(
             False,
@@ -354,6 +380,8 @@ def match_dm_deal(
             )
         else:
             reason += f" • wishlist: {wishlist_match}"
+        if wishlist_size is not None:
+            reason += f" • size {wishlist_size}"
 
     if is_walmart:
         personalize_dm_card_title(card)
@@ -367,6 +395,27 @@ def match_dm_deal(
         cash_cents,
         priority_override=flip.qualified,
     )
+
+
+def _proven_card_size(card: Any) -> str | None:
+    """The deal's proven variant size, normalized — never embed text.
+
+    Reads only the structured variant proof the provider stored on the
+    card (``variant_attributes["size"]`` on the card or its deal). A
+    size that appears only in a title or an embed field is not proof,
+    so it returns None here and the size guard fails closed.
+    """
+
+    deal = getattr(card, "deal", None)
+    for source in (
+        getattr(card, "variant_attributes", None),
+        getattr(deal, "variant_attributes", None),
+    ):
+        if isinstance(source, dict):
+            size = normalize_wishlist_size(source.get("size"))
+            if size is not None:
+                return size
+    return None
 
 
 def _is_extreme_price_lead(card: Any) -> bool:

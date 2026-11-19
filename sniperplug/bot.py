@@ -22,6 +22,7 @@ from sniperplug.cogs.canonical_workflow import CanonicalWorkflowCog
 from sniperplug.cogs.global_auto_scan_runner import AutoScanRunnerCog as GlobalAutoScanRunnerCog
 from sniperplug.cogs.clearance_bank import ClearanceBankCog
 from sniperplug.cogs.deal_drops_intake import DealDropsIntakeCog
+from sniperplug.cogs.dm_list_intake import DmListIntakeCog
 from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.dm_deal_alerts import DmDealAlertsCog
 from sniperplug.cogs.ebay_research import EbayResearchCog
@@ -197,6 +198,13 @@ class SniperPlugBot(commands.Bot):
         # the configured drops channel, while MovieTicketFeedbackCog only
         # acts on the bot's own movie-alert embeds, so they never overlap.
         await self.add_cog(DealDropsIntakeCog(self))
+        # DM list intake: a third on_message listener that only acts in
+        # 1:1 DMs (pictures / link piles -> the sender's saved list).
+        # DM delivery needs no channel ID and no message-content intent,
+        # and its guild check means it never overlaps the drops watcher.
+        # It also owns the /menu "My list" page handler (a plain method
+        # the unified menu delegates to — no slash command of its own).
+        await self.add_cog(DmListIntakeCog(self))
         await self.add_cog(MovieCommandGuideCog(self))
         await self.add_cog(GlobalAutoScanRunnerCog(self))
         # The /staff group delegates to the cogs above at call time.

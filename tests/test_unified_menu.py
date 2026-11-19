@@ -60,7 +60,7 @@ def test_menu_command_registers() -> None:
 
 def test_menu_entries_are_well_formed() -> None:
     keys = [entry.key for entry in MENU_ENTRIES]
-    assert len(keys) == len(set(keys)) == 45
+    assert len(keys) == len(set(keys)) == 46
     assert set(MENU_DELEGATES) == set(keys)
     for entry in MENU_ENTRIES:
         assert entry.mode in {"run", "modal", "choice", "channel", "special"}
@@ -172,6 +172,7 @@ def test_every_menu_delegate_target_is_a_loaded_cog_with_its_method() -> None:
         "CanonicalSettingsCog": "sniperplug.cogs.canonical_settings",
         "StorageAdminCog": "sniperplug.cogs.storage_admin",
         "SniperPlugCog": "sniperplug.cogs.sniperplug",
+        "DmListIntakeCog": "sniperplug.cogs.dm_list_intake",
     }
     for key, (cog_name, method_name) in MENU_DELEGATES.items():
         assert cog_name in loaded, (

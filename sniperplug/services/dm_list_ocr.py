@@ -1,0 +1,242 @@
+"""Picture reading for DM list intake: one small engine interface.
+
+Felix's free-version rule (2026-11-19): read screenshots locally, no
+paid image-recognition service. The bot's Discloud container is capped
+at 256 MB and already idles at ~132-174 MB, so the engine choice was
+measured before it was designed (2026-11-19, gate notes in the build
+report ``sniperplug-dm-lists-build-20261119.md``):
+
+* The live container has **no tesseract binary and no Pillow**
+  (``which tesseract`` empty; ``import PIL`` raises), so the
+  Pillow + pytesseract route cannot run there today.
+* ``rapidocr-onnxruntime`` was evaluated locally on a synthetic
+  Walmart-cart screenshot: engine load alone peaked at ~128 MB in a
+  fresh process, and a tuned run (single-threaded, detection side
+  capped, image sliced into strips) peaked at ~325 MB for the OCR
+  process alone — over the whole container cap before the bot's own
+  ~160 MB is counted. It is deliberately NOT wired in: installing it
+  would OOM the production bot.
+
+So the interface below is the feature, and the engines are honest
+about availability:
+
+* :class:`TesseractOcrEngine` — used only when a ``tesseract`` binary
+  AND Pillow + pytesseract are actually present (none are, in the
+  production container today). If a future host provides them, picture
+  reading turns on with no other code change.
+* :class:`UnavailableOcrEngine` — what production runs today. Picture
+  rows are saved as "couldn't read this one" and the intake reply says
+  plainly that picture reading isn't on yet; links work in full.
+
+:func:`extract_candidate_lines` is pure text work — it turns raw OCR
+output into plausible product-name search lines, dropping the prices,
+quantities, totals and buttons that fill a cart screenshot — and is
+fully unit-tested against canned OCR strings, so the day an engine
+lands, only the engine is new.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import shutil
+
+log = logging.getLogger("sniperplug")
+
+# At most this many product-name lines are taken from one picture; each
+# line costs a search, and a cart screenshot rarely names more items.
+MAX_CANDIDATE_LINES_PER_IMAGE = 8
+
+# Lines that are pure screenshot furniture (buttons, totals, fulfilment
+# notes), matched against the whole normalized line. A product name that
+# merely contains one of these words ("Total War: Warhammer") is not
+# furniture — only an exact whole-line match is dropped here; the other
+# filters below handle the rest.
+_NOISE_LINES = frozenset(
+    {
+        "cart",
+        "your cart",
+        "wishlist",
+        "my wishlist",
+        "subtotal",
+        "total",
+        "estimated total",
+        "taxes",
+        "checkout",
+        "check out",
+        "add to cart",
+        "added to cart",
+        "save for later",
+        "saved for later",
+        "remove",
+        "see details",
+        "details",
+        "sponsored",
+        "best seller",
+        "pickup",
+        "delivery",
+        "free pickup",
+        "free delivery",
+        "pickup tomorrow",
+        "pickup today",
+        "delivery tomorrow",
+        "in stock",
+        "out of stock",
+        "only a few left",
+        "rollback",
+        "clearance",
+        "add to list",
+        "add to registry",
+        "buy now",
+        "qty",
+        "quantity",
+    }
+)
+
+_PRICE_ONLY_RE = re.compile(r"^\$?\s*\d[\d,]*(\.\d{1,2})?(\s*(\$|usd|each|ea\.?))?$")
+_QTY_RE = re.compile(r"^(qty|quantity)\s*:?\s*\d+$", re.IGNORECASE)
+_COUNT_LINE_RE = re.compile(r"^(cart|wishlist)\s*\(\d+\s*items?\)$", re.IGNORECASE)
+_TRAILING_PRICE_RE = re.compile(r"\s+\$?\d[\d,]*\.\d{2}\s*$")
+_LEADING_BULLET_RE = re.compile(r"^\s*(?:[-*•·]|\d{1,2}[.)])\s+")
+_RATING_RE = re.compile(r"^\d(\.\d)?\s*(stars?|★)", re.IGNORECASE)
+
+
+class OcrEngine:
+    """The engine interface: image bytes in, raw text (or None) out.
+
+    ``None`` means "no engine could read this" — either no engine is
+    installed, or it failed on this image. Callers treat both the same:
+    the picture becomes a "couldn't read this one" list row.
+    """
+
+    available: bool = False
+
+    def extract_text(self, image_bytes: bytes) -> str | None:
+        raise NotImplementedError
+
+
+class UnavailableOcrEngine(OcrEngine):
+    """No picture reading on this host. Honest, instant, dependency-free."""
+
+    available = False
+
+    def extract_text(self, image_bytes: bytes) -> str | None:
+        return None
+
+
+class TesseractOcrEngine(OcrEngine):
+    """Pillow + pytesseract, active only where the binary really exists.
+
+    Everything is imported lazily and re-checked per call: this module
+    must import cleanly (and the bot must boot) on hosts with none of
+    the pieces installed, which includes the production container.
+    """
+
+    def __init__(self) -> None:
+        self._checked = False
+        self._ok = False
+
+    @property
+    def available(self) -> bool:  # type: ignore[override]
+        if not self._checked:
+            self._checked = True
+            self._ok = self._probe()
+        return self._ok
+
+    @staticmethod
+    def _probe() -> bool:
+        if shutil.which("tesseract") is None:
+            return False
+        try:
+            import PIL.Image  # noqa: F401
+            import pytesseract  # noqa: F401
+        except Exception:  # noqa: BLE001 - absence is a normal state here.
+            return False
+        return True
+
+    def extract_text(self, image_bytes: bytes) -> str | None:
+        if not self.available:
+            return None
+        try:
+            import io
+
+            import pytesseract
+            from PIL import Image
+
+            image = Image.open(io.BytesIO(image_bytes)).convert("L")
+            # Phone screenshots are tall and wide; cap the width so the
+            # OCR pass stays bounded, keeping the aspect ratio.
+            if image.width > 1200:
+                image = image.resize(
+                    (1200, int(image.height * 1200 / image.width))
+                )
+            return str(pytesseract.image_to_string(image) or "")
+        except Exception:  # noqa: BLE001 - a bad image must not crash intake.
+            log.exception("DM list OCR (tesseract) failed on one picture")
+            return None
+
+
+def get_ocr_engine() -> OcrEngine:
+    """The best engine this host can actually run, checked honestly."""
+
+    engine = TesseractOcrEngine()
+    if engine.available:
+        return engine
+    return UnavailableOcrEngine()
+
+
+def _line_is_noise(line: str) -> bool:
+    lowered = " ".join(line.lower().split())
+    if lowered in _NOISE_LINES:
+        return True
+    if _COUNT_LINE_RE.match(lowered):
+        return True
+    if _QTY_RE.match(lowered):
+        return True
+    if _PRICE_ONLY_RE.match(lowered):
+        return True
+    if _RATING_RE.match(lowered):
+        return True
+    # A product name has letters; a line of digits/punctuation is a
+    # price, a count, or a divider.
+    if not any(ch.isalpha() for ch in line):
+        return True
+    return False
+
+
+def extract_candidate_lines(
+    text: str, *, limit: int = MAX_CANDIDATE_LINES_PER_IMAGE
+) -> list[str]:
+    """Plausible product-name lines from raw OCR text, in page order.
+
+    Cart and wishlist screenshots interleave each product's name with
+    its price, quantity and fulfilment notes. This keeps lines that
+    read like product names and drops the furniture: price-only lines,
+    ``Qty 1``, totals, buttons, ratings, and one-word fragments (OCR
+    splits long names across lines; a one-word tail — "Unlocked",
+    "White" — is too little to search with and is dropped). Longer
+    wrap fragments are searched too, since plain text cannot prove
+    they are continuations; storage dedupe by pinned item ID keeps
+    one row per product when a fragment finds the same item. A
+    trailing price on a name line is stripped. Duplicates (the same
+    name read twice) collapse, order preserved.
+    """
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw_line in str(text or "").splitlines():
+        line = _LEADING_BULLET_RE.sub("", raw_line.strip())
+        line = _TRAILING_PRICE_RE.sub("", line).strip(" -–—")
+        line = " ".join(line.split())
+        if len(line) < 10 or len(line.split()) < 2:
+            continue
+        if _line_is_noise(line):
+            continue
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(line)
+        if len(lines) >= max(1, int(limit)):
+            break
+    return lines

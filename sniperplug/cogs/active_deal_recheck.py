@@ -39,7 +39,7 @@ class ActiveDealRecheckCog(commands.Cog):
 
         row, match_count = await find_cached_walmart_observation(self.bot.db, interaction.guild_id, clean_search)
         if row is None:
-            await interaction.followup.send("No cached Walmart observation matched that search. Open `/walmart active retailer:walmart` and copy more of the title or URL.", ephemeral=True)
+            await interaction.followup.send("No cached Walmart observation matched that search. Open `/staff active retailer:walmart` and copy more of the title or URL.", ephemeral=True)
             return
         if match_count > 1:
             await interaction.followup.send(

@@ -147,13 +147,13 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
                 if not config.get("enabled") or not config.get("channel_id"):
                     await self._safe_autoscan_followup(
                         interaction,
-                        "Public alerts are missing. Run `/walmart health` for the exact blocker.",
+                        "Public alerts are missing. Run `/staff health` for the exact blocker.",
                     )
                     return
                 if legacy.AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):
                     await self._safe_autoscan_followup(
                         interaction,
-                        "Walmart is not enabled for public alerts in this server. Run `/walmart health`.",
+                        "Walmart is not enabled for public alerts in this server. Run `/staff health`.",
                     )
                     return
 
@@ -254,7 +254,7 @@ class AutoScanRunnerCog(NativeAutoScanRunnerCog):
             )
         if not guilds:
             legacy.log.warning(
-                "Autoscan found no eligible live guilds after reconciliation; run /walmart health "
+                "Autoscan found no eligible live guilds after reconciliation; run /staff health "
                 "inside the intended deals channel only if startup reports needs_action"
             )
             return

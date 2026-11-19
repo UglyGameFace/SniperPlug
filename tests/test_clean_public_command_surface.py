@@ -37,7 +37,7 @@ def test_only_one_public_channel_setup_command_is_loaded():
 
 def test_old_channel_and_status_aliases_are_retired():
     names = catalog_names()
-    assert "/walmart setup" in names
+    assert "/staff channel" in names
     for retired in (
         "/setup_sniperplug",
         "/setup_sniperplug_here",
@@ -77,9 +77,9 @@ def test_home_depot_surface_keeps_targeted_commands_only():
 
 def test_help_text_points_to_dashboard_and_one_setup_flow():
     names = catalog_names()
-    assert "/walmart setup" in names
-    assert "/sniperplug_dashboard" in names
-    assert "/walmart health" in names
+    assert "/staff channel" in names
+    assert "/staff dashboard" in names
+    assert "/staff health" in names
     assert "/public_alerts_status" not in names
     assert "/sniperplug_workflow" not in names
 

@@ -210,13 +210,13 @@ class AutoScanRunnerCog(commands.Cog):
                 if not config.get("enabled") or not config.get("channel_id"):
                     await self._safe_autoscan_followup(
                         interaction,
-                        "Public alerts are still missing after self-heal. Run `/walmart health` for the exact channel/permission blocker.",
+                        "Public alerts are still missing after self-heal. Run `/staff health` for the exact channel/permission blocker.",
                     )
                     return
                 if AUTO_SCAN_RETAILER not in set(config.get("retailers") or ()):
                     await self._safe_autoscan_followup(
                         interaction,
-                        "Walmart was still missing from public retailers after self-heal. Run `/walmart health` so the repair status is visible.",
+                        "Walmart was still missing from public retailers after self-heal. Run `/staff health` so the repair status is visible.",
                     )
                     return
 
@@ -861,7 +861,7 @@ async def list_public_alert_guilds(db, *, bot: Any | None = None) -> list[AutoSc
 
         if live_guild_ids is not None and guild_id not in live_guild_ids:
             log.warning(
-                "Auto-scan deleted stale/ghost public-alert guild row guild=%s live_guilds=%s. Run /walmart setup in the live server if this server still needs alerts.",
+                "Auto-scan deleted stale/ghost public-alert guild row guild=%s live_guilds=%s. Run /staff channel in the live server if this server still needs alerts.",
                 guild_id,
                 sorted(live_guild_ids),
             )

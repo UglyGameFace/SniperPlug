@@ -153,31 +153,18 @@ def _base_commands() -> list[_FakeCommand]:
                             "check",
                             "find",
                             "hunt",
-                            "discover",
-                            "health",
-                            "threshold",
-                            "categories",
-                            "extreme",
-                            "recovery",
-                            "trace",
                             "my-alerts",
-                            "feedback",
-                            "feedback-reset",
-                            "active",
-                            "history",
-                            "setup",
-                            "menu",
                         )
                     ],
                 )
             )
-        elif name == "sniperplug":
+        elif name == "staff":
             commands.append(
                 _FakeCommand(
-                    name="sniperplug",
-                    description="Owner tools",
+                    name="staff",
+                    description="Staff tools",
                     commands=[
-                        _FakeCommand(name="provider_scan", description="Scan providers"),
+                        _FakeCommand(name="channel", description="Set the deal channel"),
                     ],
                 )
             )
@@ -231,12 +218,12 @@ def test_fingerprint_changes_when_subcommand_changes() -> None:
 
     changed = _replace(
         _base_commands(),
-        "sniperplug",
+        "staff",
         _FakeCommand(
-            name="sniperplug",
-            description="Owner tools",
+            name="staff",
+            description="Staff tools",
             commands=[
-                _FakeCommand(name="provider_probe", description="Scan providers")
+                _FakeCommand(name="intake", description="Set the deal channel")
             ],
         ),
     )
@@ -249,10 +236,10 @@ def test_fingerprint_changes_when_parameter_changes() -> None:
     def with_dashboard_parameter(parameter: _FakeParameter) -> list[_FakeCommand]:
         return _replace(
             _base_commands(),
-            "sniperplug_dashboard",
+            "menu",
             _FakeCommand(
-                name="sniperplug_dashboard",
-                description="Canonical sniperplug_dashboard command",
+                name="menu",
+                description="Canonical menu command",
                 parameters=[parameter],
             ),
         )
@@ -460,8 +447,10 @@ async def test_walmart_group_present_in_loaded_command_tree_and_hash_syncs_once(
     """Load all canonical cogs against a scratch SQLite DB, no Discord.
 
     The 17 folded Walmart commands plus the 2 restored ones must be gone
-    from the loaded tree and replaced by the /walmart group with its 20
-    subcommands. Background
+    from the loaded tree and replaced by the /walmart group. Since
+    consolidation PR 2 the group syncs only its 4 member subcommands
+    (check/find/hunt/my-alerts) and the whole tree is exactly the 7
+    target top-levels. Background
     @tasks.loop cogs log wait_until_ready errors offline; those are expected
     noise here, not setup failures.
     """
@@ -486,30 +475,22 @@ async def test_walmart_group_present_in_loaded_command_tree_and_hash_syncs_once(
         await bot.setup_hook()
 
         names = {command.name for command in bot.tree.get_commands()}
-        assert "walmart" in names
+        assert names == {
+            "menu",
+            "walmart",
+            "wishlist",
+            "movies",
+            "verizon",
+            "ebay",
+            "staff",
+        }
         walmart_group = bot.tree.get_command("walmart")
         assert walmart_group is not None
         assert {command.name for command in walmart_group.commands} == {
             "check",
             "find",
             "hunt",
-            "discover",
-            "scan-now",
-            "health",
-            "threshold",
-            "categories",
-            "extreme",
-            "recovery",
-            "trace",
             "my-alerts",
-            "feedback",
-            "feedback-reset",
-            "active",
-            "history",
-            "setup",
-            "recheck",
-            "probe",
-            "menu",
         }
         assert not {
             "check_deal",
@@ -531,7 +512,6 @@ async def test_walmart_group_present_in_loaded_command_tree_and_hash_syncs_once(
             "active_deal_history",
             "setup_sniperplug_here",
         }.intersection(names)
-        assert len(names) >= 10
 
         # First boot with no stored hash syncs once and persists the hash.
         assert sync_scopes == ["global commands"]

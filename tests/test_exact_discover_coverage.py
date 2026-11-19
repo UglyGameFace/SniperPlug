@@ -180,6 +180,6 @@ def test_discover_slash_metadata_fits_discord_limits() -> None:
 
 def test_command_catalog_explains_discover_vs_global_autoscan() -> None:
     assert "optional immediate Quick, Deep, or Full exact Walmart sweep" in COMMAND_CATALOG
-    assert "Normal automatic coverage does not require this command" in COMMAND_CATALOG
+    assert "Normal automatic coverage does not require it" in COMMAND_CATALOG
     assert "bounded manual autoscan test" in COMMAND_CATALOG
     assert "not required for normal background coverage" in COMMAND_CATALOG

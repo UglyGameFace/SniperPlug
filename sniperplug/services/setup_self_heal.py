@@ -278,7 +278,7 @@ async def repair_public_alert_setup(
                 reason="multiple possible deal channels were found, so SniperPlug refused to guess.",
                 notes=[
                     f"Possible channels: {mentions}",
-                    "Run `/walmart scan-now` once inside the exact channel you want; that safely saves it without redoing every setting.",
+                    "Run Scan now (Walmart menu) once inside the exact channel you want; that safely saves it without redoing every setting.",
                 ],
                 config=config,
             )
@@ -292,7 +292,7 @@ async def repair_public_alert_setup(
             reason=reason,
             notes=[
                 "This is a real first-install/permission issue, not an update issue.",
-                "Run `/walmart scan-now` once inside the channel SniperPlug should post in, or fix the channel permissions.",
+                "Run Scan now (Walmart menu) once inside the channel SniperPlug should post in, or fix the channel permissions.",
             ],
             config=config,
         )

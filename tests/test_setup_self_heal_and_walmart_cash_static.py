@@ -74,6 +74,6 @@ def test_walmart_cash_only_blocks_guesses_onepay_and_query_text():
 def test_command_catalog_no_longer_lists_retired_cash_and_one_setup_command():
     assert 'name="/walmart cash"' not in CATALOG
     assert "Run once during installation" in CATALOG
-    assert CATALOG.count('name="/walmart setup"') == 1
+    assert CATALOG.count('name="/staff channel"') == 1
     assert SETUP.count('name="setup_sniperplug_here"') == 1
     assert "global" in SETUP.lower()

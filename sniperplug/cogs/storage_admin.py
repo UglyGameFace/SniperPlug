@@ -127,7 +127,7 @@ async def build_storage_health_embed(db, guild_id: int) -> discord.Embed:
         description=(
             "Server-specific cache/history/feedback rows plus the live global "
             "Walmart fanout. Zero legacy rows do not prove that discovery stopped. "
-            "Use `/storage_maintenance_now confirm:true` only for stale cleanup."
+            "Use Storage cleanup in /menu (Server setup & health) only for stale cleanup."
         ),
         color=(
             discord.Color.orange()

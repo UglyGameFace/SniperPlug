@@ -61,7 +61,7 @@ class HomeDepotProvider(DealProvider):
             provider_key=self.provider_key,
             candidates=(),
             warnings=(
-                "Home Depot scan is staged only. Use /local_check with SKU/store/ZIP and observed price for proof routing.",
+                "Home Depot scan is staged only. Use Local proof check in /menu with SKU/store/ZIP and observed price for proof routing.",
             ),
             page=request.page,
             page_size=0,
@@ -79,13 +79,13 @@ class HomeDepotProvider(DealProvider):
         if os.getenv("SERPAPI_API_KEY", "").strip():
             warnings.append(
                 "SerpApi Home Depot lookup is configured (SERPAPI_API_KEY is set); "
-                "/home_depot_search and /hd_stock give the live lookup — this "
+                "/staff hd-search and /staff hd-stock give the live lookup — this "
                 "command still records manual proof only."
             )
         else:
             warnings.append(
                 "Live Home Depot lookup is not configured: the server owner has "
-                "not set SERPAPI_API_KEY, so /home_depot_search and /hd_stock "
+                "not set SERPAPI_API_KEY, so /staff hd-search and /staff hd-stock "
                 "are off. This command records manual proof only."
             )
 

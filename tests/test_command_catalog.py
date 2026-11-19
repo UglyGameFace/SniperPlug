@@ -10,17 +10,17 @@ def test_command_catalog_has_canonical_core_commands():
     names = {entry.name for entry in COMMAND_CATALOG}
 
     for command in (
-        "/walmart setup",
-        "/sniperplug_dashboard",
-        "/walmart health",
-        "/walmart scan-now",
+        "/staff channel",
+        "/staff dashboard",
+        "/staff health",
+        "/menu → Scan now",
         "/walmart find",
         "/walmart hunt",
-        "/walmart discover",
+        "/menu → Broad sweep",
         "/walmart my-alerts",
-        "/walmart categories",
-        "/walmart threshold",
-        "/walmart active",
+        "/staff categories",
+        "/staff threshold",
+        "/staff active",
     ):
         assert command in names
 
@@ -30,9 +30,9 @@ def test_command_catalog_has_canonical_core_commands():
 def test_entries_for_audience_filters_owner_commands():
     names = {entry.name for entry in entries_for_audience("owner")}
 
-    assert "/walmart setup" in names
-    assert "/sniperplug_dashboard" in names
-    assert "/walmart health" in names
+    assert "/staff channel" in names
+    assert "/staff dashboard" in names
+    assert "/staff health" in names
     assert "/walmart find" not in names
     assert "/walmart my-alerts" not in names
 

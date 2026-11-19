@@ -33,6 +33,7 @@ from sniperplug.cogs.movie_ticket_feedback import MovieTicketFeedbackCog
 from sniperplug.cogs.registered_multi_source_movies import MovieTicketsCog
 from sniperplug.cogs.public_alerts import register_persistent_public_panel_views
 from sniperplug.cogs.sniperplug import SniperPlugCog
+from sniperplug.cogs.staff_command import StaffCommandCog
 from sniperplug.cogs.storage_admin import StorageAdminCog
 from sniperplug.cogs.verizon_shine import VerizonShineCog
 from sniperplug.cogs.verified_deal_scanner import VerifiedDealScannerCog
@@ -63,6 +64,9 @@ from sniperplug.services.command_surface_hash import (
     CommandSurfaceHashStore,
     command_surface_fingerprint,
     default_hash_store_path,
+)
+from sniperplug.services.consolidation_announcement import (
+    maybe_post_consolidation_announcement,
 )
 from sniperplug.services.operational_telemetry import publish_loop
 from sniperplug.services.error_logging import (
@@ -95,6 +99,7 @@ class SniperPlugBot(commands.Bot):
             default_hash_store_path(settings.database_path)
         )
         self._command_surface_issues: tuple[str, ...] = ()
+        self._consolidation_announcement_started = False
         self._ops_started_monotonic = time.monotonic()
         self._ops_telemetry_task: asyncio.Task | None = None
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
@@ -194,6 +199,8 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(DealDropsIntakeCog(self))
         await self.add_cog(MovieCommandGuideCog(self))
         await self.add_cog(GlobalAutoScanRunnerCog(self))
+        # The /staff group delegates to the cogs above at call time.
+        await self.add_cog(StaffCommandCog(self))
         # Last: the /walmart group delegates to the cogs above at call time.
         await self.add_cog(WalmartCommandCog(self))
         # The unified menu delegates to the same cogs; it opens after them.
@@ -373,6 +380,24 @@ class SniperPlugBot(commands.Bot):
 
     async def on_ready(self) -> None:
         log.info("SniperPlug online as %s (%s)", self.user, self.user.id if self.user else "unknown")
+        # One-time PR 2 announcement: the persisted marker makes repeat
+        # boots/reconnects no-ops, and the in-memory flag keeps a
+        # reconnect storm from even re-checking. It must never block or
+        # fail startup, so every failure is logged and swallowed here
+        # (the service already isolates per-server failures).
+        if not self._consolidation_announcement_started:
+            self._consolidation_announcement_started = True
+            try:
+                posted = await maybe_post_consolidation_announcement(self)
+                if posted:
+                    log.info(
+                        "Consolidation announcement posted in %s server channel(s).",
+                        posted,
+                    )
+            except Exception:
+                log.exception(
+                    "Consolidation announcement failed safely; startup continues."
+                )
 
 
 def app_command_schema_issues(root_commands: Iterable[Any]) -> tuple[str, ...]:

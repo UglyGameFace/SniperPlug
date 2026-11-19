@@ -317,7 +317,7 @@ class VerizonShineCog(commands.GroupCog, name="verizon"):
         else:
             await interaction.followup.send(f"`{keyword.strip()}` was not in the priority list.", ephemeral=True)
 
-    @app_commands.command(name="list-keywords", description="List Verizon Shine priority keywords.")
+    @app_commands.command(name="keywords", description="List Verizon Shine priority keywords.")
     async def list_keywords(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)

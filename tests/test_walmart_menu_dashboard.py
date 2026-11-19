@@ -31,6 +31,7 @@ import discord
 import pytest
 
 from sniperplug.cogs.walmart_command import (
+    MENU_FUNCTIONS,
     MENU_MEMBER_KEYS,
     MENU_MEMBER_SECTIONS,
     MENU_REMOVED_KEYS,
@@ -496,11 +497,16 @@ def test_dashboard_embed_shows_state_and_is_green_when_ready() -> None:
     assert "LEGO Star Wars Set" not in text
     assert "HP and Target" not in text
     assert "watchers not running" not in text
+    # Consolidation PR 2: the embed prints each function's real home
+    # (a /staff command, or nothing for menu-only functions) instead of
+    # a fake /walmart subcommand; nothing is "removed" any more.
     for _section, keys in MENU_MEMBER_SECTIONS + MENU_STAFF_SECTIONS:
         for key in keys:
-            assert f"/walmart {key}" in text
-    for key in MENU_REMOVED_KEYS:
-        assert f"/walmart {key}" not in text
+            usage = MENU_FUNCTIONS[key][2]
+            if usage:
+                assert usage in text
+            assert MENU_FUNCTIONS[key][1] in text
+    assert MENU_REMOVED_KEYS == frozenset()
 
 
 def test_dashboard_embed_error_is_red() -> None:
@@ -545,11 +551,16 @@ def test_state_unavailable_renders_fallback_line_and_keeps_function_list() -> No
         build_walmart_menu_embed(state, manage_guild=True, can_check=True)
     )
     assert "Live state unavailable — the function list still works." in text
+    # Consolidation PR 2: the embed prints each function's real home
+    # (a /staff command, or nothing for menu-only functions) instead of
+    # a fake /walmart subcommand; nothing is "removed" any more.
     for _section, keys in MENU_MEMBER_SECTIONS + MENU_STAFF_SECTIONS:
         for key in keys:
-            assert f"/walmart {key}" in text
-    for key in MENU_REMOVED_KEYS:
-        assert f"/walmart {key}" not in text
+            usage = MENU_FUNCTIONS[key][2]
+            if usage:
+                assert usage in text
+            assert MENU_FUNCTIONS[key][1] in text
+    assert MENU_REMOVED_KEYS == frozenset()
     # The legacy no-argument call renders the same fallback (member view).
     assert (
         "Live state unavailable — the function list still works."

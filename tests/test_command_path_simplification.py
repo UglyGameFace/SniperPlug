@@ -9,7 +9,7 @@ def entry(name):
 def test_primary_deal_paths_are_explicit():
     assert command_guide_section(entry("/walmart find")) == "Start here"
     assert command_guide_section(entry("/walmart hunt")) == "Start here"
-    assert command_guide_section(entry("/walmart discover")) == "Start here"
+    assert command_guide_section(entry("/menu → Broad sweep")) == "Advanced / diagnostic"
 
 
 def test_advanced_duplicate_walmart_scan_is_retired():
@@ -19,8 +19,8 @@ def test_advanced_duplicate_walmart_scan_is_retired():
 
 
 def test_one_dashboard_owns_workflow_health_and_command_help():
-    dashboard = entry("/sniperplug_dashboard")
-    assert "Overview, Doctor, or Commands" in dashboard.purpose
+    dashboard = entry("/staff dashboard")
+    assert "Overview, Doctor, Commands, Routes, or Storage" in dashboard.purpose
     assert "/sniperplug_workflow" not in {item.name for item in COMMAND_CATALOG}
     assert "/sniperplug_health" not in {item.name for item in COMMAND_CATALOG}
     assert "/sniperplug_doctor" not in {item.name for item in COMMAND_CATALOG}
@@ -28,5 +28,5 @@ def test_one_dashboard_owns_workflow_health_and_command_help():
 
 
 def test_specialist_commands_are_separated():
-    assert command_guide_section(entry("/hd_stock")) == "Special searches"
+    assert command_guide_section(entry("/staff hd-stock")) == "Special searches"
     assert command_guide_section(entry("/walmart my-alerts")) == "Helpful shortcuts"

@@ -180,7 +180,7 @@ async def share_review_card(*, bot: Any, guild_id: int | None, card: Any, fallba
     config = await get_public_alert_config(db, guild_id)
     channel_id = config.get("channel_id")
     if not config.get("enabled") or not channel_id:
-        return False, "No public deal channel is configured yet. Set it with `/walmart setup` first."
+        return False, "No public deal channel is configured yet. Set it with `/staff channel` first."
     retailer = normalize_retailer_key(getattr(card, "retailer", None)) or normalize_retailer_key(fallback_retailer)
     if retailer not in set(config.get("retailers") or ()):
         return False, f"Public posting is not enabled for `{retailer}` in this server."

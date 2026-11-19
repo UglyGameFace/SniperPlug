@@ -10,7 +10,6 @@ from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.alert_renderer import DealActionView, build_deal_embed
 from sniperplug.services.candidate_pipeline import evaluate_candidate
-from sniperplug.services.monitor_control import MonitorMode, build_default_monitor_control_plane
 from sniperplug.services.risk_flags import apply_risk_flags
 from sniperplug.services.routing import (
     ALERT_ROUTES,
@@ -18,7 +17,6 @@ from sniperplug.services.routing import (
     choose_primary_route,
     route_label,
 )
-from sniperplug.services.snipe_planner import build_default_snipe_batch
 from sniperplug.services.walmart_missed_deal_trace import trace_walmart_item
 
 
@@ -46,12 +44,21 @@ def missing_channel_permissions(channel: discord.TextChannel, member: discord.Me
     return missing
 
 
-class SniperPlugCog(commands.GroupCog, name="sniperplug"):
+class SniperPlugCog(commands.Cog):
+    """Handlers that used to be the /sniperplug group (dissolved in PR 2).
+
+    No slash commands live here anymore: routes is a page of /staff
+    dashboard, provider_scan runs from the /menu server screen, and
+    test_alert is /staff test-alert. The three static demo commands
+    (snipe_plan, monitor_plan, scan_test) were deleted outright — they
+    displayed invented data. deal_trace stays a plain method for the
+    Walmart staff menu, as before.
+    """
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-
-    @app_commands.command(name="routes", description="Show SniperPlug alert channel routing for this server.")
+    # No slash decorator: this is the Routes page of /staff dashboard.
     async def routes(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -72,13 +79,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="provider_scan", description="Run a provider scan safely without posting public alerts.")
-    @app_commands.describe(
-        provider_key="Provider key, like bestbuy.",
-        query="Optional search query for providers that support keyword scans.",
-        category="Optional category key, like gpus or sneakers.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
+    # No slash decorator: this runs from the /menu server screen
+    # (Provider scan), which enforces the Manage Server gate itself.
     async def provider_scan(
         self,
         interaction: discord.Interaction,
@@ -147,9 +149,9 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         embed.set_footer(text="SniperPlug preview • verify checkout price, stock, shipping, and account eligibility before posting")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # No slash decorator: this moved to /walmart trace (cogs/walmart_command).
-    # It stays a plain method so the Walmart group can delegate to it, and so
-    # the /walmart trace permission check lives on the subcommand itself.
+    # No slash decorator: this is the Walmart staff menu's Trace an item.
+    # It stays a plain method so the Walmart menu can delegate to it; the
+    # menu enforces the Manage Server gate itself before delegating.
     async def deal_trace(self, interaction: discord.Interaction, item_id: str) -> None:
         if interaction.guild_id is None:
             await interaction.response.send_message(
@@ -213,69 +215,8 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="snipe_plan", description="Static preview of scan priorities \u2014 demo only, not live data.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def snipe_plan(self, interaction: discord.Interaction) -> None:
-        batch = build_default_snipe_batch(limit_sources=12, limit_categories=10)
-        top_plans = batch.plans[:12]
-
-        embed = discord.Embed(
-            title="SniperPlug Snipe Plan",
-            description="Source-first priorities for future providers. This command does not scan sites or make API calls.\n\nStatic preview / demo \u2014 not live data.",
-            color=discord.Color.orange(),
-        )
-        for plan in top_plans:
-            query_preview = ", ".join(plan.queries[:4])
-            embed.add_field(
-                name=f"{plan.source_name} + {plan.category_label}",
-                value=(
-                    f"Priority: **{plan.priority}** • Cadence target: **{plan.cadence_seconds}s**\n"
-                    f"Watch terms: `{query_preview}`\n"
-                    f"{plan.reason}"
-                ),
-                inline=False,
-            )
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="monitor_plan", description="Static preview of monitor targets \u2014 demo only, not live data.")
-    @app_commands.describe(source_key="Optional source filter, like amazon, best_buy, walmart, msi_store, nike.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def monitor_plan(self, interaction: discord.Interaction, source_key: str | None = None) -> None:
-        control_plane = build_default_monitor_control_plane(limit_targets=24)
-        targets = control_plane.targets if not source_key else control_plane.by_source(source_key)
-
-        embed = discord.Embed(
-            title="SniperPlug Monitor Plan",
-            description=(
-                "Control-plane preview only. This does not scan retailers, call APIs, "
-                "or post public alerts. Generated monitors default to Staff Review.\n\n"
-                "Static preview / demo \u2014 not live data."
-            ),
-            color=discord.Color.orange(),
-        )
-
-        if not targets:
-            embed.add_field(name="No monitor targets", value="No targets matched that filter.", inline=False)
-        else:
-            for target in targets[:12]:
-                terms = ", ".join(target.watch_terms[:4]) or "None"
-                embed.add_field(
-                    name=f"{monitor_mode_label(target.mode)} • {target.source_name} + {target.category_label}",
-                    value=(
-                        f"Monitor: `{target.monitor_id}`\n"
-                        f"Priority: **{target.priority}** • Cadence: **{target.cadence_seconds}s** • Cooldown: **{target.cooldown_seconds}s**\n"
-                        f"Proof required: `{target.verification_required.value}`\n"
-                        f"Route hint: `{target.route_hint or 'none'}`\n"
-                        f"Watch terms: `{terms}`"
-                    ),
-                    inline=False,
-                )
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="test_alert", description="Post a realistic SniperPlug test deal alert.")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    # No slash decorator: this is /staff test-alert; the group command
+    # carries the Manage Server gate.
     async def test_alert(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id or not interaction.guild:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
@@ -349,180 +290,6 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             ephemeral=True,
         )
 
-    @app_commands.command(name="scan_test", description="Static preview of demo source candidates \u2014 not live data.")
-    @app_commands.describe(
-        post_alerts="Post demo alerts. Defaults to private preview only.",
-        test_channel="Optional test channel to receive all demo alerts instead of route channels.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def scan_test(
-        self,
-        interaction: discord.Interaction,
-        post_alerts: bool = False,
-        test_channel: discord.TextChannel | None = None,
-    ) -> None:
-        if not interaction.guild_id or not interaction.guild:
-            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        candidates = self._demo_source_candidates()
-        decisions = [evaluate_candidate(candidate) for candidate in candidates]
-        decisions = sorted(decisions, key=lambda decision: decision.anomaly.score, reverse=True)
-
-        if not post_alerts:
-            embed = discord.Embed(
-                title="SniperPlug Scan Test Preview",
-                description=(
-                    "Private preview only. No public alerts were posted. "
-                    "Run with `post_alerts:true` only when you intentionally want demo alerts. "
-                    "Use `test_channel` to keep demo alerts out of real deal channels.\n\n"
-                    "Static preview / demo \u2014 not live data."
-                ),
-                color=discord.Color.orange(),
-            )
-            for decision in decisions[:5]:
-                deal = decision.deal
-                embed.add_field(
-                    name=deal_preview_title(deal),
-                    value=deal_preview_value_from_deal(deal, decision),
-                    inline=False,
-                )
-
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        if test_channel is not None:
-            missing = self._missing_bot_perms(interaction.guild, test_channel)
-            if missing:
-                await interaction.followup.send(
-                    self._missing_permissions_message(test_channel, missing),
-                    ephemeral=True,
-                )
-                return
-
-        posted = 0
-        skipped: list[str] = []
-        for decision in decisions[:5]:
-            deal = decision.deal
-            deal.verification_status = "demo"
-            deal.is_price_verified = False
-            deal.is_link_verified = False
-            deal.is_image_verified = False
-            deal.verification_notes = ["Demo source-candidate only. No retailer API or checkout call was made."]
-            deal = apply_risk_flags(deal)
-
-            if test_channel is not None:
-                channel = test_channel
-            else:
-                channel_id = await self.bot.db.resolve_alert_channel(interaction.guild_id, decision.route.route)
-                channel = await self._resolve_text_channel(interaction.guild, channel_id, interaction.channel)
-
-            if channel is None:
-                skipped.append(f"{deal.title}: no valid channel")
-                continue
-
-            missing = self._missing_bot_perms(interaction.guild, channel)
-            if missing:
-                skipped.append(f"{deal.title}: missing perms in #{channel.name}")
-                continue
-
-            await self.bot.db.upsert_deal(deal)
-            embed = build_deal_embed(deal)
-            embed.add_field(
-                name="Sniper Score",
-                value=(
-                    f"**{decision.anomaly.score}/250** • {friendly_score_level(decision.anomaly.level)}\n"
-                    + "\n".join(f"• {reason}" for reason in decision.reasons[:4])
-                ),
-                inline=False,
-            )
-            view = DealActionView(self.bot.db, deal)
-
-            try:
-                await channel.send(embed=embed, view=view)
-                posted += 1
-            except discord.Forbidden:
-                skipped.append(f"{deal.title}: Discord 403 in #{channel.name}")
-
-        destination = test_channel.mention if test_channel else "configured route channels"
-        summary = f"Ran **{len(candidates)}** demo source candidates through SniperPlug. Posted **{posted}** demo alerts to {destination}."
-        if skipped:
-            summary += "\n\nSkipped:\n" + "\n".join(f"• {item}" for item in skipped[:5])
-        await interaction.followup.send(summary, ephemeral=True)
-
-    def _demo_source_candidates(self) -> list[SourceCandidate]:
-        return [
-            SourceCandidate(
-                source_key="msi_store",
-                retailer="MSI Store",
-                title="GeForce RTX 5080 16G INSPIRE 3X OC Black Starter Kit",
-                product_url="https://us-store.msi.com/",
-                current_price=0.00,
-                typical_price=9999.00,
-                product_id="RTX5080-DEMO",
-                product_id_type="sku",
-                stock_status="In Stock",
-                can_add_to_cart=True,
-                signals=["Source page showed near-zero price", "Add-to-cart observed"],
-            ),
-            SourceCandidate(
-                source_key="samsung",
-                retailer="Samsung",
-                title="Samsung 77 inch OLED TV brand-direct checkout price drop",
-                product_url="https://www.samsung.com/us/",
-                current_price=99.00,
-                typical_price=2499.99,
-                product_id="SAMSUNG-OLED-DEMO",
-                product_id_type="sku",
-                stock_status="Available",
-                can_add_to_cart=True,
-                is_checkout_price=True,
-                signals=["Checkout price much lower than product value"],
-            ),
-            SourceCandidate(
-                source_key="nike",
-                retailer="Nike",
-                title="Nike Air Jordan sneaker member price error",
-                product_url="https://www.nike.com/",
-                current_price=0.01,
-                typical_price=180.00,
-                product_id="NIKE-JORDAN-DEMO",
-                product_id_type="sku",
-                stock_status="Limited sizes",
-                can_add_to_cart=True,
-                is_member_only=True,
-                signals=["Member-only pricing may vary"],
-            ),
-            SourceCandidate(
-                source_key="autozone",
-                retailer="AutoZone",
-                title="Mobil 1 full synthetic motor oil case pack",
-                product_url="https://www.autozone.com/",
-                current_price=5.00,
-                typical_price=72.00,
-                product_id="OIL-CASE-DEMO",
-                product_id_type="sku",
-                stock_status="Available",
-                can_add_to_cart=True,
-                signals=["Bulk auto fluid price anomaly"],
-            ),
-            SourceCandidate(
-                source_key="macys",
-                retailer="Macy's",
-                title="14k gold chain jewelry clearance price anomaly",
-                product_url="https://www.macys.com/",
-                current_price=49.99,
-                typical_price=799.99,
-                product_id="GOLD-CHAIN-DEMO",
-                product_id_type="sku",
-                stock_status="Available",
-                can_add_to_cart=None,
-                signals=["Jewelry price appears below expected value"],
-            ),
-        ]
-
     async def _resolve_text_channel(
         self,
         guild: discord.Guild,
@@ -560,28 +327,6 @@ class SniperPlugCog(commands.GroupCog, name="sniperplug"):
             + "\n".join(f"• {perm}" for perm in missing)
             + "\n\nGive the SniperPlug bot/role those permissions, then try again."
         )
-
-    @test_alert.error
-    @scan_test.error
-    @snipe_plan.error
-    @monitor_plan.error
-    @provider_scan.error
-    async def admin_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            message = "You need **Manage Server** permission to use this SniperPlug admin command."
-        elif isinstance(error, app_commands.CommandInvokeError) and isinstance(error.original, discord.Forbidden):
-            message = (
-                "Discord blocked SniperPlug with **403 Missing Access**. "
-                "Check the configured alert channel and give the bot View Channel, Send Messages, Embed Links, and Read Message History."
-            )
-        else:
-            message = f"SniperPlug hit an error: `{error}`"
-
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
-
 
 def deal_preview_title(deal: NormalizedDeal) -> str:
     discount = discount_percent(deal.current_price, deal.typical_price)
@@ -684,12 +429,3 @@ def provider_status_label(status: ProviderStatus) -> str:
         ProviderStatus.ERROR: "⚠️ Error",
     }
     return labels.get(status, "⚠️ Unknown")
-
-
-def monitor_mode_label(mode: MonitorMode) -> str:
-    labels = {
-        MonitorMode.PREVIEW_ONLY: "🔎 Preview",
-        MonitorMode.STAFF_REVIEW: "🛠️ Staff Review",
-        MonitorMode.PUBLIC_ALLOWED: "📣 Public Allowed",
-    }
-    return labels.get(mode, mode.value)

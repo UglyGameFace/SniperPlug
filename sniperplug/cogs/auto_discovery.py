@@ -257,7 +257,7 @@ class AutoDiscoveryCog(commands.Cog):
 
         if interaction.guild_id is None:
             await interaction.followup.send(
-                "Use `/walmart discover` in a server so SniperPlug can use that server's threshold, category, channel, and duplicate settings.",
+                "Use Broad sweep from the Walmart menu in a server so SniperPlug can use that server's threshold, category, channel, and duplicate settings.",
                 ephemeral=True,
             )
             return
@@ -736,7 +736,7 @@ class AutoDiscoveryCog(commands.Cog):
         embed.set_footer(
             text=(
                 "Search finds item IDs; only official exact-detail seller/offer and price proof can create a deal card. "
-                "Use /walmart threshold to include smaller verified markdowns."
+                "Use /staff threshold to include smaller verified markdowns."
             )
         )
         return embed
@@ -966,10 +966,10 @@ def batch_cards_for_embed_limit(
 def manual_discover_note(settings: dict) -> str:
     if not settings.get("enabled"):
         return (
-            f"Manual `/walmart discover` override: `{AUTO_DISCOVERY_RETAILER}` auto-scan is off, but this manual command is allowed."
+            f"Manual Broad sweep override: `{AUTO_DISCOVERY_RETAILER}` auto-scan is off, but this manual run is allowed."
         )
     return (
-        f"Manual `/walmart discover` run. `{AUTO_DISCOVERY_RETAILER}` auto-scan settings only gate scheduled/background pulls."
+        f"Manual Broad sweep run. `{AUTO_DISCOVERY_RETAILER}` auto-scan settings only gate scheduled/background pulls."
     )
 
 
@@ -989,5 +989,5 @@ def discover_auto_scan_status(settings: dict) -> str:
         f"Auto enabled: **{'yes' if settings.get('enabled') else 'no'}**\n"
         f"Interval: **{format_interval(interval_hours)}**\n"
         f"Daily limit: **{format_daily_limit(daily_limit)}**\n"
-        "Manual `/walmart discover`: **allowed**"
+        "Manual Broad sweep: **allowed**"
     )

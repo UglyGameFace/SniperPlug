@@ -130,7 +130,7 @@ def build_walmart_recheck_audit_embed(rows: list[dict[str, Any]]) -> discord.Emb
     if not rows:
         embed.add_field(
             name="No recheck attempts recorded yet",
-            value="Run `/walmart active` and use its recheck controls to create the first audited attempt.",
+            value="Run `/staff active` and use its recheck controls to create the first audited attempt.",
             inline=False,
         )
         return embed

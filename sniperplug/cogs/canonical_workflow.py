@@ -62,9 +62,9 @@ def target_setup_line(
     if not redsky_configured:
         return (
             "**Target waiting for key** — the server owner needs to set "
-            "`TARGET_REDSKY_API_KEY`, then run `/target_location` to choose a store"
+            "`TARGET_REDSKY_API_KEY`, then pick a Target store in /menu"
         )
-    return "**Target paused** — run `/target_location` to choose a store"
+    return "**Target paused** — pick a Target store in /menu"
 
 
 class CanonicalWorkflowCog(commands.Cog):
@@ -203,7 +203,7 @@ class CanonicalWorkflowCog(commands.Cog):
         )
         embed.add_field(
             name="Next check",
-            value="Run `/walmart health` to confirm live delivery and Target location health.",
+            value="Run `/staff health` to confirm live delivery and Target location health.",
             inline=False,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -277,7 +277,7 @@ class CanonicalWorkflowCog(commands.Cog):
         await prune_orphan_target_product_rows(self.bot.db)
         await interaction.followup.send(
             (
-                "✅ This server's Target location was cleared. Local Target alerts are disabled until an admin runs `/target_location` again."
+                "✅ This server's Target location was cleared. Local Target alerts are disabled until an admin picks a Target store in /menu again."
                 if removed
                 else "This server did not have an active Target location. Target remains disabled."
             ),
@@ -432,5 +432,5 @@ def missing_permissions_message(
         f"SniperPlug cannot post in {channel.mention} yet.\n\n"
         "Missing channel permissions:\n"
         + "\n".join(f"• {permission}" for permission in missing)
-        + "\n\nFix those permissions, then run `/walmart setup` again in this channel."
+        + "\n\nFix those permissions, then run `/staff channel` again in this channel."
     )

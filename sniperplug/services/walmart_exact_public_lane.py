@@ -118,6 +118,7 @@ def normalize_exact_verified_walmart_card(
     if existing_lane in {
         quality.LANE_OPEN_BOX_LIKE_NEW,
         quality.LANE_RESTORED_REFURBISHED,
+        quality.LANE_USED,
     }:
         lane = existing_lane
     elif _normalized(attrs.get("clearance")) == "yes":

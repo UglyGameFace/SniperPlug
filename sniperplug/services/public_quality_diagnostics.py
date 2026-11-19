@@ -40,13 +40,17 @@ def public_quality_block_reason(
             return "observed-price memory fingerprint is incomplete or unstable"
         return "price-memory proof passed but a later public gate blocked it"
 
+    condition = quality.normalized_condition(
+        quality.attr_value(card, "api_condition", "condition")
+    )
+    if lane == quality.LANE_VERIFIED_MARKDOWN and quality.is_used_condition(condition):
+        return "used condition cannot post under the plain verified-markdown label"
+
     if lane in {
         quality.LANE_OPEN_BOX_LIKE_NEW,
         quality.LANE_RESTORED_REFURBISHED,
+        quality.LANE_USED,
     }:
-        condition = quality.normalized_condition(
-            quality.attr_value(card, "api_condition", "condition")
-        )
         if not condition:
             return "condition-specific lane is missing exact condition proof"
         if not quality.has_structured_reference_proof(card):
@@ -59,6 +63,8 @@ def public_quality_block_reason(
             condition
         ):
             return f"condition `{condition}` does not match restored lane"
+        if lane == quality.LANE_USED and not quality.is_used_condition(condition):
+            return f"condition `{condition}` does not match used lane"
 
     if lane not in quality.PUBLIC_PRICE_LANES | {
         quality.LANE_CLEARANCE,

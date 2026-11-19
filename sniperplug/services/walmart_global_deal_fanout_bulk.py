@@ -49,10 +49,22 @@ from sniperplug.services.public_deal_posts import (
     card_deal_key,
     maybe_post_public_deal_cards,
 )
+from sniperplug.providers.registry import provider_registry
+from sniperplug.services.stock_status import is_unavailable_stock
+from sniperplug.services.walmart_exact_price_enrichment import _positive_number
+from sniperplug.services.walmart_exact_queue_runtime import (
+    _fetch_exact_candidate_off_loop,
+)
 from sniperplug.services.walmart_exact_verification_queue import (
     QUEUE_TABLE,
     _candidate_from_snapshot,
+    _QueueClaim,
 )
+from sniperplug.services.walmart_extreme_price_fanout import (
+    LIVE_PRICE_TOLERANCE_CENTS,
+    LIVE_PRICE_TOLERANCE_RATIO,
+)
+from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
 from sniperplug.services.walmart_fanout_decisions import (
     WalmartGuildFanoutDecision,
     classify_public_fanout_result,
@@ -92,6 +104,22 @@ LIMIT ?
 # window the offer is too old to announce as current, so the event finalizes.
 MISSING_GUILD_RETRY_SECONDS = 5 * 60
 MISSING_GUILD_MAX_WAIT = timedelta(hours=6)
+# Live pre-send recheck for public markdown posts, mirroring the extreme
+# lane's proven pattern (walmart_extreme_price_fanout). The DB superseded
+# check below compares the card against the stored queue row, not against
+# Walmart now, so a price verified up to an hour earlier could post after
+# Walmart had already reverted it. Immediately before delivery, each
+# claimed event's exact item is re-fetched once through the same trusted
+# exact path the extreme lane uses; an identity/seller change, lost
+# buyability, or a price move beyond the shared tolerance
+# (max($0.25, 1%)) skips the event — counted, and the stale card is never
+# silently repriced. A recheck error fails closed the same way. The
+# per-cycle budget bounds the added latency and quota; events past the
+# budget are deferred to the next cycle, never posted unverified.
+LIVE_PRE_SEND_RECHECK_LIMIT = 40
+LIVE_PRE_SEND_RECHECK_CONCURRENCY = 4
+LIVE_PRE_SEND_RECHECK_TIMEOUT_SECONDS = 6.0
+LIVE_RECHECK_BUDGET_REASON = "live_recheck_budget_exhausted"
 _STATE_ATTR = "_sniperplug_walmart_fanout_bulk_state"
 _FALLBACK_STATES: dict[int, "_FanoutRuntimeState"] = {}
 log = logging.getLogger("sniperplug.autoscan.fanout")
@@ -119,6 +147,7 @@ class GlobalDealFanoutResult:
     public_skipped_not_alertable: int = 0
     public_skipped_disabled: int = 0
     public_skipped_wrong_retailer: int = 0
+    public_skipped_live_recheck: int = 0
     public_errors: int = 0
     dm_preferences_checked: int = 0
     dm_matches: int = 0
@@ -155,6 +184,7 @@ class GlobalDealFanoutResult:
             f"(recent **{self.public_skipped_recent_duplicate}** • reserved **{self.public_skipped_reserved_duplicate}**) • "
             f"not alertable **{self.public_skipped_not_alertable}** • "
             f"disabled **{self.public_skipped_disabled}** • retailer **{self.public_skipped_wrong_retailer}** • "
+            f"live recheck skips **{self.public_skipped_live_recheck}** • "
             f"DM checked/matched/sent **{self.dm_preferences_checked}/{self.dm_matches}/{self.dm_sent}** • "
             f"DM skips filter/duplicate/cap/diversity **{self.dm_filter_rejected}/{self.dm_skipped_duplicate}/{self.dm_skipped_daily_cap}/{self.dm_skipped_diversity}** • "
             f"DM disabled **{self.dm_disabled}** • errors public/DM **{self.public_errors}/{self.dm_errors}**"
@@ -173,6 +203,7 @@ class _ClaimedEvent:
     deal_key: str
     claim_token: str
     card: Any
+    candidate: Any = None
     source_verified_at: str = ""
 
 
@@ -303,6 +334,17 @@ async def fanout_recent_exact_walmart_deals(
             load_result,
         )
         superseded = await _superseded_event_keys(db, claimed_events)
+        # Live pre-send recheck: the superseded check only proves the
+        # stored queue row still matches the card. Before anything is
+        # delivered, each surviving event's price is re-fetched live
+        # (bounded per cycle; overflow defers instead of posting).
+        live_rechecks = await _live_pre_send_recheck_reasons(
+            [
+                event
+                for event in claimed_events
+                if event.deal_key not in superseded
+            ]
+        )
         preferences = await list_enabled_dm_deal_alert_preferences(db)
         # Feedback learning is guild-scoped, so it is applied per guild at
         # delivery time (below), not once for the shared card. The tables are
@@ -330,6 +372,7 @@ async def fanout_recent_exact_walmart_deals(
             "public_skipped_not_alertable": 0,
             "public_skipped_disabled": 0,
             "public_skipped_wrong_retailer": 0,
+            "public_skipped_live_recheck": 0,
             "public_errors": 0,
             "dm_preferences_checked": 0,
             "dm_matches": 0,
@@ -343,6 +386,7 @@ async def fanout_recent_exact_walmart_deals(
         processed: list[tuple[str, str]] = []
         failed: list[tuple[str, str, str]] = []
         deferred: list[tuple[str, str, str]] = []
+        recheck_deferred: list[tuple[str, str, str]] = []
         fanout_decisions: list[WalmartGuildFanoutDecision] = []
         now_utc = datetime.now(timezone.utc)
 
@@ -356,6 +400,33 @@ async def fanout_recent_exact_walmart_deals(
                     event.deal_key,
                     superseded[event.deal_key],
                 )
+                processed.append((event.deal_key, event.claim_token))
+                continue
+            recheck_reason = live_rechecks.get(event.deal_key)
+            if recheck_reason == LIVE_RECHECK_BUDGET_REASON:
+                # Not a rejection: the cycle's recheck budget ran out.
+                # Defer so the event is rechecked and delivered next
+                # cycle instead of being posted unverified.
+                recheck_deferred.append(
+                    (
+                        event.deal_key,
+                        event.claim_token,
+                        "live pre-send recheck budget exhausted; retry next cycle",
+                    )
+                )
+                continue
+            if recheck_reason is not None:
+                # The live offer no longer proves the card (identity or
+                # seller changed, no longer buyable, or the price moved
+                # past tolerance). Never post the stale card; the exact
+                # queue's own re-probes can create a fresh event at the
+                # new price.
+                log.info(
+                    "Global Walmart event failed live pre-send recheck deal=%s reason=%s",
+                    event.deal_key,
+                    recheck_reason,
+                )
+                totals["public_skipped_live_recheck"] += 1
                 processed.append((event.deal_key, event.claim_token))
                 continue
             event_errors: list[str] = []
@@ -628,6 +699,13 @@ async def fanout_recent_exact_walmart_deals(
                 len(deferred),
                 sorted(awaited_guild_ids),
             )
+        await _defer_claimed_events_bulk(db, recheck_deferred)
+        if recheck_deferred:
+            log.info(
+                "Global Walmart fanout deferred %s event(s): live pre-send "
+                "recheck budget exhausted",
+                len(recheck_deferred),
+            )
         return GlobalDealFanoutResult(
             candidates_loaded=ingested.loaded,
             exact_cards=ingested.exact_cards,
@@ -862,6 +940,7 @@ async def _claim_pending_events_bulk(
                 deal_key=deal_key,
                 claim_token=token,
                 card=card,
+                candidate=candidate,
                 source_verified_at=str(
                     legacy._row_get(row, "source_verified_at", 2) or ""
                 ),
@@ -1030,6 +1109,115 @@ async def _superseded_event_keys(
             if card_cents is not None and row_cents and card_cents != row_cents:
                 superseded[event.deal_key] = f"price:{card_cents}->{row_cents}"
     return superseded
+
+
+async def _live_pre_send_recheck_reason(candidate: Any) -> str | None:
+    """Re-fetch the exact item immediately before public delivery.
+
+    The markdown counterpart of the extreme lane's
+    ``live_extreme_offer_rejection_reason``: same trusted exact fetch,
+    same identity/seller/buyability checks, same price tolerance. It
+    deliberately does NOT re-run extreme-lane eligibility — a verified
+    markdown only has to still be the same offer at (nearly) the same
+    price. Returns None when the live offer still proves the card;
+    otherwise the rejection reason. Any fetch failure fails closed: an
+    unverified price is never posted.
+    """
+
+    identity = exact_offer_identity(candidate)
+    if identity is None:
+        return "original_identity_missing"
+    provider = provider_registry.get("walmart")
+    if provider is None:
+        return "live_provider_unavailable"
+    claim = _QueueClaim(
+        item_id=identity.item_id,
+        title=str(getattr(candidate, "title", "") or ""),
+        product_url=str(getattr(candidate, "product_url", "") or ""),
+        image_url=str(getattr(candidate, "image_url", "") or ""),
+        apparent_current_cents=None,
+        apparent_reference_cents=None,
+        route_hint="public_pre_send_recheck",
+        lease_token="",
+        attempt_count=0,
+    )
+    try:
+        refreshed, status, _error = await _fetch_exact_candidate_off_loop(
+            provider,
+            claim,
+            timeout_seconds=LIVE_PRE_SEND_RECHECK_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception(
+            "Walmart public pre-send recheck failed item=%s", identity.item_id
+        )
+        return "live_fetch_failed"
+    if status != "verified" or refreshed is None:
+        return "live_fetch_unverified"
+    if exact_offer_identity(refreshed) != identity:
+        return "live_offer_or_variant_changed"
+    original_seller = " ".join(
+        str(getattr(candidate, "seller_name", "") or "").lower().split()
+    )
+    current_seller = " ".join(
+        str(getattr(refreshed, "seller_name", "") or "").lower().split()
+    )
+    if not original_seller or not current_seller or original_seller != current_seller:
+        return "live_seller_name_changed"
+    if refreshed.can_add_to_cart is not True or is_unavailable_stock(
+        refreshed.stock_status
+    ):
+        return "live_not_buyable"
+    attrs = getattr(refreshed, "variant_attributes", None) or {}
+    if str(attrs.get("availableOnline") or "").lower() in {"no", "false", "0", "off"}:
+        return "live_not_online"
+    if refreshed.is_member_only or refreshed.is_checkout_price:
+        return "live_checkout_restricted"
+    old = _positive_number(getattr(candidate, "api_current_price", None))
+    new = _positive_number(getattr(refreshed, "api_current_price", None))
+    if old is None or new is None:
+        return "live_price_missing"
+    tolerance = max(
+        LIVE_PRICE_TOLERANCE_CENTS / 100, old * LIVE_PRICE_TOLERANCE_RATIO
+    )
+    if abs(old - new) > tolerance:
+        return "live_price_changed"
+    return None
+
+
+async def _live_pre_send_recheck_reasons(
+    events: list["_ClaimedEvent"],
+) -> dict[str, str]:
+    """One live recheck per claimed event, bounded per cycle.
+
+    Returns deal_key -> rejection reason for events that must not be
+    delivered as-is. Events beyond the per-cycle budget map to
+    LIVE_RECHECK_BUDGET_REASON so the caller defers them to the next
+    cycle instead of posting them unverified.
+    """
+
+    reasons: dict[str, str] = {}
+    if not events:
+        return reasons
+    checked = events[:LIVE_PRE_SEND_RECHECK_LIMIT]
+    for event in events[LIVE_PRE_SEND_RECHECK_LIMIT:]:
+        reasons[event.deal_key] = LIVE_RECHECK_BUDGET_REASON
+    semaphore = asyncio.Semaphore(LIVE_PRE_SEND_RECHECK_CONCURRENCY)
+
+    async def check(event: "_ClaimedEvent") -> tuple[str, str | None]:
+        async with semaphore:
+            return event.deal_key, await _live_pre_send_recheck_reason(
+                event.candidate
+            )
+
+    for deal_key, reason in await asyncio.gather(
+        *(check(event) for event in checked)
+    ):
+        if reason is not None:
+            reasons[deal_key] = reason
+    return reasons
 
 
 async def _defer_claimed_events_bulk(

@@ -21,6 +21,7 @@ LANE_VERIFIED_MARKDOWN = "verified_markdown"
 LANE_PRICE_MEMORY_DROP = "price_memory_drop"
 LANE_OPEN_BOX_LIKE_NEW = "open_box_like_new"
 LANE_RESTORED_REFURBISHED = "restored_refurbished"
+LANE_USED = "used"
 LANE_WALMART_CASH = "walmart_cash"
 LANE_CART_PROMO = "cart_promo"
 LANE_ONEPAY = "onepay"
@@ -38,6 +39,7 @@ PUBLIC_PRICE_LANES = {
     LANE_PRICE_MEMORY_DROP,
     LANE_OPEN_BOX_LIKE_NEW,
     LANE_RESTORED_REFURBISHED,
+    LANE_USED,
 }
 
 PRIVATE_PROMO_LANES = {
@@ -48,6 +50,11 @@ PRIVATE_PROMO_LANES = {
 
 OPEN_BOX_CONDITION_TERMS = ("open box", "open-box", "like new", "like-new", "new other")
 RESTORED_CONDITION_TERMS = ("restored", "refurbished", "pre-owned", "pre owned", "preowned", "renewed")
+# Plain "Used" is its own condition family: it matched neither term list
+# above, so a used offer used to fall through to the plain verified-
+# markdown lane with the condition visible only in small print. Word
+# boundaries keep "unused" from matching.
+USED_CONDITION_PATTERN = re.compile(r"\bused\b")
 DISPLAY_REFERENCE_TERMS = ("msrp", "original price", "reference price", "list price")
 LOW_TRUST_REFERENCE_TERMS = (
     "ignored reference",
@@ -162,6 +169,8 @@ def normalized_lane(card: Any) -> str:
         return LANE_OPEN_BOX_LIKE_NEW
     if is_restored_condition(condition):
         return LANE_RESTORED_REFURBISHED
+    if is_used_condition(condition):
+        return LANE_USED
     attrs = variant_attrs(card)
     if attrs.get("priceMemoryIdentity") or attrs.get("priceMemoryReason"):
         return LANE_PRICE_MEMORY_DROP
@@ -190,6 +199,11 @@ def is_open_box_condition(condition: str) -> bool:
 def is_restored_condition(condition: str) -> bool:
     text = normalized_condition(condition)
     return any(term in text for term in RESTORED_CONDITION_TERMS)
+
+
+def is_used_condition(condition: str) -> bool:
+    text = normalized_condition(condition)
+    return bool(USED_CONDITION_PATTERN.search(text))
 
 
 def has_low_trust_reference(card: Any, *, source_label: str = "") -> bool:
@@ -361,8 +375,13 @@ def public_deal_rejection_reason(
         if not has_global_exact_offer_memory_proof(card):
             return "price_memory_proof_incomplete"
         return None
-    if lane in {LANE_OPEN_BOX_LIKE_NEW, LANE_RESTORED_REFURBISHED}:
-        condition = normalized_condition(attr_value(card, "api_condition", "condition"))
+    condition = normalized_condition(attr_value(card, "api_condition", "condition"))
+    if lane == LANE_VERIFIED_MARKDOWN and is_used_condition(condition):
+        # Fail closed on labeling: a used offer must travel the labeled
+        # used lane below, never the plain verified-markdown lane, however
+        # its deal_lane happened to be set upstream.
+        return "used_condition_not_labeled"
+    if lane in {LANE_OPEN_BOX_LIKE_NEW, LANE_RESTORED_REFURBISHED, LANE_USED}:
         if not condition:
             return "condition_missing"
         if not has_structured_reference_proof(card):
@@ -371,6 +390,8 @@ def public_deal_rejection_reason(
             return "open_box_condition_mismatch"
         if lane == LANE_RESTORED_REFURBISHED and not is_restored_condition(condition):
             return "restored_condition_mismatch"
+        if lane == LANE_USED and not is_used_condition(condition):
+            return "used_condition_mismatch"
     if lane not in PUBLIC_PRICE_LANES and lane not in {LANE_CLEARANCE, LANE_ROLLBACK}:
         return f"unsupported_public_lane:{lane or 'unknown'}"
     return None
@@ -408,7 +429,7 @@ def prepare_public_deal_candidate(card: Any, *, source_label: str = "", min_disc
 
 
 def public_lane_label(lane: str) -> str:
-    labels = {LANE_VERIFIED_MARKDOWN: "Verified Markdown", LANE_PRICE_MEMORY_DROP: "Observed Price Drop", LANE_OPEN_BOX_LIKE_NEW: "Open Box / Like New", LANE_RESTORED_REFURBISHED: "Restored / Refurbished", LANE_CLEARANCE: "Clearance Markdown", LANE_ROLLBACK: "Rollback Markdown", LANE_PUBLIC_SCOUT: "Public Scout"}
+    labels = {LANE_VERIFIED_MARKDOWN: "Verified Markdown", LANE_PRICE_MEMORY_DROP: "Observed Price Drop", LANE_OPEN_BOX_LIKE_NEW: "Open Box / Like New", LANE_RESTORED_REFURBISHED: "Restored / Refurbished", LANE_USED: "Used", LANE_CLEARANCE: "Clearance Markdown", LANE_ROLLBACK: "Rollback Markdown", LANE_PUBLIC_SCOUT: "Public Scout"}
     return labels.get(lane, lane.replace("_", " ").title())
 
 

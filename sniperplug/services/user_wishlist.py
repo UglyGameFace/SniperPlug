@@ -22,6 +22,13 @@ An item may carry a target price (``target_price_cents``). The target is
 one more hard guard, not a threshold change: when the matched item has a
 target, the DM fires only when the verified price is at or under it.
 
+An item may also carry a size (``size_text``, normalized by
+``normalize_wishlist_size``). The size is the same kind of hard guard:
+when the matched item has a size, the DM fires only when the deal's
+proven variant size — the structured variant proof, never embed text —
+normalizes to the same size. An unproven deal size fails closed, exactly
+like an unproven price does.
+
 Wishlist terms also steer scanning, inside the existing budget: the
 distinct terms across all users join the catalog hunt's price-sniper
 priority pool (see ``list_wishlist_steering_terms``), so they are checked
@@ -39,6 +46,7 @@ process-wide ready flag.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -71,18 +79,24 @@ _SCHEMA_LOCK = asyncio.Lock()
 
 
 class WishlistEntry(str):
-    """One wishlist item: its display name, plus its optional target price.
+    """One wishlist item: its display name, plus its optional guards.
 
     A ``str`` subclass so every existing consumer of the plain display
     name (fanout grouping, matching, menu counts) keeps working byte-for-
     byte, while the DM matcher can also read ``target_price_cents``
-    (``None`` = no target; DM on any match, the original behaviour).
+    (``None`` = no target; DM on any match, the original behaviour) and
+    ``size_text`` (``None`` = no size guard; otherwise the canonical size
+    from ``normalize_wishlist_size``).
     """
 
     target_price_cents: int | None
+    size_text: str | None
 
     def __new__(
-        cls, item: object, target_price_cents: int | None = None
+        cls,
+        item: object,
+        target_price_cents: int | None = None,
+        size_text: object = None,
     ) -> "WishlistEntry":
         entry = super().__new__(cls, str(item))
         entry.target_price_cents = (
@@ -90,7 +104,70 @@ class WishlistEntry(str):
             if target_price_cents is not None and int(target_price_cents) > 0
             else None
         )
+        entry.size_text = normalize_wishlist_size(size_text)
         return entry
+
+
+_SIZE_WORDS = {
+    "XS": "XS",
+    "EXTRA SMALL": "XS",
+    "S": "S",
+    "SMALL": "S",
+    "M": "M",
+    "MEDIUM": "M",
+    "L": "L",
+    "LARGE": "L",
+    "XL": "XL",
+    "EXTRA LARGE": "XL",
+    "X LARGE": "XL",
+    "2XL": "2XL",
+    "XXL": "2XL",
+    "3XL": "3XL",
+    "XXXL": "3XL",
+    "4XL": "4XL",
+    "XXXXL": "4XL",
+}
+
+
+def _canonical_size_number(text: str) -> str:
+    number = float(text)
+    return str(int(number)) if number == int(number) else str(number)
+
+
+def normalize_wishlist_size(value: object) -> str | None:
+    """Canonical size, shared by wishlist entries and proven variant sizes.
+
+    One normalizer for both sides of the size guard, so the size a user
+    typed and the size the variant proof carries compare equal when they
+    mean the same size: ``US 10`` / ``10.0`` / ``10`` are one size,
+    ``3 Y`` is the kids' ``3Y``, ``XXL`` is ``2XL``, ``32 x 30`` and
+    ``W32 L30`` are the waist/inseam ``32X30``, and apparel words
+    (``Large``) fold to their letter (``L``). Anything unrecognized keeps
+    its uppercased, single-spaced text form, so less common sizes
+    (``0-3M``, ``Queen``) still match when both sides carry the same
+    text. Empty or implausibly long values are not sizes (``None``).
+    """
+
+    text = " ".join(str(value or "").split()).strip().upper()
+    if not text or len(text) > 24:
+        return None
+    text = re.sub(r"^(?:SIZE|US|U\.S\.)\s+", "", text)
+    text = text.replace(" 1/2", ".5")
+    word_form = text.replace("-", " ")
+    if word_form in _SIZE_WORDS:
+        return _SIZE_WORDS[word_form]
+    waist = re.fullmatch(r"(\d{2})\s*W?\s*[X/ ]\s*L?\s*(\d{2})L?", text)
+    if waist:
+        return f"{waist.group(1)}X{waist.group(2)}"
+    waist_labeled = re.fullmatch(r"W(\d{2})\s*L(\d{2})", text)
+    if waist_labeled:
+        return f"{waist_labeled.group(1)}X{waist_labeled.group(2)}"
+    kids = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([YC])", text)
+    if kids:
+        return f"{_canonical_size_number(kids.group(1))}{kids.group(2)}"
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return _canonical_size_number(text)
+    return text
 
 
 @dataclass(frozen=True)
@@ -101,6 +178,7 @@ class WishlistAddResult:
     count: int = 0
     updated: bool = False
     target_price_cents: int | None = None
+    size_text: str | None = None
 
     @property
     def at_cap(self) -> bool:
@@ -138,6 +216,7 @@ async def ensure_user_wishlist_tables(db: Any) -> None:
                 item_key TEXT NOT NULL,
                 added_at TEXT NOT NULL,
                 target_price_cents INTEGER,
+                size_text TEXT,
                 PRIMARY KEY (user_id, item_key)
             )
             """
@@ -153,6 +232,10 @@ async def ensure_user_wishlist_tables(db: Any) -> None:
         if "target_price_cents" not in columns:
             await conn.execute(
                 f"ALTER TABLE {WISHLIST_TABLE} ADD COLUMN target_price_cents INTEGER"
+            )
+        if "size_text" not in columns:
+            await conn.execute(
+                f"ALTER TABLE {WISHLIST_TABLE} ADD COLUMN size_text TEXT"
             )
         await conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{WISHLIST_TABLE}_user "
@@ -170,7 +253,7 @@ async def list_user_wishlist_entries(
     await ensure_user_wishlist_tables(db)
     conn = db.require_conn()
     cursor = await conn.execute(
-        f"SELECT item, target_price_cents FROM {WISHLIST_TABLE} "
+        f"SELECT item, target_price_cents, size_text FROM {WISHLIST_TABLE} "
         f"WHERE user_id = ? ORDER BY added_at ASC",
         (str(int(user_id)),),
     )
@@ -179,6 +262,7 @@ async def list_user_wishlist_entries(
         WishlistEntry(
             str(_row_get(row, "item", 0)),
             _as_optional_int(_row_get(row, "target_price_cents", 1)),
+            _row_get(row, "size_text", 2),
         )
         for row in rows
     )
@@ -206,7 +290,7 @@ async def list_wishlists_for_users(
     conn = db.require_conn()
     placeholders = ", ".join("?" for _ in ids)
     cursor = await conn.execute(
-        f"SELECT user_id, item, target_price_cents FROM {WISHLIST_TABLE} "
+        f"SELECT user_id, item, target_price_cents, size_text FROM {WISHLIST_TABLE} "
         f"WHERE user_id IN ({placeholders}) ORDER BY user_id, added_at ASC",
         tuple(str(user_id) for user_id in ids),
     )
@@ -222,6 +306,7 @@ async def list_wishlists_for_users(
                 WishlistEntry(
                     str(_row_get(row, "item", 1)),
                     _as_optional_int(_row_get(row, "target_price_cents", 2)),
+                    _row_get(row, "size_text", 3),
                 )
             )
     return {user_id: tuple(items) for user_id, items in grouped.items()}
@@ -261,6 +346,7 @@ async def add_user_wishlist_item(
     item: str,
     *,
     target_price_cents: int | None = None,
+    size_text: object = None,
 ) -> WishlistAddResult:
     display = normalize_wishlist_item(item)
     key = wishlist_item_key(item)
@@ -269,30 +355,37 @@ async def add_user_wishlist_item(
     if len(key.split()) > 8:
         return WishlistAddResult(False, display, "too_long")
     target = _as_optional_int(target_price_cents)
+    size = normalize_wishlist_size(size_text)
     await ensure_user_wishlist_tables(db)
     current = await list_user_wishlist_entries(db, user_id)
     existing = next(
         (entry for entry in current if wishlist_item_key(entry) == key), None
     )
     if existing is not None:
-        if target is None:
+        if target is None and size is None:
             # A bare re-add changes nothing — in particular it never
-            # clears a target the user already set for the item.
+            # clears a target or size the user already set for the item.
             return WishlistAddResult(
                 False,
                 str(existing),
                 "duplicate",
                 len(current),
                 target_price_cents=existing.target_price_cents,
+                size_text=existing.size_text,
             )
-        # Re-adding with a target is how a target is set or changed: the
-        # row is updated in place, never duplicated, and the update is
-        # allowed even when the wishlist is at the item cap.
+        # Re-adding with a target and/or a size is how they are set or
+        # changed: the row is updated in place, never duplicated, and
+        # the update is allowed even when the wishlist is at the item
+        # cap. A guard the re-add does not mention keeps its old value.
+        effective_target = (
+            target if target is not None else existing.target_price_cents
+        )
+        effective_size = size if size is not None else existing.size_text
         conn = db.require_conn()
         await conn.execute(
-            f"UPDATE {WISHLIST_TABLE} SET target_price_cents = ? "
+            f"UPDATE {WISHLIST_TABLE} SET target_price_cents = ?, size_text = ? "
             f"WHERE user_id = ? AND item_key = ?",
-            (target, str(int(user_id)), key),
+            (effective_target, effective_size, str(int(user_id)), key),
         )
         await conn.commit()
         return WishlistAddResult(
@@ -301,15 +394,16 @@ async def add_user_wishlist_item(
             "updated",
             len(current),
             updated=True,
-            target_price_cents=target,
+            target_price_cents=effective_target,
+            size_text=effective_size,
         )
     if len(current) >= MAX_WISHLIST_ITEMS_PER_USER:
         return WishlistAddResult(False, display, "cap", len(current))
     conn = db.require_conn()
     await conn.execute(
         f"""
-        INSERT INTO {WISHLIST_TABLE} (user_id, item, item_key, added_at, target_price_cents)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO {WISHLIST_TABLE} (user_id, item, item_key, added_at, target_price_cents, size_text)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id, item_key) DO NOTHING
         """,
         (
@@ -318,11 +412,17 @@ async def add_user_wishlist_item(
             key,
             datetime.now(timezone.utc).isoformat(),
             target,
+            size,
         ),
     )
     await conn.commit()
     return WishlistAddResult(
-        True, display, "", len(current) + 1, target_price_cents=target
+        True,
+        display,
+        "",
+        len(current) + 1,
+        target_price_cents=target,
+        size_text=size,
     )
 
 
@@ -378,7 +478,8 @@ def match_wishlist_entry(
     Whole-phrase, word-boundary matching (``phrase_in_text``): ``iphone 11``
     matches "Apple iPhone 11 64GB" but not "iphone 110 case" and ``iphone``
     does not match "iphonex". The returned entry keeps the item's target
-    price (plain-string items match with no target). ``None`` = no match.
+    price and size (plain-string items match with neither). ``None`` = no
+    match.
     """
 
     if items is None:
@@ -392,7 +493,10 @@ def match_wishlist_entry(
                 if isinstance(item, WishlistEntry)
                 else None
             )
-            return WishlistEntry(display, target)
+            size = (
+                item.size_text if isinstance(item, WishlistEntry) else None
+            )
+            return WishlistEntry(display, target, size)
     return None
 
 

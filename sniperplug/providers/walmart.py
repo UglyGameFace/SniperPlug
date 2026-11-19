@@ -36,10 +36,12 @@ from sniperplug.services.public_deal_quality import (
     LANE_ONEPAY,
     LANE_RESTORED_REFURBISHED,
     LANE_ROLLBACK,
+    LANE_USED,
     LANE_VERIFIED_MARKDOWN,
     LANE_WALMART_CASH,
     is_open_box_condition,
     is_restored_condition,
+    is_used_condition,
     normalized_condition,
 )
 
@@ -957,6 +959,8 @@ def _walmart_deal_lane(
         return LANE_OPEN_BOX_LIKE_NEW
     if is_restored_condition(normalized):
         return LANE_RESTORED_REFURBISHED
+    if is_used_condition(normalized):
+        return LANE_USED
     if has_walmart_cash or proof_attrs.get("walmartCashSavings") or proof_attrs.get("walmartCashAmount") or proof_attrs.get("walmartCashReward"):
         return LANE_WALMART_CASH
     if has_onepay or proof_attrs.get("onePayCashback") or proof_attrs.get("onepayCashback"):

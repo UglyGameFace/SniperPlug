@@ -356,7 +356,7 @@ async def test_cog_add_with_size_then_list_shows_it() -> None:
         _, kwargs = interaction.followup.sent[0]
         embed = kwargs["embed"]
         assert "nike shoes" in (embed.description or "")
-        assert "size 10.5 only" in (embed.description or "")
+        assert "nike shoes — size 10.5" in (embed.description or "")
 
 
 @pytest.mark.asyncio

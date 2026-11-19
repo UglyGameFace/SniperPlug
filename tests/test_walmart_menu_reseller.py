@@ -7,8 +7,8 @@ quick, simple, to the point.
 
 The new split:
 
-* Everyone: Find deals, Hunt deals, My alerts buttons + DM toggle +
-  Refresh. Check a deal appears only for openers who can check.
+* Everyone: Find deals, Browse, My alerts buttons + DM toggle +
+  Refresh. Check a link appears only for openers who can check.
 * Deal Finder role (The 420 Lobby role 1517181991412302025) OR Manage
   Server can check a deal — the slash command's gate and the menu's
   gate both use ``_can_check_deal``.
@@ -178,13 +178,13 @@ def test_member_view_has_find_hunt_my_alerts_dm_refresh_and_no_staff() -> None:
     labels = _buttons(view)
     assert set(labels) == {
         "Find deals",
-        "Hunt deals",
+        "Browse",
         "My alerts",
         "DM alerts: OFF",
         "Refresh",
     }
     assert _selects(view) == []
-    assert "Check a deal" not in labels
+    assert "Check a link" not in labels
     assert "−5%" not in labels
     assert "Extreme: OFF" not in labels
     assert view.timeout == 300
@@ -193,8 +193,8 @@ def test_member_view_has_find_hunt_my_alerts_dm_refresh_and_no_staff() -> None:
 def test_role_holder_view_shows_check_button_but_no_staff() -> None:
     view = WalmartMenuView(WalmartCommandCog(bot=None), can_check=True)
     labels = _buttons(view)
-    assert "Check a deal" in labels
-    assert {"Find deals", "Hunt deals", "My alerts"} <= set(labels)
+    assert "Check a link" in labels
+    assert {"Find deals", "Browse", "My alerts"} <= set(labels)
     assert _selects(view) == []
     assert "−5%" not in labels
     assert "Extreme: OFF" not in labels
@@ -209,7 +209,7 @@ def test_staff_view_shows_staff_select_stepper_and_extreme() -> None:
     assert {option.value for option in selects[0].options} == set(MENU_STAFF_KEYS)
     assert len(selects[0].options) == 10
     labels = _buttons(view)
-    assert {"Check a deal", "Find deals", "Hunt deals", "My alerts"} <= set(labels)
+    assert {"Check a link", "Find deals", "Browse", "My alerts"} <= set(labels)
     assert {"−5%", "40%", "+5%", "Extreme: OFF", "DM alerts: OFF", "Refresh"} <= set(labels)
 
 
@@ -345,7 +345,7 @@ async def test_walmart_menu_passes_flags_to_view(monkeypatch) -> None:
     member = _FakeInteraction()
     await cog.menu.callback(cog, member)
     view = member.followup.sent[0][1]["view"]
-    assert "Check a deal" not in _buttons(view)
+    assert "Check a link" not in _buttons(view)
     assert _selects(view) == []
     embed = member.followup.sent[0][1]["embed"]
     assert "Deal checks need the 🔍 Deal Finder role" in _embed_text(embed)
@@ -353,7 +353,7 @@ async def test_walmart_menu_passes_flags_to_view(monkeypatch) -> None:
     staff = _FakeInteraction(manage_guild=True)
     await cog.menu.callback(cog, staff)
     view = staff.followup.sent[0][1]["view"]
-    assert "Check a deal" in _buttons(view)
+    assert "Check a link" in _buttons(view)
     assert len(_selects(view)) == 1
 
 
@@ -368,7 +368,7 @@ async def test_unified_menu_walmart_category_passes_flags() -> None:
     member = _FakeInteraction()
     await cog.open_category(member, "walmart")
     view = member.response.edited[0]["view"]
-    assert "Check a deal" not in _buttons(view)
+    assert "Check a link" not in _buttons(view)
     assert _selects(view) == []
     embed = member.response.edited[0]["embed"]
     assert "Deal checks need the 🔍 Deal Finder role" in _embed_text(embed)
@@ -376,5 +376,5 @@ async def test_unified_menu_walmart_category_passes_flags() -> None:
     staff = _FakeInteraction(manage_guild=True)
     await cog.open_category(staff, "walmart")
     view = staff.response.edited[0]["view"]
-    assert "Check a deal" in _buttons(view)
+    assert "Check a link" in _buttons(view)
     assert len(_selects(view)) == 1

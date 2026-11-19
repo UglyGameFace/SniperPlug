@@ -52,22 +52,28 @@ from sniperplug.services.user_wishlist import (
 
 GROUP_DESCRIPTION = (
     "Name items you want — get a DM only if the broad scan finds one "
-    "as a verified deal."
+    "as a price-checked deal."
 )
 
 MAX_TARGET_PRICE_DOLLARS = 1_000_000
 
 
+def _money(cents: int) -> str:
+    if cents % 100 == 0:
+        return f"${cents // 100:,}"
+    return f"${cents / 100:,.2f}"
+
+
 def _target_suffix(entry: WishlistEntry) -> str:
     if entry.target_price_cents is None:
         return ""
-    return f" — DM only at or under ${entry.target_price_cents / 100:,.2f}"
+    return f" — under {_money(entry.target_price_cents)}"
 
 
 def _size_suffix(entry: WishlistEntry) -> str:
     if entry.size_text is None:
         return ""
-    return f" — size {entry.size_text} only"
+    return f" — size {entry.size_text}"
 
 
 def _wishlist_lines(items: tuple[WishlistEntry, ...]) -> str:
@@ -83,8 +89,8 @@ def _dm_status_line(preference: DmDealAlertPreference) -> str:
     if preference.enabled:
         return "Personal deal DMs are **on** — wishlist matches will reach your DMs."
     return (
-        "Personal deal DMs are **off** — wishlist matches cannot reach you until "
-        "they are on. Run `/walmart my-alerts action:Enable or update with typed options`."
+        "Personal deal DMs are **off** — wishlist matches can't reach you until "
+        "they're on. Open **My alerts** in the menu to turn them on."
     )
 
 
@@ -96,7 +102,7 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
 
     # -- add -----------------------------------------------------------
 
-    @app_commands.command(name="add", description="Add an item to your wishlist. I'll DM you if the bot's broad scan finds it as a verified deal.")
+    @app_commands.command(name="add", description="Add an item to your wishlist. I'll DM you if the bot's broad scan finds it as a price-checked deal.")
     @app_commands.describe(
         item="Plain product name, for example: iphone 11, dyson airwrap, rtx 5070.",
         target_price="Optional: only DM me at or under this price, for example 150.",
@@ -132,7 +138,7 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
             conditions = []
             if result.target_price_cents is not None:
                 conditions.append(
-                    "the verified price is at or under "
+                    "the checked price is at or under "
                     f"${result.target_price_cents / 100:,.2f}"
                 )
             if result.size_text is not None:
@@ -197,8 +203,8 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
         await interaction.followup.send(
             f"✅ Added **{result.item}** to your wishlist "
             f"({result.count}/{MAX_WISHLIST_ITEMS_PER_USER}).{target_note}{size_note}\n\n"
-            "I'll DM you if the bot's broad scan finds it first as a verified deal "
-            "(exact price proof, at least 20% off). "
+            "I'll DM you if the bot's broad scan finds it first as a deal "
+            "(price checked, at least 20% off). "
             f"{WISHLIST_SCAN_NOTE} "
             "See everything with `/wishlist list`."
             + (f"\n\n{dm_note}" if dm_note else ""),
@@ -228,7 +234,7 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
             description=(
                 "You added an item to your wishlist, so your personal deal DMs "
                 "are now on with the usual Smart settings "
-                "(exact verified deals, at least 20% off, daily cap 25). "
+                "(price-checked deals, at least 20% off, up to 25 a day). "
                 "You will only hear about wishlist matches and other deals "
                 "that pass those filters — and a wishlist match only happens "
                 "when the bot's broad scan finds your item first.\n\n"
@@ -247,8 +253,8 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
         except discord.HTTPException as error:
             return False, (
                 f"⚠️ Discord could not deliver the confirmation DM (`{type(error).__name__}`), "
-                "so your personal deal DMs are still off — your wishlist item is saved, "
-                "try `/walmart my-alerts action:Enable or update with typed options` again shortly."
+                "so your personal deal DMs are still off — your wishlist item is saved. "
+                "Try again from **My alerts** in the menu in a little while."
             )
         await save_dm_deal_alert_preference(
             self.bot.db,
@@ -304,7 +310,7 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
         embed.set_footer(
             text=(
                 f"{len(items)}/{MAX_WISHLIST_ITEMS_PER_USER} items • "
-                "Add with /wishlist add • Matches need exact price proof and at least 20% off, "
+                "Add with /wishlist add • Matches need a checked price and at least 20% off, "
                 "and the item must first be found by the bot's broad scan."
             )
         )

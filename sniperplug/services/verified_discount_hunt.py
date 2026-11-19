@@ -591,7 +591,7 @@ async def verified_hunt_button_callback(self, interaction: discord.Interaction) 
         if category_notes or category_suppressed_cards:
             lines = []
             if category_suppressed_cards:
-                lines.append(f"Muted category settings hid **{len(category_suppressed_cards)}** normal public lead(s). Extreme/nuclear deals still break through.")
+                lines.append(f"Muted category settings hid **{len(category_suppressed_cards)}** normal public lead(s). Extreme price leads still break through.")
             lines.extend(f"• {note}" for note in category_notes[:3])
             summary.add_field(name="🎛️ Deal Feed Controls", value="\n".join(lines)[:1024], inline=False)
 
@@ -612,18 +612,16 @@ async def verified_hunt_button_callback(self, interaction: discord.Interaction) 
 
 
 def build_verified_hunt_menu_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="🚨 SniperPlug Walmart Hunt",
-        description=(
-            "Pick a category. Each button scans Walmart sale/result surfaces using your server's starting deal threshold.\n"
-            "Change it with `/walmart threshold percent:30`. Lower values show more verified results."
-        ),
+    # One line and the category buttons — that's the whole screen. The
+    # per-category paragraphs (each ending in the same threshold
+    # sentence, nine times) and the sort-passes footer explained the
+    # machine instead of the outcome, and told members to run a staff
+    # command to change the threshold.
+    return discord.Embed(
+        title="Browse deals",
+        description="Pick a category. Every price is checked before it's shown.",
         color=discord.Color.red(),
     )
-    for preset in HUNT_PRESETS.values():
-        embed.add_field(name=f"{preset.emoji} {preset.label}", value=f"{preset.description}\nUses the server deal threshold. Scout/value leads are private.", inline=False)
-    embed.set_footer(text=f"Each category checks {len(SORT_PASSES)} sort passes × up to {PAGES_PER_QUERY} pages per route. Math must come from trusted API product prices.")
-    return embed
 
 
 def build_verified_hunt_summary(preset: HuntPreset, pages_checked: int, products_checked: int, found_count: int, warnings: tuple[str, ...], shown_discount: int) -> discord.Embed:
@@ -638,11 +636,11 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
     embed = discord.Embed(
         title=f"{preset.emoji} {preset.label} Hunt Results",
         description=(
-            f"Starting threshold: **{result.min_discount}%+ verified markdown**\n"
+            f"Starting at: **{result.min_discount}% off** or better\n"
             f"Checked: **{result.products_checked} returned products** across **{result.pages_checked} API pages**\n"
             f"Routes: **{len(preset.queries)}** • Remembered product rechecks: **{result.memory_recheck_count}** • Page size: **{RESULTS_PER_PAGE}**\n"
-            f"Verified {result.min_discount}%+ total: **{found_total}** • Shown now: **{len(result.cards)}**\n"
-            f"Review/flip/scout candidates: **{review_count}**"
+            f"Deals at {result.min_discount}% off or better, total: **{found_total}** • Shown now: **{len(result.cards)}**\n"
+            f"Extra leads to review: **{review_count}**"
         ),
         color=discord.Color.red() if result.cards else discord.Color.dark_gold(),
     )
@@ -652,26 +650,26 @@ def build_verified_hunt_result_embed(result: VerifiedHuntResult) -> discord.Embe
     if result.price_memory is not None:
         embed.add_field(name="🧠 Price memory", value=result.price_memory.summary_line(), inline=False)
     if result.review_candidates is not None:
-        embed.add_field(name="🟨 Review / flip / scout audit", value=result.review_candidates.summary_line(), inline=False)
+        embed.add_field(name="🟨 Extra leads", value=result.review_candidates.summary_line(), inline=False)
     if result.scout_lead_count:
-        embed.add_field(name="🔎 Low-price scout", value=f"Surfaced **{result.scout_lead_count}** private scout/value lead(s) from broad category scans.", inline=False)
+        embed.add_field(name="🔎 Low-price leads", value=f"Surfaced **{result.scout_lead_count}** private lead(s) from broad category scans.", inline=False)
     if result.memory_recheck_count:
         embed.add_field(name="♻️ Remembered products", value=f"Rechecked **{result.memory_recheck_count}** known Walmart SKU/UPC/title seed(s) so older good leads can resurface when price, coupon, offer, or stock changes.", inline=False)
     if not result.cards and review_count:
         embed.add_field(
-            name=f"No auto-postable verified {result.min_discount}%+ deals — showing review/flip/scout candidates",
-            value="Private candidates can be manually checked and posted. They are not auto-posted unless trusted Walmart price math passes.",
+            name=f"Nothing at {result.min_discount}% off or better to post — showing extra leads instead",
+            value="These are private. They only post after a person checks them.",
             inline=False,
         )
     elif not result.cards:
         embed.add_field(
-            name=f"No verified {result.min_discount}%+ API markdowns found",
-            value="Walmart did not return enough trusted markdown proof at this threshold. Lower it with `/walmart threshold percent:30` to show more verified results.",
+            name=f"No deals at {result.min_discount}% off or better found",
+            value="Nothing passed the price check at this server's setting. Server staff can lower the public discount to show more.",
             inline=False,
         )
     if result.warnings:
         embed.add_field(name="⚠️ API notes", value="\n".join(f"• {w}" for w in result.warnings[:5]), inline=False)
-    embed.set_footer(text="Change starting markdown with /walmart threshold. Review/flip/scout leads are private and require manual checkout/comp checks.")
+    embed.set_footer(text="Extra leads are private — a person checks them before anything posts.")
     return embed
 
 
@@ -685,7 +683,7 @@ async def send_card_batches(interaction: discord.Interaction, *, summary: discor
         )
     for batch in batch_cards_for_limit(review_cards or []):
         await interaction.followup.send(
-            content="🟨 Review/flip/scout API leads — private only, not public-posted as verified deals.",
+            content="🟨 Extra leads — private only. A person checks these before anything posts.",
             embeds=[sanitize_embed(card.embed) for card in batch],
             view=deal_scanner.PresetResultView(batch),
             ephemeral=True,

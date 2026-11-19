@@ -181,9 +181,9 @@ def test_staff_menu_view_has_staff_select_and_quick_buttons() -> None:
     # Refresh) sit alongside the four member buttons; with no snapshot the
     # stepper shows the 40% default and both toggles show OFF.
     assert {button.label for button in buttons} == {
-        "Check a deal",
+        "Check a link",
         "Find deals",
-        "Hunt deals",
+        "Browse",
         "My alerts",
         "−5%",
         "40%",

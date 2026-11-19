@@ -92,9 +92,9 @@ def test_dm_rule_parser_uses_explicit_off_to_remove_max_price() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("threshold_text", "96", "DM Deal Threshold"),
+        ("threshold_text", "96", "Smallest discount"),
         ("savings_text", "-1", "Minimum savings"),
-        ("score_text", "251", "Minimum Sniper score"),
+        ("score_text", "251", "Minimum deal score"),
         ("max_price_text", "0", "Maximum item price"),
         ("daily_cap_text", "101", "Daily DM limit"),
     ],
@@ -127,10 +127,11 @@ def test_dm_rules_modal_does_not_force_every_field() -> None:
 
 def test_personal_menu_keeps_rules_and_flip_separate_without_wall_of_help_text() -> None:
     source = inspect.getsource(DmDealPreferencesView)
-    assert "Deal rules:" in source
+    assert "Deal rules" in source
     assert "DM Deal Threshold" not in source
-    assert "Flip Override:" in source
-    assert "Flip Profit:" in source
+    assert "Price mistakes:" in source
+    assert "Only mistakes worth" in source
+    assert "Flip Override" not in source
     assert "Products & brands" in source
     assert "Categories" in source
     assert "Safety boundary" not in source

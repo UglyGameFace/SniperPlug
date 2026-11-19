@@ -113,10 +113,10 @@ def parse_dm_rule_values(
             threshold = int(threshold_raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                "DM Deal Threshold must be a whole number from 0 to 95."
+                "Smallest discount must be a whole number from 0 to 95."
             ) from exc
         if not 0 <= threshold <= 95:
-            raise ValueError("DM Deal Threshold must be between 0% and 95%.")
+            raise ValueError("Smallest discount must be between 0% and 95%.")
 
     savings_raw = str(savings_text or "").strip()
     min_savings_cents: int | None = None
@@ -133,10 +133,10 @@ def parse_dm_rule_values(
             score = int(score_raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                "Minimum Sniper score must be a whole number from 0 to 250."
+                "Minimum deal score must be a whole number from 0 to 250."
             ) from exc
         if not 0 <= score <= 250:
-            raise ValueError("Minimum Sniper score must be between 0 and 250.")
+            raise ValueError("Minimum deal score must be between 0 and 250.")
 
     max_price_raw = str(max_price_text or "").strip()
     max_price_cents: int | None = None
@@ -195,10 +195,10 @@ def _parse_dollars(value: str, *, field_name: str) -> float:
 
 def _mode_help(mode: str) -> str:
     if mode == "smart":
-        return "adapts quality requirements upward by price while keeping your floors hard"
+        return "raises the bar on pricier items — your own minimums always apply"
     if mode == "custom":
-        return "uses your manual floors exactly"
-    return "uses your saved hard floors without Smart price-based increases"
+        return "uses exactly the minimums you set"
+    return "uses your saved minimums, with no automatic increases"
 
 
 class DmDealPreferencesView(discord.ui.View):
@@ -291,17 +291,18 @@ class DmDealPreferencesView(discord.ui.View):
 
     def _build_routes_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="🚨 DM deal routes",
+            title="🚨 Kinds of deals",
             description=(
-                "Choose the **kinds of verified deals** you want, without memorizing "
-                "products or categories. Multiple selections work as OR.\n\n"
-                "When routes are selected, they replace product/category inclusion "
-                "filters, but price, markdown, score, savings, keywords and daily "
-                "limits still apply. Clear routes to use product/category filters again."
+                "Follow whole **kinds of deals** — price mistakes, hot deals "
+                "and more — instead of picking products. If you pick more "
+                "than one, any of them can DM you.\n\n"
+                "If you pick any, they replace your product and category "
+                "picks. Your discount, savings and daily limits still apply. "
+                "Clear them to go back to product and category picks."
             ),
             color=discord.Color.blurple(),
         )
-        embed.add_field(name="Your selected routes", value=self._route_preview(), inline=False)
+        embed.add_field(name="Your kinds of deals", value=self._route_preview(), inline=False)
         return embed
 
     def _route_preview(self) -> str:
@@ -309,7 +310,7 @@ class DmDealPreferencesView(discord.ui.View):
         return (
             ", ".join(labels[route] for route in labels if route in self.selected_routes)
             if self.selected_routes
-            else "None (product/category personalization is active)"
+            else "None — your product and category picks apply"
         )
 
     def _build_home_embed(self) -> discord.Embed:
@@ -318,19 +319,20 @@ class DmDealPreferencesView(discord.ui.View):
             if self.dm_max_price_cents is not None
             else "No limit"
         )
+        if self.dm_daily_cap == UNLIMITED_MAX_ALERTS_PER_DAY:
+            cap_text = "No daily limit"
+        else:
+            cap_text = f"Up to {self.dm_daily_cap} a day"
         embed = discord.Embed(
-            title="🎯 Personal Walmart Deal Alerts",
+            title="🎯 My alerts",
             description=(
-                "**Deal routes** lets you follow Price Glitches, Hot Deals and other "
-                "verified deal types without choosing products. Products and categories "
-                "remain optional for specific interests.\n\n"
-                "Selected routes take priority over old product/category filters. "
-                "Your hard deal rules always apply."
+                f"Deal DMs: **{'ON' if self.preference.enabled else 'OFF'}** · "
+                f"Only deals **{self.dm_min_discount}%** off or better · {cap_text}"
             ),
             color=discord.Color.blurple(),
         )
         embed.add_field(
-            name="🚨 Deal routes",
+            name="🚨 Kinds of deals",
             value=f"**{self._route_preview()}**",
             inline=False,
         )
@@ -354,7 +356,7 @@ class DmDealPreferencesView(discord.ui.View):
         embed.add_field(
             name="🔔 Deal rules",
             value=(
-                f"**{self.dm_min_discount}%+** markdown • "
+                f"**{self.dm_min_discount}%+** off • "
                 f"${self.dm_min_savings_cents / 100:,.2f}+ savings • "
                 f"score {self.dm_min_score}/250\n"
                 f"Mode **{DM_MODE_LABELS.get(self.dm_mode, self.dm_mode.title())}** • "
@@ -364,9 +366,9 @@ class DmDealPreferencesView(discord.ui.View):
             inline=False,
         )
         embed.add_field(
-            name="💰 Flip Override",
+            name="💰 Price mistakes",
             value=(
-                f"**{'ON' if self.flip_enabled else 'OFF'}** • minimum estimated net profit "
+                f"**{'ON' if self.flip_enabled else 'OFF'}** • only mistakes worth "
                 f"**${self.flip_min_profit_cents / 100:,.0f}+**"
             ),
             inline=False,
@@ -510,7 +512,7 @@ class DmDealPreferencesView(discord.ui.View):
 
     def _build_home_items(self) -> None:
         routes = discord.ui.Button(
-            label=f"Deal routes ({len(self.selected_routes)})",
+            label=f"Kinds of deals ({len(self.selected_routes)})",
             emoji="🚨",
             style=discord.ButtonStyle.primary,
             row=0,
@@ -537,7 +539,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(categories)
 
         dm_rules = discord.ui.Button(
-            label=f"Deal rules: {self.dm_min_discount}%+",
+            label="Deal rules",
             emoji="🔔",
             style=discord.ButtonStyle.secondary,
             row=1,
@@ -546,7 +548,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(dm_rules)
 
         mode = discord.ui.Button(
-            label=f"Mode: {DM_MODE_LABELS.get(self.dm_mode, self.dm_mode.title())}",
+            label="Change mode",
             emoji="🎚️",
             style=discord.ButtonStyle.secondary,
             row=1,
@@ -555,7 +557,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(mode)
 
         flip = discord.ui.Button(
-            label=f"Flip Override: {'ON' if self.flip_enabled else 'OFF'}",
+            label=f"Price mistakes: {'ON' if self.flip_enabled else 'OFF'}",
             emoji="💰",
             style=(
                 discord.ButtonStyle.success
@@ -568,7 +570,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(flip)
 
         profit = discord.ui.Button(
-            label=f"Flip Profit: ${self.flip_min_profit_cents / 100:,.0f}+",
+            label=f"Only mistakes worth ${self.flip_min_profit_cents / 100:,.0f}+",
             emoji="📈",
             style=discord.ButtonStyle.secondary,
             row=2,
@@ -581,7 +583,7 @@ class DmDealPreferencesView(discord.ui.View):
     def _build_route_items(self) -> None:
         self.add_item(_DmRouteSelect(self))
         clear = discord.ui.Button(
-            label="Clear selected routes",
+            label="Clear kinds of deals",
             emoji="🧹",
             style=discord.ButtonStyle.secondary,
             row=1,
@@ -590,7 +592,7 @@ class DmDealPreferencesView(discord.ui.View):
         clear.callback = self._clear_routes
         self.add_item(clear)
         dashboard = discord.ui.Button(
-            label="Dashboard",
+            label="Back",
             emoji="⬅️",
             style=discord.ButtonStyle.secondary,
             row=2,
@@ -669,7 +671,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(clear_brands)
 
         dashboard = discord.ui.Button(
-            label="Dashboard",
+            label="Back",
             emoji="⬅️",
             style=discord.ButtonStyle.secondary,
             row=3,
@@ -746,7 +748,7 @@ class DmDealPreferencesView(discord.ui.View):
         self.add_item(clear_tab)
 
         dashboard = discord.ui.Button(
-            label="Dashboard",
+            label="Back",
             emoji="⬅️",
             style=discord.ButtonStyle.secondary,
             row=4,
@@ -802,7 +804,7 @@ class DmDealPreferencesView(discord.ui.View):
     async def _clear_routes(self, interaction: discord.Interaction) -> None:
         self.selected_routes.clear()
         self.dirty = True
-        await self._refresh(interaction, status="Route selection cleared. Product/category filters apply.")
+        await self._refresh(interaction, status="Kinds of deals cleared. Your product and category picks apply.")
 
     async def _show_products(self, interaction: discord.Interaction) -> None:
         self.screen = SCREEN_PRODUCTS
@@ -914,9 +916,9 @@ class DmDealPreferencesView(discord.ui.View):
         await self._refresh(
             interaction,
             status=(
-                "💰 Flip Override enabled."
+                "💰 Price mistakes on."
                 if self.flip_enabled
-                else "💰 Flip Override disabled."
+                else "💰 Price mistakes off."
             ),
         )
 
@@ -990,7 +992,7 @@ class _DmRouteSelect(discord.ui.Select):
             for route, label in route_labels()
         ]
         super().__init__(
-            placeholder="Select which verified deal types to DM",
+            placeholder="Select which kinds of deals to DM",
             min_values=1,
             max_values=len(options),
             options=options,
@@ -1000,7 +1002,7 @@ class _DmRouteSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         self.owner.selected_routes = set(self.values)
         self.owner.dirty = True
-        await self.owner._refresh(interaction, status="Updated routes. Save changes to apply.")
+        await self.owner._refresh(interaction, status="Kinds of deals updated. Save changes to apply.")
 
 
 class _ProductPageSelect(discord.ui.Select):
@@ -1122,8 +1124,7 @@ class _CategoryPageSelect(discord.ui.Select):
                 label=category.label[:100],
                 value=category.key,
                 description=(
-                    f"Scan priority {category.demand_level}/100 • discovery baseline "
-                    f"{category.min_discount_percent:g}%"
+                    f"Deals from {category.min_discount_percent:g}% off"
                 )[:100],
                 default=category.key in active,
             )
@@ -1234,7 +1235,7 @@ class _DmDealRulesModal(
     title="Change only the DM rules you want",
 ):
     threshold = discord.ui.TextInput(
-        label="DM Deal Threshold (%) — optional",
+        label="Smallest discount (%) — optional",
         placeholder="Blank keeps current",
         required=False,
         max_length=2,
@@ -1246,7 +1247,7 @@ class _DmDealRulesModal(
         max_length=12,
     )
     score = discord.ui.TextInput(
-        label="Minimum Sniper score — optional",
+        label="Minimum deal score — optional",
         placeholder="Blank keeps current",
         required=False,
         max_length=3,
@@ -1340,9 +1341,9 @@ class _DmDealRulesModal(
         await self.owner._refresh(interaction, status=status)
 
 
-class _FlipProfitModal(discord.ui.Modal, title="Flip Override minimum profit"):
+class _FlipProfitModal(discord.ui.Modal, title="Price mistakes: smallest profit"):
     amount = discord.ui.TextInput(
-        label="Minimum estimated net profit in dollars",
+        label="Smallest profit in dollars",
         placeholder="50",
         required=True,
         max_length=12,
@@ -1370,7 +1371,7 @@ class _FlipProfitModal(discord.ui.Modal, title="Flip Override minimum profit"):
             return
         if not 10 <= dollars <= 100_000:
             await interaction.response.send_message(
-                "Flip profit must be between $10 and $100,000.",
+                "Smallest profit must be between $10 and $100,000.",
                 ephemeral=True,
             )
             return
@@ -1382,8 +1383,8 @@ class _FlipProfitModal(discord.ui.Modal, title="Flip Override minimum profit"):
         await self.owner._refresh(
             interaction,
             status=(
-                f"📈 Flip minimum set to **${new_value / 100:,.2f}**."
+                f"📈 Smallest profit set to **${new_value / 100:,.2f}**."
                 if changed
-                else "That Flip minimum is already selected."
+                else "That smallest profit is already set."
             ),
         )

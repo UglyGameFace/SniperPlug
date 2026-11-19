@@ -51,6 +51,10 @@ CRITICAL_MODULES = (
     "sniperplug.services.storage_maintenance",
     "sniperplug.services.verified_discount_hunt",
     "sniperplug.storage.db",
+    "sniperplug.services.dm_ocr_jobs",
+    "sniperplug.ocr_reader.app",
+    "sniperplug.ocr_reader.service",
+    "sniperplug.ocr_reader.engine",
 )
 
 

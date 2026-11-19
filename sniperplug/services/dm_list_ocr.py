@@ -24,9 +24,20 @@ about availability:
   AND Pillow + pytesseract are actually present (none are, in the
   production container today). If a future host provides them, picture
   reading turns on with no other code change.
-* :class:`UnavailableOcrEngine` — what production runs today. Picture
+* :class:`UnavailableOcrEngine` — the honest fallback. Picture
   rows are saved as "couldn't read this one" and the intake reply says
   plainly that picture reading isn't on yet; links work in full.
+* :class:`RemoteOcrEngine` — the production path since the reader
+  shipped: a separate small Discloud app (``SniperPlug-Reader``,
+  ``sniperplug.ocr_reader``) runs the measured rapidocr build in its
+  own 512 MB container, and the bot hands it pictures through the
+  shared database (``sniperplug.services.dm_ocr_jobs``). It cannot
+  implement the synchronous interface — submitting a job and polling
+  for its text is async work — so it exposes ``available()`` /
+  ``read_text()`` coroutines and the intake's picture branch awaits
+  them. Its availability is the reader's heartbeat, not an env flag:
+  no fresh heartbeat, no remote reads, and intake falls back to the
+  unavailable behavior on its own.
 
 :func:`extract_candidate_lines` is pure text work — it turns raw OCR
 output into plausible product-name search lines, dropping the prices,
@@ -37,6 +48,7 @@ lands, only the engine is new.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import shutil
@@ -183,6 +195,109 @@ def get_ocr_engine() -> OcrEngine:
     if engine.available:
         return engine
     return UnavailableOcrEngine()
+
+
+# The reader checks in every ~30 s; three missed check-ins in a row
+# means it is gone, not busy. A read is given two minutes end to end —
+# the reader works one picture at a time and a phone screenshot takes
+# seconds — after which the picture settles unread, like any failure.
+READER_HEARTBEAT_MAX_AGE_SECONDS = 90.0
+REMOTE_OCR_TIMEOUT_SECONDS = 120.0
+REMOTE_OCR_POLL_SECONDS = 2.0
+
+
+class RemoteOcrEngine:
+    """Async client for the standalone SniperPlug-Reader app.
+
+    The bot never downloads the picture for this path and never runs
+    OCR itself: it queues a job carrying the attachment URL, and the
+    reader (which polls the same table) downloads, reads, and writes
+    back the raw text. ``read_text`` returns that text, or ``None``
+    for every failure family — the job failed, the wait timed out,
+    the heartbeat went stale mid-flight, or the job row vanished —
+    because the intake settles all of them the same way: the picture
+    becomes a "couldn't read this one" row, exactly like the
+    no-engine path. A finished job's row is deleted once consumed,
+    so result text and URLs do not pile up in the shared table.
+    """
+
+    def __init__(
+        self,
+        *,
+        poll_seconds: float = REMOTE_OCR_POLL_SECONDS,
+        timeout_seconds: float = REMOTE_OCR_TIMEOUT_SECONDS,
+        heartbeat_max_age_seconds: float = READER_HEARTBEAT_MAX_AGE_SECONDS,
+    ) -> None:
+        self.poll_seconds = max(0.05, float(poll_seconds))
+        self.timeout_seconds = max(0.1, float(timeout_seconds))
+        self.heartbeat_max_age_seconds = float(heartbeat_max_age_seconds)
+
+    async def available(self, db: object) -> bool:
+        """True when the reader's heartbeat is fresh. Never raises."""
+
+        from sniperplug.services.dm_ocr_jobs import reader_heartbeat_fresh
+
+        try:
+            return await reader_heartbeat_fresh(
+                db, max_age_seconds=self.heartbeat_max_age_seconds
+            )
+        except Exception:  # noqa: BLE001 - a DB hiccup means "not available".
+            log.exception("DM list remote OCR heartbeat check failed")
+            return False
+
+    async def read_text(
+        self, db: object, *, user_id: int, attachment_url: str
+    ) -> str | None:
+        """Queue one picture and wait for its raw OCR text (or None)."""
+
+        from sniperplug.services.dm_ocr_jobs import (
+            JOB_DONE,
+            JOB_FAILED,
+            get_dm_ocr_job,
+            reader_heartbeat_fresh,
+            submit_dm_ocr_job,
+        )
+
+        try:
+            job_id = await submit_dm_ocr_job(db, user_id, attachment_url)
+        except Exception:  # noqa: BLE001 - a failed submit is a failed read.
+            log.exception("DM list remote OCR could not queue a picture")
+            return None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.timeout_seconds
+        while True:
+            try:
+                job = await get_dm_ocr_job(db, job_id)
+                if job is None:
+                    return None
+                if job.status == JOB_DONE:
+                    text = job.result_text
+                    await self._consume_quietly(db, job_id)
+                    return text if text else None
+                if job.status == JOB_FAILED:
+                    await self._consume_quietly(db, job_id)
+                    return None
+                if loop.time() >= deadline:
+                    return None
+                if not await reader_heartbeat_fresh(
+                    db, max_age_seconds=self.heartbeat_max_age_seconds
+                ):
+                    return None
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - settle unread, never hang intake.
+                log.exception("DM list remote OCR poll failed")
+                return None
+            await asyncio.sleep(self.poll_seconds)
+
+    @staticmethod
+    async def _consume_quietly(db: object, job_id: int) -> None:
+        from sniperplug.services.dm_ocr_jobs import consume_dm_ocr_job
+
+        try:
+            await consume_dm_ocr_job(db, job_id)
+        except Exception:  # noqa: BLE001 - the reader's sweep is the backstop.
+            log.exception("DM list remote OCR could not consume job %s", job_id)
 
 
 def _line_is_noise(line: str) -> bool:

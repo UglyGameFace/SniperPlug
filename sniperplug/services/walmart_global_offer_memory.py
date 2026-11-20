@@ -117,6 +117,51 @@ def exact_offer_identity(candidate: SourceCandidate) -> ExactOfferIdentity | Non
     if not item_id or not exact_item_id or item_id != exact_item_id:
         return None
 
+    return _derive_exact_offer_identity(candidate, attrs, item_id)
+
+
+def stored_offer_identity(candidate: SourceCandidate) -> ExactOfferIdentity | None:
+    """Return the identity a *stored* candidate claims, from fields only.
+
+    Queue snapshots are written from candidates that already passed
+    :func:`exact_offer_identity` at verification time, but the snapshot
+    payload does not retain the live-enrichment proof stamp
+    (``exactDetailPriceProof`` / ``exactDetailItemId``). Demanding that
+    stamp from a rebuilt snapshot candidate therefore fails closed on
+    every stored event. This derivation uses only the concrete stored
+    fields — item id, selected offer id, seller, variant, condition,
+    fulfillment — i.e. exactly what :func:`exact_offer_identity` derives
+    after its proof gate.
+
+    This is NOT price proof and must never be used as such. Its only
+    legitimate use is as the expectation that a freshly fetched,
+    fully proven live identity (``exact_offer_identity`` on the live
+    candidate, proof gate included) must equal before a stored deal may
+    be delivered.
+    """
+
+    attrs = dict(getattr(candidate, "variant_attributes", None) or {})
+    item_id = _walmart_item_id(candidate)
+    if not item_id:
+        return None
+    # If the snapshot does carry an exact item id, it must agree with the
+    # candidate's own item id; a contradiction is corrupt data, not proof.
+    exact_item_id = _digits(attrs.get("exactDetailItemId"))
+    if exact_item_id and exact_item_id != item_id:
+        return None
+    return _derive_exact_offer_identity(candidate, attrs, item_id)
+
+
+def _derive_exact_offer_identity(
+    candidate: SourceCandidate,
+    attrs: dict[str, Any],
+    item_id: str,
+) -> ExactOfferIdentity | None:
+    """Derive the exact-offer fingerprint from a candidate's concrete
+    fields. Callers own the gates (proof stamp for live candidates,
+    stored-field sanity for snapshot candidates); this is the shared
+    derivation both sides must agree on."""
+
     offer_id = _clean_id(getattr(candidate, "selected_offer_id", None))
     if not offer_id:
         return None

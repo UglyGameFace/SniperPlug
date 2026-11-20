@@ -10,6 +10,7 @@ from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.alert_renderer import DealActionView, build_deal_embed
 from sniperplug.services.candidate_pipeline import evaluate_candidate
+from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.risk_flags import apply_risk_flags
 from sniperplug.services.routing import (
     ALERT_ROUTES,
@@ -66,11 +67,46 @@ class SniperPlugCog(commands.Cog):
 
         stats = await self.bot.db.stats(interaction.guild_id)
         routes = stats.get("alert_routes", {})
+        public_config = await get_public_alert_config(
+            self.bot.db, interaction.guild_id
+        )
+        public_channel_id = public_config.get("channel_id")
 
         embed = discord.Embed(title="SniperPlug Routes", color=discord.Color.orange())
+        # Truth-in-labeling: automatic public posts are NOT routed. The
+        # canonical pipeline (guild_public_alert_settings + bulk fanout)
+        # sends every automatic post to the single public alert channel;
+        # it never consults this legacy per-route map. The map's only
+        # live readers are the staff test alert (resolve_alert_channel)
+        # and setup repair, which keeps the default route as a saved
+        # backup channel. Say so instead of showing "Not set" for every
+        # route while the server is in fact posting.
+        if public_channel_id:
+            destination = (
+                "Automatic deal posts all go to this server's public "
+                f"alert channel, <#{public_channel_id}> — they are not "
+                "split by route."
+            )
+        else:
+            destination = (
+                "Automatic deal posts are not set up for this server "
+                "yet — no public alert channel is saved."
+            )
+        embed.description = (
+            f"{destination}\n\n"
+            "The channels below are legacy per-route overrides. "
+            "Automatic posts never use them: a route channel is only "
+            "used when staff send a test alert, and the Default Deals "
+            "channel doubles as a saved backup the setup check can "
+            "restore the public channel from. 'No separate channel set' "
+            "means that route has no override — it does not mean deals "
+            "have nowhere to post."
+        )
         for route in ALERT_ROUTES:
             channel_id = routes.get(route)
-            channel_text = f"<#{channel_id}>" if channel_id else "Not set"
+            channel_text = (
+                f"<#{channel_id}>" if channel_id else "No separate channel set"
+            )
             embed.add_field(
                 name=route_label(route),
                 value=f"{channel_text}\n{ROUTE_DESCRIPTIONS[route]}",

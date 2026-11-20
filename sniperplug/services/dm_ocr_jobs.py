@@ -193,13 +193,19 @@ async def submit_dm_ocr_job(db: Any, user_id: int, attachment_url: str) -> int:
 
     await ensure_dm_ocr_tables(db)
     conn = db.require_conn()
+    # RETURNING, not cursor.lastrowid: the production libsql cursor
+    # does not expose lastrowid (only the sqlite test double does) —
+    # asking for it crashed the save in production on 2026-11-19,
+    # after the insert had already committed. RETURNING is the
+    # pattern the rest of the bot already uses on this driver.
     cursor = await conn.execute(
         f"INSERT INTO {JOBS_TABLE} (user_id, attachment_url, status, created_at) "
-        f"VALUES (?, ?, ?, ?)",
+        f"VALUES (?, ?, ?, ?) RETURNING id",
         (str(int(user_id)), str(attachment_url), JOB_QUEUED, _utc_now_iso()),
     )
+    row = await cursor.fetchone()
     await conn.commit()
-    return int(cursor.lastrowid or 0)
+    return int(_row_get(row, "id", 0) or 0)
 
 
 async def get_dm_ocr_job(db: Any, job_id: int) -> DmOcrJob | None:

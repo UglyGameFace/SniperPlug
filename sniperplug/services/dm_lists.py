@@ -298,6 +298,7 @@ async def add_dm_list_items(
                 (user_id, item_id, name, name_key, status, price_cents,
                  product_url, source, source_ref, added_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (
                 str(int(user_id)),
@@ -313,7 +314,13 @@ async def add_dm_list_items(
                 now,
             ),
         )
-        row_id = int(cursor.lastrowid or 0)
+        # RETURNING, not cursor.lastrowid: the production libsql
+        # cursor does not expose lastrowid (only the sqlite test
+        # double does) — asking for it crashed this save in
+        # production on 2026-11-19, after the insert had already
+        # committed, leaving DM replies stuck mid-flight.
+        inserted = await cursor.fetchone()
+        row_id = int(_row_get(inserted, "id", 0) or 0)
         new_row = DmListRow(
             id=row_id,
             user_id=int(user_id),

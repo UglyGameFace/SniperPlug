@@ -147,6 +147,11 @@ LIST_FULL_NOTE = (
     f"Your list is full ({MAX_DM_LIST_ITEMS_PER_USER} items), "
     "so some couldn't be added."
 )
+SETTLE_FAILURE_NOTE = (
+    "Something went wrong while reading those pictures, so I "
+    "couldn't finish. Your list is under /menu → My deals → "
+    "My list — send the pictures again and I'll read them then."
+)
 
 
 def reading_picture_note(count: int) -> str:
@@ -992,6 +997,19 @@ class DmListIntakeCog(commands.Cog):
             raise
         except Exception:  # noqa: BLE001 - a background settle must not die loud.
             log.exception("DM list remote picture settle failed")
+            # Never leave the reply sitting on "Reading your
+            # picture…" forever (2026-11-19: a production save
+            # failure did exactly that). Say it failed, plainly,
+            # and point at the list and a re-send.
+            if sent is not None:
+                try:
+                    await sent.edit(  # type: ignore[attr-defined]
+                        content=SETTLE_FAILURE_NOTE, embed=None, view=None
+                    )
+                except Exception:  # noqa: BLE001 - best effort only.
+                    log.exception(
+                        "DM list: could not post the picture-read failure note"
+                    )
 
     async def _settle_remote_pictures_inner(
         self,

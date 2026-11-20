@@ -264,3 +264,57 @@ async def test_remote_engine_gives_up_when_the_heartbeat_dies() -> None:
         assert await engine.read_text(db, user_id=USER_ID, attachment_url=URL) is None
         # Settled on the stale heartbeat, far before the 30 s timeout.
         assert loop.time() - started < 5
+
+
+class _NoLastrowidCursor:
+    """The production libsql cursor's shape: rows, but no lastrowid."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    async def fetchone(self):
+        return await self._cursor.fetchone()
+
+    async def fetchall(self):
+        return await self._cursor.fetchall()
+
+    def __getattr__(self, name):
+        if name == "lastrowid":
+            raise AttributeError("production cursor has no lastrowid")
+        return getattr(self._cursor, name)
+
+
+class _NoLastrowidConn:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, *args, **kwargs):
+        return _NoLastrowidCursor(await self._conn.execute(*args, **kwargs))
+
+    async def commit(self):
+        await self._conn.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+@pytest.mark.asyncio
+async def test_submit_returns_a_usable_id_with_a_production_shaped_cursor() -> None:
+    """Regression (2026-11-19): submit read cursor.lastrowid, which
+    the production libsql cursor does not expose. The insert
+    committed but the call raised, so the bot believed the queue
+    had failed and never polled the job it had just created."""
+
+    jobs._SCHEMA_READY = False
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        db = _FakeDatabase(_NoLastrowidConn(conn))
+        job_id = await submit_dm_ocr_job(db, USER_ID, URL)
+        assert job_id > 0
+        job = await get_dm_ocr_job(db, job_id)
+        assert job is not None
+        assert job.id == job_id
+        assert job.status == JOB_QUEUED
+    finally:
+        await conn.close()
+        jobs._SCHEMA_READY = False

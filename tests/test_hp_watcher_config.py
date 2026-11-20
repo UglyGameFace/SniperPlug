@@ -45,6 +45,16 @@ def test_hp_watcher_bounds_aggressive_polling_values(monkeypatch) -> None:
     assert settings.offer_batch_size == 100
 
 
+def test_hp_watcher_impersonate_defaults_to_chrome_and_is_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("HP_WATCHER_REQUIRE_REMOTE_DB", "false")
+    monkeypatch.delenv("HP_WATCHER_IMPERSONATE", raising=False)
+    assert HPWatcherSettings.from_env().impersonate == "chrome"
+    monkeypatch.setenv("HP_WATCHER_IMPERSONATE", "chrome124")
+    assert HPWatcherSettings.from_env().impersonate == "chrome124"
+    monkeypatch.setenv("HP_WATCHER_IMPERSONATE", "  ")
+    assert HPWatcherSettings.from_env().impersonate == "chrome"
+
+
 def test_hp_price_error_mode_defaults_to_big_ticket_69_percent(monkeypatch) -> None:
     monkeypatch.setenv("HP_WATCHER_REQUIRE_REMOTE_DB", "false")
     for name in (

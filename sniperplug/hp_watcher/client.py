@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 import time
 from typing import Any
 from urllib.parse import urlencode
 
-import aiohttp
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests import exceptions as curl_exceptions
 
 from sniperplug.hp_watcher.config import HPWatcherSettings
 
@@ -25,22 +27,42 @@ class HTTPDocument:
     not_modified: bool = False
 
 
+@dataclass(frozen=True)
+class _TransportResponse:
+    url: str
+    status: int
+    text: str
+    headers: Mapping[str, str]
+
+
 class HPStoreClient:
+    """HP store HTTP client backed by a browser-impersonating transport.
+
+    HP's Akamai edge silently drops requests from plain HTTP clients (the
+    TLS handshake completes, then zero bytes ever come back), so this client
+    uses curl_cffi with a real browser TLS/HTTP fingerprint instead of
+    aiohttp. The public interface (async context manager, fetch_document,
+    fetch_price_batch) and the retry/log behaviour are unchanged from the
+    aiohttp implementation so service-level counters keep their meaning.
+    """
+
     def __init__(self, settings: HPWatcherSettings):
         self.settings = settings
-        self._session: aiohttp.ClientSession | None = None
+        self._session: AsyncSession | None = None
         self._semaphore = asyncio.Semaphore(settings.request_concurrency)
 
     async def __aenter__(self) -> "HPStoreClient":
-        timeout = aiohttp.ClientTimeout(total=self.settings.request_timeout_seconds)
-        self._session = aiohttp.ClientSession(
-            timeout=timeout,
+        # The impersonation profile supplies a coherent browser identity
+        # (TLS fingerprint plus matching User-Agent / client hints), so the
+        # configured HP_WATCHER_USER_AGENT is deliberately NOT sent: mixing
+        # a bot UA with a browser fingerprint is exactly the mismatch the
+        # edge is gating on. The setting stays accepted for compatibility.
+        self._session = AsyncSession(
+            impersonate=self.settings.impersonate,
             headers={
-                "User-Agent": self.settings.user_agent,
                 "Accept-Language": "en-US,en;q=0.9",
                 "Accept": "application/json,text/html,application/xml,text/xml;q=0.9,*/*;q=0.8",
             },
-            raise_for_status=False,
         )
         return self
 
@@ -64,32 +86,30 @@ class HPStoreClient:
             headers["If-Modified-Since"] = last_modified
 
         response = await self._request("GET", url, headers=headers, attempts=attempts)
-        async with response:
-            if response.status == 304:
-                return HTTPDocument(
-                    url=str(response.url),
-                    status=304,
-                    text="",
-                    etag=response.headers.get("ETag", etag),
-                    last_modified=response.headers.get("Last-Modified", last_modified),
-                    not_modified=True,
-                )
-            text = await response.text(errors="replace")
-            if response.status != 200:
-                log.warning(
-                    "HP document request returned non-success status=%s requested_url=%s final_url=%s",
-                    response.status,
-                    url,
-                    str(response.url),
-                )
-                raise RuntimeError(f"HP request returned HTTP {response.status} for {url}")
+        if response.status == 304:
             return HTTPDocument(
-                url=str(response.url),
-                status=response.status,
-                text=text,
-                etag=response.headers.get("ETag", ""),
-                last_modified=response.headers.get("Last-Modified", ""),
+                url=response.url,
+                status=304,
+                text="",
+                etag=response.headers.get("ETag", etag),
+                last_modified=response.headers.get("Last-Modified", last_modified),
+                not_modified=True,
             )
+        if response.status != 200:
+            log.warning(
+                "HP document request returned non-success status=%s requested_url=%s final_url=%s",
+                response.status,
+                url,
+                response.url,
+            )
+            raise RuntimeError(f"HP request returned HTTP {response.status} for {url}")
+        return HTTPDocument(
+            url=response.url,
+            status=response.status,
+            text=response.text,
+            etag=response.headers.get("ETag", ""),
+            last_modified=response.headers.get("Last-Modified", ""),
+        )
 
     async def fetch_price_batch(
         self,
@@ -121,7 +141,7 @@ class HPStoreClient:
         *,
         headers: dict[str, str] | None = None,
         attempts: int,
-    ) -> aiohttp.ClientResponse:
+    ) -> _TransportResponse:
         session = self._session
         if session is None:
             raise RuntimeError("HPStoreClient must be used as an async context manager")
@@ -135,17 +155,30 @@ class HPStoreClient:
                         method,
                         url,
                         headers=headers,
+                        timeout=self.settings.request_timeout_seconds,
                         allow_redirects=True,
                     )
-                if response.status in {429, 500, 502, 503, 504} and attempt + 1 < attempt_count:
+                if response.status_code in {429, 500, 502, 503, 504} and attempt + 1 < attempt_count:
                     retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
-                    response.release()
                     await asyncio.sleep(max(retry_after, 0.8 * (2**attempt)))
                     continue
-                return response
+                return _TransportResponse(
+                    url=str(response.url),
+                    status=int(response.status_code),
+                    text=response.text,
+                    headers=response.headers,
+                )
             except asyncio.CancelledError:
                 raise
-            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            except curl_exceptions.Timeout as error:
+                # Keep the historical classification: the aiohttp transport
+                # surfaced timeouts as TimeoutError in the exhausted-retries
+                # log line, and watchers/alerts read that shape.
+                last_error = TimeoutError(str(error))
+                if attempt + 1 >= attempt_count:
+                    break
+                await asyncio.sleep(0.8 * (2**attempt))
+            except curl_exceptions.RequestException as error:
                 last_error = error
                 if attempt + 1 >= attempt_count:
                     break

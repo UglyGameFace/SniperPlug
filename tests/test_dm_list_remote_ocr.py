@@ -465,3 +465,34 @@ async def test_oversize_picture_with_reader_up_is_noted_not_deferred(
         assert remote.read_calls == []
         assert await list_dm_list_items(db, USER_ID) == ()
         assert "too big" in message.replies[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_settle_failure_replaces_the_reading_note(monkeypatch) -> None:
+    """If the settle itself fails, the reply must not sit on
+    "Reading your picture…" forever (2026-11-19 production bug):
+    it is replaced with a plain failure note."""
+
+    async with _isolated_db() as db:
+        remote = FakeRemoteOcr(text=CART_OCR_TEXT)
+        cog, _verify, _provider = _cog(monkeypatch, db, remote=remote)
+        real_add = intake.add_dm_list_items
+        calls = {"n": 0}
+
+        async def flaky_add(db_, user_id, candidates):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RuntimeError("save exploded")
+            return await real_add(db_, user_id, candidates)
+
+        monkeypatch.setattr(intake, "add_dm_list_items", flaky_add)
+        message = FakeMessage("", attachments=[FakeAttachment()])
+        await cog.on_message(message)
+        assert len(message.replies) == 1
+        await _settle(cog)
+        assert calls["n"] == 2
+        assert len(message.sent.edits) == 1
+        edit = message.sent.edits[0]
+        assert edit["content"] == intake.SETTLE_FAILURE_NOTE
+        assert edit["embed"] is None
+        assert edit["view"] is None

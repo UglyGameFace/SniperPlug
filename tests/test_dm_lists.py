@@ -308,3 +308,60 @@ async def test_update_check_refreshes_a_row() -> None:
         stored = (await list_dm_list_items(db, USER_ID))[0]
         assert stored.name == "Apple iPhone 11, 64GB, Green"
         assert await update_dm_list_item_check(db, 424242, price_cents=1) is None
+
+
+class _NoLastrowidCursor:
+    """The production libsql cursor's shape: rows, but no lastrowid."""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    async def fetchone(self):
+        return await self._cursor.fetchone()
+
+    async def fetchall(self):
+        return await self._cursor.fetchall()
+
+    def __getattr__(self, name):
+        if name == "lastrowid":
+            raise AttributeError("production cursor has no lastrowid")
+        return getattr(self._cursor, name)
+
+
+class _NoLastrowidConn:
+    def __init__(self, conn):
+        self._conn = conn
+
+    async def execute(self, *args, **kwargs):
+        return _NoLastrowidCursor(await self._conn.execute(*args, **kwargs))
+
+    async def commit(self):
+        await self._conn.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+@pytest.mark.asyncio
+async def test_add_items_with_a_production_shaped_cursor() -> None:
+    """Regression (2026-11-19): the save read cursor.lastrowid,
+    which the production libsql cursor does not expose — every DM
+    list save crashed in production after its insert committed,
+    leaving replies stuck mid-flight. The save must work against a
+    cursor with no lastrowid at all."""
+
+    dm_lists._SCHEMA_READY = False
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        db = _FakeDatabase(_NoLastrowidConn(conn))
+        outcome = await add_dm_list_items(
+            db, 111, [_exact("425031866", "Apple iPhone 11, 64GB, Green")]
+        )
+        assert len(outcome.added) == 1
+        assert outcome.added[0].id > 0
+        rows = await list_dm_list_items(db, 111)
+        assert [row.id for row in rows] == [outcome.added[0].id]
+        assert rows[0].status == STATUS_EXACT
+    finally:
+        await conn.close()
+        dm_lists._SCHEMA_READY = False

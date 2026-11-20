@@ -7,9 +7,10 @@ and the menu itself was just a list of the same functions. This hub covers
 everything: pick a category, pick a function, it runs right there.
 
 Navigation fits Discord's limits (a select holds at most 25 options): the
-hub has one select for the five categories, and each category has its own
-select for its functions. Walmart reuses the existing WalmartMenuView
-unchanged (plus a Back button), so no Walmart behavior changes here.
+hub has one select for the categories, and each function category has its
+own select for its functions. Walmart reuses the existing WalmartMenuView
+unchanged (plus a Back button), so no Walmart behavior changes here; the
+HP Store category swaps in its own status panel the same way.
 
 Every entry runs its function: no-arg functions delegate straight to the
 handler that owns the slash command; functions that need typed input open
@@ -35,6 +36,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from sniperplug.cogs.dm_deal_alerts import ACTION_CHOICES
+from sniperplug.cogs.public_alerts import public_alert_channel_status
 from sniperplug.cogs.walmart_command import (
     WalmartCheckModal,
     WalmartFindModal,
@@ -42,10 +44,16 @@ from sniperplug.cogs.walmart_command import (
     _can_check_deal,
     build_walmart_menu_embed,
 )
+from sniperplug.services.hp_watcher_health import (
+    HPWatcherHealth,
+    load_hp_watcher_health,
+)
 from sniperplug.services.menu_dashboard_state import (
     MenuDashboardState,
     load_menu_dashboard_state,
 )
+from sniperplug.services.public_alert_config import get_public_alert_config
+from sniperplug.services.setup_self_heal import repair_public_alert_setup
 
 log = logging.getLogger("sniperplug")
 
@@ -66,11 +74,17 @@ _STATE_UNAVAILABLE_LINE = "Live state unavailable — the function list still wo
 # accents chosen to match the render's palette.
 CATEGORY_COLORS: dict[str, int] = {
     "walmart": 0x0071DC,  # Walmart blue
+    "hp-store": 0x0096D6,  # HP blue
     "my-deals": 0x9B59B6,  # purple
     "stores": 0x1ABC9C,  # teal
     "movies-verizon": 0xE91E63,  # pink
     "server": 0x607D8B,  # slate
 }
+
+# Categories that swap in a dedicated panel instead of the generic
+# function-list embed: Walmart reuses the Walmart menu, HP Store has
+# its own status panel. Neither has MENU_ENTRIES rows.
+DEDICATED_PANEL_CATEGORIES = frozenset({"walmart", "hp-store"})
 
 def _dm_summary(state: MenuDashboardState) -> str:
     if not state.dm_enabled:
@@ -173,6 +187,7 @@ class _Entry:
 
 MENU_CATEGORIES: tuple[tuple[str, str, str], ...] = (
     ("walmart", "🛒 Walmart", "Find, browse, check, alerts, and server setup."),
+    ("hp-store", "💻 HP Store", "Price-error watcher: status, coverage, and this server's HP deals."),
     ("my-deals", "🔔 My deals", "Your wishlist and personal DM alerts."),
     ("stores", "🏪 eBay & Home Depot", "Research, stock checks, and clearance leads."),
     ("movies-verizon", "🎬 Movies & Verizon", "Free movie tickets and Verizon rewards."),
@@ -297,7 +312,7 @@ MENU_DELEGATES: dict[str, tuple[str, str]] = {
 ENTRIES_BY_CATEGORY: dict[str, tuple[_Entry, ...]] = {
     key: tuple(entry for entry in MENU_ENTRIES if entry.category == key)
     for key, _label, _desc in MENU_CATEGORIES
-    if key != "walmart"
+    if key not in DEDICATED_PANEL_CATEGORIES
 }
 
 # Modal fields per entry key: (field key, label, placeholder, required, style, max length).
@@ -429,6 +444,172 @@ def build_category_embed(
 def _has_manage_guild(interaction: discord.Interaction) -> bool:
     permissions = getattr(getattr(interaction, "user", None), "guild_permissions", None)
     return bool(permissions is not None and getattr(permissions, "manage_guild", False))
+
+
+# -- HP Store panel ------------------------------------------------------------
+
+@dataclass(frozen=True)
+class HPPanelState:
+    """Everything the HP Store panel renders, read fresh at open/refresh.
+
+    ``health`` is None when the watcher read failed (or there is no
+    database); ``config`` is None when this server's alert settings
+    could not be read. The builder renders a plain fallback line for
+    each missing piece instead of failing — same rule as the hub.
+    """
+
+    health: HPWatcherHealth | None = None
+    config: dict | None = None
+    channel_status: str = ""
+    setup_needs_attention: bool = False
+
+    @property
+    def alerts_enabled(self) -> bool:
+        return bool(self.config and self.config.get("enabled"))
+
+    @property
+    def hp_selected(self) -> bool:
+        if not self.config:
+            return False
+        retailers = {
+            str(value).strip().lower() for value in self.config.get("retailers") or ()
+        }
+        return "hp" in retailers
+
+    @property
+    def channel_id(self) -> int | None:
+        if not self.config:
+            return None
+        value = self.config.get("channel_id")
+        return int(value) if value else None
+
+    @property
+    def channel_ready(self) -> bool:
+        return self.channel_status.startswith("✅")
+
+    @property
+    def delivery_ready(self) -> bool:
+        """Same formula as the /autoscan_health HP delivery line:
+        alerts on, channel sendable, no setup repair outstanding, and
+        HP picked as one of this server's stores."""
+        return (
+            self.alerts_enabled
+            and self.hp_selected
+            and self.channel_ready
+            and not self.setup_needs_attention
+        )
+
+
+def _hp_watcher_lines(health: HPWatcherHealth | None) -> str:
+    if health is None:
+        return (
+            "Couldn't read the watcher's status just now — press **🔄 Refresh** "
+            "to try again. Deals still post if everything else is set up."
+        )
+    if health.status == "not_started":
+        lines = [
+            (
+                "⏸️ **Not running** — no HP watcher is running yet, so HP deals "
+                "aren't being scanned."
+            )
+        ]
+    elif health.ok:
+        lines = ["🟢 **Working** — watching HP's store around the clock for price errors and big markdowns."]
+    elif health.status == "healthy" and health.stale:
+        lines = [
+            (
+                "🟠 **Gone quiet** — it was working, but it hasn't finished a scan "
+                "in a while, so HP deals may be missed until it recovers."
+            )
+        ]
+    elif health.status == "degraded":
+        lines = [
+            (
+                "🟠 **Working with problems** — the watcher is running, but some "
+                "of its scans are failing."
+            )
+        ]
+    else:
+        lines = [f"🟠 **{health.status}** — the watcher isn't in a normal working state."]
+    if health.last_successful_cycle_at:
+        lines.append(f"Last successful scan: `{health.last_successful_cycle_at}`")
+    if health.last_error:
+        lines.append(f"Last problem: `{health.last_error[:350]}`")
+    return "\n".join(lines)
+
+
+def _hp_coverage_lines(health: HPWatcherHealth | None) -> str | None:
+    if health is None:
+        return None
+    return (
+        f"**{health.products:,}** products in HP's catalog · "
+        f"**{health.identified_products:,}** identified and being price-checked\n"
+        f"**{health.due_offers:,}** price checks due · "
+        f"**{health.active_markdowns:,}** marked down right now · "
+        f"**{health.pending_events:,}** deals waiting to post"
+    )
+
+
+def _hp_delivery_lines(state: HPPanelState) -> str:
+    if state.config is None:
+        return (
+            "Couldn't read this server's alert settings just now — press "
+            "**🔄 Refresh** to try again."
+        )
+    lines: list[str] = []
+    if not state.alerts_enabled:
+        lines.append(
+            "Public deal alerts are **off** for this server, so HP deals "
+            "won't post here."
+        )
+    elif not state.hp_selected:
+        lines.append(
+            "Public deal alerts are on, but **HP Store isn't one of the "
+            "stores picked** for this server, so HP deals won't post here."
+        )
+    elif state.delivery_ready:
+        lines.append(f"✅ HP deals will post to <#{state.channel_id}>.")
+    else:
+        lines.append("HP Store is picked, but posting isn't ready yet:")
+    if state.config is not None and state.channel_status and not (
+        state.delivery_ready and state.channel_status.startswith("✅")
+    ):
+        lines.append(state.channel_status)
+    lines.append(
+        "To change where deals post, run `/staff channel` in the channel "
+        "that should get them. Full health check: `/autoscan_health`."
+    )
+    return "\n".join(lines)
+
+
+def build_hp_panel_embed(state: HPPanelState) -> discord.Embed:
+    """The HP Store panel: watcher status, coverage, this server's
+    delivery, and what happens when a deal hits — all plain words."""
+
+    embed = discord.Embed(
+        title="💻 HP Store",
+        description=(
+            "HP's own store, watched around the clock for price errors "
+            "and big markdowns."
+        ),
+        color=discord.Color(CATEGORY_COLORS["hp-store"]),
+    )
+    embed.add_field(name="Watcher", value=_hp_watcher_lines(state.health), inline=False)
+    coverage = _hp_coverage_lines(state.health)
+    if coverage is not None:
+        embed.add_field(name="Coverage", value=coverage, inline=False)
+    embed.add_field(
+        name="Deals in this server", value=_hp_delivery_lines(state), inline=False
+    )
+    embed.add_field(
+        name="When a deal hits",
+        value=(
+            "A confirmed HP deal posts to this server's deals channel, and "
+            "members whose personal DM alerts match it get a DM too."
+        ),
+        inline=False,
+    )
+    return embed
 
 
 # -- views -------------------------------------------------------------------
@@ -655,6 +836,49 @@ class _WalmartBackButton(discord.ui.Button):
         )
 
 
+class HPMenuView(discord.ui.View):
+    """The HP Store panel: Refresh re-reads the watcher and this
+    server's delivery state in place; Back returns to the hub. Same
+    timeout/disable pattern as the category views."""
+
+    def __init__(
+        self,
+        cog: "UnifiedMenuCog",
+        state: HPPanelState | None = None,
+    ) -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.state = state if state is not None else HPPanelState()
+        self.add_item(HPRefreshButton(cog))
+        self.add_item(UnifiedBackButton(cog))
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+
+class HPRefreshButton(discord.ui.Button):
+    """Re-read the HP watcher health and delivery config, re-render.
+
+    Read-only in the same sense as the category Refresh: the readers
+    it reuses run their usual setup checks, nothing here changes any
+    setting.
+    """
+
+    def __init__(self, cog: "UnifiedMenuCog") -> None:
+        self.cog = cog
+        super().__init__(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        state = await self.cog._load_hp_panel(interaction)
+        await self.cog._edit_dashboard(
+            interaction,
+            embed=build_hp_panel_embed(state),
+            view=HPMenuView(self.cog, state),
+        )
+
+
 class _ConfirmView(discord.ui.View):
     """Yes/no for one entry: pick, delegate, then disable the buttons."""
 
@@ -834,6 +1058,56 @@ class UnifiedMenuCog(commands.Cog):
         except Exception:
             return MenuDashboardState()
 
+    async def _load_hp_panel(self, interaction: discord.Interaction) -> HPPanelState:
+        """Fresh HP panel state for this server, never raising.
+
+        Watcher health comes from the same reader /autoscan_health
+        uses; delivery reuses that panel's exact setup path — repair
+        the public-alert setup, take its config, then check the saved
+        channel — so the menu and the health embed can never disagree
+        about whether HP deals will post here.
+        """
+        try:
+            guild = getattr(interaction, "guild", None)
+            guild_id = getattr(interaction, "guild_id", None) or getattr(guild, "id", None)
+            db = getattr(self.bot, "db", None)
+            if db is None or guild_id is None:
+                return HPPanelState()
+            guild_id = int(guild_id)
+            health: HPWatcherHealth | None = None
+            try:
+                health = await load_hp_watcher_health(db)
+            except Exception:
+                health = None
+            config: dict | None = None
+            channel_status = ""
+            needs_attention = False
+            try:
+                repair = await repair_public_alert_setup(db, self.bot, guild_id)
+                config = (
+                    repair.config
+                    if getattr(repair, "config", None) is not None
+                    else await get_public_alert_config(db, guild_id)
+                )
+                needs_attention = bool(
+                    getattr(repair, "human_action_required", False)
+                )
+                channel_status = public_alert_channel_status(
+                    self.bot, guild_id, config.get("channel_id")
+                )
+            except Exception:
+                config = None
+                channel_status = ""
+                needs_attention = False
+            return HPPanelState(
+                health=health,
+                config=config,
+                channel_status=channel_status,
+                setup_needs_attention=needs_attention,
+            )
+        except Exception:
+            return HPPanelState()
+
     # -- navigation ------------------------------------------------------
 
     @app_commands.command(name="menu", description="Open the SniperPlug menu: every function in one place.")
@@ -879,6 +1153,14 @@ class UnifiedMenuCog(commands.Cog):
                     manage_guild=manage_guild,
                     can_check=can_check,
                 ),
+            )
+            return
+        if category_key == "hp-store":
+            panel = await self._load_hp_panel(interaction)
+            await self._edit_dashboard(
+                interaction,
+                embed=build_hp_panel_embed(panel),
+                view=HPMenuView(self, panel),
             )
             return
         await self._edit_dashboard(

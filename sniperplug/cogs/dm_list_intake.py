@@ -198,11 +198,29 @@ def _short_name(name: str) -> str:
     return text
 
 
+def _linked_name(row: DmListRow) -> str:
+    """The row's name as a tappable link when its product page is known.
+
+    Felix (2026-11-19): the list showed names and prices but no way
+    to open the item — every row that carries a product URL now
+    links straight to it (Walmart page, which opens the app or the
+    browser). Rows without a URL keep the plain bold name.
+    """
+
+    name = _short_name(row.name)
+    url = str(row.product_url or "").strip()
+    if not url.startswith(("https://", "http://")):
+        return f"**{name}**"
+    # Brackets in the visible text would break the markdown link.
+    safe = name.replace("[", "").replace("]", "")
+    return f"[**{safe}**]({url})"
+
+
 def dm_list_row_line(row: DmListRow, *, page_price: bool = False) -> str:
     """One embed line for a list row, with its honest status."""
 
     if row.status == STATUS_EXACT:
-        line = f"✅ **{_short_name(row.name)}**"
+        line = f"✅ {_linked_name(row)}"
         price = _money_cents(row.price_cents)
         if price:
             line += f" — {price}"
@@ -211,12 +229,12 @@ def dm_list_row_line(row: DmListRow, *, page_price: bool = False) -> str:
         return line + " · exact match"
     if row.status == STATUS_CLOSEST:
         return (
-            f"🔎 **{_short_name(row.name)}** · closest match — "
+            f"🔎 {_linked_name(row)} · closest match — "
             "price not checked yet"
         )
     if row.status == STATUS_UNCHECKED:
         return (
-            f"🔎 **{_short_name(row.name)}** · couldn't check it just "
+            f"🔎 {_linked_name(row)} · couldn't check it just "
             "now — tap **Check prices now**"
         )
     return "📷 A picture I couldn't read"

@@ -723,3 +723,60 @@ async def test_open_my_list_empty_then_filled(monkeypatch) -> None:
         assert content is None
         assert "Apple iPhone 11" in kwargs["embed"].description
         assert isinstance(kwargs["view"], DmListView)
+
+
+# --- tappable product links (Felix, 2026-11-19) -------------------------------
+
+
+def _link_row(**overrides):
+    from sniperplug.services.dm_lists import DmListRow
+
+    fields = {
+        "id": 1,
+        "user_id": 111,
+        "name": "Equate Women's 5-Blade Manual Razor Kit",
+        "status": "exact",
+        "item_id": "139918537",
+        "price_cents": 572,
+        "product_url": "https://www.walmart.com/ip/139918537",
+    }
+    fields.update(overrides)
+    return DmListRow(**fields)
+
+
+def test_row_line_links_the_name_to_the_product_page() -> None:
+    from sniperplug.cogs.dm_list_intake import dm_list_row_line
+
+    line = dm_list_row_line(_link_row())
+    assert (
+        "[**Equate Women's 5-Blade Manual Razor Kit**]"
+        "(https://www.walmart.com/ip/139918537)"
+    ) in line
+    assert "$5.72" in line
+    assert "exact match" in line
+
+
+def test_row_line_links_closest_matches_too() -> None:
+    from sniperplug.cogs.dm_list_intake import dm_list_row_line
+
+    line = dm_list_row_line(
+        _link_row(status="closest", price_cents=None, name="Bounty Paper Towels")
+    )
+    assert "[**Bounty Paper Towels**](https://www.walmart.com/ip/139918537)" in line
+    assert "closest match" in line
+    assert "$" not in line
+
+
+def test_row_line_without_a_url_stays_plain() -> None:
+    from sniperplug.cogs.dm_list_intake import dm_list_row_line
+
+    line = dm_list_row_line(_link_row(product_url=None))
+    assert "**Equate Women's 5-Blade Manual Razor Kit**" in line
+    assert "](" not in line
+
+
+def test_row_line_strips_brackets_from_linked_names() -> None:
+    from sniperplug.cogs.dm_list_intake import dm_list_row_line
+
+    line = dm_list_row_line(_link_row(name="Widget [2 Pack] Special"))
+    assert "[**Widget 2 Pack Special**](https://www.walmart.com/ip/139918537)" in line

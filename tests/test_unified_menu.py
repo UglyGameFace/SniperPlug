@@ -90,6 +90,9 @@ def test_every_category_fits_discord_select_limit() -> None:
     for key, _label, _desc in MENU_CATEGORIES:
         if key == "walmart":
             assert len(MENU_FUNCTIONS) <= 25
+        elif key == "hp-store":
+            # Dedicated panel like Walmart: no function entries at all.
+            assert key not in ENTRIES_BY_CATEGORY
         else:
             assert 1 <= len(ENTRIES_BY_CATEGORY[key]) <= 25
 
@@ -717,3 +720,202 @@ def test_every_new_control_resolves_to_a_real_handler() -> None:
             # Must be a real override, not the base discord.ui no-op.
             assert type(child).callback is not discord.ui.Button.callback
             assert type(child).callback is not discord.ui.Select.callback
+
+
+# -- HP Store panel (dedicated category, like Walmart) --------------------
+
+from sniperplug.cogs.unified_menu import (
+    CATEGORY_COLORS,
+    DEDICATED_PANEL_CATEGORIES,
+    HPMenuView,
+    HPPanelState,
+    build_hp_panel_embed,
+)
+from sniperplug.services.hp_watcher_health import HPWatcherHealth
+
+
+def _fake_hp_health(**overrides) -> HPWatcherHealth:
+    values = dict(
+        status="healthy",
+        last_successful_cycle_at="2026-11-20T20:55:00+00:00",
+        products=4563,
+        identified_products=4278,
+        active_markdowns=3,
+        due_product_pages=45,
+        due_offers=12,
+        pending_events=1,
+        sitemap_failures=0,
+        product_failures=0,
+        stale=False,
+        last_error="",
+    )
+    values.update(overrides)
+    return HPWatcherHealth(**values)
+
+
+def _fake_hp_config(**overrides) -> dict:
+    values = {
+        "enabled": True,
+        "retailers": ("walmart", "hp"),
+        "channel_id": 1518804442718146560,
+    }
+    values.update(overrides)
+    return values
+
+
+def _ready_hp_state(**overrides) -> HPPanelState:
+    values = dict(
+        health=_fake_hp_health(),
+        config=_fake_hp_config(),
+        channel_status="✅ <#1518804442718146560> is saved and sendable.",
+        setup_needs_attention=False,
+    )
+    values.update(overrides)
+    return HPPanelState(**values)
+
+
+def test_hp_store_category_is_registered_as_a_dedicated_panel() -> None:
+    keys = [key for key, _label, _desc in MENU_CATEGORIES]
+    assert "hp-store" in keys
+    label = dict((key, label) for key, label, _d in MENU_CATEGORIES)["hp-store"]
+    assert label == "💻 HP Store"
+    assert "hp-store" in DEDICATED_PANEL_CATEGORIES
+    assert "hp-store" not in ENTRIES_BY_CATEGORY
+    assert CATEGORY_COLORS["hp-store"] == 0x0096D6  # HP blue
+    # The hub's More… select offers it like every other category.
+    view = UnifiedMenuView(UnifiedMenuCog(bot=None))
+    select = next(child for child in view.children if isinstance(child, discord.ui.Select))
+    assert "hp-store" in {option.value for option in select.options}
+
+
+def test_hp_panel_embed_healthy_shows_coverage_and_delivery() -> None:
+    embed = build_hp_panel_embed(_ready_hp_state())
+    assert (embed.title or "") == "💻 HP Store"
+    assert embed.color.value == 0x0096D6
+    text = _embed_text(embed)
+    assert "🟢 **Working**" in text
+    assert "4,563" in text and "4,278" in text  # catalog / identified
+    assert "**12** price checks due" in text
+    assert "**3** marked down right now" in text
+    assert "**1** deals waiting to post" in text
+    assert "HP deals will post to <#1518804442718146560>" in text
+    assert "get a DM too" in text
+    # No internal vocabulary leaks into member copy.
+    for jargon in ("fanout", "retailer_verified", "1795025712460"):
+        assert jargon not in text
+
+
+def test_hp_panel_embed_stale_watcher_says_gone_quiet() -> None:
+    state = _ready_hp_state(health=_fake_hp_health(stale=True))
+    text = _embed_text(build_hp_panel_embed(state))
+    assert "🟠 **Gone quiet**" in text
+    assert "Last successful scan:" in text
+
+
+def test_hp_panel_embed_watcher_missing_states() -> None:
+    not_started = _ready_hp_state(health=_fake_hp_health(status="not_started", stale=True))
+    text = _embed_text(build_hp_panel_embed(not_started))
+    assert "⏸️ **Not running**" in text
+
+    unreadable = HPPanelState()
+    text = _embed_text(build_hp_panel_embed(unreadable))
+    assert "Couldn't read the watcher's status" in text
+    assert "Couldn't read this server's alert settings" in text
+
+
+def test_hp_panel_embed_delivery_reflects_config() -> None:
+    off = _ready_hp_state(config=_fake_hp_config(enabled=False))
+    text = _embed_text(build_hp_panel_embed(off))
+    assert "Public deal alerts are **off**" in text
+    assert "HP deals will post" not in text
+
+    not_picked = _ready_hp_state(config=_fake_hp_config(retailers=("walmart",)))
+    text = _embed_text(build_hp_panel_embed(not_picked))
+    assert "HP Store isn't one of the stores picked" in text
+    assert "HP deals will post" not in text
+
+    broken_channel = _ready_hp_state(
+        channel_status="⛔ <#1518804442718146560> is saved, but bot is missing: Send Messages."
+    )
+    text = _embed_text(build_hp_panel_embed(broken_channel))
+    assert "posting isn't ready yet" in text
+    assert "bot is missing: Send Messages" in text
+    # The settings pointer is always present.
+    assert "/staff channel" in text
+    assert "/autoscan_health" in text
+
+
+def test_hp_panel_view_has_refresh_and_back_with_real_handlers() -> None:
+    cog = UnifiedMenuCog(bot=None)
+    view = HPMenuView(cog, _ready_hp_state())
+    buttons = [c for c in view.children if isinstance(c, discord.ui.Button)]
+    assert {b.label for b in buttons} == {"← Back to menu", "🔄 Refresh"}
+    for child in view.children:
+        assert callable(getattr(child, "callback", None))
+        assert type(child).callback is not discord.ui.Button.callback
+
+
+@pytest.mark.asyncio
+async def test_hp_category_opens_dedicated_panel(monkeypatch) -> None:
+    import sniperplug.cogs.unified_menu as um
+
+    interaction = _FakeInteraction()
+
+    async def _fake_panel(_interaction):
+        interaction.response.calls.append("hp-load")
+        return _ready_hp_state()
+
+    cog = UnifiedMenuCog(bot=None)
+    monkeypatch.setattr(cog, "_load_hp_panel", _fake_panel)
+    await cog.open_category(interaction, "hp-store")
+    # Defer-first, like every other dashboard path (10062 rule).
+    assert interaction.response.calls[0] == "defer"
+    assert "hp-load" in interaction.response.calls
+    assert len(interaction.response.edited) == 1
+    embed = interaction.response.edited[0]["embed"]
+    assert "HP Store" in (embed.title or "")
+    view = interaction.response.edited[0]["view"]
+    assert isinstance(view, HPMenuView)
+    labels = {child.label for child in view.children if isinstance(child, discord.ui.Button)}
+    assert labels == {"← Back to menu", "🔄 Refresh"}
+    assert um.HPMenuView is HPMenuView
+
+
+@pytest.mark.asyncio
+async def test_hp_refresh_button_re_reads_and_re_renders(monkeypatch) -> None:
+    interaction = _FakeInteraction()
+    fresh = _ready_hp_state(health=_fake_hp_health(identified_products=4500))
+
+    cog = UnifiedMenuCog(bot=None)
+
+    async def _fake_panel(_interaction):
+        interaction.response.calls.append("hp-load")
+        return fresh
+
+    monkeypatch.setattr(cog, "_load_hp_panel", _fake_panel)
+    view = HPMenuView(cog, _ready_hp_state())
+    refresh = next(
+        c for c in view.children
+        if isinstance(c, discord.ui.Button) and c.label == "🔄 Refresh"
+    )
+    await refresh.callback(interaction)
+    assert interaction.response.calls == ["defer", "hp-load"]
+    assert len(interaction.response.edited) == 1
+    embed = interaction.response.edited[0]["embed"]
+    assert "4,500" in _embed_text(embed)
+    assert isinstance(interaction.response.edited[0]["view"], HPMenuView)
+
+
+@pytest.mark.asyncio
+async def test_hp_back_button_returns_to_hub() -> None:
+    cog = UnifiedMenuCog(bot=None)
+    view = HPMenuView(cog, _ready_hp_state())
+    back = next(
+        child for child in view.children
+        if isinstance(child, discord.ui.Button) and child.label == "← Back to menu"
+    )
+    interaction = _FakeInteraction()
+    await back.callback(interaction)
+    assert len(interaction.response.edited) == 1
+    embed = interaction.response.edited[0]["embed"]
+    assert (embed.title or "") == "SniperPlug"

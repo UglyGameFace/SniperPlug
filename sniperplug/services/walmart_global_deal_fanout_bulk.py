@@ -64,7 +64,10 @@ from sniperplug.services.walmart_extreme_price_fanout import (
     LIVE_PRICE_TOLERANCE_CENTS,
     LIVE_PRICE_TOLERANCE_RATIO,
 )
-from sniperplug.services.walmart_global_offer_memory import exact_offer_identity
+from sniperplug.services.walmart_global_offer_memory import (
+    exact_offer_identity,
+    stored_offer_identity,
+)
 from sniperplug.services.walmart_fanout_decisions import (
     WalmartGuildFanoutDecision,
     classify_public_fanout_result,
@@ -1122,9 +1125,18 @@ async def _live_pre_send_recheck_reason(candidate: Any) -> str | None:
     price. Returns None when the live offer still proves the card;
     otherwise the rejection reason. Any fetch failure fails closed: an
     unverified price is never posted.
+
+    The claimed event's candidate is rebuilt from a stored queue
+    snapshot, which keeps the concrete identity fields (item, offer,
+    seller, variant) but not the live-enrichment proof stamp — so the
+    stored side's expected identity is derived from those fields via
+    ``stored_offer_identity``. The LIVE refreshed candidate must still
+    fully prove itself: ``exact_offer_identity`` (proof gate included)
+    must succeed on it and equal the stored expectation, or the event
+    is skipped.
     """
 
-    identity = exact_offer_identity(candidate)
+    identity = stored_offer_identity(candidate)
     if identity is None:
         return "original_identity_missing"
     provider = provider_registry.get("walmart")

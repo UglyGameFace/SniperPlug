@@ -15,6 +15,7 @@ from sniperplug.cogs.settings_dashboard import (
     format_doctor_checks,
     format_provider_health,
     format_recent_errors,
+    truncate,
 )
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.autoscan_live_guild_reconciliation import (
@@ -27,6 +28,7 @@ from sniperplug.services.deal_threshold_settings import (
     set_starting_deal_percent,
 )
 from sniperplug.services.error_logging import fetch_recent_error_events
+from sniperplug.services.hp_watcher_health import load_hp_watcher_health
 from sniperplug.services.public_alert_config import get_public_alert_config
 from sniperplug.services.walmart_catalog_coverage import catalog_route_pool
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
@@ -206,6 +208,7 @@ async def build_overview_dashboard(
     )
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
+    hp_health = await load_hp_watcher_health(db)
     route_count = len(catalog_route_pool())
 
     ready = (
@@ -240,7 +243,7 @@ async def build_overview_dashboard(
         value=(
             f"Deal posts: **{'on' if public_config.get('enabled') else 'off'}**\n"
             f"Channel: {f'<#{channel_id}>' if channel_id else '**not set**'}\n"
-            f"Stores: {stores}\n"
+            f"Stores this server receives: {stores}\n"
             f"Smallest public discount: **{threshold}%**\n"
             "Members' own DM settings: **separate**"
         ),
@@ -266,8 +269,18 @@ async def build_overview_dashboard(
         inline=False,
     )
     embed.add_field(
-        name="Stores",
-        value=format_provider_health(provider_health),
+        # Not "Stores": that word above means the stores this server
+        # picked to receive. This field is the other fact — which store
+        # connections/watchers are actually running — so label it
+        # differently and include the HP watcher (same health source as
+        # /autoscan_health and the /menu HP panel) instead of leaving HP
+        # selected in one breath and missing in the next.
+        name="Store connections",
+        value=truncate(
+            f"{format_provider_health(provider_health)}\n"
+            f"{hp_health.summary_line()}",
+            1024,
+        ),
         inline=False,
     )
     embed.add_field(

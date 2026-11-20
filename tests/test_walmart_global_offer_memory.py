@@ -11,6 +11,7 @@ from sniperplug.services.walmart_global_offer_memory import (
     ensure_global_offer_memory_table,
     exact_offer_identity,
     observe_exact_offer,
+    stored_offer_identity,
 )
 from sniperplug.services.walmart_observed_price_memory import (
     build_observed_price_drop_card,
@@ -336,6 +337,62 @@ def test_concurrent_first_observations_share_one_global_row() -> None:
         await conn.close()
 
     run(scenario())
+
+
+def _unstamped(item: SourceCandidate) -> SourceCandidate:
+    """The same candidate as a stored queue snapshot rebuild: concrete
+    identity fields intact, live-enrichment proof stamp absent."""
+    item.variant_attributes = {
+        key: value
+        for key, value in dict(item.variant_attributes or {}).items()
+        if key not in {"exactDetailPriceProof", "exactDetailItemId"}
+    }
+    return item
+
+
+def test_stored_offer_identity_matches_proven_identity_for_same_offer() -> None:
+    proven = exact_offer_identity(candidate())
+    assert proven is not None
+    stored = stored_offer_identity(_unstamped(candidate()))
+    assert stored is not None
+    assert stored == proven
+
+
+def test_stored_offer_identity_still_requires_concrete_fields() -> None:
+    no_offer = _unstamped(candidate())
+    no_offer.selected_offer_id = None
+    assert stored_offer_identity(no_offer) is None
+
+    no_seller = _unstamped(candidate())
+    no_seller.seller_name = None
+    no_seller.variant_attributes = {
+        key: value
+        for key, value in dict(no_seller.variant_attributes or {}).items()
+        if key not in {"sellerId", "seller", "walmartSeller"}
+    }
+    assert stored_offer_identity(no_seller) is None
+
+    no_item = _unstamped(candidate())
+    no_item.product_id = None
+    no_item.sku = None
+    no_item.product_url = ""
+    no_item.direct_product_url = ""
+    assert stored_offer_identity(no_item) is None
+
+
+def test_stored_offer_identity_rejects_contradictory_exact_item_id() -> None:
+    item = _unstamped(candidate())
+    item.variant_attributes = {
+        **dict(item.variant_attributes or {}),
+        "exactDetailItemId": "999999999",
+    }
+    assert stored_offer_identity(item) is None
+
+
+def test_exact_offer_identity_still_requires_proof_stamp() -> None:
+    # The proven-identity gate is unchanged: no stamp, no identity.
+    assert exact_offer_identity(_unstamped(candidate())) is None
+    assert exact_offer_identity(candidate(exact=False)) is None
 
 
 def test_autoscan_does_not_use_legacy_guild_price_memory_for_public_proof() -> None:

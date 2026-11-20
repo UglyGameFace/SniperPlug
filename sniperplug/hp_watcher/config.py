@@ -34,6 +34,10 @@ class HPWatcherSettings:
     require_remote_database: bool = True
     run_once: bool = False
     user_agent: str = "SniperPlug-HP-Watcher/1.1 (+https://sniperplug.com)"
+    # curl_cffi browser profile the HP transport impersonates. HP's edge
+    # gates on the TLS/HTTP fingerprint, so this profile (not user_agent,
+    # which is accepted only for compatibility) is the client's identity.
+    impersonate: str = "chrome"
 
     @classmethod
     def from_env(cls) -> "HPWatcherSettings":
@@ -74,6 +78,7 @@ class HPWatcherSettings:
             require_remote_database=env_bool("HP_WATCHER_REQUIRE_REMOTE_DB", default=True),
             run_once=env_bool("HP_WATCHER_RUN_ONCE", default=False),
             user_agent=os.getenv("HP_WATCHER_USER_AGENT", "SniperPlug-HP-Watcher/1.1 (+https://sniperplug.com)").strip(),
+            impersonate=os.getenv("HP_WATCHER_IMPERSONATE", "chrome").strip() or "chrome",
         )
 
     def validate_runtime(self) -> None:

@@ -89,6 +89,10 @@ class DmListCandidate:
     product_url: str | None = None
     source: str = "link"  # "link" | "photo"
     source_ref: str = ""
+    # The verified was-price, when the verifier proved one. Lets the
+    # list say "was $X · N% off" for a real deal and "not on sale"
+    # for everything else (Felix, 2026-11-19).
+    reference_price_cents: int | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,7 @@ class DmListRow:
     status: str
     item_id: str | None = None
     price_cents: int | None = None
+    reference_price_cents: int | None = None
     product_url: str | None = None
     source: str = "link"
     source_ref: str = ""
@@ -142,7 +147,8 @@ async def ensure_dm_list_tables(db: Any) -> None:
                 source TEXT NOT NULL DEFAULT 'link',
                 source_ref TEXT NOT NULL DEFAULT '',
                 added_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                reference_price_cents INTEGER
             )
             """
         )
@@ -150,6 +156,18 @@ async def ensure_dm_list_tables(db: Any) -> None:
             f"CREATE INDEX IF NOT EXISTS idx_{DM_LIST_TABLE}_user "
             f"ON {DM_LIST_TABLE} (user_id, added_at)"
         )
+        # Existing tables (created before the was-price column):
+        # add it in place, the same guarded ALTER the wishlist uses.
+        column_cursor = await conn.execute(f"PRAGMA table_info({DM_LIST_TABLE})")
+        existing_columns = {
+            str(_row_get(row, "name", 1) or "")
+            for row in await column_cursor.fetchall()
+        }
+        if "reference_price_cents" not in existing_columns:
+            await conn.execute(
+                f"ALTER TABLE {DM_LIST_TABLE} "
+                "ADD COLUMN reference_price_cents INTEGER"
+            )
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sniperplug_data_migrations (
@@ -175,6 +193,9 @@ def _row_from_db(row: Any) -> DmListRow:
         name=str(_row_get(row, "name", 3) or ""),
         status=str(_row_get(row, "status", 5) or ""),
         price_cents=_as_optional_int(_row_get(row, "price_cents", 6)),
+        reference_price_cents=_as_optional_int(
+            _row_get(row, "reference_price_cents", 12)
+        ),
         product_url=(
             str(_row_get(row, "product_url", 7))
             if _row_get(row, "product_url", 7)
@@ -189,7 +210,8 @@ def _row_from_db(row: Any) -> DmListRow:
 
 _COLUMNS = (
     "id, user_id, item_id, name, name_key, status, price_cents, "
-    "product_url, source, source_ref, added_at, updated_at"
+    "product_url, source, source_ref, added_at, updated_at, "
+    "reference_price_cents"
 )
 
 
@@ -244,6 +266,7 @@ async def add_dm_list_items(
                 await conn.execute(
                     f"UPDATE {DM_LIST_TABLE} SET name = ?, name_key = ?, "
                     f"status = ?, price_cents = ?, product_url = ?, "
+                    f"reference_price_cents = ?, "
                     f"updated_at = ? WHERE id = ?",
                     (
                         str(candidate.name or prior.name),
@@ -251,6 +274,7 @@ async def add_dm_list_items(
                         STATUS_EXACT,
                         candidate.price_cents,
                         candidate.product_url or prior.product_url,
+                        candidate.reference_price_cents,
                         now,
                         prior.id,
                     ),
@@ -263,6 +287,7 @@ async def add_dm_list_items(
                     status=STATUS_EXACT,
                     item_id=item_id,
                     price_cents=candidate.price_cents,
+                    reference_price_cents=candidate.reference_price_cents,
                     product_url=candidate.product_url or prior.product_url,
                     source=prior.source,
                     source_ref=prior.source_ref,
@@ -296,8 +321,9 @@ async def add_dm_list_items(
             f"""
             INSERT INTO {DM_LIST_TABLE}
                 (user_id, item_id, name, name_key, status, price_cents,
-                 product_url, source, source_ref, added_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 product_url, source, source_ref, added_at, updated_at,
+                 reference_price_cents)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -312,6 +338,7 @@ async def add_dm_list_items(
                 source_ref,
                 now,
                 now,
+                candidate.reference_price_cents,
             ),
         )
         # RETURNING, not cursor.lastrowid: the production libsql
@@ -328,6 +355,7 @@ async def add_dm_list_items(
             status=status,
             item_id=item_id,
             price_cents=candidate.price_cents,
+            reference_price_cents=candidate.reference_price_cents,
             product_url=candidate.product_url,
             source=candidate.source or "link",
             source_ref=source_ref,
@@ -358,15 +386,17 @@ async def update_dm_list_item_check(
     *,
     name: str | None = None,
     price_cents: int | None = None,
+    reference_price_cents: int | None = None,
     status: str | None = None,
     product_url: str | None = None,
 ) -> DmListRow | None:
     """Refresh one row after a re-check; returns the stored row.
 
     Only fields the re-check actually proved are passed in; a field
-    left ``None`` keeps its stored value, except ``price_cents`` —
-    passing a fresh verified price is the normal case, and a re-check
-    that pins the item always carries one.
+    left ``None`` keeps its stored value, except ``price_cents`` and
+    ``reference_price_cents`` — a re-check that pins the item always
+    carries its fresh price truth, and a was-price the verifier no
+    longer proves must clear rather than linger as a stale deal.
     """
 
     await ensure_dm_list_tables(db)
@@ -383,16 +413,19 @@ async def update_dm_list_item_check(
         status if status in DM_LIST_STATUSES else current.status
     )
     new_price = price_cents if price_cents is not None else current.price_cents
+    new_reference = reference_price_cents
     new_url = product_url if product_url else current.product_url
     now = _utc_now_iso()
     await conn.execute(
         f"UPDATE {DM_LIST_TABLE} SET name = ?, name_key = ?, status = ?, "
-        f"price_cents = ?, product_url = ?, updated_at = ? WHERE id = ?",
+        f"price_cents = ?, reference_price_cents = ?, product_url = ?, "
+        f"updated_at = ? WHERE id = ?",
         (
             new_name,
             dm_list_name_key(new_name),
             new_status,
             new_price,
+            new_reference,
             new_url,
             now,
             int(row_id),
@@ -406,6 +439,7 @@ async def update_dm_list_item_check(
         status=new_status,
         item_id=current.item_id,
         price_cents=new_price,
+        reference_price_cents=new_reference,
         product_url=new_url,
         source=current.source,
         source_ref=current.source_ref,

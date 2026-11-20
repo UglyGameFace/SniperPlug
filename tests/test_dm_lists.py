@@ -365,3 +365,96 @@ async def test_add_items_with_a_production_shaped_cursor() -> None:
     finally:
         await conn.close()
         dm_lists._SCHEMA_READY = False
+
+
+def test_extract_lines_drops_amazon_cart_furniture() -> None:
+    """Measured on Felix's real Amazon cart screenshot (2026-11-19):
+    every furniture line must die here or at the match gate; only
+    the product fragment may be searched."""
+
+    text = (
+        "Search or ask a question\n"
+        "Proceed to checkout (14 items)\n"
+        "CapstarOralFleaTabletsDogs25+lbs,\n"
+        "Nitenpyram, 6-Dose|ldeal for Dogs 2...\n"
+        "#1 Best Seller in Dog Flea Pills\n"
+        "10K+ bought in past month\n"
+        "($6.80 / count)\n"
+        "Vprime Tomorrow\n"
+        "FREE delivery Tomorrow, Nov 20\n"
+        "FREE Returns\n"
+        "In Stock\n"
+        "Subscribe&Save - 5% off\n"
+        "Auto-delivery every 3 months (Most common)\n"
+        "10% coupon applied at checkout.\n"
+        "Conditions apply\n"
+    )
+    assert extract_candidate_lines(text) == [
+        "Nitenpyram, 6-Dose|ldeal for Dogs 2..."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reference_price_roundtrips_and_a_recheck_can_clear_it() -> None:
+    from dataclasses import replace
+
+    async with _isolated_db() as db:
+        candidate = replace(
+            _exact("425031866", "Apple iPhone 11, 64GB, Green"),
+            reference_price_cents=59600,
+        )
+        outcome = await add_dm_list_items(db, 111, [candidate])
+        assert outcome.added[0].reference_price_cents == 59600
+        rows = await list_dm_list_items(db, 111)
+        assert rows[0].reference_price_cents == 59600
+        updated = await update_dm_list_item_check(
+            db, rows[0].id, price_cents=29800, reference_price_cents=55000
+        )
+        assert updated is not None
+        assert updated.reference_price_cents == 55000
+        # A re-check that no longer proves a was-price clears it.
+        cleared = await update_dm_list_item_check(db, rows[0].id, price_cents=29800)
+        assert cleared is not None
+        assert cleared.reference_price_cents is None
+
+
+@pytest.mark.asyncio
+async def test_reference_price_column_migrates_onto_an_old_table() -> None:
+    """Tables created before the was-price column gain it in place."""
+
+    from dataclasses import replace
+
+    dm_lists._SCHEMA_READY = False
+    conn = await aiosqlite.connect(":memory:")
+    try:
+        await conn.execute(
+            """
+            CREATE TABLE user_dm_list_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                item_id TEXT,
+                name TEXT NOT NULL,
+                name_key TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                price_cents INTEGER,
+                product_url TEXT,
+                source TEXT NOT NULL DEFAULT 'link',
+                source_ref TEXT NOT NULL DEFAULT '',
+                added_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await conn.commit()
+        db = _FakeDatabase(conn)
+        candidate = replace(
+            _exact("425031866", "Apple iPhone 11, 64GB, Green"),
+            reference_price_cents=59600,
+        )
+        outcome = await add_dm_list_items(db, 111, [candidate])
+        assert outcome.added[0].reference_price_cents == 59600
+        rows = await list_dm_list_items(db, 111)
+        assert rows[0].reference_price_cents == 59600
+    finally:
+        await conn.close()
+        dm_lists._SCHEMA_READY = False

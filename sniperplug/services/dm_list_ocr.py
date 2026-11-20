@@ -105,6 +105,28 @@ _NOISE_LINES = frozenset(
     }
 )
 
+# Screenshot furniture that appears INSIDE longer lines (an Amazon
+# cart's badges, buttons and delivery notes — measured on a real
+# Amazon cart screenshot, 2026-11-19, where every extracted line was
+# furniture and each one was searched as if it were a product).
+# These phrases are store UI, never product names, so a substring
+# match is safe here where the whole-line set above is not.
+_NOISE_PHRASES = (
+    "proceed to checkout",
+    "search or ask a question",
+    "best seller in",
+    "bought in past month",
+    "subscribe&save",
+    "subscribe & save",
+    "auto-delivery",
+    "free returns",
+    "free delivery",
+    "prime tomorrow",
+    "/ count",
+    "applied at checkout",
+    "conditions apply",
+)
+
 _PRICE_ONLY_RE = re.compile(r"^\$?\s*\d[\d,]*(\.\d{1,2})?(\s*(\$|usd|each|ea\.?))?$")
 _QTY_RE = re.compile(r"^(qty|quantity)\s*:?\s*\d+$", re.IGNORECASE)
 _COUNT_LINE_RE = re.compile(r"^(cart|wishlist)\s*\(\d+\s*items?\)$", re.IGNORECASE)
@@ -303,6 +325,8 @@ class RemoteOcrEngine:
 def _line_is_noise(line: str) -> bool:
     lowered = " ".join(line.lower().split())
     if lowered in _NOISE_LINES:
+        return True
+    if any(phrase in lowered for phrase in _NOISE_PHRASES):
         return True
     if _COUNT_LINE_RE.match(lowered):
         return True

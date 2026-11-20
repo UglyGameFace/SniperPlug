@@ -92,6 +92,7 @@ from sniperplug.services.dm_lists import (
     list_dm_list_items,
     update_dm_list_item_check,
 )
+from sniperplug.services.dm_product_interests import normalize_match_text
 from sniperplug.services.user_wishlist import (
     MAX_WISHLIST_ITEMS_PER_USER,
     add_user_wishlist_item,
@@ -216,6 +217,19 @@ def _linked_name(row: DmListRow) -> str:
     return f"[**{safe}**]({url})"
 
 
+def _sale_segment(row: DmListRow) -> str:
+    """The deal truth for a priced row, in Felix's words (2026-11-19):
+    show the item, but say plainly when it isn't on sale."""
+
+    price = row.price_cents
+    reference = row.reference_price_cents
+    if price and reference and reference > price:
+        percent = round((1 - price / reference) * 100)
+        if percent >= 1:
+            return f" · was {_money_cents(reference)} · {percent}% off"
+    return " · not on sale right now"
+
+
 def dm_list_row_line(row: DmListRow, *, page_price: bool = False) -> str:
     """One embed line for a list row, with its honest status."""
 
@@ -226,6 +240,7 @@ def dm_list_row_line(row: DmListRow, *, page_price: bool = False) -> str:
             line += f" — {price}"
             if page_price:
                 line += " (page price)"
+            line += _sale_segment(row)
         return line + " · exact match"
     if row.status == STATUS_CLOSEST:
         return (
@@ -274,6 +289,56 @@ def _is_image_attachment(attachment: object) -> bool:
     return filename.endswith(_IMAGE_EXTENSIONS)
 
 
+# A picture line may only pin a search hit whose title actually
+# matches the line. Walmart search returns loosely related products,
+# and taking the first hit sight-unseen pinned wrong flea treatments
+# for badge lines on a real Amazon cart screenshot (2026-11-19).
+# The bar is token containment: a share of the line's meaningful
+# tokens must appear in the hit's title (product titles run longer
+# than the lines read off a cart, so the line's tokens are the
+# denominator). Measured on Felix's real screenshots (2026-11-19):
+# unrelated UI lines score 0.00–0.33 against the products they used
+# to pin, a garbled-but-real title fragment scores 0.50 against its
+# true product (0.25 against the wrong brand), and clean cart lines
+# score 0.78–1.00. 0.4 sits between the junk ceiling and the real
+# floor.
+_TITLE_MATCH_MIN = 0.4
+_MATCH_STOP_TOKENS = frozenset(
+    {"the", "a", "an", "for", "and", "or", "of", "with", "in", "on", "to", "by"}
+)
+
+
+def _match_tokens(text: object) -> frozenset[str]:
+    return frozenset(
+        token
+        for token in normalize_match_text(text).split()
+        if len(token) >= 3 and token not in _MATCH_STOP_TOKENS
+    )
+
+
+def _title_match_score(line: str, title: object) -> float:
+    line_tokens = _match_tokens(line)
+    if not line_tokens:
+        return 0.0
+    shared = line_tokens & _match_tokens(title)
+    return len(shared) / len(line_tokens)
+
+
+def _best_title_match(line: str, candidates: Iterable[object]) -> object | None:
+    """The hit that matches the line best, or None when none does."""
+
+    best: object | None = None
+    best_score = 0.0
+    for candidate in candidates:
+        score = _title_match_score(line, getattr(candidate, "title", ""))
+        if score > best_score:
+            best = candidate
+            best_score = score
+    if best is None or best_score < _TITLE_MATCH_MIN:
+        return None
+    return best
+
+
 def _candidate_item_id(candidate: object) -> str | None:
     product_id = str(getattr(candidate, "product_id", "") or "").strip()
     if product_id.isdigit():
@@ -303,6 +368,31 @@ def _verified_price_cents(result: object) -> tuple[int | None, bool]:
         return int(round(float(price) * 100)), False
     except (TypeError, ValueError):
         return None, False
+
+
+# Classifications where the verifier's candidate carries a TRUSTED
+# reference price (its classifier only computes a discount from a
+# trusted reference). Anything else — no reference, a page-observed
+# price — proves no discount, and the list must say so.
+_REFERENCE_CLASSIFICATIONS = frozenset(
+    {"verified_markdown", "verified_under_threshold", "verified_reference"}
+)
+
+
+def _verified_reference_cents(result: object) -> int | None:
+    """The was-price in cents when the verification proved one."""
+
+    if getattr(result, "classification", None) not in _REFERENCE_CLASSIFICATIONS:
+        return None
+    candidate = getattr(result, "candidate", None)
+    raw = getattr(candidate, "api_reference_price", None) if candidate else None
+    if raw is None:
+        return None
+    try:
+        cents = int(round(float(raw) * 100))
+    except (TypeError, ValueError):
+        return None
+    return cents if cents > 0 else None
 
 
 class _Budget:
@@ -641,6 +731,7 @@ class DmListView(discord.ui.View):
                     row.id,
                     name=str(getattr(candidate, "title", "") or "") or None,
                     price_cents=price_cents,
+                    reference_price_cents=_verified_reference_cents(result),
                     status=STATUS_EXACT,
                     product_url=(
                         str(
@@ -1187,6 +1278,7 @@ class DmListIntakeCog(commands.Cog):
             status=STATUS_EXACT,
             item_id=item_id,
             price_cents=price_cents,
+            reference_price_cents=_verified_reference_cents(result),
             product_url=(
                 str(
                     getattr(candidate, "direct_product_url", None)
@@ -1318,7 +1410,12 @@ class DmListIntakeCog(commands.Cog):
         found = getattr(result, "candidates", ()) or ()
         if not found:
             return None
-        best = found[0]
+        best = _best_title_match(line, found)
+        if best is None:
+            # The search answered, but nothing it returned is the
+            # product in the picture. A wrong "exact match" is worse
+            # than no row — the line simply contributes nothing.
+            return None
         name = str(getattr(best, "title", "") or "").strip() or line
         item_id = _candidate_item_id(best)
         url = (
@@ -1355,6 +1452,7 @@ class DmListIntakeCog(commands.Cog):
             status=STATUS_EXACT,
             item_id=item_id,
             price_cents=price_cents,
+            reference_price_cents=_verified_reference_cents(verified),
             product_url=(
                 str(
                     getattr(candidate, "direct_product_url", None)

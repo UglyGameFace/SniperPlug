@@ -780,3 +780,118 @@ def test_row_line_strips_brackets_from_linked_names() -> None:
 
     line = dm_list_row_line(_link_row(name="Widget [2 Pack] Special"))
     assert "[**Widget 2 Pack Special**](https://www.walmart.com/ip/139918537)" in line
+
+
+# --- sale labels (Felix, 2026-11-19) ------------------------------------------
+
+
+def test_row_line_shows_the_was_price_and_percent_off() -> None:
+    from sniperplug.cogs.dm_list_intake import dm_list_row_line
+
+    line = dm_list_row_line(_link_row(reference_price_cents=1199))
+    assert "$5.72" in line
+    assert "was $11.99" in line
+    assert "52% off" in line
+    assert "not on sale" not in line
+
+
+def test_row_line_says_not_on_sale_without_a_proven_discount() -> None:
+    from sniperplug.cogs.dm_list_intake import dm_list_row_line
+
+    line = dm_list_row_line(_link_row())
+    assert "$5.72" in line
+    assert "not on sale right now" in line
+    assert "% off" not in line
+
+
+def test_row_line_page_price_still_says_not_on_sale() -> None:
+    from sniperplug.cogs.dm_list_intake import dm_list_row_line
+
+    line = dm_list_row_line(_link_row(), page_price=True)
+    assert "(page price)" in line
+    assert "not on sale right now" in line
+
+
+@pytest.mark.asyncio
+async def test_verified_markdown_reference_reaches_the_row_and_reply(
+    monkeypatch,
+) -> None:
+    async with _isolated_db() as db:
+        cog, verify, _ = _cog(monkeypatch, db)
+        message = FakeMessage(IPHONE_URL)
+        await cog.on_message(message)
+        rows = await list_dm_list_items(db, USER_ID)
+        assert len(rows) == 1
+        # The stub verifies at $298 against a $596 reference.
+        assert rows[0].price_cents == 29800
+        assert rows[0].reference_price_cents == 59600
+        description = message.replies[0]["embed"].description
+        assert "was $596" in description
+        assert "50% off" in description
+
+
+# --- the title-match gate (Felix, 2026-11-19) ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unrelated_search_hit_is_never_pinned(monkeypatch) -> None:
+    """A line that matches nothing the search returned contributes
+    no row — a wrong 'exact match' is worse than none."""
+
+    async with _isolated_db() as db:
+        engine = FakeOcrEngine("Ask a question about this product\n")
+        provider = FakeProvider(
+            search_results={
+                "Ask a question about this product": (
+                    _candidate(
+                        "161147779",
+                        "If You Know You Know IYKYK - The Question Card "
+                        "Party Game for Adults",
+                        19.99,
+                    ),
+                )
+            }
+        )
+        cog, verify, _ = _cog(monkeypatch, db, provider=provider, engine=engine)
+        message = FakeMessage("", attachments=[FakeAttachment(b"png-bytes")])
+        await cog.on_message(message)
+        assert verify.calls == []
+        rows = await list_dm_list_items(db, USER_ID)
+        assert [row.status for row in rows] == [STATUS_UNREADABLE]
+
+
+@pytest.mark.asyncio
+async def test_search_picks_the_hit_that_matches_the_line(monkeypatch) -> None:
+    """The first hit is not taken on faith: the garbled Capstar
+    fragment must pin the Capstar hit listed second, not the
+    PetArmor hit listed first (measured pair, 2026-11-19)."""
+
+    async with _isolated_db() as db:
+        line = "Nitenpyram, 6-Dose|ldeal for Dogs 2..."
+        engine = FakeOcrEngine(line + "\n")
+        provider = FakeProvider(
+            search_results={
+                line: (
+                    _candidate(
+                        "111111111",
+                        "PETARMOR CAPACTION Fast-Acting Oral Flea "
+                        "Treatment for Medium and Large Dogs",
+                        31.49,
+                    ),
+                    _candidate(
+                        "222222222",
+                        "CAPSTAR (Nitenpyram) Fast-Acting Oral Flea "
+                        "Treatment for Large Dogs (over 25 lbs), "
+                        "6 Tablets, 57 mg",
+                        43.18,
+                    ),
+                )
+            }
+        )
+        cog, verify, _ = _cog(monkeypatch, db, provider=provider, engine=engine)
+        message = FakeMessage("", attachments=[FakeAttachment(b"png-bytes")])
+        await cog.on_message(message)
+        assert verify.calls == ["222222222"]
+        rows = await list_dm_list_items(db, USER_ID)
+        assert [row.item_id for row in rows] == ["222222222"]
+        assert rows[0].status == STATUS_EXACT

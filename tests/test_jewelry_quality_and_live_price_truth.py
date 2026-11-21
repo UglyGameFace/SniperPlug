@@ -170,3 +170,54 @@ def test_live_exact_recheck_tolerates_one_percent_move_on_pricier_lead(monkeypat
 
     monkeypatch.setattr(extreme, "_fetch_exact_candidate_off_loop", fake_fetch)
     assert asyncio.run(extreme.live_extreme_offer_rejection_reason(base)) is None
+
+
+@pytest.mark.parametrize("title", [
+    "Timex Men's Expedition Scout 40mm Watch with Leather Strap",
+    "Casio G-Shock Digital Watch",
+    "Fitbit Versa Smartwatch with Heart Rate",
+    "Women's Goldtone Fashion Watch with Leather Band",
+])
+def test_watches_under_a_jewelry_department_are_not_jewelry(title):
+    # Walmart files watches under the Jewelry department; the breadcrumb
+    # alone must not condemn an ordinary watch as unproven jewelry.
+    card = _card(title)
+    card.variant_attributes = {
+        "categoryPath": "Jewelry/Womens Jewelry & Watches/Mens Watches",
+    }
+    assert card_jewelry_rejection_reason(card) is None
+    assert jewelry_quality_rejection_reason(
+        title,
+        attributes={"category": "Home Page/Jewelry/Mens Watches"},
+    ) is None
+
+
+def test_watch_deal_reaches_a_watches_subscriber():
+    card = _card("Timex Men's Expedition Scout 40mm Watch with Leather Strap")
+    card.variant_attributes = {
+        "categoryPath": "Jewelry/Womens Jewelry & Watches/Mens Watches",
+    }
+    pref = DmDealAlertPreference(
+        user_id=1, enabled=True, min_discount=20,
+        categories=("watches",),
+    )
+    decision = match_dm_deal(pref, card)
+    assert decision.matched
+    assert decision.category_key == "watches"
+
+
+def test_watch_word_cannot_launder_a_jewelry_item():
+    # A title that names a real jewelry item stays gated even when the word
+    # "watch" appears and even under a watches breadcrumb.
+    card = _card("Goldtone Watch Charm Bracelet Gift Set")
+    card.variant_attributes = {
+        "categoryPath": "Jewelry/Womens Jewelry & Watches/Womens Watches",
+    }
+    assert card_jewelry_rejection_reason(card) == "fashion_or_plated_jewelry"
+    necklace = _card(
+        "Time and Tru Women's Goldtone Initial U Necklace with Giftable Pouch"
+    )
+    necklace.variant_attributes = {
+        "categoryPath": "Jewelry/Womens Jewelry & Watches/Womens Watches",
+    }
+    assert card_jewelry_rejection_reason(necklace) == "fashion_or_plated_jewelry"

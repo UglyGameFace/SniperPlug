@@ -10,7 +10,12 @@ from sniperplug.services.dm_deal_alerts import (
 )
 from sniperplug.services.dm_deal_badges import personalize_dm_card_title
 from sniperplug.services.jewelry_quality import card_jewelry_rejection_reason
+from sniperplug.services.anomaly_score import score_deal_anomaly
 from sniperplug.services.dm_deal_routes import split_dm_route_preferences, verified_card_route
+from sniperplug.services.listing_contradiction import (
+    candidate_condition,
+    listing_lead_reference_price,
+)
 from sniperplug.services.routing import PRICE_GLITCH_ROUTE, route_label
 from sniperplug.services.dm_personal_categories import (
     category_key_for_card,
@@ -75,6 +80,16 @@ def match_dm_deal(
     An exact-price lead (no verified was-price) is only ever a DM for a
     subscriber whose product or brand interest matches that exact card;
     there is no markdown to rank it by otherwise.
+
+    A listing-error lead is different when it is evidence-backed: the
+    detector re-verified a trusted reference price (reference/list/context
+    or the existing cross-seller comp) against the contradiction, so there
+    IS a reference to rank it by. Such a lead is matched like a referenced
+    deal on the price-mistake route — the subscriber's discount floor is
+    measured on the implied gap versus that reference, and the category,
+    score, cap and profit-floor guards all apply unchanged. A listing
+    lead without trusted reference evidence stays an exact-price lead
+    under the interest rule above.
     """
 
     pref = preference.normalized()
@@ -115,6 +130,49 @@ def match_dm_deal(
         or getattr(card, "discount", None)
     )
     score = _as_int(getattr(card, "score", 0))
+
+    # Evidence-backed listing-error leads: the lead card deliberately
+    # carries no verified was-price fields (it must never present one),
+    # but its source candidate may carry a trusted reference that the
+    # detector already used as value evidence. Re-verify that here, from
+    # the candidate, and only when the candidate's price is the card's
+    # price: the lead then ranks as a referenced deal by its implied gap
+    # versus the reference, scored by the same anomaly score every other
+    # deal carries. Without trusted evidence nothing changes — the card
+    # falls through to the exact-price lead path below.
+    listing_candidate = getattr(card, "listing_contradiction_candidate", None)
+    listing_evidence_backed = False
+    if (
+        bool(getattr(card, "listing_error_lead", False))
+        and listing_candidate is not None
+        and hasattr(listing_candidate, "to_normalized_deal")
+        and current_cents is not None
+        and _money_to_cents(getattr(listing_candidate, "current_price", None))
+        == current_cents
+    ):
+        listing_reference = listing_lead_reference_price(listing_candidate)
+        listing_reference_cents = _money_to_cents(listing_reference)
+        if (
+            listing_reference_cents is not None
+            and listing_reference_cents > current_cents
+        ):
+            listing_evidence_backed = True
+            reference_cents = listing_reference_cents
+            discount = (
+                (reference_cents - current_cents) / reference_cents * 100.0
+            )
+            # Score the candidate's deal the way any referenced deal is
+            # scored. When the trusted reference lives only in the comp /
+            # context fields, the normalized deal carries no typical
+            # price for the scorer to see — supply the re-verified
+            # reference as its typical price so the internal score floor
+            # judges the same gap every other referenced deal is judged
+            # by, instead of a gap it cannot see.
+            listing_deal = listing_candidate.to_normalized_deal()
+            if _money_to_cents(getattr(listing_deal, "typical_price", None)) is None:
+                listing_deal.typical_price = listing_reference
+            score = score_deal_anomaly(listing_deal).score
+
     savings_cents = max(0, (reference_cents or 0) - (current_cents or 0))
     cash_cents = walmart_cash_cents(card)
 
@@ -185,6 +243,13 @@ def match_dm_deal(
     # Inclusion layers. Each is computed independently; any one of them is
     # enough, and none of them can veto another.
     route = verified_card_route(card)
+    if route is None and listing_evidence_backed:
+        # A listing-error lead carries no verified deal route metadata —
+        # the card is built by the listing lane, not the markdown lanes.
+        # Its classification is the price-mistake route: the detector
+        # re-verified the contradiction and its value evidence above, so
+        # this is a structured lane assignment, never a title guess.
+        route = PRICE_GLITCH_ROUTE
     route_match = route is not None and route in selected_routes
 
     product_match = ProductPreferenceMatch(False)
@@ -296,6 +361,24 @@ def match_dm_deal(
             "no verified was-price, no discount claimed • "
             f"category {category_key}"
         )
+    elif listing_evidence_backed:
+        # The gap is implied by the trusted reference, not a verified
+        # markdown — the trace says so, and names the route + floor basis
+        # the match stands on. The card itself labels the condition; the
+        # trace repeats it so a non-new lead is never read as new.
+        reason = (
+            f"Listing-error lead • {discount:.0f}% implied gap vs "
+            f"${reference_cents / 100:,.2f} reference "
+            "(not a verified markdown) • "
+            f"saves ${savings_cents / 100:,.2f} if the larger claim ships • "
+            f"score {score}/250 • category {category_key} • "
+            f"meets your {required_discount}% floor"
+        )
+        grade = candidate_condition(listing_candidate)
+        if grade is not None and grade != "New":
+            reason += f" • condition {grade} — NOT a new item"
+        elif grade is not None:
+            reason += " • condition New"
     else:
         reason = (
             f"{discount:.0f}% exact markdown • saves ${savings_cents / 100:,.2f} • "

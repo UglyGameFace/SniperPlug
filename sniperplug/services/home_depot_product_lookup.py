@@ -116,6 +116,10 @@ async def fetch_home_depot_product_detail(product_id: str, *, zip_code: str | No
         except Exception:
             pass
 
+    direct_detail = await _fetch_direct_detail(product_id, zip_code=zip_code, store_id=store_id, db=db, cache_key=cache_key)
+    if direct_detail is not None:
+        return direct_detail
+
     payload = await asyncio.to_thread(_fetch_product_payload_sync, params)
     if db is not None and isinstance(payload, dict) and not payload.get("_sniperplug_error") and not payload.get("error"):
         try:
@@ -129,6 +133,121 @@ async def fetch_home_depot_product_detail(product_id: str, *, zip_code: str | No
         except Exception:
             pass
     return _detail_from_payload(product_id, payload)
+
+
+DIRECT_DETAIL_WARNING = "Served by the Home Depot direct gateway lane (no SerpApi credit used)."
+
+
+def _detail_from_direct_payload(product_id: str, payload: Any, *, store_id: str | None = None, zip_code: str | None = None) -> HomeDepotProductDetail | None:
+    """Parse a productClientOnlyProduct gateway payload into a detail.
+
+    Returns None when the payload carries no usable price, so the caller
+    falls back to SerpApi instead of trusting a hollow record.
+    """
+    if not isinstance(payload, dict):
+        return None
+    product = ((payload.get("data") or {}).get("product") or {})
+    if not isinstance(product, dict) or not product:
+        return None
+    identifiers = product.get("identifiers") if isinstance(product.get("identifiers"), dict) else {}
+    pricing = product.get("pricing") if isinstance(product.get("pricing"), dict) else {}
+    price = _number(pricing.get("value"))
+    if price is None:
+        return None
+    original = _number(pricing.get("original"))
+    if original is not None and original <= price:
+        original = None
+
+    image_url: str | None = None
+    media = product.get("media") if isinstance(product.get("media"), dict) else {}
+    images = media.get("images") if isinstance(media, dict) else None
+    if isinstance(images, list):
+        for image in images:
+            if isinstance(image, dict) and image.get("url"):
+                image_url = str(image["url"]).replace("<SIZE>", "400")
+                break
+
+    fulfillment = product.get("fulfillment") if isinstance(product.get("fulfillment"), dict) else {}
+    options: list[HomeDepotFulfillmentOption] = []
+    fulfillment_quantity: int | None = None
+    raw_options = fulfillment.get("fulfillmentOptions") if isinstance(fulfillment, dict) else None
+    for option in raw_options or []:
+        if not isinstance(option, dict):
+            continue
+        quantities: list[int] = []
+        for service in option.get("services") or []:
+            if not isinstance(service, dict):
+                continue
+            for location in service.get("locations") or []:
+                if not isinstance(location, dict):
+                    continue
+                if store_id and str(location.get("locationId") or "") not in {"", str(store_id)}:
+                    continue
+                inventory = location.get("inventory") if isinstance(location.get("inventory"), dict) else {}
+                qty = _int(inventory.get("quantity"))
+                if qty is not None:
+                    quantities.append(qty)
+        option_quantity = sum(quantities) if quantities else None
+        option_type = _clean(option.get("type")) or "Fulfillment"
+        options.append(HomeDepotFulfillmentOption(type=option_type, quantity=option_quantity))
+        if option_quantity is not None:
+            if "pickup" in option_type.lower() or fulfillment_quantity is None:
+                fulfillment_quantity = option_quantity
+
+    canonical = _clean(identifiers.get("canonicalUrl"))
+    if canonical and canonical.startswith("/"):
+        canonical = f"https://www.homedepot.com{canonical}"
+    return HomeDepotProductDetail(
+        product_id=_clean(product.get("itemId")) or product_id,
+        title=_clean(identifiers.get("productLabel")),
+        link=canonical or f"https://www.homedepot.com/p/{product_id}",
+        image_url=image_url,
+        price=price,
+        original_price=original,
+        reference_price_source="direct pricing.original" if original is not None else None,
+        upc=_clean(identifiers.get("upc")) or _clean(identifiers.get("upcGtin13")),
+        store_sku_number=_clean(identifiers.get("storeSkuNumber")),
+        brand=_clean(identifiers.get("brandName")),
+        fulfillment_store=_clean(store_id),
+        fulfillment_quantity=fulfillment_quantity,
+        fulfillment_options=tuple(options),
+        warnings=(DIRECT_DETAIL_WARNING,),
+        raw_keys=tuple(product.keys()),
+    )
+
+
+async def _fetch_direct_detail(product_id: str, *, zip_code: str | None = None, store_id: str | None = None, db: Any = None, cache_key: str) -> HomeDepotProductDetail | None:
+    """Try the direct gateway lane for a product detail; None = fall back."""
+    from sniperplug.services import hd_direct_client
+
+    if db is not None:
+        try:
+            cached = await db.get_provider_cache("home_depot_product_direct", cache_key)
+            if cached:
+                detail = _detail_from_direct_payload(product_id, cached["response"], store_id=store_id, zip_code=zip_code)
+                if detail is not None:
+                    return _with_warning(detail, "Product detail cache hit: reused recent direct gateway payload.")
+        except Exception:
+            pass
+    try:
+        payload = await hd_direct_client.product_detail(product_id, store_id=store_id, zip_code=zip_code)
+    except Exception:
+        return None
+    detail = _detail_from_direct_payload(product_id, payload, store_id=store_id, zip_code=zip_code)
+    if detail is None:
+        return None
+    if db is not None:
+        try:
+            await db.set_provider_cache(
+                "home_depot_product_direct",
+                cache_key,
+                payload,
+                request={"product_id": product_id, "store_id": store_id or "", "zip": zip_code or ""},
+                expires_at=_expires_at(PRODUCT_DETAIL_CACHE_MINUTES),
+            )
+        except Exception:
+            pass
+    return detail
 
 
 def _product_params(product_id: str, *, zip_code: str | None = None, store_id: str | None = None) -> dict[str, str]:

@@ -18,7 +18,10 @@ def test_home_depot_search_uses_private_owner_language():
 
 
 def test_home_depot_search_does_not_charge_cache_hits():
-    assert 'quota_cost = 0 if result.metadata.get("cache_hit") else 1' in SEARCH
+    # Lane-aware charging: serpapi_credit is 0 for direct-lane hits and
+    # SerpApi cache hits alike; the cache_hit expression remains the
+    # default when a provider reports no explicit credit.
+    assert 'quota_cost = int(result.metadata.get("serpapi_credit", 0 if result.metadata.get("cache_hit") else 1))' in SEARCH
     assert 'serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)' in SEARCH
     assert 'SerpApi charged: **{quota_cost} credit(s)**' in SEARCH
 

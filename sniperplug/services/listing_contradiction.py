@@ -495,6 +495,47 @@ def _price_only_value_evidence(candidate: Any) -> str | None:
     return None
 
 
+def listing_lead_reference_price(candidate: Any) -> float | None:
+    """The trusted reference price that makes this candidate an
+    evidence-backed listing lead, or None.
+
+    A listing lead is evidence-backed only when the detector itself would
+    call it a lead: a quantity contradiction whose value evidence holds
+    (``ListingContradiction.is_lead``), or a condition contradiction with a
+    reference price far above the asking price. The returned price is the
+    specific reference that satisfied the evidence check — a reference /
+    list / context price the candidate already carries, or the existing
+    cross-seller marketplace comp — never a scraped or guessed price.
+    Callers (personal DM matching) use it to measure the implied gap
+    against the subscriber's own discount floor; a lead without one stays
+    a no-reference lead.
+    """
+    current = _positive(getattr(candidate, "current_price", None))
+    if current is None:
+        return None
+    references = _reference_prices(candidate)
+    if not references:
+        return None
+    contradiction = candidate_contradiction(candidate)
+    if contradiction is not None and contradiction.is_lead:
+        larger, smaller = contradiction.larger_value, contradiction.smaller_value
+        for reference in references:
+            if reference >= MATERIAL_RATIO * current:
+                return reference
+            predicted_smaller = reference * (smaller / larger)
+            if (
+                predicted_smaller > 0
+                and abs(current - predicted_smaller) <= 0.35 * predicted_smaller
+            ):
+                return reference
+        return None
+    if detect_condition_contradiction(candidate) is not None:
+        for reference in references:
+            if reference >= MATERIAL_RATIO * current:
+                return reference
+    return None
+
+
 def build_listing_error_lead_card(candidate: Any) -> Any | None:
     """Build the speculative listing-error lead card, or None.
 

@@ -61,7 +61,7 @@ COMMAND_CATALOG: tuple[CommandCatalogEntry, ...] = (
         name="/wishlist add",
         audience="Everyone",
         purpose="Add a plain product name to your personal wishlist.",
-        when_to_use="Use when you want a DM about one exact item, for example iphone 11 or dyson airwrap, instead of a whole category. Adding an item turns your personal deal DMs on with the usual Smart settings.",
+        when_to_use="Use when you want a DM about one exact item, for example iphone 11 or dyson airwrap, instead of a whole category. Adding an item turns your personal deal DMs on with your saved alert settings.",
     ),
     CommandCatalogEntry(
         name="/wishlist list",

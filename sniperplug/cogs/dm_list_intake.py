@@ -594,6 +594,9 @@ class DmListView(discord.ui.View):
 
     def current_embed(self) -> discord.Embed:
         notes = list(self.notes)
+        tally = self._status_tally()
+        if tally:
+            notes.insert(0, tally)
         if self.check_note:
             notes.append(self.check_note)
         return build_dm_list_embed(
@@ -602,6 +605,25 @@ class DmListView(discord.ui.View):
             notes=notes,
             page_price_item_ids=self.page_price_item_ids,
         )
+
+    def _status_tally(self) -> str:
+        """One line of counts by match status, so the list reads at a glance."""
+
+        if len(self.rows) < 2:
+            return ""
+        counts: dict[str, int] = {}
+        for row in self.rows:
+            counts[row.status] = counts.get(row.status, 0) + 1
+        parts: list[str] = []
+        if counts.get(STATUS_EXACT):
+            parts.append(f"{counts[STATUS_EXACT]} exact")
+        if counts.get(STATUS_CLOSEST):
+            parts.append(f"{counts[STATUS_CLOSEST]} closest (price not checked)")
+        if counts.get(STATUS_UNCHECKED):
+            parts.append(f"{counts[STATUS_UNCHECKED]} not checked yet")
+        if counts.get(STATUS_UNREADABLE):
+            parts.append(f"{counts[STATUS_UNREADABLE]} couldn't be read")
+        return " · ".join(parts)
 
     async def _guard_owner(self, interaction: discord.Interaction) -> bool:
         if int(getattr(interaction.user, "id", 0) or 0) == self.owner_id:
@@ -627,25 +649,24 @@ class DmListView(discord.ui.View):
             preference = await get_dm_deal_alert_preference(db, self.owner_id)
             if preference.enabled:
                 return ""
+            enabled_preference = replace(
+                preference, enabled=True, failure_count=0, last_error=""
+            )
             embed = discord.Embed(
                 title="✅ SniperPlug wishlist alerts are on",
                 description=(
                     "You added an item to your wishlist from your list, so "
-                    "your personal deal DMs are now on with the usual Smart "
-                    "settings (price-checked deals, at least 20% off, up to "
-                    "25 a day). Pause anytime with "
-                    "`/walmart my-alerts action:Pause alerts`."
+                    "your personal deal DMs are now on. "
+                    f"{enabled_preference.summary_sentence()} "
+                    "Change them anytime in /menu → My alerts."
                 ),
                 color=discord.Color.green(),
             )
             await interaction.user.send(embed=embed)
-            await save_dm_deal_alert_preference(
-                db,
-                replace(preference, enabled=True, failure_count=0, last_error=""),
-            )
+            await save_dm_deal_alert_preference(db, enabled_preference)
             return (
-                "Your personal deal DMs were off, so I turned them on with "
-                "the usual Smart settings."
+                "Your personal deal DMs were off, so I turned them on — "
+                f"{enabled_preference.summary_sentence()}"
             )
         except discord.Forbidden:
             return (

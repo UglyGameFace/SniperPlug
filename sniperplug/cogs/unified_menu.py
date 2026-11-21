@@ -137,10 +137,13 @@ def _category_summary(state: MenuDashboardState, category_key: str) -> str:
     if category_key == "my-deals":
         return f"wishlist {state.wishlist_count}/{state.wishlist_cap} · {_dm_summary(state)}"
     if category_key == "stores":
-        return (
+        summary = (
             f"{state.active_deal_count} active deals · public posts at "
             f"{state.threshold_percent}% off or better"
         )
+        if state.hd_location_label:
+            summary += f" · Home Depot location: **{state.hd_location_label}**"
+        return summary
     if category_key == "movies-verizon":
         if state.deals_today is not None:
             return f"{state.deals_today} deals today"
@@ -224,8 +227,12 @@ MENU_ENTRIES: tuple[_Entry, ...] = (
            "/ebay status", "stores", "run", "EbayResearchCog", "status"),
     _Entry("home-depot-search", "Home Depot search", "Search Home Depot.",
            "/staff hd-search", "stores", "modal", "HomeDepotSearchCog", "home_depot_search", manage_guild=True),
-    _Entry("home-depot-penny-hunt", "Home Depot penny hunt", "Hunt penny and clearance candidates.",
+    _Entry("home-depot-penny-hunt", "Home Depot penny hunt", "Start a standing penny hunt — it scans now, then auto-scans daily for new candidates.",
            "/staff hd-penny", "stores", "modal", "HomeDepotSearchCog", "home_depot_penny_hunt", manage_guild=True),
+    _Entry("home-depot-my-hunts", "My Home Depot hunts", "Your standing penny hunts (auto-scans) — see them or stop one.",
+           "Runs here in the menu", "stores", "run", "HomeDepotSearchCog", "open_my_hunts", manage_guild=True),
+    _Entry("home-depot-location", "My Home Depot store", "Set the ZIP (and store) Home Depot hunts, searches, and stock checks use, so you stop typing it.",
+           "Runs here in the menu", "stores", "modal", "HomeDepotSearchCog", "set_hd_location", manage_guild=True),
     _Entry("home-depot-penny-watch", "Home Depot penny watch", "Clearance items being tracked toward a penny, and where each one stands.",
            "Runs here in the menu", "stores", "run", "HomeDepotSearchCog", "open_penny_watch", manage_guild=True),
     _Entry("hd-stock", "Home Depot stock", "Check one SKU at a nearby store.",
@@ -335,17 +342,21 @@ _MODAL_FIELDS: dict[str, tuple[_ModalField, ...]] = {
     ),
     "home-depot-search": (
         _ModalField("query", "What to search", "drill, patio set, paint", True),
-        _ModalField("store_id", "Store number (optional)", "1234", False),
-        _ModalField("zip_code", "ZIP code (optional)", "06484", False),
+        _ModalField("store_id", "Store number (optional — blank uses your saved store)", "1234", False),
+        _ModalField("zip_code", "ZIP code (optional — blank uses your saved ZIP)", "06484", False),
     ),
     "home-depot-penny-hunt": (
         _ModalField("query", "What to hunt", "tools, garden, appliances", True),
+        _ModalField("store_id", "Store number (optional — blank uses your saved store)", "1234", False),
+        _ModalField("zip_code", "ZIP code (optional — blank uses your saved ZIP)", "06484", False),
+    ),
+    "home-depot-location": (
+        _ModalField("zip_code", "ZIP code", "06484", True),
         _ModalField("store_id", "Store number (optional)", "1234", False),
-        _ModalField("zip_code", "ZIP code (optional)", "06484", False),
     ),
     "hd-stock": (
         _ModalField("sku", "SKU / Internet number", "1001234567", True),
-        _ModalField("zip_code", "ZIP code", "06484", True),
+        _ModalField("zip_code", "ZIP code (optional — blank uses your saved ZIP)", "06484", False),
         _ModalField("store_id", "Store number (optional)", "1234", False),
     ),
     "local-check": (

@@ -71,6 +71,7 @@ EXPECTED_FIELDS = {
     "active_deals",
     "active_deal_count",
     "deals_today",
+    "hd_location_label",
 }
 
 

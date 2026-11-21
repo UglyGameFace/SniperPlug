@@ -95,6 +95,7 @@ class MenuDashboardState:
     active_deals: list = field(default_factory=list)
     active_deal_count: int = 0
     deals_today: int | None = None
+    hd_location_label: str = ""
 
 
 def _cell(row: Any, key: str, index: int) -> Any:
@@ -296,6 +297,18 @@ async def _load_wishlist(state: MenuDashboardState, db: Any, user_id: Any) -> No
         state.wishlist_count = 0
 
 
+async def _load_hd_location(state: MenuDashboardState, db: Any, user_id: Any) -> None:
+    if user_id is None:
+        return
+    try:
+        from sniperplug.services.hd_user_location import get_hd_user_location
+
+        location = await get_hd_user_location(db, user_id=int(user_id))
+        state.hd_location_label = location.label if location else ""
+    except Exception:
+        state.hd_location_label = ""
+
+
 async def _load_active_deals(state: MenuDashboardState, db: Any, guild_id: Any) -> None:
     try:
         # Same listing the public /active_deals command shows: most recent
@@ -374,6 +387,7 @@ async def load_menu_dashboard_state(bot: Any, guild_id: int, user_id: int) -> Me
         await _load_delivery(state, bot, db, guild_id)
         await _load_dm_preferences(state, db, user_id)
         await _load_wishlist(state, db, user_id)
+        await _load_hd_location(state, db, user_id)
         await _load_active_deals(state, db, guild_id)
         state.deals_today = await _count_deals_today(db, guild_id)
     except Exception:

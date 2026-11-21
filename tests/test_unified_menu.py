@@ -60,7 +60,7 @@ def test_menu_command_registers() -> None:
 
 def test_menu_entries_are_well_formed() -> None:
     keys = [entry.key for entry in MENU_ENTRIES]
-    assert len(keys) == len(set(keys)) == 47
+    assert len(keys) == len(set(keys)) == 49
     assert set(MENU_DELEGATES) == set(keys)
     for entry in MENU_ENTRIES:
         assert entry.mode in {"run", "modal", "choice", "channel", "special"}

@@ -80,6 +80,11 @@ class SourceCandidate:
     shipping_status: str | None = None
     shipping_source: str | None = None
 
+    # Product description text as carried by the provider payload, when it
+    # carries any at all. Used only by the listing-contradiction detector;
+    # absence means the detector compares title against variant claims only.
+    description: str | None = None
+
     def __post_init__(self) -> None:
         self._apply_walmart_selected_offer_truth()
         asin = self.product_id if self.product_id_type == "asin" else None
@@ -412,6 +417,7 @@ class SourceCandidate:
             seller_name=self.seller_name,
             fulfillment_type=self.fulfillment_type,
             condition=self.condition,
+            description=self.description,
             availability_message="; ".join(availability_bits)
             if availability_bits
             else None,

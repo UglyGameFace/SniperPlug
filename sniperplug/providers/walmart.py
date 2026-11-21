@@ -442,6 +442,7 @@ class WalmartProvider(DealProvider):
             retailer="Walmart",
             title=title,
             product_url=product_url,
+            description=_item_description(item),
             current_price=current_price,
             typical_price=typical_price,
             image_url=str(item.get("largeImage") or item.get("mediumImage") or item.get("thumbnailImage") or "") or None,
@@ -1118,6 +1119,23 @@ def _walmart_proof_attributes(item: dict[str, Any], variant_attrs: dict[str, str
     if unit_size and "unitSize" not in attrs:
         attrs["unitSize"] = unit_size
     return attrs
+
+
+def _item_description(item: dict) -> str | None:
+    """Carry the payload's description text, when it carries any.
+
+    The affiliate search/detail payloads expose long/short description
+    fields on some items and none on others. Whatever is present is kept
+    as plain text (tags stripped, bounded) purely as detector input for
+    the listing-contradiction check; it is never display copy.
+    """
+    for key in ("longDescription", "shortDescription", "description", "productDescription"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            text = re.sub(r"<[^>]+>", " ", value)
+            text = " ".join(text.split())
+            return text[:2000] or None
+    return None
 
 
 def _unit_size_from_title(title: str) -> str | None:

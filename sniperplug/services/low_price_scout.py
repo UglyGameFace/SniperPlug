@@ -39,17 +39,29 @@ class ScoutLead:
 def scout_low_price_leads(candidates: Iterable[SourceCandidate], *, limit: int = 8, search_query: str = "") -> list[DealCard]:
     scored: list[ScoutLead] = []
     seen: set[str] = set()
+    cards: list[DealCard] = []
     for candidate in candidates:
+        key = candidate.selected_offer_id or candidate.product_id or candidate.sku or candidate.upc or candidate.product_url or candidate.title
+        # Listing-error leads are a separate speculative lane: a candidate
+        # whose listing contradicts itself on quantity surfaces with its
+        # own clearly-labelled card, never as a verified markdown.
+        from sniperplug.services.listing_contradiction import build_listing_error_lead_card
+
+        listing_card = build_listing_error_lead_card(candidate)
+        if listing_card is not None and key not in seen:
+            seen.add(key)
+            cards.append(listing_card)
+            continue
         lead = score_candidate(candidate, search_query=search_query)
         if lead is None:
             continue
-        key = candidate.selected_offer_id or candidate.product_id or candidate.sku or candidate.upc or candidate.product_url or candidate.title
         if key in seen:
             continue
         seen.add(key)
         scored.append(lead)
     scored.sort(key=lambda item: item.score, reverse=True)
-    return [build_scout_card(lead) for lead in scored[:limit]]
+    cards.extend(build_scout_card(lead) for lead in scored[:limit])
+    return cards[:limit]
 
 
 def score_candidate(candidate: SourceCandidate, *, search_query: str = "") -> ScoutLead | None:

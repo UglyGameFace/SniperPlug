@@ -367,6 +367,8 @@ def _is_extreme_price_lead(card: Any) -> bool:
 
     if bool(getattr(card, "page_price_lead", False)):
         return True
+    if bool(getattr(card, "listing_error_lead", False)):
+        return True
     if getattr(card, "extreme_exact_candidate", None) is not None:
         return True
     return getattr(card, "page_price_candidate", None) is not None

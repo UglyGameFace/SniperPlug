@@ -634,6 +634,36 @@ async def test_add_all_button_adds_and_turns_alerts_on(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_view_tally_counts_each_status(monkeypatch) -> None:
+    async with _isolated_db() as db:
+        rows = await _seed_rows(db)
+        view = DmListView(FakeBot(db), USER_ID, rows)
+        tally = "1 exact · 1 not checked yet · 1 couldn't be read"
+        assert view._status_tally() == tally
+        assert tally in (view.current_embed().description or "")
+
+
+@pytest.mark.asyncio
+async def test_first_add_probe_dm_quotes_the_real_settings(monkeypatch) -> None:
+    async with _isolated_db() as db:
+        rows = await _seed_rows(db)
+        view = DmListView(FakeBot(db), USER_ID, rows)
+        interaction = FakeInteraction()
+        await view._on_add_all(interaction)
+        assert interaction.dms, "the probe DM should have been sent"
+        dm_description = interaction.dms[0]["embed"].description or ""
+        # The alerts copy used to quote a removed "Smart settings" mode
+        # and a 20% floor the defaults never had. It now quotes the
+        # preference's own summary sentence — the settings actually saved.
+        assert "Smart" not in dm_description
+        preference = await get_dm_deal_alert_preference(db, USER_ID)
+        assert preference.summary_sentence() in dm_description
+        followup_text = interaction.followup.sent[0][0]
+        assert "Smart" not in followup_text
+        assert preference.summary_sentence() in followup_text
+
+
+@pytest.mark.asyncio
 async def test_add_selected_uses_the_select_values(monkeypatch) -> None:
     async with _isolated_db() as db:
         rows = await _seed_rows(db)

@@ -13,8 +13,8 @@ the exact-set ``/walmart`` surface test. A wishlist is also
 retailer-agnostic (it matches Walmart, HP and Target verified deals), so it
 does not belong under a Walmart-only group.
 
-Adding an item turns personal DM alerts on with the usual Smart defaults
-when they are off — a wishlist that never DMs anyone is useless — but only
+Adding an item turns personal DM alerts on with the user's saved
+settings when they are off — a wishlist that never DMs anyone is useless — but only
 after proving the DM can be delivered, the same probe-then-save pattern
 ``/walmart my-alerts`` uses. If DMs are closed, the item is still saved and
 the reply says plainly that alerts stay off until DMs are allowed.
@@ -222,23 +222,25 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
         interaction: discord.Interaction,
         preference: DmDealAlertPreference,
     ) -> tuple[bool, str]:
-        """Prove DM delivery, then enable personal alerts with Smart defaults.
+        """Prove DM delivery, then enable personal alerts.
 
         Returns (enabled, note). Mirrors the probe-then-save pattern in
         ``DmDealAlertsCog.dm_deals``: never enable a stream that cannot
-        reach the user.
+        reach the user. The copy quotes the preference's own summary
+        sentence so it can never drift from the settings actually saved.
         """
 
+        enabled_preference = replace(
+            preference, enabled=True, failure_count=0, last_error=""
+        )
         embed = discord.Embed(
             title="✅ SniperPlug wishlist alerts are on",
             description=(
-                "You added an item to your wishlist, so your personal deal DMs "
-                "are now on with the usual Smart settings "
-                "(price-checked deals, at least 20% off, up to 25 a day). "
-                "You will only hear about wishlist matches and other deals "
-                "that pass those filters — and a wishlist match only happens "
-                "when the bot's broad scan finds your item first.\n\n"
-                "Pause anytime with `/walmart my-alerts action:Pause alerts`."
+                "You added an item to your wishlist, so your personal deal "
+                f"DMs are now on. {enabled_preference.summary_sentence()} "
+                "A wishlist match only happens when the bot's broad scan "
+                "finds your item first.\n\n"
+                "Change them anytime in /menu → My alerts."
             ),
             color=discord.Color.green(),
         )
@@ -256,13 +258,10 @@ class WishlistCog(commands.GroupCog, group_name="wishlist", group_description=GR
                 "so your personal deal DMs are still off — your wishlist item is saved. "
                 "Try again from **My alerts** in the menu in a little while."
             )
-        await save_dm_deal_alert_preference(
-            self.bot.db,
-            replace(preference, enabled=True, failure_count=0, last_error=""),
-        )
+        await save_dm_deal_alert_preference(self.bot.db, enabled_preference)
         return True, (
-            "Your personal deal DMs were off, so I turned them on with the usual "
-            "Smart settings — pause anytime with `/walmart my-alerts action:Pause alerts`."
+            "Your personal deal DMs were off, so I turned them on — "
+            f"{enabled_preference.summary_sentence()}"
         )
 
     # -- remove --------------------------------------------------------

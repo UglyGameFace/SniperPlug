@@ -16,3 +16,14 @@ libsql==0.1.11; platform_machine != "aarch64"
 python-dotenv==1.2.2
 cryptography==50.0.0
 pytest==9.1.1
+# Picture reader, embedded mode: the same pins as requirements-reader.txt.
+# The standalone reader app installs only that file; the main bot needs
+# the OCR wheels itself when SNIPERPLUG_EMBED_READER=true runs the
+# reader in-process against the local SQLite database (the reader's
+# heartbeat in the shared DB is what turns picture reading on — no
+# separate app required). OpenCV is deliberately not pinned: rapidocr
+# pulls opencv-python, whose wheel needs libGL, and the engine swaps in
+# opencv-python-headless at first import (see sniperplug/ocr_reader).
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.32.0
+Pillow==13.0.0

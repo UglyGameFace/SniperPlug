@@ -5,6 +5,21 @@ SOURCE = Path("sniperplug/cogs/dm_deal_alerts.py").read_text(encoding="utf-8")
 MENU = Path("sniperplug/cogs/dm_deal_preferences_view.py").read_text(encoding="utf-8")
 MATCHER = Path("sniperplug/services/dm_deal_matching.py").read_text(encoding="utf-8")
 PERSONAL = Path("sniperplug/services/dm_personal_categories.py").read_text(encoding="utf-8")
+WISHLIST = Path("sniperplug/cogs/wishlist.py").read_text(encoding="utf-8")
+DM_LIST_INTAKE = Path("sniperplug/cogs/dm_list_intake.py").read_text(encoding="utf-8")
+COMMAND_CATALOG = Path("sniperplug/services/command_catalog.py").read_text(encoding="utf-8")
+
+
+def test_alerts_copy_never_mentions_the_removed_smart_mode() -> None:
+    # The wishlist-add and DM-list flows kept telling users their alerts
+    # used "the usual Smart settings" (and a 20% floor the defaults
+    # never had) after the Smart mode was removed. The copy now quotes
+    # the saved preference's own summary sentence instead.
+    for source in (WISHLIST, DM_LIST_INTAKE, COMMAND_CATALOG):
+        assert "Smart settings" not in source
+        assert "Smart defaults" not in source
+    assert "summary_sentence()" in WISHLIST
+    assert "summary_sentence()" in DM_LIST_INTAKE
 
 
 def test_dm_deals_exposes_complete_personalization_menu() -> None:

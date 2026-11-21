@@ -11,6 +11,8 @@ from sniperplug.bot import SniperPlugBot, env_enabled
 from sniperplug.config import Settings
 from sniperplug.hp_watcher.app import run as run_hp_watcher
 from sniperplug.hp_watcher.config import HPWatcherSettings
+from sniperplug.ocr_reader.app import run as run_ocr_reader
+from sniperplug.ocr_reader.config import OcrReaderSettings
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
     install_global_exception_hooks,
@@ -29,6 +31,7 @@ LOCAL_SQLITE_MODE_ENV = "SNIPERPLUG_LOCAL_SQLITE"
 LOCAL_SQLITE_ALLOW_EMPTY_ENV = "SNIPERPLUG_LOCAL_SQLITE_ALLOW_EMPTY"
 EMBED_HP_WATCHER_ENV = "SNIPERPLUG_EMBED_HP_WATCHER"
 EMBED_TARGET_WATCHER_ENV = "SNIPERPLUG_EMBED_TARGET_WATCHER"
+EMBED_READER_ENV = "SNIPERPLUG_EMBED_READER"
 EMBEDDED_WATCHER_RESTART_SECONDS = 30.0
 SQLITE_BACKUP_INTERVAL_HOURS_ENV = "SNIPERPLUG_SQLITE_BACKUP_INTERVAL_HOURS"
 SQLITE_BACKUP_RETENTION_ENV = "SNIPERPLUG_SQLITE_BACKUP_RETENTION"
@@ -76,9 +79,10 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
     def _start_local_sqlite_services(self) -> None:
         hp_enabled = env_enabled(EMBED_HP_WATCHER_ENV, default=False)
         target_enabled = env_enabled(EMBED_TARGET_WATCHER_ENV, default=False)
+        reader_enabled = env_enabled(EMBED_READER_ENV, default=False)
         backend = str(getattr(self.db, "backend", "unknown") or "unknown")
 
-        if hp_enabled or target_enabled:
+        if hp_enabled or target_enabled or reader_enabled:
             if not self._local_sqlite_mode:
                 raise RuntimeError(
                     "Embedded HP/Target watchers require SNIPERPLUG_LOCAL_SQLITE=true."
@@ -143,12 +147,39 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
                 name="sniperplug-embedded-target-watcher",
             )
 
+        reader_started = False
+        if reader_enabled:
+            if not _ocr_engine_available():
+                # The OCR wheels are optional in this image. Without them
+                # the reader can never write its heartbeat, so picture
+                # reading stays honestly off — parking here instead of
+                # crash-looping the supervisor every 30 seconds.
+                log.error(
+                    "Embedded picture reader requested but "
+                    "rapidocr-onnxruntime is not installed in this image; "
+                    "picture reading stays off."
+                )
+            else:
+                reader_settings = replace(
+                    OcrReaderSettings.from_env(),
+                    database_path=self.settings.database_path,
+                    require_remote_database=False,
+                )
+                self._embedded_watcher_tasks["reader"] = asyncio.create_task(
+                    _supervise_embedded_watcher(
+                        "reader", run_ocr_reader, reader_settings
+                    ),
+                    name="sniperplug-embedded-ocr-reader",
+                )
+                reader_started = True
+
         log.info(
             "Embedded retailer watchers configured backend=%s hp=%s target=%s "
-            "separate_discloud_watcher_apps_required=false",
+            "reader=%s separate_discloud_watcher_apps_required=false",
             backend,
             str(hp_enabled).lower(),
             str(target_enabled).lower(),
+            str(reader_started).lower(),
         )
 
     async def close(self) -> None:
@@ -174,6 +205,20 @@ class ProcessIsolatedSniperPlugBot(SniperPlugBot):
             if not self._runtime_database_closed:
                 self._runtime_database_closed = True
                 await self.db.close()
+
+
+def _ocr_engine_available() -> bool:
+    """Whether the OCR engine's package is importable in this image.
+
+    ``find_spec`` answers without loading onnxruntime, so the check is
+    cheap at boot. The reader's own load remains the real proof; this
+    only keeps a bot image built without the OCR wheels from entering
+    the supervisor's restart loop for a reader that can never start.
+    """
+
+    import importlib.util
+
+    return importlib.util.find_spec("rapidocr_onnxruntime") is not None
 
 
 async def _supervise_embedded_watcher(

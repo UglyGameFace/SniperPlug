@@ -174,6 +174,11 @@ def test_canonical_runtime_embeds_watchers_only_with_explicit_local_sqlite() -> 
     assert "_assert_local_database_present(settings.database_path)" in PROCESS_RUNTIME
     assert 'EMBED_HP_WATCHER_ENV = "SNIPERPLUG_EMBED_HP_WATCHER"' in PROCESS_RUNTIME
     assert 'EMBED_TARGET_WATCHER_ENV = "SNIPERPLUG_EMBED_TARGET_WATCHER"' in PROCESS_RUNTIME
+    assert 'EMBED_READER_ENV = "SNIPERPLUG_EMBED_READER"' in PROCESS_RUNTIME
+    assert "run_ocr_reader" in PROCESS_RUNTIME
+    assert "OcrReaderSettings" in PROCESS_RUNTIME
+    assert "_ocr_engine_available" in PROCESS_RUNTIME
+    assert "rapidocr-onnxruntime" in PROCESS_RUNTIME
     assert 'backend != "sqlite"' in PROCESS_RUNTIME
     assert "_assert_remote_database_env_absent" in PROCESS_RUNTIME
     assert "require_remote_database=False" in PROCESS_RUNTIME

@@ -224,3 +224,30 @@ async def test_run_forever_touches_the_heartbeat_and_loads_the_engine() -> None:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+
+def test_embedded_reader_engine_availability_check(monkeypatch) -> None:
+    """The bot parks the embedded reader when the OCR wheels are absent
+    instead of crash-looping its supervisor; find_spec decides."""
+
+    import importlib.util
+
+    from sniperplug import process_runtime
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    assert process_runtime._ocr_engine_available() is True
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert process_runtime._ocr_engine_available() is False
+
+
+def test_main_requirements_carry_the_reader_wheels() -> None:
+    """Embedded mode runs the reader inside the bot, so the bot's own
+    requirements must pin the same OCR wheels as the reader app's."""
+
+    from pathlib import Path
+
+    main_reqs = Path("requirements.txt").read_text(encoding="utf-8")
+    reader_reqs = Path("requirements-reader.txt").read_text(encoding="utf-8")
+    for pin in ("rapidocr-onnxruntime==1.4.4", "onnxruntime==1.32.0", "Pillow==13.0.0"):
+        assert pin in reader_reqs
+        assert pin in main_reqs

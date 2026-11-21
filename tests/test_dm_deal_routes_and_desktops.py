@@ -182,7 +182,9 @@ def test_route_preferences_survive_other_personalization_edits():
     assert split_dm_route_preferences(with_flip) == ("price_glitch",)
     selected_categories = split_category_preferences(with_flip)
     assert "dm_route:price_glitch" not in selected_categories
-    assert "ram" in selected_categories
+    # The legacy favorite token is not a subscription, so it never lands
+    # in the selected categories.
+    assert "ram" not in selected_categories
 
 
 def test_route_selection_round_trips_through_discord_menu_save(monkeypatch):

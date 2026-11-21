@@ -76,7 +76,41 @@ def test_muted_tokens_no_longer_block_anything() -> None:
     assert split_category_preferences(preference.normalized().categories) == ()
 
 
-def test_favorite_tokens_become_plain_selected_categories() -> None:
+def test_favorite_tokens_never_subscribe_the_category() -> None:
+    boots = _card(
+        "Madden NYC Men's Noryx Chelsea Boots",
+        current=22.49,
+        reference=65.0,
+        discount=65.0,
+        score=232,
+    )
+    assert category_key_for_card(boots) == "shoes_apparel"
+
+    # Felix's shape: shoes_apparel exists only as a legacy favorite, next
+    # to a genuine pick. The favorite must not let the boots in.
+    favorite_only_pick = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        min_discount=30,
+        categories=("favorite:shoes_apparel", "gpus"),
+    )
+    assert split_category_preferences(
+        favorite_only_pick.normalized().categories
+    ) == ("gpus",)
+    assert match_dm_deal(favorite_only_pick, boots).matched is False
+
+    # The same boots deal matches once shoes_apparel is a plain selected
+    # category.
+    subscribed = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        min_discount=30,
+        categories=("shoes_apparel", "gpus"),
+    )
+    assert match_dm_deal(subscribed, boots).matched is True
+
+
+def test_favorite_only_preference_drops_to_no_picks() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
@@ -84,13 +118,8 @@ def test_favorite_tokens_become_plain_selected_categories() -> None:
         categories=("favorite:gpus",),
     )
 
-    assert split_category_preferences(preference.normalized().categories) == ("gpus",)
-
-    gpu_decision = match_dm_deal(preference, _card("NVIDIA RTX 5070 GPU"))
-    other_decision = match_dm_deal(preference, _card("Apple AirPods Pro 2nd Gen"))
-
-    assert gpu_decision.matched is True
-    assert other_decision.matched is False
+    assert preference.normalized().categories == ()
+    assert split_category_preferences(preference.normalized().categories) == ()
 
 
 def test_favorites_no_longer_change_the_discount_floor() -> None:
@@ -194,6 +223,7 @@ def test_settings_embed_shows_human_labels_not_storage_tokens() -> None:
     assert "favorite:gpus" not in description
     assert "muted:baby_kids" not in field_text
     assert "favorite:gpus" not in field_text
-    # The favorites folded into ordinary category picks with human labels.
-    assert "Graphics Cards" in field_text
-    assert "Smart Home / Security" in field_text
+    # Favorites are not subscriptions, so their labels must not show up
+    # as category picks either.
+    assert "Graphics Cards" not in field_text
+    assert "Smart Home / Security" not in field_text

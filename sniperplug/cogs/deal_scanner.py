@@ -19,7 +19,6 @@ from sniperplug.services.public_deal_quality import (
     normalized_condition,
     select_public_deal_candidates,
 )
-from sniperplug.services.routing import route_label
 from sniperplug.services.safe_links import LinkChoice, product_link_choices
 from sniperplug.services.scan_locks import ScanLockKey, scan_operation_locks
 from sniperplug.services.walmart_cash_offers import (
@@ -1315,34 +1314,30 @@ def build_deal_card_embed(candidate: SourceCandidate, deal: NormalizedDeal, deci
     link_block = product_link_block(link_choices, fallback_url=deal.product_url)
     if link_block:
         embed.add_field(name="🔗 Product links", value=link_block, inline=False)
-    embed.add_field(name="📊 Sniper Read", value=f"**{friendly_score_level(decision.anomaly.level)}** • `{score}/250`\nRoute: **{route_label(decision.route.route)}**\nWould alert: **{'Yes' if decision.should_alert else 'No'}**", inline=True)
-    embed.add_field(name="📦 Stock", value=stock_block(candidate, deal), inline=True)
+    # User-facing cards stay short: price, the option that was priced, a
+    # stock line when there is something positive to say, and shopper flags.
+    # Scores, routes, proof dumps and fulfillment internals are staff
+    # diagnostics and live on staff surfaces, not on the card everyone sees.
     option_lines = selected_option_lines(deal)
     if option_lines:
         embed.add_field(name="🎯 Selected option", value="\n".join(option_lines), inline=False)
-    proof_block = product_proof_block(deal)
-    if proof_block:
-        embed.add_field(name="🧾 Product Proof", value=proof_block, inline=False)
-    fulfillment_block = fulfillment_proof_block(candidate, deal)
-    if fulfillment_block:
-        embed.add_field(name="🚚 Fulfillment", value=fulfillment_block, inline=False)
+    stock_lines = []
+    if candidate.stock_status:
+        stock_lines.append(candidate.stock_status[:80])
+    if candidate.can_add_to_cart is True:
+        stock_lines.append("🛒 Add-to-cart seen")
+    if deal.variant_attributes.get("availableOnline") == "yes" and not any(
+        "Available" in line for line in stock_lines
+    ):
+        stock_lines.append("Online available")
+    if stock_lines:
+        embed.add_field(name="📦 Stock", value="\n".join(stock_lines), inline=False)
     flag_block = walmart_flag_block(deal)
     if flag_block:
         embed.add_field(name="🏷️ Deal Flags", value=flag_block, inline=False)
     if deal.option_mismatch_warning:
         embed.add_field(name="⚠️ Variant warning", value=deal.option_mismatch_warning, inline=False)
-    embed.add_field(name="🟢 Liveness", value=liveness_block(deal, discount), inline=False)
-    proof_lines = proof_lines_for(candidate, decision)
-    if proof_lines:
-        embed.add_field(name="🔎 Why it showed up", value="\n".join(proof_lines[:4]), inline=False)
-    footer_bits = [f"SKU: {deal.sku or 'n/a'}", f"UPC: {deal.upc or 'n/a'}"]
-    model = deal.model or deal.variant_attributes.get("modelNumber") or deal.variant_attributes.get("model")
-    if model:
-        footer_bits.append(f"Model: {model[:32]}")
-    if deal.variant_label:
-        footer_bits.append(f"Option: {deal.variant_label[:40]}")
-    footer_bits.append("Recheck before posting")
-    embed.set_footer(text=" • ".join(footer_bits))
+    embed.set_footer(text="SniperPlug · prices can change — recheck before buying")
     return embed
 
 
@@ -1364,47 +1359,9 @@ def selected_option_lines(deal: NormalizedDeal) -> list[str]:
         value = deal.variant_attributes.get(key)
         if value:
             lines.append(f"{label}: `{value}`")
-    if deal.selected_offer_id:
-        lines.append(f"Offer ID: `{short_value(deal.selected_offer_id, 40)}`")
     return dedupe_lines(lines)[:8]
 
 
-def product_proof_block(deal: NormalizedDeal) -> str | None:
-    attrs = deal.variant_attributes
-    lines: list[str] = []
-    for key, label in (
-        ("brand", "Brand"),
-        ("manufacturer", "Manufacturer"),
-        ("modelNumber", "Model"),
-        ("model", "Model"),
-        ("rating", "Rating"),
-        ("reviews", "Reviews"),
-        ("category", "Category"),
-        ("offerType", "Offer type"),
-        ("unitPrice", "Unit price"),
-        ("unit", "Unit"),
-        ("maxOrderQty", "Max order"),
-    ):
-        value = attrs.get(key)
-        if value:
-            lines.append(f"{label}: **{short_value(value, 80)}**")
-    return "\n".join(dedupe_lines(lines)[:8]) if lines else None
-
-
-def fulfillment_proof_block(candidate: SourceCandidate, deal: NormalizedDeal) -> str | None:
-    attrs = deal.variant_attributes
-    lines: list[str] = []
-    if candidate.stock_status:
-        lines.append(f"Stock: **{candidate.stock_status[:80]}**")
-    if candidate.can_add_to_cart is True:
-        lines.append("Add-to-cart: **seen**")
-    elif candidate.can_add_to_cart is False:
-        lines.append("Add-to-cart: **not confirmed**")
-    for key, label in (("availableOnline", "Available online"), ("shipToStore", "Ship to store"), ("freeShipToStore", "Free ship to store"), ("twoThreeDayShipping", "2-3 day shipping")):
-        value = attrs.get(key)
-        if value:
-            lines.append(f"{label}: **{value}**")
-    return "\n".join(dedupe_lines(lines)[:7]) if lines else None
 
 
 def walmart_flag_block(deal: NormalizedDeal) -> str | None:
@@ -1413,9 +1370,6 @@ def walmart_flag_block(deal: NormalizedDeal) -> str | None:
     lines = [f"{label}: **{attrs[key]}**" for key, label in flag_labels if attrs.get(key) and attrs[key] != "no"]
     return "\n".join(lines[:5]) if lines else None
 
-
-def variant_proof_lines(deal: NormalizedDeal) -> list[str]:
-    return selected_option_lines(deal)
 
 
 def dedupe_lines(lines: list[str]) -> list[str]:
@@ -1428,10 +1382,6 @@ def dedupe_lines(lines: list[str]) -> list[str]:
         unique.append(line)
     return unique
 
-
-def short_value(value: str, limit: int) -> str:
-    text = " ".join(str(value).split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def no_match_help(query: str, min_discount: int, page: int, simple_mode: bool) -> str:
@@ -1512,48 +1462,7 @@ def price_block(current_price: float | None, typical_price: float | None) -> str
     return f"**{money(current_price)}**\nNo reference price returned."
 
 
-def stock_block(candidate: SourceCandidate, deal: NormalizedDeal | None = None) -> str:
-    lines = []
-    if candidate.stock_status:
-        lines.append(candidate.stock_status[:80])
-    if candidate.can_add_to_cart is True:
-        lines.append("🛒 Add-to-cart seen")
-    elif candidate.can_add_to_cart is False:
-        lines.append("🛒 Cart not confirmed")
-    if deal is not None and deal.variant_attributes.get("availableOnline") == "yes" and "Available" not in lines:
-        lines.append("Online available")
-    return "\n".join(lines) if lines else "Stock not confirmed"
 
-
-def liveness_block(deal: NormalizedDeal, discount: float) -> str:
-    if deal.option_mismatch_warning:
-        return "🛠️ **Staff review required.** The priced option may not match the parent listing."
-    if discount >= 80:
-        return "🔥 **High-value candidate.** Re-run scan before posting because price errors can revert fast."
-    if discount >= 50:
-        return "💎 **Strong discount.** Verify checkout price and stock before posting."
-    if discount >= 30:
-        return "✅ **Useful discount.** Good for watchlist, but not a true glitch yet."
-    if discount <= 10:
-        return "⚪ **Weak/back-near-normal.** Usually not worth alerting unless there is another catalyst."
-    return "🔎 Recheck before posting."
-
-
-def proof_lines_for(candidate: SourceCandidate, decision) -> list[str]:
-    lines = [f"• {reason}" for reason in decision.anomaly.reasons[:2]]
-    important_signals = [
-        signal
-        for signal in candidate.signals
-        if signal.startswith("Walmart current price source")
-        or signal.startswith("Walmart reference price source")
-        or signal.startswith("selected option")
-        or signal.startswith("condition")
-        or signal.startswith("max order quantity")
-        or signal.startswith("offer type")
-        or signal in {"rollback", "clearance", "special buy", "marketplace seller", "bundle"}
-    ]
-    lines.extend(f"• {signal}" for signal in important_signals[:4])
-    return dedupe_lines(lines) or ["• Product link and current price returned by Walmart API"]
 
 
 def percent_off_label(discount: float) -> str:

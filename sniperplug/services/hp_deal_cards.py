@@ -23,9 +23,6 @@ def build_hp_deal_card(candidate: SourceCandidate, *, event_key: str = "") -> De
     embed = discord.Embed(
         title=candidate.title,
         url=candidate.direct_product_url or candidate.product_url,
-        description=(
-            "**Exact HP.com structured-price match** — catalog entry and part number were checked before this alert."
-        ),
         color=discord.Color.green(),
     )
     if candidate.image_url:
@@ -50,38 +47,20 @@ def build_hp_deal_card(candidate: SourceCandidate, *, event_key: str = "") -> De
         ),
         inline=True,
     )
-    embed.add_field(
-        name="🔎 Exact identity",
-        value=(
-            f"SKU: `{candidate.sku or 'unknown'}`\n"
-            f"Catalog entry: `{candidate.product_id or 'unknown'}`\n"
-            f"Seller: **{candidate.seller_name or 'HP.com'}**"
-        ),
-        inline=False,
-    )
-    stock = candidate.stock_status or "Not returned"
-    cart = (
-        "Confirmed" if candidate.can_add_to_cart is True else
-        "Unavailable" if candidate.can_add_to_cart is False else
-        "Not returned"
-    )
-    embed.add_field(
-        name="📦 Availability",
-        value=f"Stock: **{stock}**\nAdd to cart: **{cart}**",
-        inline=False,
-    )
+    availability_lines = []
+    if candidate.stock_status:
+        availability_lines.append(f"Stock: **{candidate.stock_status}**")
+    if candidate.can_add_to_cart is True:
+        availability_lines.append("Add to cart: **Confirmed**")
+    if availability_lines:
+        embed.add_field(
+            name="📦 Availability",
+            value="\n".join(availability_lines),
+            inline=False,
+        )
     promotion = str(candidate.variant_attributes.get("hpPromotionText") or "").strip()
     if promotion:
         embed.add_field(name="🎟️ HP promotion", value=promotion[:1024], inline=False)
-    embed.add_field(
-        name="✅ Verification",
-        value=(
-            "Price source: `HPServices priceData.price`\n"
-            "Reference: HP MSRP when `lPrice` is supplied; otherwise a previous exact HP.com observation.\n"
-            "A visible-page `$0.00` placeholder is never accepted as a deal price."
-        ),
-        inline=False,
-    )
     embed.set_footer(text="Prices and availability can change. Open the exact HP.com product before buying.")
 
     card = DealCard(

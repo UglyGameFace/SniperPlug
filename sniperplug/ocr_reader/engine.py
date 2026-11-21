@@ -88,9 +88,11 @@ def _repair_opencv_headless() -> None:
     made the import work in the same container. Discloud's BUILD step
     runs a single command with no shell chaining, so the swap cannot
     be sequenced at build time; it happens here, once, the first time
-    the import fails. If the in-process retry still fails, the
-    service exits and the app's auto-restart gets a fresh process in
-    which the headless build is already installed.
+    the import fails. The loader purges the failed import's partial
+    module entries before retrying (see ``_load_rapidocr_class``); if
+    the retry still fails, the service exits and the app's
+    auto-restart gets a fresh process in which the headless build is
+    already installed.
     """
 
     import subprocess
@@ -116,6 +118,29 @@ def _repair_opencv_headless() -> None:
     )
 
 
+def _purge_partial_imports() -> None:
+    """Drop the failed cv2/rapidocr module entries from ``sys.modules``.
+
+    A failed ``import cv2`` can leave a partially initialized package
+    behind; while that entry lives, every retry in the same process
+    re-hits it instead of the files the repair just installed. The
+    standalone reader never noticed — its process restarted — but the
+    reader embedded in the bot (2026-11-21) looped on exactly this:
+    the headless build was on disk and the in-process retry still
+    raised the libGL error until the whole bot restarted.
+    """
+
+    import sys
+
+    for name in list(sys.modules):
+        if name == "cv2" or name.startswith("cv2."):
+            del sys.modules[name]
+        elif name == "rapidocr_onnxruntime" or name.startswith(
+            "rapidocr_onnxruntime."
+        ):
+            del sys.modules[name]
+
+
 def _load_rapidocr_class(import_fn=None, repair_fn=None) -> object:
     """Import RapidOCR, repairing the OpenCV build once if needed."""
 
@@ -126,6 +151,7 @@ def _load_rapidocr_class(import_fn=None, repair_fn=None) -> object:
         return importer()
     except ImportError:
         (repair_fn or _repair_opencv_headless)()
+        _purge_partial_imports()
         importlib.invalidate_caches()
         return importer()
 

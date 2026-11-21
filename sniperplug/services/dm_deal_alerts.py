@@ -118,11 +118,12 @@ class DmDealAlertPreference:
 def _translate_legacy_category_tokens(
     values: Iterable[str] | str | None,
 ) -> tuple[str, ...]:
-    """Fold retired category tokens into the single selected-categories list.
+    """Drop retired category tokens from the selected-categories list.
 
-    Favorites used to be a separate soft-priority list; on read they become
-    ordinary selected categories. Muted categories are gone entirely, so
-    their tokens drop silently instead of vetoing deals forever.
+    Favorites used to be a separate soft-priority list; they were never a
+    subscription, so on read their tokens drop silently instead of folding
+    into the selection. Muted categories are gone entirely, so their
+    tokens drop silently instead of vetoing deals forever.
     """
 
     translated: list[str] = []
@@ -130,9 +131,7 @@ def _translate_legacy_category_tokens(
         if value.startswith("muted:"):
             continue
         if value.startswith("favorite:"):
-            value = value[len("favorite:") :].strip()
-            if not value:
-                continue
+            continue
         translated.append(value)
     return tuple(translated)
 

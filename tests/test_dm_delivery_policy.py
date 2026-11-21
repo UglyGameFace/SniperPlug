@@ -74,10 +74,10 @@ def test_diversity_only_applies_to_broad_finite_cap_subscribers() -> None:
     fashion = _decision("premium_apparel")
     assert policy.diversity_applies(_preference(), fashion) is True
 
-    # Legacy favorite tokens read back as ordinary category picks, and any
-    # subscriber with picks is no longer "broad".
+    # Legacy favorite tokens are not picks — a favorite was never a
+    # subscription — so a favorite-only subscriber is still "broad".
     favorite = _preference(categories=("favorite:premium_apparel",))
-    assert policy.diversity_applies(favorite, fashion) is False
+    assert policy.diversity_applies(favorite, fashion) is True
 
     allowlist = _preference(categories=("premium_apparel", "apple"))
     assert policy.diversity_applies(allowlist, fashion) is False
@@ -162,24 +162,30 @@ async def test_fashion_wave_is_stopped_after_reserved_share(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_favorite_fashion_category_bypasses_automatic_diversity(monkeypatch) -> None:
+async def test_favorite_fashion_category_does_not_bypass_automatic_diversity(monkeypatch) -> None:
     async def total(*args, **kwargs):
         return 7
 
-    async def fail_family(*args, **kwargs):
-        raise AssertionError("a subscriber with category picks should bypass automatic diversity")
+    async def family(*args, **kwargs):
+        assert kwargs["category_family"] == "fashion"
+        return 7
 
     monkeypatch.setattr(policy, "dm_alerts_sent_today", total)
-    monkeypatch.setattr(policy, "dm_family_alerts_sent_today", fail_family)
+    monkeypatch.setattr(policy, "dm_family_alerts_sent_today", family)
 
+    # A legacy favorite is not a category pick, so the diversity reserve
+    # still applies and the fashion wave is stopped at its reserved share.
     gate = await policy.evaluate_dm_delivery_gate(
         object(),
         preference=_preference(categories=("favorite:sneakers",)),
         decision=_decision("sneakers"),
     )
 
-    assert gate.allowed is True
-    assert gate.reason == "allowed"
+    assert gate.allowed is False
+    assert gate.reason == "diversity_cap"
+    assert gate.category_family == "fashion"
+    assert gate.family_sent_today == 7
+    assert gate.family_limit == 7
 
 
 @pytest.mark.asyncio

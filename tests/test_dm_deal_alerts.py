@@ -168,7 +168,7 @@ def test_savings_are_reported_but_never_a_floor() -> None:
     assert decision.savings_cents == 8000
 
 
-def test_favorites_fold_into_selected_categories_on_read() -> None:
+def test_favorites_drop_on_read_instead_of_becoming_subscriptions() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
@@ -176,11 +176,35 @@ def test_favorites_fold_into_selected_categories_on_read() -> None:
     ).normalized()
 
     assert "favorite:gpus" not in preference.categories
-    assert split_category_preferences(preference.categories) == (
-        "gpus",
-        "smart_home",
-        "apple",
+    assert preference.categories == ("apple",)
+    assert split_category_preferences(preference.categories) == ("apple",)
+
+
+def test_summary_sentence_counts_only_real_selected_categories() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        min_discount=50,
+        categories=(
+            "gpus",
+            "favorite:shoes_apparel",
+            "favorite:appliances",
+            "favorite:smart_home",
+        ),
     )
+
+    assert preference.summary_sentence() == (
+        "You'll get DMs for 1 category you picked · 50% off or "
+        "better · up to 25 a day."
+    )
+
+    favorite_only = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        min_discount=50,
+        categories=("favorite:shoes_apparel",),
+    )
+    assert "all deals" in favorite_only.summary_sentence()
 
 
 def test_muted_tokens_drop_silently_on_read() -> None:

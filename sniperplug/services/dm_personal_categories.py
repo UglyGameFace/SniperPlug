@@ -190,19 +190,18 @@ def split_category_preferences(
 ) -> tuple[str, ...]:
     """Return the selected categories stored in a preference token list.
 
-    Legacy ``favorite:`` tokens fold into the selection (favorites are now
-    ordinary picks) and legacy ``muted:`` tokens are ignored — muting a
-    category no longer exists. Route, product, brand and flip tokens belong
-    to other layers and are skipped here.
+    Legacy ``favorite:`` tokens are ignored — a favorite was a soft
+    priority marker, never a subscription — and legacy ``muted:`` tokens
+    are ignored because muting a category no longer exists. Route,
+    product, brand and flip tokens belong to other layers and are skipped
+    here.
     """
 
     selected: list[str] = []
     for value in _split_values(values):
-        if value.startswith(FAVORITE_CATEGORY_PREFIX):
-            category = value[len(FAVORITE_CATEGORY_PREFIX) :].strip()
-            selected.extend(normalize_personal_categories((category,)))
-        elif (
-            value.startswith(MUTED_CATEGORY_PREFIX)
+        if (
+            value.startswith(FAVORITE_CATEGORY_PREFIX)
+            or value.startswith(MUTED_CATEGORY_PREFIX)
             or value == FLIP_ALERTS_TOKEN
             or value.startswith(FLIP_MIN_PROFIT_PREFIX)
             or value.startswith(PRODUCT_INTEREST_PREFIX)
@@ -210,8 +209,7 @@ def split_category_preferences(
             or value.startswith(DM_ROUTE_PREFIX)
         ):
             continue
-        else:
-            selected.extend(normalize_personal_categories((value,)))
+        selected.extend(normalize_personal_categories((value,)))
     return _dedupe(selected)
 
 

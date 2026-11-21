@@ -88,8 +88,8 @@ def test_interest_aliases_and_tokens_round_trip_without_becoming_categories() ->
     assert saved_interests == interests
     assert saved_brands == ("anker", "versace", "ysl")
     # Interest/brand tokens never become categories; the legacy favorite
-    # token folds into the selection and the muted token is ignored.
-    assert selected == ("mobile_accessories",)
+    # and muted tokens are both ignored.
+    assert selected == ()
 
 
 def test_obvious_human_product_names_resolve_without_secret_catalog_keys() -> None:

@@ -448,6 +448,58 @@ async def update_dm_list_item_check(
     )
 
 
+async def remove_dm_list_items(
+    db: Any, user_id: int, item_ids: Iterable[int]
+) -> int:
+    """Delete specific rows from one user's list; returns how many went.
+
+    Scoped by user_id in the DELETE itself, so ids from someone else's
+    list can never be removed through this path.
+    """
+
+    ids = sorted({int(value) for value in item_ids})
+    if not ids:
+        return 0
+    await ensure_dm_list_tables(db)
+    conn = db.require_conn()
+    placeholders = ", ".join("?" for _ in ids)
+    cursor = await conn.execute(
+        f"SELECT COUNT(*) AS n FROM {DM_LIST_TABLE} "
+        f"WHERE user_id = ? AND id IN ({placeholders})",
+        (int(user_id), *ids),
+    )
+    row = await cursor.fetchone()
+    count = int(_row_get(row, "n", 0) or 0)
+    if count:
+        await conn.execute(
+            f"DELETE FROM {DM_LIST_TABLE} "
+            f"WHERE user_id = ? AND id IN ({placeholders})",
+            (int(user_id), *ids),
+        )
+        await conn.commit()
+    return count
+
+
+async def clear_dm_list_items(db: Any, user_id: int) -> int:
+    """Delete every row on one user's list; returns how many went."""
+
+    await ensure_dm_list_tables(db)
+    conn = db.require_conn()
+    cursor = await conn.execute(
+        f"SELECT COUNT(*) AS n FROM {DM_LIST_TABLE} WHERE user_id = ?",
+        (int(user_id),),
+    )
+    row = await cursor.fetchone()
+    count = int(_row_get(row, "n", 0) or 0)
+    if count:
+        await conn.execute(
+            f"DELETE FROM {DM_LIST_TABLE} WHERE user_id = ?",
+            (int(user_id),),
+        )
+        await conn.commit()
+    return count
+
+
 def _row_get(row: Any, key: str, index: int) -> Any:
     if row is None:
         return None

@@ -89,7 +89,9 @@ from sniperplug.services.dm_lists import (
     DmListCandidate,
     DmListRow,
     add_dm_list_items,
+    clear_dm_list_items,
     list_dm_list_items,
+    remove_dm_list_items,
     update_dm_list_item_check,
 )
 from sniperplug.services.dm_product_interests import normalize_match_text
@@ -506,6 +508,7 @@ class DmListView(discord.ui.View):
         self.page_price_item_ids = page_price_item_ids
         self.check_note = ""
         self.selected_ids: list[int] = []
+        self._clear_armed = False
 
         named = [row for row in self.rows if row.wishlistable][:_SELECT_LIMIT]
         self.select: discord.ui.Select | None = None
@@ -560,6 +563,24 @@ class DmListView(discord.ui.View):
         )
         self.check_button.callback = self._on_check  # type: ignore[method-assign]
         self.add_item(self.check_button)
+
+        self.remove_button = discord.ui.Button(
+            label="Remove picked",
+            style=discord.ButtonStyle.secondary,
+            custom_id="dm_list:remove_picked",
+            disabled=not named,
+        )
+        self.remove_button.callback = self._on_remove_picked  # type: ignore[method-assign]
+        self.add_item(self.remove_button)
+
+        self.clear_button = discord.ui.Button(
+            label="Clear whole list",
+            style=discord.ButtonStyle.secondary,
+            custom_id="dm_list:clear",
+            disabled=not self.rows,
+        )
+        self.clear_button.callback = self._on_clear_list  # type: ignore[method-assign]
+        self.add_item(self.clear_button)
 
         self.close_button = discord.ui.Button(
             label="Close",
@@ -774,6 +795,80 @@ class DmListView(discord.ui.View):
                     await message.edit(embed=self.current_embed(), view=self)
                 except Exception:
                     log.exception("DM list: could not edit the list message")
+
+    async def _on_remove_picked(self, interaction: discord.Interaction) -> None:
+        if not await self._guard_owner(interaction):
+            return
+        if not self.selected_ids:
+            await interaction.response.send_message(
+                "Pick at least one item in the list first, then tap this.",
+                ephemeral=True,
+            )
+            return
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            await interaction.response.send_message(
+                "I can't reach your list right now — try again in a "
+                "little while.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        removed = await remove_dm_list_items(db, self.owner_id, self.selected_ids)
+        removed_ids = set(self.selected_ids)
+        remaining = [row for row in self.rows if row.id not in removed_ids]
+        new_view = DmListView(
+            self.bot,
+            self.owner_id,
+            remaining,
+            title=self.title,
+            notes=self.notes,
+            page_price_item_ids=self.page_price_item_ids,
+        )
+        new_view.check_note = (
+            f"🗑️ Removed {removed} item(s) from your list."
+            if removed
+            else "Those items were already gone from your list."
+        )
+        try:
+            await interaction.edit_original_response(
+                embed=new_view.current_embed(), view=new_view
+            )
+        except Exception:  # noqa: BLE001 - the removal already landed.
+            log.exception("DM list: could not refresh after removal")
+        self.stop()
+
+    async def _on_clear_list(self, interaction: discord.Interaction) -> None:
+        if not await self._guard_owner(interaction):
+            return
+        if not self._clear_armed:
+            self._clear_armed = True
+            self.clear_button.label = "Tap again to clear your whole list"
+            await interaction.response.edit_message(view=self)
+            return
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            await interaction.response.send_message(
+                "I can't reach your list right now — try again in a "
+                "little while.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        removed = await clear_dm_list_items(db, self.owner_id)
+        embed = build_dm_list_embed(
+            [],
+            title=self.title,
+            notes=[
+                f"🗑️ Cleared your whole list — {removed} item(s) removed. "
+                "DM me pictures or links anytime to start a new one."
+            ],
+        )
+        try:
+            await interaction.edit_original_response(embed=embed, view=None)
+        except Exception:  # noqa: BLE001 - the clear already landed.
+            log.exception("DM list: could not refresh after clear")
+        self.stop()
 
     async def _on_close(self, interaction: discord.Interaction) -> None:
         if not await self._guard_owner(interaction):

@@ -16,6 +16,17 @@ _JEWELRY = re.compile(
     r"engagement rings?|wedding rings?|promise rings?)\b",
     re.IGNORECASE,
 )
+_WATCH = re.compile(
+    r"\b(?:watches|watch|smartwatches|smartwatch|wristwatches|wristwatch|"
+    r"timepieces?)\b",
+    re.IGNORECASE,
+)
+_JEWELRY_ITEM = re.compile(
+    r"\b(?:necklaces?|pendants?|bracelets?|earrings?|anklets?|bangles?|"
+    r"charms?|brooches?|lockets?|engagement rings?|wedding rings?|"
+    r"promise rings?)\b",
+    re.IGNORECASE,
+)
 _RING = re.compile(r"\brings?\b", re.IGNORECASE)
 _NON_JEWELRY_RING = re.compile(
     r"\b(?:ring\s+(?:video\s+)?(?:doorbell|camera|alarm)|"
@@ -67,6 +78,13 @@ def jewelry_quality_rejection_reason(
     source product-material fields, never seller marketing or product color.
     """
     name = " ".join(str(title or "").split())
+    # Retailers file watches under the Jewelry department, so the category
+    # text alone would condemn every ordinary watch as unproven jewelry.
+    # The product's own title is its identity: a watch that names no jewelry
+    # item in its title is a watch, not jewelry, whatever department the
+    # retailer shelved it in.
+    if _WATCH.search(name) and not _JEWELRY_ITEM.search(name):
+        return None
     attrs = attributes if isinstance(attributes, dict) else {}
     material = " ".join(
         str(value or "")

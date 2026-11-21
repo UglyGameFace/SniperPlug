@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.models.deal import NormalizedDeal
 from sniperplug.services.anomaly_score import AnomalyScore, score_deal_anomaly
+from sniperplug.services.listing_contradiction import (
+    candidate_contradiction,
+    detect_condition_contradiction,
+)
 from sniperplug.services.risk_flags import apply_risk_flags
 from sniperplug.services.routing import RouteDecision, STAFF_REVIEW_ROUTE, choose_primary_route
 
@@ -71,6 +75,32 @@ def evaluate_candidate(candidate: SourceCandidate) -> CandidateDecision:
         hold_for_review = True
         route = RouteDecision(STAFF_REVIEW_ROUTE, "selected variant or option needs manual review")
         reasons.append("Review: selected option mismatch")
+
+    # Listing contradictions (title vs description/variant quantity claims)
+    # are notes, never verified deals: the flag attaches and a lead-eligible
+    # contradiction is held for review, but this never promotes a candidate
+    # to a public alert and never changes an existing alert outcome.
+    contradiction = candidate_contradiction(candidate)
+    if contradiction is not None:
+        deal.risk_flags.append(contradiction.note())
+        deal.verification_notes.append(contradiction.note())
+        reasons.append("Review: listing contradiction")
+        if contradiction.is_lead:
+            deal.is_possible_price_error = True
+            deal.alert_tags.append("Listing error lead")
+            deal.verification_notes.append(
+                f"Listing-error lead evidence: {contradiction.value_evidence}"
+            )
+            if not should_alert:
+                hold_for_review = True
+
+    condition_clash = detect_condition_contradiction(candidate)
+    if condition_clash is not None:
+        deal.risk_flags.append(condition_clash.note())
+        deal.verification_notes.append(condition_clash.note())
+        reasons.append("Review: condition contradiction")
+        if not should_alert:
+            hold_for_review = True
 
     return CandidateDecision(
         candidate=candidate,

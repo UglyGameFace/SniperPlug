@@ -80,6 +80,10 @@ class NormalizedDeal:
     shipping_status: str | None = None
     shipping_source: str | None = None
 
+    # Provider-carried product description text, when available (see
+    # SourceCandidate.description). Detector input only, never display copy.
+    description: str | None = None
+
     def recalculate_prices(self) -> None:
         if self.current_price is not None and self.typical_price:
             self.savings_amount = round(

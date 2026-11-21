@@ -6,12 +6,15 @@ LOCAL = Path("sniperplug/cogs/home_depot_local.py").read_text()
 
 
 def test_home_depot_search_uses_private_owner_language():
-    assert "Route: **Private Owner Review**" in SEARCH
+    # The card no longer carries a Sniper Read route line at all (staff
+    # diagnostics came off user-facing cards 2026-11-20); the private-lead
+    # framing lives in the hunt copy and the card's own honesty lines.
+    assert "Route: **Private Owner Review**" not in SEARCH
     assert "Route: **Staff Review**" not in SEARCH
     assert "private shopper verification leads" in SEARCH
     assert "Only your own store/register check can confirm a penny price" in SEARCH
     assert "It does **not** prove shelf stock" in SEARCH
-    assert "Verify in store before posting" in SEARCH
+    assert "confirm in store before buying" in SEARCH
 
 
 def test_home_depot_search_does_not_charge_cache_hits():

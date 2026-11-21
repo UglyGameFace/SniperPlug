@@ -451,48 +451,18 @@ def build_home_depot_deal_card(
 
     embed.add_field(name="💰 Price", value=home_depot_price_block(candidate), inline=False)
     embed.add_field(name="🔗 Product links", value=home_depot_link_block(candidate), inline=False)
-    embed.add_field(
-        name="📊 Sniper Read",
-        value=(
-            f"**{friendly_penny_level(penny_level)}** • `{penny_score}/100`\n"
-            "Route: **Private Owner Review**\n"
-            "Would alert: **No**"
-        ),
-        inline=True,
-    )
-    embed.add_field(name="📦 Stock", value=home_depot_stock_block(candidate), inline=True)
-
-    proof_block = home_depot_product_proof_block(candidate)
-    if proof_block:
-        embed.add_field(name="🧾 Product Proof", value=proof_block, inline=False)
-
-    fulfillment_block = home_depot_fulfillment_block(candidate)
-    if fulfillment_block:
-        embed.add_field(name="🚚 Fulfillment", value=fulfillment_block, inline=False)
-
-    embed.add_field(name="🟢 Liveness", value=home_depot_liveness_block(candidate.current_price, penny_score, raw_fallback=raw_fallback), inline=False)
+    if candidate.stock_status:
+        embed.add_field(name="📦 Stock", value=home_depot_stock_block(candidate), inline=True)
     embed.add_field(
         name="🏪 What this proves",
         value=(
-            "This card proves only the online/search evidence shown above. "
+            "This card shows the online/search price only. "
             "It does **not** prove shelf stock, the exact local store price, or a register penny. "
             "Confirm those yourself in the selected Home Depot store before buying or sharing publicly."
         ),
         inline=False,
     )
-
-    proof_lines = home_depot_proof_lines(candidate, reasons)
-    if proof_lines:
-        embed.add_field(name="🔎 Why it showed up", value="\n".join(proof_lines[:6]), inline=False)
-
-    footer_bits = [f"SKU: {candidate.sku or candidate.product_id or 'n/a'}"]
-    if candidate.model:
-        footer_bits.append(f"Model: {candidate.model}")
-    if candidate.upc:
-        footer_bits.append(f"UPC: {candidate.upc}")
-    footer_bits.append("SerpApi candidate")
-    footer_bits.append("Private lead • Verify in store before posting • confirm personally")
-    embed.set_footer(text=" • ".join(footer_bits))
+    embed.set_footer(text="SniperPlug · online price — confirm in store before buying")
     return embed
 
 
@@ -539,33 +509,6 @@ def home_depot_price_block(candidate: SourceCandidate) -> str:
     return f"**{money(current_price)}**\nWas/typical: **Unavailable from SerpApi**\nSavings: **Not calculable from returned data**{ending_line}{badge_line}"
 
 
-def home_depot_product_proof_block(candidate: SourceCandidate) -> str | None:
-    attrs = candidate.variant_attributes or {}
-    lines: list[str] = []
-    for key, label in (
-        ("brand", "Brand"),
-        ("model_number", "Model"),
-        ("rating", "Rating"),
-        ("reviews", "Reviews"),
-        ("badges", "Badges"),
-        ("collection", "Collection"),
-    ):
-        value = attrs.get(key)
-        if value:
-            lines.append(f"{label}: **{value}**")
-    if candidate.can_add_to_cart is not None:
-        lines.append(f"Add-to-cart: **{'seen' if candidate.can_add_to_cart else 'not seen'}**")
-    return "\n".join(lines[:7]) if lines else None
-
-
-def home_depot_fulfillment_block(candidate: SourceCandidate) -> str | None:
-    attrs = candidate.variant_attributes or {}
-    lines = []
-    for key in ("pickup", "delivery", "general_stock", "general_stock_status", "store_stock", "store_stock_status"):
-        value = attrs.get(key)
-        if value:
-            lines.append(f"{key.replace('_', ' ').title()}: **{value}**")
-    return "\n".join(lines[:6]) if lines else None
 
 
 def home_depot_stock_block(candidate: SourceCandidate) -> str:
@@ -578,42 +521,6 @@ def home_depot_stock_block(candidate: SourceCandidate) -> str:
     return "\n".join(lines) if lines else "Local stock not confirmed"
 
 
-def home_depot_liveness_block(current_price: float | None, penny_score: int, *, raw_fallback: bool = False) -> str:
-    if raw_fallback:
-        return "⚪ **Raw low-score result.** Shown because SerpApi returned products and SniperPlug will not hide paid-credit results."
-    if current_price is not None and price_ending(current_price) == "01":
-        return "🚨 **Possible penny candidate.** SerpApi is not register proof; verify with in-store scan/register before posting."
-    if penny_score >= 80:
-        return "🔥 **High-priority verification candidate.** Do not public-alert until in-store proof confirms it."
-    if penny_score >= 60:
-        return "💎 **Strong clearance candidate.** Send to staff review and verify locally."
-    if penny_score >= 40:
-        return "✅ **Clearance watch.** Has multiple clearance/deal signals, but still needs local verification."
-    if penny_score >= 20:
-        return "🟡 **Deal watch.** Possible useful deal, but not enough proof to call clearance or penny."
-    return "⚪ **Weak lead.** Keep private unless more proof is found."
-
-
-def home_depot_proof_lines(candidate: SourceCandidate, reasons: tuple[str, ...]) -> list[str]:
-    lines: list[str] = []
-    attrs = candidate.variant_attributes or {}
-    for reason in reasons[:3]:
-        lines.append(f"• {reason}")
-    for key, label in (
-        ("price_badge", "badge"),
-        ("price_saving", "savings"),
-        ("percentage_off", "percent off"),
-    ):
-        value = attrs.get(key)
-        if value and len(lines) < 6:
-            lines.append(f"• Home Depot {label}: {value}")
-    for signal in candidate.signals[:4]:
-        if len(lines) >= 6:
-            break
-        lines.append(f"• {signal}")
-    if not lines:
-        lines.append("• Home Depot product link returned by SerpApi")
-    return lines
 
 
 def home_depot_heat_emoji(current_price: float | None, penny_score: int) -> str:
@@ -651,17 +558,6 @@ def home_depot_color(penny_score: int) -> discord.Color:
         return discord.Color.gold()
     return discord.Color.light_grey()
 
-
-def friendly_penny_level(level: str) -> str:
-    labels = {
-        "high_priority_in_store_verification": "High-priority verify",
-        "strong_clearance_candidate": "Strong clearance candidate",
-        "strong_penny_candidate": "Strong penny candidate",
-        "clearance_watch": "Clearance watch",
-        "deal_watch": "Deal watch",
-        "weak_lead": "Weak lead",
-    }
-    return labels.get(level, level.replace("_", " ").title())
 
 
 def money(value: float | None) -> str:

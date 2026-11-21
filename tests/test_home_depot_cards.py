@@ -21,12 +21,16 @@ def test_home_depot_card_uses_sniperplug_deal_format():
     embed = cards[0]
     field_names = [field.name for field in embed.fields]
     assert "💰 Price" in field_names
-    assert "📊 Sniper Read" in field_names
+    assert "🔗 Product links" in field_names
     assert "📦 Stock" in field_names
-    assert "🟢 Liveness" in field_names
-    assert "🔎 Why it showed up" in field_names
-    assert "SKU: 1001234567" in embed.footer.text
-    assert "Verify in store before posting" in embed.footer.text
+    assert "🏪 What this proves" in field_names
+    # Staff diagnostics stay off the user-facing card.
+    assert "📊 Sniper Read" not in field_names
+    assert "🟢 Liveness" not in field_names
+    assert "🔎 Why it showed up" not in field_names
+    assert "🧾 Product Proof" not in field_names
+    assert "SKU:" not in embed.footer.text
+    assert embed.footer.text == "SniperPlug · online price — confirm in store before buying"
 
 
 def test_home_depot_zip_anchor_counts_as_local_proof():
@@ -68,7 +72,6 @@ def test_home_depot_penny_hunt_falls_back_to_raw_results_when_filter_hides_all()
     assert batch.filtered_count == 1
     assert batch.used_raw_fallback is True
     assert "RAW SERPAPI RESULT" in batch.embeds[0].title
-    assert "will not hide paid-credit results" in [field.value for field in batch.embeds[0].fields if field.name == "🟢 Liveness"][0]
 
 
 def test_home_depot_price_block_shows_typical_price_savings():
@@ -91,7 +94,7 @@ def test_home_depot_price_block_shows_typical_price_savings():
     assert "Save: **$760.00 (40%)**" in price_field
 
 
-def test_home_depot_card_displays_enriched_proof_fields():
+def test_home_depot_card_keeps_enriched_proof_fields_off_the_card():
     candidate = SourceCandidate(
         source_key="home_depot_serpapi",
         retailer="Home Depot",
@@ -122,14 +125,10 @@ def test_home_depot_card_displays_enriched_proof_fields():
     embed = batch.embeds[0]
     fields = {field.name: field.value for field in embed.fields}
 
-    assert "🧾 Product Proof" in fields
-    assert "Brand: **Home Decorators Collection**" in fields["🧾 Product Proof"]
-    assert "Model: **DOVETON-48**" in fields["🧾 Product Proof"]
-    assert "Rating: **4.3**" in fields["🧾 Product Proof"]
-    assert "Reviews: **128**" in fields["🧾 Product Proof"]
-    assert "Add-to-cart: **seen**" in fields["🧾 Product Proof"]
-    assert "🚚 Fulfillment" in fields
-    assert "Pickup: **Pickup: free pickup**" in fields["🚚 Fulfillment"]
-    assert "Delivery: **Delivery: free delivery**" in fields["🚚 Fulfillment"]
+    # Enriched provider attributes are evidence for the pipeline, not card
+    # copy: brand/model/rating/fulfillment dumps stay off the user card.
+    assert "🧾 Product Proof" not in fields
+    assert "🚚 Fulfillment" not in fields
     assert "Badge: **Special Buy**" in fields["💰 Price"]
-    assert "Model: DOVETON-48" in embed.footer.text
+    assert "Model:" not in embed.footer.text
+    assert "DOVETON-48" not in str(embed.to_dict())

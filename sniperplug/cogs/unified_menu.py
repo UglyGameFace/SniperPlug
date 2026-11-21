@@ -226,6 +226,8 @@ MENU_ENTRIES: tuple[_Entry, ...] = (
            "/staff hd-search", "stores", "modal", "HomeDepotSearchCog", "home_depot_search", manage_guild=True),
     _Entry("home-depot-penny-hunt", "Home Depot penny hunt", "Hunt penny and clearance candidates.",
            "/staff hd-penny", "stores", "modal", "HomeDepotSearchCog", "home_depot_penny_hunt", manage_guild=True),
+    _Entry("home-depot-penny-watch", "Home Depot penny watch", "Clearance items being tracked toward a penny, and where each one stands.",
+           "Runs here in the menu", "stores", "run", "HomeDepotSearchCog", "open_penny_watch", manage_guild=True),
     _Entry("hd-stock", "Home Depot stock", "Check one SKU at a nearby store.",
            "/staff hd-stock", "stores", "modal", "HomeDepotLocalCog", "hd_stock", manage_guild=True),
     _Entry("local-check", "Local proof check", "Record a price you saw in a store — no live stock lookup.",

@@ -6,6 +6,7 @@ import json
 import aiosqlite
 
 from sniperplug.services.public_alert_config import (
+    HD_PENNY_RETAILER_MIGRATION,
     HP_RETAILER_MIGRATION,
     ensure_public_alert_table,
     get_public_alert_config,
@@ -57,21 +58,28 @@ def test_existing_enabled_walmart_destinations_receive_hp_but_not_local_target()
         disabled = await get_public_alert_config(db, 2)
         custom = await get_public_alert_config(db, 3)
         already = await get_public_alert_config(db, 4)
-        assert enabled["retailers"] == ("walmart", "hp")
+        # Two one-time enrollments append to enabled Walmart destinations:
+        # hp (price-error watcher) and home_depot (penny tracker, 2026-11-20).
+        assert enabled["retailers"] == ("walmart", "hp", "home_depot")
         assert disabled["retailers"] == ("walmart",)
         assert custom["retailers"] == ("amazon",)
         # Existing Target rows are remediated by target_locations once its
         # location table is initialized; this migration no longer creates them.
-        assert already["retailers"] == ("walmart", "hp", "target")
+        assert already["retailers"] == ("walmart", "hp", "target", "home_depot")
 
         marker = await conn.execute(
             "SELECT COUNT(*) FROM sniperplug_data_migrations WHERE migration_key = ?",
             (HP_RETAILER_MIGRATION,),
         )
         assert (await marker.fetchone())[0] == 1
+        hd_marker = await conn.execute(
+            "SELECT COUNT(*) FROM sniperplug_data_migrations WHERE migration_key = ?",
+            (HD_PENNY_RETAILER_MIGRATION,),
+        )
+        assert (await hd_marker.fetchone())[0] == 1
         await ensure_public_alert_table(db)
         repeat = await get_public_alert_config(db, 1)
-        assert repeat["retailers"] == ("walmart", "hp")
+        assert repeat["retailers"] == ("walmart", "hp", "home_depot")
         await conn.close()
 
     asyncio.run(run())

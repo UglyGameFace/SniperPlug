@@ -100,12 +100,26 @@ def clearance_signal_from_price(price: float | None) -> ClearanceSignal | None:
             price_ending=ending,
             confidence=35,
         )
+    if ending == "02":
+        return ClearanceSignal(
+            stage=ClearanceStage.FINAL_MARKDOWN_CANDIDATE,
+            reason="Observed price ends in .02. Treat as a final-markdown candidate on the faster markdown ladder (weaker sourcing than .03).",
+            price_ending=ending,
+            confidence=28,
+        )
     if ending == "06":
         return ClearanceSignal(
             stage=ClearanceStage.CLEARANCE_CANDIDATE,
             reason="Observed price ends in .06. Treat as an early clearance candidate, not a confirmed penny deal.",
             price_ending=ending,
             confidence=25,
+        )
+    if ending == "04":
+        return ClearanceSignal(
+            stage=ClearanceStage.CLEARANCE_CANDIDATE,
+            reason="Observed price ends in .04. Treat as a mid-clearance candidate on the faster markdown ladder, not a confirmed penny deal.",
+            price_ending=ending,
+            confidence=20,
         )
     return None
 

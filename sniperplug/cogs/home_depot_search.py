@@ -10,6 +10,12 @@ from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
 from sniperplug.services.embed_delivery import send_summary_and_embeds
+from sniperplug.services.hd_penny_stages import PennyStage
+from sniperplug.services.hd_penny_tracker import (
+    HdPennyStatus,
+    load_hd_penny_status,
+    seed_from_hunt_candidates,
+)
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
 from sniperplug.services.safe_links import product_link_choices
@@ -145,6 +151,14 @@ class HomeDepotSearchCog(commands.Cog):
                 await interaction.followup.send("\n".join(result.warnings), ephemeral=True)
                 return
             batch = build_home_depot_card_batch(result.candidates, has_local_anchor=has_local_anchor, penny_mode=penny_mode)
+            track_note = None
+            if penny_mode:
+                track_note = await self._track_penny_hunt_results(
+                    result.candidates,
+                    guild_id=interaction.guild_id,
+                    store_id=cleaned_store_id,
+                    zip_code=cleaned_zip_code,
+                )
             summary = discord.Embed(
                 title="🏚️ Home Depot Penny Hunt" if penny_mode else "🏚️ Home Depot Search",
                 description=(
@@ -169,6 +183,8 @@ class HomeDepotSearchCog(commands.Cog):
                     value="SerpApi returned products, but none passed the penny threshold. Showing raw low-score results anyway so the credit is not wasted.",
                     inline=False,
                 )
+            if track_note:
+                summary.add_field(name="🪙 Penny watch", value=track_note, inline=False)
             if batch.candidates:
                 summary.add_field(
                     name="Product links",
@@ -209,6 +225,171 @@ class HomeDepotSearchCog(commands.Cog):
             )
         finally:
             await scan_operation_locks.release(lock_key)
+
+    async def _track_penny_hunt_results(
+        self,
+        candidates: tuple[SourceCandidate, ...],
+        *,
+        guild_id: int | None,
+        store_id: str,
+        zip_code: str,
+    ) -> str | None:
+        """Auto-track stage/deep-markdown hunt results in the penny tracker.
+
+        Tracking must never break the hunt itself: any failure is swallowed
+        and the search results still stand on their own.
+        """
+
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            return None
+        try:
+            seeded = await seed_from_hunt_candidates(
+                db,
+                candidates,
+                guild_id=guild_id,
+                store_id=store_id or "",
+                zip_code=zip_code or None,
+            )
+        except Exception:
+            return None
+        if seeded.tracked_new:
+            return (
+                f"Now tracking **{seeded.tracked_new}** new item(s) toward a penny. "
+                "Watch them under **Home Depot penny watch** in /menu — you will "
+                "get an alert here if one enters the final markdown stage or "
+                "drops to $0.01."
+            )
+        if seeded.tracked_existing:
+            return "The stage-worthy results above are already on the penny watch list."
+        return None
+
+    async def open_penny_watch(self, interaction: discord.Interaction) -> None:
+        """``/menu`` → eBay & Home Depot → Home Depot penny watch."""
+
+        await interaction.response.defer(ephemeral=True)
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            await interaction.followup.send(
+                "I can't reach the penny watch list right now — try again in a little while.",
+                ephemeral=True,
+            )
+            return
+        status = await load_hd_penny_status(db)
+        await interaction.followup.send(embed=build_penny_watch_embed(status), ephemeral=True)
+
+
+def build_penny_watch_embed(status: HdPennyStatus) -> discord.Embed:
+    """The penny watch status page: plain words, estimates labeled."""
+
+    if not status.key_configured:
+        state_line = (
+            "⏸️ **Not running yet** — Home Depot penny tracking needs the "
+            "SerpApi key (`SERPAPI_API_KEY`). Once the server owner sets it, "
+            "tracking starts on its own."
+        )
+    elif not status.enabled:
+        state_line = "⏸️ **Turned off** in the bot's settings right now."
+    elif status.watching or status.pennied:
+        state_line = (
+            "🟢 **Watching** — tracked clearance items are re-checked on a "
+            "schedule, final-stage items first."
+        )
+    else:
+        state_line = (
+            "🟢 **Running, nothing tracked yet** — run a Home Depot penny hunt "
+            "or save a Home Depot clearance lead, and stage-worthy items are "
+            "tracked automatically."
+        )
+    embed = discord.Embed(
+        title="🪙 Home Depot Penny Watch",
+        description=(
+            f"{state_line}\n\n"
+            "Clearance prices end in a code: **.03 is the final markdown** — "
+            "those items drop to **$0.01** next, or get pulled. This page "
+            "shows where every tracked item stands."
+        ),
+        color=discord.Color.orange(),
+    )
+    counts = status.stage_counts
+    embed.add_field(
+        name="Where things stand",
+        value=(
+            f"Watching **{status.watching}** item(s) • "
+            f"final stage **{counts.get('final', 0)}** • "
+            f"mid **{counts.get('mid', 0)}** • "
+            f"first markdown **{counts.get('first', 0)}** • "
+            f"stage unclear **{counts.get('unknown', 0) + counts.get('not_clearance', 0)}**\n"
+            f"Hit a penny so far: **{status.pennied}**"
+            + (
+                f"\nLast check: `{status.last_cycle_at}`"
+                if status.last_cycle_at
+                else ""
+            )
+        ),
+        inline=False,
+    )
+    look_for = [item for item in status.items if item.stage in (PennyStage.FINAL, PennyStage.PENNY)]
+    watching = [item for item in status.items if item.stage not in (PennyStage.FINAL, PennyStage.PENNY)]
+    if look_for:
+        embed.add_field(
+            name="🚨 Ones to look for",
+            value="\n".join(_penny_watch_item_line(item) for item in look_for[:8])[:1024],
+            inline=False,
+        )
+    if watching:
+        embed.add_field(
+            name="Also being watched",
+            value="\n".join(_penny_watch_item_line(item) for item in watching[:8])[:1024],
+            inline=False,
+        )
+    if not status.items and status.key_configured and status.enabled:
+        embed.add_field(
+            name="Nothing tracked yet",
+            value=(
+                "Run **Home Depot penny hunt** with a ZIP or store, or use "
+                "**Save a clearance lead** for a Home Depot item you spotted. "
+                "Anything sitting at a clearance stage gets followed here "
+                "until it drops to a penny or leaves clearance."
+            ),
+            inline=False,
+        )
+    embed.set_footer(
+        text="Drop windows are estimates — timing varies by store. A penny is only called when the price is actually seen at $0.01."
+    )
+    return embed
+
+
+def _penny_watch_item_line(item) -> str:
+    price = f"${item.price_cents / 100:,.2f}" if item.price_cents is not None else "price unknown"
+    stage_text = {
+        PennyStage.PENNY: "🚨 **PENNY — $0.01**",
+        PennyStage.FINAL: "🏷️ **Final markdown**",
+        PennyStage.MID: "Mid clearance",
+        PennyStage.FIRST: "First markdown",
+        PennyStage.UNKNOWN: "Clearance watch",
+        PennyStage.NOT_CLEARANCE: "Not on clearance",
+    }[item.stage]
+    bits = [f"**{_trim_title(item.title, 60)}** — {price} • {stage_text}"]
+    detail: list[str] = []
+    if item.store_label and item.store_label != "online":
+        detail.append(f"store {item.store_label}")
+    if item.days_in_stage is not None and item.status == "watching":
+        detail.append(f"{item.days_in_stage:.0f} day(s) at this stage")
+    if item.estimate is not None:
+        estimate = item.estimate
+        detail.append(
+            "estimated drop "
+            f"{estimate.earliest.strftime('%b %d')}–{estimate.latest.strftime('%b %d')} (estimate)"
+        )
+    if detail:
+        bits.append(" · ".join(detail))
+    return "\n".join(bits)
+
+
+def _trim_title(title: str, limit: int) -> str:
+    cleaned = " ".join(str(title or "").split())
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
 
 
 def build_home_depot_cards(candidates: tuple[SourceCandidate, ...], *, has_store_id: bool, penny_mode: bool) -> list[discord.Embed]:

@@ -27,6 +27,7 @@ from sniperplug.cogs.deal_feedback_admin import DealFeedbackAdminCog
 from sniperplug.cogs.dm_deal_alerts import DmDealAlertsCog
 from sniperplug.cogs.ebay_research import EbayResearchCog
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
+from sniperplug.cogs.home_depot_penny import HomeDepotPennyTrackerCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.local_inventory import LocalInventoryCog
 from sniperplug.cogs.movie_command_guide import MovieCommandGuideCog
@@ -179,6 +180,10 @@ class SniperPlugBot(commands.Bot):
         await self.add_cog(ClearanceBankCog(self))
         await self.add_cog(HomeDepotSearchCog(self))
         await self.add_cog(HomeDepotLocalCog(self))
+        # Penny tracker: no slash commands of its own — it owns the
+        # background polling loop, and /menu reaches its status page
+        # through HomeDepotSearchCog.open_penny_watch.
+        await self.add_cog(HomeDepotPennyTrackerCog(self))
         await self.add_cog(AutoDiscoveryCog(self))
         await self.add_cog(DmDealAlertsCog(self))
         # Standalone group, not a /walmart delegate: the wishlist matches

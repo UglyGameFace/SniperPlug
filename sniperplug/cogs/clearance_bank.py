@@ -7,6 +7,7 @@ from discord.ext import commands
 from sniperplug.cogs.local_inventory import clean_optional, normalize_retailer_key
 from sniperplug.models.local_inventory import clearance_signal_from_price
 from sniperplug.providers.registry import provider_registry
+from sniperplug.services.hd_penny_tracker import seed_from_clearance_seed
 from sniperplug.services.walmart_deal_recheck import recheck_clearance_seed
 
 # One /clearance_bank call rechecks at most this many Walmart seeds live:
@@ -66,6 +67,27 @@ class ClearanceBankCog(commands.Cog):
             notes=clean_optional(notes),
         )
 
+        # Home Depot leads also join the penny tracker, which re-checks
+        # them on a schedule and alerts when one enters the final markdown
+        # stage or drops to $0.01. Tracking failure never loses the seed.
+        penny_tracked = False
+        if retailer_key == "home_depot":
+            try:
+                penny_tracked = await seed_from_clearance_seed(
+                    self.bot.db,
+                    {
+                        "guild_id": interaction.guild_id,
+                        "title": title.strip(),
+                        "sku": clean_optional(sku),
+                        "product_url": clean_optional(product_url),
+                        "store_id": clean_optional(store_id),
+                        "zip_code": clean_optional(zip_code),
+                        "observed_price": observed_price,
+                    },
+                )
+            except Exception:
+                penny_tracked = False
+
         embed = discord.Embed(
             title="🌱 Clearance seed saved",
             description="This is a manual lead bank entry. It does not claim live inventory or a confirmed penny deal.",
@@ -84,6 +106,17 @@ class ClearanceBankCog(commands.Cog):
             embed.add_field(name="Price signal", value=value, inline=False)
         if notes:
             embed.add_field(name="Notes", value=notes[:500], inline=False)
+        if penny_tracked:
+            embed.add_field(
+                name="🪙 Penny watch",
+                value=(
+                    "This Home Depot lead is also on the **penny watch**: "
+                    "SniperPlug re-checks its price on a schedule and alerts "
+                    "when it enters the final markdown stage or drops to $0.01. "
+                    "See **Home Depot penny watch** in /menu."
+                ),
+                inline=False,
+            )
         embed.set_footer(text="Next: open Clearance bank in /menu with recheck on to recheck Walmart seeds against live item detail.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 

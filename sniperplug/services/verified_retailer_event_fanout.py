@@ -27,6 +27,8 @@ from sniperplug.services.dm_delivery_telemetry import (
     record_user_dm_outcome,
 )
 from sniperplug.services.embed_delivery import sanitize_embed
+from sniperplug.services.hd_penny_cards import build_hd_penny_card
+from sniperplug.services.hd_penny_public_posts import maybe_post_hd_penny_cards
 from sniperplug.services.hp_deal_cards import build_hp_deal_card
 from sniperplug.services.hp_public_posts import maybe_post_hp_deal_cards
 from sniperplug.services.target_deal_cards import build_target_deal_card
@@ -96,6 +98,12 @@ def retailer_fanout_handler(retailer: str) -> RetailerFanoutHandler | None:
             label="Target",
             build_card=build_target_deal_card,
             post_cards=maybe_post_target_deal_cards,
+        )
+    if key == "home_depot":
+        return RetailerFanoutHandler(
+            label="Home Depot",
+            build_card=build_hd_penny_card,
+            post_cards=maybe_post_hd_penny_cards,
         )
     return None
 

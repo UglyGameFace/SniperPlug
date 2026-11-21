@@ -76,3 +76,40 @@ def test_repair_failure_propagates_without_retry() -> None:
     with pytest.raises(RuntimeError):
         _load_rapidocr_class(import_fn=fail_import, repair_fn=fail_repair)
     assert attempts == [1]
+
+
+def test_retry_purges_the_failed_imports_partial_modules() -> None:
+    """Regression (2026-11-21, embedded reader): the first import's
+    partial cv2/rapidocr entries must be gone before the retry, or a
+    long-lived process keeps re-hitting the broken build the repair
+    just replaced on disk."""
+
+    import sys
+    import types
+
+    stale_cv2 = types.ModuleType("cv2")
+    stale_rapid = types.ModuleType("rapidocr_onnxruntime")
+    sys.modules["cv2"] = stale_cv2
+    sys.modules["rapidocr_onnxruntime"] = stale_rapid
+    sentinel = object()
+    attempts: list[int] = []
+
+    def flaky_import() -> object:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ImportError("libGL.so.1: cannot open shared object file")
+        assert sys.modules.get("cv2") is not stale_cv2
+        assert sys.modules.get("rapidocr_onnxruntime") is not stale_rapid
+        return sentinel
+
+    try:
+        result = _load_rapidocr_class(
+            import_fn=flaky_import,
+            repair_fn=lambda: None,
+        )
+    finally:
+        sys.modules.pop("cv2", None)
+        sys.modules.pop("rapidocr_onnxruntime", None)
+
+    assert result is sentinel
+    assert len(attempts) == 2

@@ -70,6 +70,7 @@ from sniperplug.services.command_surface_hash import (
 from sniperplug.services.consolidation_announcement import (
     maybe_post_consolidation_announcement,
 )
+from sniperplug.services.memory_hygiene import memory_hygiene_loop
 from sniperplug.services.operational_telemetry import publish_loop
 from sniperplug.services.error_logging import (
     configure_runtime_logging,
@@ -94,7 +95,13 @@ class SniperPlugBot(commands.Bot):
     def __init__(self, settings: Settings):
         intents = discord.Intents.default()
         intents.message_content = env_enabled("ENABLE_MESSAGE_CONTENT_INTENT", default=False)
-        super().__init__(command_prefix=commands.when_mentioned_or("!"), intents=intents)
+        super().__init__(
+            command_prefix=commands.when_mentioned_or("!"),
+            intents=intents,
+            # The bot acts on commands and its own posts; it does not need
+            # discord.py's default 1,000-message cache (several MB of embeds).
+            max_messages=200,
+        )
         self.settings = settings
         self.db = Database(settings.database_path)
         self.command_surface_hash_store = CommandSurfaceHashStore(
@@ -104,6 +111,7 @@ class SniperPlugBot(commands.Bot):
         self._consolidation_announcement_started = False
         self._ops_started_monotonic = time.monotonic()
         self._ops_telemetry_task: asyncio.Task | None = None
+        self._memory_hygiene_task: asyncio.Task | None = None
         log.info("Discord intents configured: message_content=%s slash_first=true", intents.message_content)
 
     async def setup_hook(self) -> None:
@@ -233,6 +241,9 @@ class SniperPlugBot(commands.Bot):
             )
 
         log.info("Runtime services ready: provider_count=%s", len(provider_registry.providers))
+        self._memory_hygiene_task = asyncio.create_task(
+            memory_hygiene_loop(self), name="sniperplug-memory-hygiene"
+        )
         await self._sync_commands()
         # Diagnostics are opt-in and never become a prerequisite for the bot.
         if len(os.getenv("SNIPERPLUG_OPS_INGEST_SECRET", "").strip()) >= 32:
@@ -255,6 +266,11 @@ class SniperPlugBot(commands.Bot):
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        hygiene_task = self._memory_hygiene_task
+        self._memory_hygiene_task = None
+        if hygiene_task is not None:
+            hygiene_task.cancel()
+            await asyncio.gather(hygiene_task, return_exceptions=True)
         await super().close()
         # Release the database connection setup_hook opened. The
         # aiosqlite worker thread behind it is non-daemon, so leaving

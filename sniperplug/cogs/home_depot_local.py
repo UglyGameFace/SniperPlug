@@ -9,7 +9,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from sniperplug.cogs.home_depot_search import home_depot_link_block, money, price_ending, trim_title
+from sniperplug.cogs.home_depot_search import home_depot_link_block, money, price_ending, resolve_hd_location, trim_title
+from sniperplug.services.hd_user_location import save_hd_user_location
 from sniperplug.models.candidate import SourceCandidate
 from sniperplug.providers.base import ProviderScanRequest, ProviderStatus
 from sniperplug.providers.registry import provider_registry
@@ -70,6 +71,18 @@ class HomeDepotStoreSelect(discord.ui.Select):
         store_id = self.values[0]
         store = self.stores_by_id.get(store_id)
         db = getattr(interaction.client, "db", None)
+        # The store the user just picked IS their home store: save it
+        # with the ZIP so later checks stop asking.
+        if db is not None:
+            try:
+                await save_hd_user_location(
+                    db,
+                    user_id=interaction.user.id,
+                    zip_code=self.zip_code,
+                    store_id=store_id,
+                )
+            except Exception:
+                pass
         await interaction.response.defer(ephemeral=True)
         lock_key = ScanLockKey(guild_id=interaction.guild_id, user_id=interaction.user.id, action="hd_stock_store_select", query=self.sku, preset=store_id)
         if not await scan_operation_locks.acquire(lock_key):
@@ -95,18 +108,36 @@ class HomeDepotLocalCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="hd_stock", description="Check a Home Depot SKU near a ZIP with local store selection.")
+    @app_commands.command(name="hd_stock", description="Check a Home Depot SKU near your saved ZIP (or a ZIP you pass) with local store selection.")
     @app_commands.describe(
         sku="Home Depot SKU / Internet #, like 334851114.",
-        zip_code="5-digit ZIP code to find nearby stores.",
+        zip_code="5-digit ZIP code to find nearby stores. Leave blank to use your saved Home Depot ZIP.",
         store_id="Optional Home Depot store ID. Leave blank to pick from nearby stores.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def hd_stock(self, interaction: discord.Interaction, sku: str, zip_code: str, store_id: str | None = None) -> None:
+    async def hd_stock(self, interaction: discord.Interaction, sku: str, zip_code: str | None = None, store_id: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True)
         cleaned_sku = _clean_sku(sku)
-        cleaned_zip = _clean_zip(zip_code)
-        cleaned_store_id = _clean_store_id(store_id)
+        # Blank ZIP/store fall back to the user's saved Home Depot
+        # location; an explicitly typed ZIP becomes the new saved one.
+        resolved_zip, resolved_store, _note, resolve_error = await resolve_hd_location(
+            getattr(self.bot, "db", None),
+            user_id=interaction.user.id,
+            zip_code=_clean_zip(zip_code or ""),
+            store_id=(store_id or "").strip(),
+        )
+        if resolve_error:
+            await interaction.followup.send(resolve_error, ephemeral=True)
+            return
+        cleaned_zip = _clean_zip(resolved_zip)
+        cleaned_store_id = _clean_store_id(resolved_store or store_id)
+        if not cleaned_zip:
+            await interaction.followup.send(
+                "I need a ZIP for a stock check and you don't have a saved Home Depot location yet. "
+                "Set one in /menu → eBay & Home Depot → **My Home Depot store**, or pass `zip_code:` here.",
+                ephemeral=True,
+            )
+            return
         error = _validation_error(cleaned_sku, cleaned_zip, cleaned_store_id)
         if error:
             await interaction.followup.send(error, ephemeral=True)

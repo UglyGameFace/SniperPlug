@@ -16,6 +16,18 @@ from sniperplug.services.hd_penny_tracker import (
     load_hd_penny_status,
     seed_from_hunt_candidates,
 )
+from sniperplug.services.hd_standing_hunts import (
+    list_standing_hunts,
+    register_standing_hunt,
+    stop_standing_hunt,
+)
+from sniperplug.services.hd_user_location import (
+    HdUserLocation,
+    get_hd_user_location,
+    normalize_hd_store_id,
+    normalize_hd_zip,
+    save_hd_user_location,
+)
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
 from sniperplug.services.safe_links import product_link_choices
@@ -43,8 +55,8 @@ class HomeDepotSearchCog(commands.Cog):
     @app_commands.command(name="home_depot_search", description="Manually search Home Depot through SerpApi with quota protection.")
     @app_commands.describe(
         query="Product search, like milwaukee drill, vanity, faucet, ceiling fan.",
-        store_id="Optional Home Depot store ID.",
-        zip_code="Optional delivery/local ZIP.",
+        store_id="Optional Home Depot store ID. Leave blank to use your saved store.",
+        zip_code="Optional delivery/local ZIP. Leave blank to use your saved Home Depot ZIP.",
         page="Page to scan. Page 2+ uses another SerpApi credit.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -58,11 +70,11 @@ class HomeDepotSearchCog(commands.Cog):
     ) -> None:
         await self._run_search(interaction, query=query, store_id=store_id, zip_code=zip_code, page=page, penny_mode=False)
 
-    @app_commands.command(name="home_depot_penny_hunt", description="Manually hunt Home Depot penny/clearance candidates through SerpApi.")
+    @app_commands.command(name="home_depot_penny_hunt", description="Start a standing Home Depot penny hunt: scans now, then auto-scans daily for new candidates.")
     @app_commands.describe(
         query="Targeted query, like faucet, vanity, milwaukee, ryobi, ceiling fan.",
-        store_id="Optional Home Depot store ID. ZIP alone is enough for a local search.",
-        zip_code="Recommended local ZIP. Used as the local anchor when store ID is unknown.",
+        store_id="Optional Home Depot store ID. Leave blank to use your saved store.",
+        zip_code="Optional local ZIP. Leave blank to use your saved Home Depot ZIP.",
         page="Page to scan. Page 2+ uses another SerpApi credit.",
     )
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -90,6 +102,25 @@ class HomeDepotSearchCog(commands.Cog):
         cleaned_query = clean_query(query)
         cleaned_store_id = (store_id or "").strip()
         cleaned_zip_code = (zip_code or "").strip()
+        # Saved Home Depot location fills any blank field; an explicitly
+        # typed ZIP/store wins for this run and becomes the new saved
+        # location. This is what stops the "type your ZIP every time"
+        # loop Felix hit, and a saved ZIP counts as the local anchor for
+        # the broad-query credit guard below.
+        (
+            cleaned_zip_code,
+            cleaned_store_id,
+            location_note_text,
+            location_error,
+        ) = await resolve_hd_location(
+            getattr(self.bot, "db", None),
+            user_id=interaction.user.id,
+            zip_code=cleaned_zip_code,
+            store_id=cleaned_store_id,
+        )
+        if location_error:
+            await interaction.followup.send(location_error, ephemeral=True)
+            return
         has_local_anchor = bool(cleaned_store_id or cleaned_zip_code)
         broad_warning = _broad_query_warning(cleaned_query)
         if not cleaned_query:
@@ -152,10 +183,17 @@ class HomeDepotSearchCog(commands.Cog):
                 return
             batch = build_home_depot_card_batch(result.candidates, has_local_anchor=has_local_anchor, penny_mode=penny_mode)
             track_note = None
+            hunt_note = None
             if penny_mode:
                 track_note = await self._track_penny_hunt_results(
                     result.candidates,
                     guild_id=interaction.guild_id,
+                    store_id=cleaned_store_id,
+                    zip_code=cleaned_zip_code,
+                )
+                hunt_note = await self._register_standing_hunt(
+                    interaction,
+                    query=cleaned_query,
                     store_id=cleaned_store_id,
                     zip_code=cleaned_zip_code,
                 )
@@ -185,6 +223,10 @@ class HomeDepotSearchCog(commands.Cog):
                 )
             if track_note:
                 summary.add_field(name="🪙 Penny watch", value=track_note, inline=False)
+            if hunt_note:
+                summary.add_field(name="🔁 Standing hunt", value=hunt_note, inline=False)
+            if location_note_text:
+                summary.add_field(name="📍 Home Depot location", value=location_note_text, inline=False)
             if batch.candidates:
                 summary.add_field(
                     name="Product links",
@@ -264,6 +306,96 @@ class HomeDepotSearchCog(commands.Cog):
             return "The stage-worthy results above are already on the penny watch list."
         return None
 
+    async def _register_standing_hunt(
+        self,
+        interaction: discord.Interaction,
+        *,
+        query: str,
+        store_id: str,
+        zip_code: str,
+    ) -> str | None:
+        """Register (or refresh) the standing hunt behind a manual hunt.
+
+        The manual pass the user just ran is the hunt's first pass, so
+        registration stamps it as just-run and the daily discovery cycle
+        takes it from there. Registration must never break the hunt
+        itself: any failure is swallowed and the results still stand.
+        """
+
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            return None
+        try:
+            await register_standing_hunt(
+                db,
+                guild_id=interaction.guild_id,
+                user_id=interaction.user.id,
+                query=query,
+                zip_code=zip_code or None,
+                store_id=store_id or "",
+            )
+        except Exception:
+            return None
+        return (
+            "This hunt is now a **standing auto-scan**: SniperPlug re-runs it "
+            "automatically about **once a day** and seeds anything new into "
+            "the penny watch — no need to run it by hand again. See or stop "
+            "your hunts under **My Home Depot hunts** in /menu. Stopping a "
+            "hunt does not untrack items already on the penny watch."
+        )
+
+    async def set_hd_location(
+        self,
+        interaction: discord.Interaction,
+        zip_code: str | None = None,
+        store_id: str | None = None,
+    ) -> None:
+        """``/menu`` → eBay & Home Depot → My Home Depot store."""
+
+        await interaction.response.defer(ephemeral=True)
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            await interaction.followup.send(
+                "I can't save your Home Depot location right now — try again in a little while.",
+                ephemeral=True,
+            )
+            return
+        try:
+            preference = await save_hd_user_location(
+                db,
+                user_id=interaction.user.id,
+                zip_code=zip_code or "",
+                store_id=store_id,
+            )
+        except ValueError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"📍 Saved your Home Depot location: **{preference.label}**. "
+            "Home Depot hunts, searches, and stock checks will use it whenever "
+            "you leave the ZIP/store fields blank — you don't have to type it "
+            "again. Type a different ZIP on any run to override it (that run's "
+            "ZIP becomes the new saved one).",
+            ephemeral=True,
+        )
+
+    async def open_my_hunts(self, interaction: discord.Interaction) -> None:
+        """``/menu`` → eBay & Home Depot → My Home Depot hunts."""
+
+        await interaction.response.defer(ephemeral=True)
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            await interaction.followup.send(
+                "I can't reach your hunts right now — try again in a little while.",
+                ephemeral=True,
+            )
+            return
+        embed, hunts = await build_my_hunts_embed(
+            db, guild_id=interaction.guild_id, user_id=interaction.user.id
+        )
+        view = HdHuntStopView(db, owner_id=interaction.user.id, hunts=hunts) if hunts else None
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
     async def open_penny_watch(self, interaction: discord.Interaction) -> None:
         """``/menu`` → eBay & Home Depot → Home Depot penny watch."""
 
@@ -276,10 +408,205 @@ class HomeDepotSearchCog(commands.Cog):
             )
             return
         status = await load_hd_penny_status(db)
-        await interaction.followup.send(embed=build_penny_watch_embed(status), ephemeral=True)
+        location = None
+        try:
+            location = await get_hd_user_location(db, user_id=interaction.user.id)
+        except Exception:
+            location = None
+        await interaction.followup.send(
+            embed=build_penny_watch_embed(
+                status, location_label=location.label if location else None
+            ),
+            ephemeral=True,
+        )
 
 
-def build_penny_watch_embed(status: HdPennyStatus) -> discord.Embed:
+async def resolve_hd_location(
+    db,
+    *,
+    user_id: int,
+    zip_code: str,
+    store_id: str,
+) -> tuple[str, str, str | None, str | None]:
+    """Fill blank ZIP/store fields from the user's saved HD location.
+
+    Returns ``(zip_code, store_id, note, error)``. An explicitly typed
+    ZIP wins for the run and is saved as the new location (keeping the
+    saved store when the ZIP is unchanged or a store was typed with it);
+    an explicitly typed store alone overrides the saved store for the
+    run. With both blank, the saved location fills them and the note
+    says so. Validation errors come back as ``error`` text.
+    """
+
+    explicit_zip = (zip_code or "").strip()
+    explicit_store = (store_id or "").strip()
+    if explicit_zip:
+        try:
+            explicit_zip = normalize_hd_zip(explicit_zip)
+        except ValueError as error:
+            return "", "", None, str(error)
+    if explicit_store:
+        try:
+            explicit_store = normalize_hd_store_id(explicit_store) or ""
+        except ValueError as error:
+            return "", "", None, str(error)
+    saved: HdUserLocation | None = None
+    if db is not None:
+        try:
+            saved = await get_hd_user_location(db, user_id=user_id)
+        except Exception:
+            saved = None
+    if explicit_zip:
+        store_to_save = explicit_store or (
+            saved.store_id if saved is not None and saved.zip_code == explicit_zip else None
+        )
+        note = None
+        if db is not None:
+            try:
+                preference = await save_hd_user_location(
+                    db,
+                    user_id=user_id,
+                    zip_code=explicit_zip,
+                    store_id=store_to_save,
+                )
+                note = (
+                    f"Saved as your Home Depot location: **{preference.label}**. "
+                    "Blank ZIP/store fields will use it from now on."
+                )
+            except Exception:
+                note = None
+        return explicit_zip, explicit_store or (store_to_save or ""), note, None
+    if saved is not None:
+        return (
+            saved.zip_code,
+            explicit_store or (saved.store_id or ""),
+            f"Using your saved Home Depot location: **{saved.label}**.",
+            None,
+        )
+    return "", explicit_store, None, None
+
+
+async def build_my_hunts_embed(db, *, guild_id: int | None, user_id: int):
+    """The My Home Depot hunts page: standing auto-scans + saved location."""
+
+    hunts = await list_standing_hunts(db, guild_id=guild_id, user_id=user_id)
+    location = None
+    try:
+        location = await get_hd_user_location(db, user_id=user_id)
+    except Exception:
+        location = None
+    embed = discord.Embed(
+        title="🔁 My Home Depot Hunts",
+        description=(
+            "A hunt is a **standing auto-scan**, not a one-time lookup: "
+            "SniperPlug re-runs each hunt automatically about **once a "
+            "day** and seeds anything new into the penny watch."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="📍 Your Home Depot location",
+        value=(
+            f"**{location.label}** — blank ZIP/store fields on hunts, "
+            "searches, and stock checks use it."
+            if location
+            else "Not set yet — set it under **My Home Depot store** in "
+            "/menu, or type a ZIP on any hunt and it saves automatically."
+        ),
+        inline=False,
+    )
+    if hunts:
+        lines = []
+        for hunt in hunts:
+            anchor = hunt.zip_code or "no ZIP"
+            if hunt.store_id:
+                anchor += f" · store {hunt.store_id}"
+            last = (
+                hunt.last_run_at.strftime("%b %d") if hunt.last_run_at else "not yet"
+            )
+            lines.append(f"**{hunt.query}** — {anchor} · last scan {last}")
+        embed.add_field(
+            name=f"Standing hunts ({len(hunts)})",
+            value="\n".join(lines)[:1024],
+            inline=False,
+        )
+        embed.add_field(
+            name="Stopping a hunt",
+            value=(
+                "Pick a hunt below to stop its auto-scans. Items already "
+                "seeded into the penny watch **stay tracked** — stopping "
+                "only stops new discovery for that query."
+            ),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="No standing hunts yet",
+            value=(
+                "Run **Home Depot penny hunt** once and it becomes a "
+                "standing hunt that re-scans on its own."
+            ),
+            inline=False,
+        )
+    return embed, hunts
+
+
+class HdHuntStopSelect(discord.ui.Select):
+    def __init__(self, db, owner_id: int, hunts):
+        self.db = db
+        self.owner_id = owner_id
+        self.hunts_by_id = {str(hunt.hunt_id): hunt for hunt in hunts}
+        options = [
+            discord.SelectOption(
+                label=f"Stop: {hunt.query}"[:100],
+                value=str(hunt.hunt_id),
+                description="Stops auto-scans; tracked penny items stay tracked."[:100],
+            )
+            for hunt in hunts[:25]
+        ]
+        super().__init__(
+            placeholder="Stop one of your standing hunts…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "This hunt list belongs to the user who opened it.", ephemeral=True
+            )
+            return
+        hunt = self.hunts_by_id.get(self.values[0])
+        await interaction.response.defer(ephemeral=True)
+        stopped = False
+        if hunt is not None:
+            stopped = await stop_standing_hunt(
+                self.db, hunt_id=hunt.hunt_id, user_id=self.owner_id
+            )
+        embed, hunts = await build_my_hunts_embed(
+            self.db, guild_id=interaction.guild_id, user_id=self.owner_id
+        )
+        if hunt is not None and stopped:
+            embed.add_field(
+                name="Stopped",
+                value=(
+                    f"**{hunt.query}** will not auto-scan again. Items it "
+                    "already seeded stay on the penny watch."
+                ),
+                inline=False,
+            )
+        view = HdHuntStopView(self.db, owner_id=self.owner_id, hunts=hunts) if hunts else None
+        await interaction.edit_original_response(embed=embed, view=view)
+
+
+class HdHuntStopView(discord.ui.View):
+    def __init__(self, db, owner_id: int, hunts):
+        super().__init__(timeout=300)
+        self.add_item(HdHuntStopSelect(db, owner_id, hunts))
+
+
+def build_penny_watch_embed(status: HdPennyStatus, *, location_label: str | None = None) -> discord.Embed:
     """The penny watch status page: plain words, estimates labeled."""
 
     if not status.key_configured:
@@ -311,6 +638,12 @@ def build_penny_watch_embed(status: HdPennyStatus) -> discord.Embed:
         ),
         color=discord.Color.orange(),
     )
+    if location_label:
+        embed.add_field(
+            name="📍 Your Home Depot location",
+            value=f"**{location_label}** — hunts and searches use it when the ZIP/store fields are blank.",
+            inline=False,
+        )
     counts = status.stage_counts
     embed.add_field(
         name="Where things stand",
@@ -347,7 +680,8 @@ def build_penny_watch_embed(status: HdPennyStatus) -> discord.Embed:
         embed.add_field(
             name="Nothing tracked yet",
             value=(
-                "Run **Home Depot penny hunt** with a ZIP or store, or use "
+                "Run **Home Depot penny hunt** (your saved ZIP is used when "
+                "you leave it blank, and the hunt keeps auto-scanning daily), or use "
                 "**Save a clearance lead** for a Home Depot item you spotted. "
                 "Anything sitting at a clearance stage gets followed here "
                 "until it drops to a penny or leaves clearance."

@@ -10,6 +10,7 @@ from sniperplug.services.public_posting import normalize_retailer_key
 
 CHANNEL_PREFIX = "ch:"
 HP_RETAILER_MIGRATION = "20260802_enable_hp_for_existing_walmart_public_alerts"
+HD_PENNY_RETAILER_MIGRATION = "20261120_enable_home_depot_penny_for_existing_walmart_public_alerts"
 
 
 async def ensure_public_alert_table(db: Any) -> None:
@@ -39,6 +40,14 @@ async def ensure_public_alert_table(db: Any) -> None:
         db,
         migration_key=HP_RETAILER_MIGRATION,
         retailer="hp",
+    )
+    # Same one-time enrollment for the Home Depot penny tracker: without
+    # home_depot among a server's picked stores, its penny/final-stage
+    # alerts could never post anywhere.
+    await _migrate_existing_walmart_alerts_to_retailer(
+        db,
+        migration_key=HD_PENNY_RETAILER_MIGRATION,
+        retailer="home_depot",
     )
 
 

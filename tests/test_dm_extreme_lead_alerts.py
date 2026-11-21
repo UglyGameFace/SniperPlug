@@ -104,14 +104,11 @@ def _iphone_page_candidate(*, price: float = 1.0) -> SourceCandidate:
     )
 
 
-def _preference(*, categories=(), mode: str = "all", **kwargs) -> DmDealAlertPreference:
+def _preference(*, categories=(), **kwargs) -> DmDealAlertPreference:
     return DmDealAlertPreference(
         user_id=7,
         enabled=True,
-        mode=mode,
         min_discount=20,
-        min_score=0,
-        min_savings_cents=0,
         categories=categories,
         **kwargs,
     )
@@ -234,7 +231,7 @@ def test_markdown_cutoffs_unchanged_for_ordinary_deals() -> None:
     )
 
     decision = match_dm_deal(
-        _preference(categories=("brand:samsung",), mode="smart"), card
+        _preference(categories=("brand:samsung",)), card
     )
 
     assert not decision.matched

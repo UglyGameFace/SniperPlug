@@ -96,9 +96,7 @@ def _preference(**overrides) -> DmDealAlertPreference:
     values = dict(
         user_id=42,
         enabled=True,
-        mode="custom",
         min_discount=20,
-        min_score=50,
         categories=(),
     )
     values.update(overrides)

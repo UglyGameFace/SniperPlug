@@ -59,11 +59,11 @@ def test_all_live_fanouts_import_the_canonical_dm_matcher() -> None:
 
 def test_authoritative_matcher_keeps_specific_intent_hard_and_separate_from_categories() -> None:
     product_position = MATCHER.index("product_match = match_product_preferences(")
-    flip_position = MATCHER.index("if flip_enabled and not no_reference_lead:")
-    assert product_position < flip_position
-    assert "has_specific_walmart_intent" in MATCHER
-    assert "not has_specific_walmart_intent" in MATCHER
+    floor_position = MATCHER.index("if discount < required_discount")
+    assert product_position < floor_position
+    assert "matched_layers" in MATCHER
     assert "explicit product intent" in MATCHER
+    assert "exact-price leads need an explicit product or brand interest" in MATCHER
     assert "none of your specific product interests matched" in PRODUCTS
     assert "none of your selected brands matched" in PRODUCTS
 

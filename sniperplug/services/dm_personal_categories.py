@@ -3,9 +3,12 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from sniperplug.services.dm_deal_alerts import normalize_categories, normalize_terms
-from sniperplug.services.dm_flip_opportunities import DEFAULT_FLIP_MIN_PROFIT_CENTS
-from sniperplug.services.dm_deal_routes import dm_route_tokens, split_dm_route_preferences
+from sniperplug.services.dm_deal_alerts import normalize_categories
+from sniperplug.services.dm_deal_routes import (
+    DM_ROUTE_PREFIX,
+    dm_route_tokens,
+    split_dm_route_preferences,
+)
 from sniperplug.services.dm_product_interests import (
     BRAND_PREFIX,
     PRODUCT_INTEREST_PREFIX,
@@ -18,11 +21,11 @@ from sniperplug.services.opportunity_watchlist import (
 )
 
 
-LEGACY_CATEGORY_MUTE_PREFIX = "category:"
 MUTED_CATEGORY_PREFIX = "muted:"
 FAVORITE_CATEGORY_PREFIX = "favorite:"
 FLIP_ALERTS_TOKEN = "flip:enabled"
 FLIP_MIN_PROFIT_PREFIX = "flip_profit:"
+DEFAULT_FLIP_MIN_PROFIT_CENTS = 5_000
 CATEGORY_PAGE_SIZE = 25
 
 _CATEGORY_LABELS = {category.key: category.label for category in OPPORTUNITY_CATEGORIES}
@@ -182,86 +185,49 @@ def normalize_personal_categories(values: Iterable[str] | str | None) -> tuple[s
     return _dedupe(expanded)
 
 
-def split_exclude_terms(values: Iterable[str] | str | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Read old category tokens while preserving keyword compatibility."""
-
-    keywords: list[str] = []
-    muted_categories: list[str] = []
-    for value in _split_values(values):
-        if value.startswith(LEGACY_CATEGORY_MUTE_PREFIX):
-            category = value[len(LEGACY_CATEGORY_MUTE_PREFIX) :].strip()
-            muted_categories.extend(normalize_personal_categories((category,)))
-        else:
-            keywords.append(value)
-    return normalize_terms(keywords), _dedupe(muted_categories)
-
-
-def compose_exclude_terms(
-    keywords: Iterable[str] | str | None,
-    muted_categories: Iterable[str] | str | None = None,
-) -> tuple[str, ...]:
-    # New menu saves place mutes in categories_json, which is not capped by the
-    # 12-keyword safety limit. Legacy tokens are accepted only for compatibility.
-    legacy_tokens = tuple(
-        f"{LEGACY_CATEGORY_MUTE_PREFIX}{category}"
-        for category in normalize_personal_categories(muted_categories)
-    )
-    return (*legacy_tokens, *normalize_terms(keywords))
-
-
-def update_category_mutes(
-    existing_excludes: Iterable[str] | str | None,
-    *,
-    add: Iterable[str] | str | None = None,
-    remove: Iterable[str] | str | None = None,
-    replacement_keywords: Iterable[str] | str | None = None,
-) -> tuple[str, ...]:
-    """Legacy adapter retained for old callers and existing saved rows."""
-
-    current_keywords, current_muted = split_exclude_terms(existing_excludes)
-    keywords = (
-        normalize_terms(replacement_keywords)
-        if replacement_keywords is not None
-        else current_keywords
-    )
-    muted = list(current_muted)
-    muted.extend(normalize_personal_categories(add))
-    remove_set = set(normalize_personal_categories(remove))
-    muted = [category for category in _dedupe(muted) if category not in remove_set]
-    return compose_exclude_terms(keywords, muted)
-
-
 def split_category_preferences(
     values: Iterable[str] | str | None,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> tuple[str, ...]:
+    """Return the selected categories stored in a preference token list.
+
+    Legacy ``favorite:`` tokens fold into the selection (favorites are now
+    ordinary picks) and legacy ``muted:`` tokens are ignored — muting a
+    category no longer exists. Route, product, brand and flip tokens belong
+    to other layers and are skipped here.
+    """
+
     selected: list[str] = []
-    favorites: list[str] = []
     for value in _split_values(values):
         if value.startswith(FAVORITE_CATEGORY_PREFIX):
             category = value[len(FAVORITE_CATEGORY_PREFIX) :].strip()
-            favorites.extend(normalize_personal_categories((category,)))
+            selected.extend(normalize_personal_categories((category,)))
         elif (
             value.startswith(MUTED_CATEGORY_PREFIX)
             or value == FLIP_ALERTS_TOKEN
             or value.startswith(FLIP_MIN_PROFIT_PREFIX)
             or value.startswith(PRODUCT_INTEREST_PREFIX)
             or value.startswith(BRAND_PREFIX)
+            or value.startswith(DM_ROUTE_PREFIX)
         ):
             continue
         else:
             selected.extend(normalize_personal_categories((value,)))
-    return _dedupe(selected), _dedupe(favorites)
+    return _dedupe(selected)
 
 
-def muted_category_preferences(
+def explicit_flip_min_profit_cents(
     values: Iterable[str] | str | None,
-) -> tuple[str, ...]:
-    muted: list[str] = []
+) -> int:
+    """The price-mistake profit floor the user actually stored, else 0.
+
+    ``flip_settings`` reports a default floor when no token exists; the
+    matcher gate must only apply to a floor that is really in storage.
+    """
+
     for value in _split_values(values):
-        if value.startswith(MUTED_CATEGORY_PREFIX):
-            category = value[len(MUTED_CATEGORY_PREFIX) :].strip()
-            muted.extend(normalize_personal_categories((category,)))
-    return _dedupe(muted)
+        if value.startswith(FLIP_MIN_PROFIT_PREFIX):
+            return flip_settings(values)[1]
+    return 0
 
 
 def flip_settings(
@@ -283,23 +249,13 @@ def flip_settings(
 
 def compose_category_preferences(
     selected: Iterable[str] | str | None,
-    favorites: Iterable[str] | str | None,
     *,
-    muted: Iterable[str] | str | None = None,
     flip_enabled: bool = False,
     flip_min_profit_cents: int = DEFAULT_FLIP_MIN_PROFIT_CENTS,
     product_tokens: Iterable[str] | str | None = None,
     routes: Iterable[str] | str | None = None,
 ) -> tuple[str, ...]:
     selected_values = normalize_personal_categories(selected)
-    favorite_tokens = tuple(
-        f"{FAVORITE_CATEGORY_PREFIX}{category}"
-        for category in normalize_personal_categories(favorites)
-    )
-    muted_tokens = tuple(
-        f"{MUTED_CATEGORY_PREFIX}{category}"
-        for category in normalize_personal_categories(muted)
-    )
     flip_tokens: list[str] = []
     safe_profit = max(1_000, min(10_000_000, int(flip_min_profit_cents)))
     if flip_enabled:
@@ -309,77 +265,10 @@ def compose_category_preferences(
     return _dedupe(
         (
             *selected_values,
-            *favorite_tokens,
-            *muted_tokens,
             *flip_tokens,
             *product_preference_tokens(product_tokens),
             *dm_route_tokens(routes),
         )
-    )
-
-
-def update_favorite_categories(
-    existing_categories: Iterable[str] | str | None,
-    *,
-    add: Iterable[str] | str | None = None,
-    remove: Iterable[str] | str | None = None,
-    replacement_selected: Iterable[str] | str | None = None,
-) -> tuple[str, ...]:
-    current_selected, current_favorites = split_category_preferences(
-        existing_categories
-    )
-    current_muted = muted_category_preferences(existing_categories)
-    current_flip_enabled, current_flip_profit = flip_settings(existing_categories)
-    selected = (
-        normalize_personal_categories(replacement_selected)
-        if replacement_selected is not None
-        else current_selected
-    )
-    favorites = list(current_favorites)
-    favorites.extend(normalize_personal_categories(add))
-    remove_set = set(normalize_personal_categories(remove))
-    favorites = [
-        category
-        for category in _dedupe(favorites)
-        if category not in remove_set
-    ]
-    return compose_category_preferences(
-        selected,
-        favorites,
-        muted=current_muted,
-        flip_enabled=current_flip_enabled,
-        flip_min_profit_cents=current_flip_profit,
-        product_tokens=existing_categories,
-        routes=split_dm_route_preferences(existing_categories),
-    )
-
-
-def update_muted_categories(
-    existing_categories: Iterable[str] | str | None,
-    *,
-    add: Iterable[str] | str | None = None,
-    remove: Iterable[str] | str | None = None,
-    replacement: Iterable[str] | str | None = None,
-) -> tuple[str, ...]:
-    selected, favorites = split_category_preferences(existing_categories)
-    current_muted = muted_category_preferences(existing_categories)
-    current_flip_enabled, current_flip_profit = flip_settings(existing_categories)
-    muted = (
-        list(normalize_personal_categories(replacement))
-        if replacement is not None
-        else list(current_muted)
-    )
-    muted.extend(normalize_personal_categories(add))
-    remove_set = set(normalize_personal_categories(remove))
-    muted = [category for category in _dedupe(muted) if category not in remove_set]
-    return compose_category_preferences(
-        selected,
-        favorites,
-        muted=muted,
-        flip_enabled=current_flip_enabled,
-        flip_min_profit_cents=current_flip_profit,
-        product_tokens=existing_categories,
-        routes=split_dm_route_preferences(existing_categories),
     )
 
 
@@ -389,13 +278,10 @@ def update_flip_settings(
     enabled: bool | None = None,
     minimum_profit_cents: int | None = None,
 ) -> tuple[str, ...]:
-    selected, favorites = split_category_preferences(existing_categories)
-    muted = muted_category_preferences(existing_categories)
+    selected = split_category_preferences(existing_categories)
     current_enabled, current_profit = flip_settings(existing_categories)
     return compose_category_preferences(
         selected,
-        favorites,
-        muted=muted,
         flip_enabled=current_enabled if enabled is None else bool(enabled),
         flip_min_profit_cents=(
             current_profit

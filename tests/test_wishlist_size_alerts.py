@@ -78,9 +78,7 @@ def _preference() -> DmDealAlertPreference:
     return DmDealAlertPreference(
         user_id=42,
         enabled=True,
-        mode="custom",
         min_discount=20,
-        min_score=50,
         categories=(),
     )
 

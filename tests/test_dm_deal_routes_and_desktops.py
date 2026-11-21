@@ -18,9 +18,7 @@ from sniperplug.services.dm_deal_routes import (
 )
 from sniperplug.services.dm_personal_categories import (
     split_category_preferences,
-    update_favorite_categories,
     update_flip_settings,
-    update_muted_categories,
 )
 from sniperplug.services.dm_product_interests import (
     match_product_preferences,
@@ -31,7 +29,7 @@ from sniperplug.services.opportunity_watchlist import category_for_title
 from sniperplug.services.routing import PRICE_GLITCH_ROUTE, HOT_DEALS_ROUTE
 
 
-def _card(*, glitch: bool = True, with_deal: bool = True):
+def _card(*, glitch: bool = True, with_deal: bool = True, score: int = 150):
     title = "HP OMEN gaming desktop PC"
     deal = NormalizedDeal(
         title=title,
@@ -51,7 +49,7 @@ def _card(*, glitch: bool = True, with_deal: bool = True):
         api_current_price=80.0,
         api_reference_price=400.0,
         api_discount_percent=80.0,
-        score=150,
+        score=score,
         deal=deal if with_deal else None,
     )
 
@@ -60,9 +58,7 @@ def _pref(*tokens: str, max_price: int | None = None, min_discount: int = 20):
     return DmDealAlertPreference(
         user_id=42,
         enabled=True,
-        mode="all",
         min_discount=min_discount,
-        min_score=10,
         max_price_cents=max_price,
         categories=tuple(tokens),
     )
@@ -81,9 +77,9 @@ def test_route_labels_normalize_and_unknown_routes_are_not_subscriptions():
     assert "amazon" not in PERSONAL_DEAL_ROUTES
 
 
-def test_route_subscription_is_an_alternative_to_stale_product_and_category_filters():
+def test_route_match_works_alongside_stale_product_and_category_picks():
     old = update_product_preferences(
-        ("muted:desktop_computers", "gpus"),
+        ("gpus",),
         add_interests=("iphones",),
         add_brands=("Anker",),
     )
@@ -105,25 +101,88 @@ def test_route_subscriptions_never_bypass_explicit_hard_thresholds():
     selected = dm_route_tokens(("price_glitch",))
     assert not match_dm_deal(_pref(*selected, max_price=5_000), _card()).matched
     assert not match_dm_deal(_pref(*selected, min_discount=90), _card()).matched
-    assert not match_dm_deal(
-        DmDealAlertPreference(
-            user_id=42, enabled=True, mode="all", min_discount=20,
-            min_score=200, categories=selected,
-        ),
-        _card(),
-    ).matched
+    assert not match_dm_deal(_pref(*selected), _card(score=50)).matched
+
+
+def test_union_interest_match_dms_even_when_the_route_is_not_selected():
+    # The headline change: routes used to override every other pick. A
+    # Walmart deal that matches a picked product now DMs even when its
+    # route is not one of the picked deal types.
+    pref = _pref(
+        *dm_route_tokens(("price_glitch",)),
+        "interest:desktop_computers",
+    )
+    decision = match_dm_deal(pref, _card(glitch=False))
+    assert decision.matched
+    assert "explicit product intent" in decision.reason
+
+
+def test_union_hp_deal_matches_through_its_route():
+    title = "HP OMEN gaming laptop"
+    deal = NormalizedDeal(
+        title=title,
+        retailer="HP",
+        product_url="https://www.hp.com/us-en/shop/pdp/omen",
+        current_price=99.0,
+        typical_price=999.0,
+        discount_percent=90.0,
+        is_possible_price_error=True,
+    )
+    card = SimpleNamespace(
+        label=title,
+        retailer="HP",
+        url=deal.product_url,
+        embed=discord.Embed(title=title),
+        variant_attributes={},
+        api_current_price=99.0,
+        api_reference_price=999.0,
+        api_discount_percent=90.0,
+        score=150,
+        deal=deal,
+    )
+    pref = _pref(*dm_route_tokens(("price_glitch",)), min_discount=50)
+    decision = match_dm_deal(pref, card)
+    assert decision.matched
+    assert "route Price Glitches" in decision.reason
+
+
+def test_union_product_picks_alone_do_not_gate_other_retailers():
+    title = "HP OMEN gaming laptop"
+    deal = NormalizedDeal(
+        title=title,
+        retailer="HP",
+        product_url="https://www.hp.com/us-en/shop/pdp/omen",
+        current_price=99.0,
+        typical_price=999.0,
+        discount_percent=90.0,
+        is_possible_price_error=True,
+    )
+    card = SimpleNamespace(
+        label=title,
+        retailer="HP",
+        url=deal.product_url,
+        embed=discord.Embed(title=title),
+        variant_attributes={},
+        api_current_price=99.0,
+        api_reference_price=999.0,
+        api_discount_percent=90.0,
+        score=150,
+        deal=deal,
+    )
+    pref = _pref("interest:laptops", min_discount=50)
+    # Product picks are a Walmart-only layer: silent here, not a veto, so
+    # with no other applicable pick the HP deal stays eligible.
+    assert match_dm_deal(pref, card).matched
 
 
 def test_route_preferences_survive_other_personalization_edits():
     old = (*dm_route_tokens(("price_glitch",)), "favorite:ram")
     with_products = update_product_preferences(old, add_interests=("iphones",))
     with_flip = update_flip_settings(with_products, enabled=True)
-    with_mute = update_muted_categories(with_flip, add=("baby",))
-    with_favorite = update_favorite_categories(with_mute, add=("gaming",))
-    assert split_dm_route_preferences(with_favorite) == ("price_glitch",)
-    selected_categories, favorites = split_category_preferences(with_favorite)
+    assert split_dm_route_preferences(with_flip) == ("price_glitch",)
+    selected_categories = split_category_preferences(with_flip)
     assert "dm_route:price_glitch" not in selected_categories
-    assert "desktop_computers" in favorites
+    assert "ram" in selected_categories
 
 
 def test_route_selection_round_trips_through_discord_menu_save(monkeypatch):
@@ -149,12 +208,12 @@ def test_route_selection_round_trips_through_discord_menu_save(monkeypatch):
         "price_glitch", "hot_deals",
     )
     assert view.dirty is False
-    # Selected kinds are listed in the Kinds of deals field now that the
-    # description leads with the plan's one-line state summary.
+    # The home screen leads with the one-sentence summary in plain names.
     embed_text = (response.embed.description or "") + "\n" + "\n".join(
         f"{field.name}\n{field.value}" for field in response.embed.fields
     )
-    assert "Price Glitches" in embed_text
+    assert "price mistakes" in embed_text
+    assert "big markdowns" in embed_text
     assert response.view is view
 
 

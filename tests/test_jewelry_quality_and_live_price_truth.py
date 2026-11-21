@@ -52,7 +52,7 @@ def test_fashion_and_plated_jewelry_cannot_be_precious_metal_alerts(title):
     assert card_jewelry_rejection_reason(card) == "fashion_or_plated_jewelry"
     assert public_deal_rejection_reason(card, min_discount=1) == "fashion_or_plated_jewelry"
     pref = DmDealAlertPreference(
-        user_id=1, enabled=True, mode="all", min_discount=20, min_score=0,
+        user_id=1, enabled=True, min_discount=20,
         categories=("dm_route:coupon_stack",),
     )
     assert match_dm_deal(pref, card).reason == "fashion_or_plated_jewelry"

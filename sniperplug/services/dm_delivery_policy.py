@@ -85,7 +85,7 @@ def category_family_for_key(category_key: str) -> str:
 
 
 def family_limit_for_daily_cap(daily_cap: int, category_family: str) -> int | None:
-    """Reserve finite Smart-mode slots so one family cannot consume the day.
+    """Reserve finite-cap slots so one family cannot consume the day.
 
     Fashion is intentionally tighter because apparel, shoes, and sneakers are
     high-volume markdown categories that were crowding out later deal families.
@@ -104,20 +104,21 @@ def diversity_applies(
     preference: DmDealAlertPreference,
     decision: DmDealMatchDecision,
 ) -> bool:
+    """Diversity reserves apply only to broad subscribers with a finite cap.
+
+    A subscriber who picked deal types or categories told us what they
+    want; only a subscriber with no picks at all gets the family-spread
+    reserve so one category family cannot consume their whole day.
+    """
+
     pref = preference.normalized()
     if pref.max_alerts_per_day == UNLIMITED_MAX_ALERTS_PER_DAY:
         return False
-    if pref.mode != "smart" or not decision.matched or decision.priority_override:
+    if not decision.matched:
         return False
-
     if split_dm_route_preferences(pref.categories):
         return False
-    selected_categories, favorite_categories = split_category_preferences(
-        pref.categories
-    )
-    if selected_categories:
-        return False
-    if decision.category_key in favorite_categories:
+    if split_category_preferences(pref.categories):
         return False
     return True
 
@@ -186,7 +187,7 @@ async def evaluate_dm_delivery_gate(
     preference: DmDealAlertPreference,
     decision: DmDealMatchDecision,
 ) -> DmDeliveryGateDecision:
-    """Apply the shared post-match daily-cap and broad-Smart diversity policy."""
+    """Apply the shared post-match daily-cap and broad-subscriber diversity policy."""
 
     pref = preference.normalized()
     family = category_family_for_key(decision.category_key)

@@ -37,7 +37,7 @@ from discord.ext import commands
 
 from sniperplug.cogs.active_deal_recheck import ActiveDealRecheckCog
 from sniperplug.cogs.auto_discovery import DISCOVERY_COVERAGE_CHOICES
-from sniperplug.cogs.dm_deal_alerts import ACTION_CHOICES, MODE_CHOICES
+from sniperplug.cogs.dm_deal_alerts import ACTION_CHOICES
 from sniperplug.services.deal_threshold_settings import (
     DEFAULT_STARTING_DEAL_PERCENT,
     set_starting_deal_percent,
@@ -533,48 +533,28 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
     @app_commands.command(name="my-alerts", description="Set your personal deal alerts in DMs.")
     @app_commands.describe(
         action="Open the menu, inspect, test, pause, or update your personal alerts.",
-        mode="Smart adapts quality rules to price; All and Custom use hard filters.",
         min_discount="Smallest discount you want, in percent.",
         max_price="Do not DM products above this current price, including price mistakes.",
-        min_score="Minimum deal score from 0 to 250.",
-        min_savings="Minimum dollar savings from the was price.",
-        categories="Optional hard allowlist. Leave empty to keep all categories eligible.",
-        favorite_categories="Prioritize interests without excluding other great deals: tech, gaming, PC, smart home.",
-        unfavorite_categories="Remove categories from your personal favorites.",
+        categories="Replace your picked categories: tech, gaming, PC, smart home.",
         product_interests="Add specific products: portable chargers, NeeDoh, Pokemon TCG, cologne, LEGO, and more.",
         remove_interests="Remove specific product interests from your personal DMs.",
         brands="Add brand filters such as Anker, Versace, Dior, YSL, Belkin, or LEGO.",
         remove_brands="Remove brands from your personal DM filter.",
-        keywords="Advanced comma list: at least one of these words must match.",
-        exclude="Comma list of words that always block a product, including price mistakes.",
-        mute_categories="Hide categories from normal DMs, such as baby, toys, pets, or beauty.",
-        unmute_categories="Restore personally muted categories, such as baby or toys.",
-        flip_alerts="Allow big price-mistake alerts even in muted categories.",
-        flip_min_profit="Smallest estimated profit for a price-mistake alert.",
+        flip_min_profit="Price mistakes: only DM me when the was-to-now spread is at least this many dollars.",
         daily_cap="Daily DM limit: 1-100, or type unlimited for no cap.",
     )
-    @app_commands.choices(action=ACTION_CHOICES, mode=MODE_CHOICES)
+    @app_commands.choices(action=ACTION_CHOICES)
     async def my_alerts(
         self,
         interaction: discord.Interaction,
         action: app_commands.Choice[str],
-        mode: app_commands.Choice[str] | None = None,
         min_discount: app_commands.Range[int, 0, 95] | None = None,
         max_price: app_commands.Range[float, 0.01, 100000.0] | None = None,
-        min_score: app_commands.Range[int, 0, 250] | None = None,
-        min_savings: app_commands.Range[float, 0.0, 100000.0] | None = None,
         categories: app_commands.Range[str, 1, 300] | None = None,
-        favorite_categories: app_commands.Range[str, 1, 300] | None = None,
-        unfavorite_categories: app_commands.Range[str, 1, 300] | None = None,
         product_interests: app_commands.Range[str, 1, 400] | None = None,
         remove_interests: app_commands.Range[str, 1, 400] | None = None,
         brands: app_commands.Range[str, 1, 400] | None = None,
         remove_brands: app_commands.Range[str, 1, 400] | None = None,
-        keywords: app_commands.Range[str, 1, 300] | None = None,
-        exclude: app_commands.Range[str, 1, 300] | None = None,
-        mute_categories: app_commands.Range[str, 1, 300] | None = None,
-        unmute_categories: app_commands.Range[str, 1, 300] | None = None,
-        flip_alerts: bool | None = None,
         flip_min_profit: app_commands.Range[float, 10.0, 100000.0] | None = None,
         daily_cap: app_commands.Range[str, 1, 12] | None = None,
     ) -> None:
@@ -582,23 +562,13 @@ class WalmartCommandCog(commands.GroupCog, group_name="walmart", group_descripti
             interaction,
             "my-alerts",
             action=action,
-            mode=mode,
             min_discount=min_discount,
             max_price=max_price,
-            min_score=min_score,
-            min_savings=min_savings,
             categories=categories,
-            favorite_categories=favorite_categories,
-            unfavorite_categories=unfavorite_categories,
             product_interests=product_interests,
             remove_interests=remove_interests,
             brands=brands,
             remove_brands=remove_brands,
-            keywords=keywords,
-            exclude=exclude,
-            mute_categories=mute_categories,
-            unmute_categories=unmute_categories,
-            flip_alerts=flip_alerts,
             flip_min_profit=flip_min_profit,
             daily_cap=daily_cap,
         )

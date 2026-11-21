@@ -37,6 +37,25 @@ def route_labels() -> tuple[tuple[str, str], ...]:
     return tuple((route, ROUTE_LABELS[route]) for route in PERSONAL_DEAL_ROUTES)
 
 
+# Plain names for the personal alerts screens. These are what a subscriber
+# actually picks from, so they describe the deal in everyday words instead
+# of reusing the staff-facing route labels above.
+PERSONAL_ROUTE_PLAIN_NAMES: dict[str, str] = {
+    PRICE_GLITCH_ROUTE: "Price mistakes",
+    HOT_DEALS_ROUTE: "Big markdowns",
+    COUPON_STACK_ROUTE: "Coupon stacks",
+    BUSINESS_ROUTE: "Business & bulk",
+    YMMV_ROUTE: "Might not work for everyone",
+    DEFAULT_ROUTE: "Everything else",
+}
+
+
+def personal_route_labels() -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (route, PERSONAL_ROUTE_PLAIN_NAMES[route]) for route in PERSONAL_DEAL_ROUTES
+    )
+
+
 def normalize_dm_routes(values: Iterable[str] | str | None) -> tuple[str, ...]:
     if values is None:
         return ()

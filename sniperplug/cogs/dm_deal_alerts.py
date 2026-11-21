@@ -14,11 +14,13 @@ from sniperplug.services.dm_deal_alerts import (
     delete_dm_deal_alert_preference,
     dm_alerts_sent_today,
     get_dm_deal_alert_preference,
-    normalize_terms,
     save_dm_deal_alert_preference,
 )
 from sniperplug.services.dm_delivery_policy import delete_dm_delivery_history
-from sniperplug.services.dm_deal_routes import route_labels, split_dm_route_preferences
+from sniperplug.services.dm_deal_routes import (
+    personal_route_labels,
+    split_dm_route_preferences,
+)
 from sniperplug.services.dm_delivery_telemetry import (
     UserDmDeliveryTelemetry,
     clear_user_dm_delivery_telemetry,
@@ -26,15 +28,12 @@ from sniperplug.services.dm_delivery_telemetry import (
 )
 from sniperplug.services.dm_personal_categories import (
     category_label,
-    compose_exclude_terms,
+    compose_category_preferences,
+    explicit_flip_min_profit_cents,
     flip_settings,
-    muted_category_preferences,
     normalize_personal_categories,
     split_category_preferences,
-    split_exclude_terms,
-    update_favorite_categories,
     update_flip_settings,
-    update_muted_categories,
 )
 from sniperplug.services.dm_product_interests import (
     brand_label,
@@ -54,12 +53,6 @@ ACTION_CHOICES = [
     app_commands.Choice(name="Send a test DM", value="test"),
     app_commands.Choice(name="Pause alerts", value="disable"),
     app_commands.Choice(name="Delete my alert data", value="delete"),
-]
-
-MODE_CHOICES = [
-    app_commands.Choice(name="Smart — quality and value adapt to price", value="smart"),
-    app_commands.Choice(name="All — use only my hard filters", value="all"),
-    app_commands.Choice(name="Custom — strict manual settings", value="custom"),
 ]
 
 _DAILY_CAP_UNLIMITED_TERMS = {
@@ -83,48 +76,28 @@ class DmDealAlertsCog(commands.Cog):
     )
     @app_commands.describe(
         action="Open the menu, inspect, test, pause, or update your personal alerts.",
-        mode="Smart adapts quality rules to price; All and Custom use hard filters.",
         min_discount="Smallest discount you want, in percent.",
         max_price="Do not DM products above this current price, including price mistakes.",
-        min_score="Minimum deal score from 0 to 250.",
-        min_savings="Minimum dollar savings from the was price.",
-        categories="Optional hard allowlist. Leave empty to keep all categories eligible.",
-        favorite_categories="Prioritize interests without excluding other great deals: tech, gaming, PC, smart home.",
-        unfavorite_categories="Remove categories from your personal favorites.",
+        categories="Replace your picked categories: tech, gaming, PC, smart home.",
         product_interests="Add specific products: portable chargers, NeeDoh, Pokemon TCG, cologne, LEGO, and more.",
         remove_interests="Remove specific product interests from your personal DMs.",
         brands="Add brand filters such as Anker, Versace, Dior, YSL, Belkin, or LEGO.",
         remove_brands="Remove brands from your personal DM filter.",
-        keywords="Advanced comma list: at least one of these words must match.",
-        exclude="Comma list of words that always block a product, including price mistakes.",
-        mute_categories="Hide categories from normal DMs, such as baby, toys, pets, or beauty.",
-        unmute_categories="Restore personally muted categories, such as baby or toys.",
-        flip_alerts="Allow big price-mistake alerts even in muted categories.",
-        flip_min_profit="Smallest estimated profit for a price-mistake alert.",
+        flip_min_profit="Price mistakes: only DM me when the was-to-now spread is at least this many dollars.",
         daily_cap="Daily DM limit: 1-100, or type unlimited for no cap.",
     )
-    @app_commands.choices(action=ACTION_CHOICES, mode=MODE_CHOICES)
+    @app_commands.choices(action=ACTION_CHOICES)
     async def dm_deals(
         self,
         interaction: discord.Interaction,
         action: app_commands.Choice[str],
-        mode: app_commands.Choice[str] | None = None,
         min_discount: app_commands.Range[int, 0, 95] | None = None,
         max_price: app_commands.Range[float, 0.01, 100000.0] | None = None,
-        min_score: app_commands.Range[int, 0, 250] | None = None,
-        min_savings: app_commands.Range[float, 0.0, 100000.0] | None = None,
         categories: app_commands.Range[str, 1, 300] | None = None,
-        favorite_categories: app_commands.Range[str, 1, 300] | None = None,
-        unfavorite_categories: app_commands.Range[str, 1, 300] | None = None,
         product_interests: app_commands.Range[str, 1, 400] | None = None,
         remove_interests: app_commands.Range[str, 1, 400] | None = None,
         brands: app_commands.Range[str, 1, 400] | None = None,
         remove_brands: app_commands.Range[str, 1, 400] | None = None,
-        keywords: app_commands.Range[str, 1, 300] | None = None,
-        exclude: app_commands.Range[str, 1, 300] | None = None,
-        mute_categories: app_commands.Range[str, 1, 300] | None = None,
-        unmute_categories: app_commands.Range[str, 1, 300] | None = None,
-        flip_alerts: bool | None = None,
         flip_min_profit: app_commands.Range[float, 10.0, 100000.0] | None = None,
         daily_cap: app_commands.Range[str, 1, 12] | None = None,
     ) -> None:
@@ -136,23 +109,13 @@ class DmDealAlertsCog(commands.Cog):
         # action was picked with filters typed, say so instead of dropping
         # them silently.
         _typed_options: dict[str, object | None] = {
-            "mode": mode,
             "min_discount": min_discount,
             "max_price": max_price,
-            "min_score": min_score,
-            "min_savings": min_savings,
             "categories": categories,
-            "favorite_categories": favorite_categories,
-            "unfavorite_categories": unfavorite_categories,
             "product_interests": product_interests,
             "remove_interests": remove_interests,
             "brands": brands,
             "remove_brands": remove_brands,
-            "keywords": keywords,
-            "exclude": exclude,
-            "mute_categories": mute_categories,
-            "unmute_categories": unmute_categories,
-            "flip_alerts": flip_alerts,
             "flip_min_profit": flip_min_profit,
             "daily_cap": daily_cap,
         }
@@ -292,43 +255,23 @@ class DmDealAlertsCog(commands.Cog):
             )
             return
 
-        keyword_excludes, legacy_muted = split_exclude_terms(
-            preference.exclude_keywords
-        )
-        stored_muted = muted_category_preferences(preference.categories)
-        updated_muted = list(dict.fromkeys((*legacy_muted, *stored_muted)))
-        updated_muted.extend(normalize_personal_categories(mute_categories))
-        remove_muted = set(normalize_personal_categories(unmute_categories))
-        updated_muted = [
-            category
-            for category in dict.fromkeys(updated_muted)
-            if category not in remove_muted
-        ]
-
-        updated_excludes = compose_exclude_terms(
-            normalize_terms(exclude)
-            if exclude is not None
-            else keyword_excludes
-        )
-        updated_categories = update_favorite_categories(
-            preference.categories,
-            add=favorite_categories,
-            remove=unfavorite_categories,
-            replacement_selected=categories,
-        )
-        updated_categories = update_muted_categories(
-            updated_categories,
-            replacement=updated_muted,
-        )
-        updated_categories = update_flip_settings(
-            updated_categories,
-            enabled=flip_alerts,
-            minimum_profit_cents=(
-                int(round(float(flip_min_profit) * 100))
-                if flip_min_profit is not None
-                else None
-            ),
-        )
+        updated_categories = preference.categories
+        if categories is not None:
+            current_flip_enabled, current_flip_profit = flip_settings(
+                updated_categories
+            )
+            updated_categories = compose_category_preferences(
+                normalize_personal_categories(categories),
+                flip_enabled=current_flip_enabled,
+                flip_min_profit_cents=current_flip_profit,
+                product_tokens=updated_categories,
+                routes=split_dm_route_preferences(updated_categories),
+            )
+        if flip_min_profit is not None:
+            updated_categories = update_flip_settings(
+                updated_categories,
+                minimum_profit_cents=int(round(float(flip_min_profit) * 100)),
+            )
         updated_categories = update_product_preferences(
             updated_categories,
             add_interests=add_interest_keys,
@@ -340,7 +283,6 @@ class DmDealAlertsCog(commands.Cog):
         updated = replace(
             preference,
             enabled=True,
-            mode=mode.value if mode is not None else preference.mode,
             min_discount=(
                 int(min_discount)
                 if min_discount is not None
@@ -351,21 +293,7 @@ class DmDealAlertsCog(commands.Cog):
                 if max_price is not None
                 else preference.max_price_cents
             ),
-            min_score=(
-                int(min_score) if min_score is not None else preference.min_score
-            ),
-            min_savings_cents=(
-                int(round(float(min_savings) * 100))
-                if min_savings is not None
-                else preference.min_savings_cents
-            ),
             categories=updated_categories,
-            keywords=(
-                normalize_terms(keywords)
-                if keywords is not None
-                else preference.keywords
-            ),
-            exclude_keywords=updated_excludes,
             max_alerts_per_day=(
                 parsed_daily_cap
                 if parsed_daily_cap is not None
@@ -442,123 +370,86 @@ def build_dm_settings_embed(
     title: str = "🔔 Personal deal DM settings",
 ) -> discord.Embed:
     normalized = preference.normalized()
-    keyword_excludes, legacy_muted = split_exclude_terms(
-        normalized.exclude_keywords
-    )
-    stored_muted = muted_category_preferences(normalized.categories)
-    muted_categories = tuple(dict.fromkeys((*legacy_muted, *stored_muted)))
-    selected_categories, favorite_categories = split_category_preferences(
-        normalized.categories
-    )
+    selected_routes = split_dm_route_preferences(normalized.categories)
+    route_names = dict(personal_route_labels())
     product_interests, product_brands = split_product_preferences(
         normalized.categories
     )
-    flip_enabled, flip_min_profit_cents = flip_settings(normalized.categories)
-    selected_routes = split_dm_route_preferences(normalized.categories)
-    route_names = dict(route_labels())
-    route_text = ", ".join(route_names[key] for key in selected_routes) if selected_routes else "all types"
-
-    muted_text = (
-        ", ".join(category_label(category) for category in muted_categories)
-        if muted_categories
-        else "none"
-    )
-    favorite_text = (
-        ", ".join(category_label(category) for category in favorite_categories)
-        if favorite_categories
-        else "none"
-    )
-    selected_text = (
-        ", ".join(category_label(category) for category in selected_categories)
-        if selected_categories
-        else "all categories"
-    )
-    interest_text = (
-        ", ".join(product_interest_label(key) for key in product_interests)
-        if product_interests
-        else "none — category rules stay broad"
-    )
-    brand_text = (
-        ", ".join(brand_label(slug) for slug in product_brands)
-        if product_brands
-        else "all brands"
-    )
-    keyword_text = ", ".join(keyword_excludes) if keyword_excludes else "none"
-
-    summary: list[str] = []
-    for line in normalized.summary_lines():
-        if line.startswith("Categories:"):
-            summary.append(f"Kinds of deals: **{route_text}**")
-            if selected_routes:
-                summary.append("Kinds of deals are on, so product/category picks are paused.")
-            summary.append(f"Allowed categories: **{selected_text}**")
-            summary.append(f"Favorite DM categories: **{favorite_text}**")
-            summary.append(f"Specific products: **{interest_text}**")
-            summary.append(f"Brand filter: **{brand_text}**")
-            summary.append(
-                "Price mistakes: "
-                f"**{'enabled' if flip_enabled else 'disabled'}**"
-            )
-            summary.append(
-                "Smallest price-mistake profit: "
-                f"**${flip_min_profit_cents / 100:,.2f}**"
-            )
-        elif line.startswith("Exclude:"):
-            summary.append(f"Exclude words: **{keyword_text}**")
-            summary.append(f"Muted DM categories: **{muted_text}**")
-        else:
-            summary.append(line)
+    selected_categories = split_category_preferences(normalized.categories)
+    flip_floor_cents = explicit_flip_min_profit_cents(normalized.categories)
 
     embed = discord.Embed(
         title=title,
-        description="\n".join(summary),
+        description=normalized.summary_sentence(),
         color=discord.Color.green() if normalized.enabled else discord.Color.orange(),
     )
+
+    picks: list[str] = []
+    if selected_routes:
+        picks.append(
+            "Kinds of deals: "
+            + ", ".join(route_names[route] for route in selected_routes)
+        )
+    if product_interests:
+        picks.append(
+            "Specific products: "
+            + ", ".join(
+                product_interest_label(key) for key in product_interests
+            )
+        )
+    if product_brands:
+        picks.append(
+            "Brands: "
+            + ", ".join(brand_label(slug) for slug in product_brands)
+        )
+    if selected_categories:
+        picks.append(
+            "Categories: "
+            + ", ".join(
+                category_label(category) for category in selected_categories
+            )
+        )
+    if picks:
+        embed.add_field(
+            name="🔔 What DMs you",
+            value="\n".join(picks)[:1024],
+            inline=False,
+        )
+
+    price_text = (
+        f"${normalized.max_price_cents / 100:,.2f}"
+        if normalized.max_price_cents is not None
+        else "no limit"
+    )
+    quality = (
+        f"**{normalized.min_discount}%+** off • max price **{price_text}** • "
+        f"daily limit **{daily_cap_label(normalized.max_alerts_per_day)}**"
+    )
+    if flip_floor_cents > 0 and "price_glitch" in selected_routes:
+        quality += (
+            f" • price mistakes worth "
+            f"**${flip_floor_cents / 100:,.2f}+**"
+        )
     embed.add_field(
-        name="🎯 Specific product filters",
-        value=(
-            "Without kinds of deals picked, specific products narrow broad categories. "
-            "Multiple product interests are **OR**; "
-            "multiple brands are **OR**. If you set both products and brands, a deal must match "
-            "**one selected product AND one selected brand**. Picked kinds of deals take priority "
-            "over these product/category filters; other hard limits stay enforced.\n"
-            "Run `/walmart my-alerts action:Show specific product catalog` for the supported product profiles."
-        ),
+        name="🎚️ How good, how many",
+        value=quality,
         inline=False,
     )
     embed.add_field(
         name="Open the complete menu",
         value=(
-            "Run `/walmart my-alerts action:Open personalization menu` for the paginated, searchable "
-            "kinds-of-deals picker, products, categories and saved personal controls."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Favorites and mutes are personal",
-        value=(
-            "Favorites get a small Smart-mode priority boost but do **not** hide other great deals. "
-            "Muted categories disappear from normal **personal** DMs only. Public alerts and every "
-            "other subscriber remain unchanged."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Price mistakes",
-        value=(
-            "When enabled, a big price mistake may DM you even if its category is muted. "
-            "The profit is always labeled **estimated**: it is worked out from recent sold "
-            "prices when those are connected, with selling costs taken off. Prices from "
-            "active eBay listings never count as sold proof."
+            "Run `/walmart my-alerts action:Open personalization menu` to pick "
+            "kinds of deals, products, brands and categories with buttons."
         ),
         inline=False,
     )
     embed.add_field(
         name="Built-in safety",
         value=(
-            "Only buyable deals whose current and was prices were both checked can DM you. "
-            "Your picks (kinds of deals, or products/categories), minimums, maximum price, "
-            "required/excluded words, and your saved daily limit all stay enforced."
+            "Only buyable deals whose current and was prices were both checked "
+            "can DM you. A deal DMs you when it matches anything you picked — "
+            "kinds of deals, products, brands, categories, or your wishlist — "
+            "and your discount, max price and daily limit always apply."
         ),
         inline=False,
     )
@@ -622,7 +513,7 @@ def build_product_interest_catalog_embed(
             inline=False,
         )
     embed.set_footer(
-        text="Product filters are hard. Brand filters narrow them further; price mistakes do not bypass them."
+        text="Product picks are one way to get a DM. Kinds of deals, categories and your wishlist are the others — a match on any of them counts."
     )
     return embed
 

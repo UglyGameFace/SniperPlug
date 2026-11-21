@@ -10,7 +10,8 @@ from sniperplug.services.dm_deal_alerts import (
     daily_cap_label,
     normalize_categories,
 )
-from sniperplug.services.dm_deal_matching import match_dm_deal
+from sniperplug.services.dm_deal_matching import DM_INTERNAL_MIN_SCORE, match_dm_deal
+from sniperplug.services.dm_personal_categories import split_category_preferences
 
 
 def _card(
@@ -39,13 +40,11 @@ def _card(
     )
 
 
-def test_smart_exact_value_deal_matches() -> None:
+def test_exact_value_deal_matches_with_no_picks() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        mode="smart",
         min_discount=35,
-        min_score=78,
     )
 
     decision = match_dm_deal(preference, _card())
@@ -65,37 +64,27 @@ def test_missing_exact_reference_fails_closed() -> None:
     assert "exact current/was price proof" in decision.reason
 
 
-def test_keyword_category_and_exclusion_filters_are_all_enforced() -> None:
+def test_selected_category_is_an_inclusion_layer() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        mode="custom",
         min_discount=30,
-        min_score=50,
         categories=("apple",),
-        keywords=("airpods",),
-        exclude_keywords=("refurbished",),
     )
 
     assert match_dm_deal(preference, _card()).matched is True
-    assert match_dm_deal(
-        preference,
-        _card(title="Refurbished Apple AirPods Pro 2nd Gen"),
-    ).matched is False
     assert match_dm_deal(
         preference,
         _card(title="Samsung Galaxy Buds Pro"),
     ).matched is False
 
 
-def test_walmart_cash_only_requires_strict_api_proof() -> None:
+def test_walmart_cash_category_matches_only_with_strict_api_proof() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        mode="all",
         min_discount=30,
-        min_score=50,
-        walmart_cash_only=True,
+        categories=("walmart_cash",),
     )
 
     without_proof = match_dm_deal(
@@ -117,13 +106,11 @@ def test_walmart_cash_only_requires_strict_api_proof() -> None:
     assert with_proof.walmart_cash_cents == 1000
 
 
-def test_smart_filter_rejects_cheap_low_savings_noise() -> None:
+def test_discount_floor_is_exactly_the_users_floor() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        mode="smart",
         min_discount=35,
-        min_score=78,
     )
 
     decision = match_dm_deal(
@@ -138,63 +125,38 @@ def test_smart_filter_rejects_cheap_low_savings_noise() -> None:
     )
 
     assert decision.matched is False
-    assert decision.required_discount == 50
+    assert decision.required_discount == 35
 
 
-def test_smart_mode_never_lowers_explicit_discount_or_score_floors() -> None:
+def test_internal_score_floor_is_a_constant_not_a_user_setting() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        mode="smart",
-        min_discount=70,
-        min_score=180,
+        min_discount=20,
     )
 
-    below_discount = match_dm_deal(
-        preference,
-        _card(discount=69.0, score=250),
-    )
     below_score = match_dm_deal(
         preference,
-        _card(discount=70.0, score=179),
+        _card(discount=80.0, score=DM_INTERNAL_MIN_SCORE - 1),
+    )
+    at_score = match_dm_deal(
+        preference,
+        _card(discount=80.0, score=DM_INTERNAL_MIN_SCORE),
     )
 
-    assert below_discount.matched is False
-    assert below_discount.required_discount == 70
     assert below_score.matched is False
-    assert "score 179 is below the required 180" in below_score.reason
+    assert (
+        f"score {DM_INTERNAL_MIN_SCORE - 1} is below the required "
+        f"{DM_INTERNAL_MIN_SCORE}"
+    ) in below_score.reason
+    assert at_score.matched is True
 
 
-def test_walmart_cash_cannot_soften_below_user_discount_floor() -> None:
+def test_savings_are_reported_but_never_a_floor() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        mode="smart",
-        min_discount=60,
-        min_score=78,
-    )
-    card = _card(
-        discount=59.0,
-        attrs={
-            "walmartCashApiProof": "yes",
-            "walmartCashAmount": 10,
-        },
-    )
-
-    decision = match_dm_deal(preference, card)
-
-    assert decision.matched is False
-    assert decision.required_discount == 60
-
-
-def test_high_markdown_cannot_bypass_explicit_savings_floor() -> None:
-    preference = DmDealAlertPreference(
-        user_id=1,
-        enabled=True,
-        mode="smart",
         min_discount=50,
-        min_score=78,
-        min_savings_cents=20000,
     )
 
     decision = match_dm_deal(
@@ -202,8 +164,72 @@ def test_high_markdown_cannot_bypass_explicit_savings_floor() -> None:
         _card(current=20.0, reference=100.0, discount=80.0, score=200),
     )
 
-    assert decision.matched is False
-    assert "below the required $200.00" in decision.reason
+    assert decision.matched is True
+    assert decision.savings_cents == 8000
+
+
+def test_favorites_fold_into_selected_categories_on_read() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        categories=("favorite:gpus", "favorite:smart_home", "apple"),
+    ).normalized()
+
+    assert "favorite:gpus" not in preference.categories
+    assert split_category_preferences(preference.categories) == (
+        "gpus",
+        "smart_home",
+        "apple",
+    )
+
+
+def test_muted_tokens_drop_silently_on_read() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        min_discount=30,
+        categories=("muted:baby_kids",),
+    )
+
+    # The mute is gone, so the preference has no picks at all and a baby
+    # deal is just an ordinary eligible deal again.
+    assert preference.normalized().categories == ()
+    decision = match_dm_deal(preference, _card(title="Gerber Baby Boys Pajama Set"))
+    assert decision.matched is True
+
+
+def test_summary_sentence_describes_the_plan_in_one_line() -> None:
+    preference = DmDealAlertPreference(
+        user_id=629459300854661120,
+        enabled=True,
+        min_discount=50,
+        max_alerts_per_day=UNLIMITED_MAX_ALERTS_PER_DAY,
+        categories=(
+            "dm_route:price_glitch",
+            "dm_route:hot_deals",
+            "interest:laptops",
+            "flip_profit:3000",
+            "gpus",
+        ),
+    )
+
+    sentence = preference.summary_sentence()
+
+    assert sentence == (
+        "You'll get DMs for price mistakes, big markdowns, specific "
+        "products you picked and 1 category you picked · 50% off or "
+        "better · price mistakes worth $30+ · no daily limit."
+    )
+
+
+def test_summary_sentence_for_broad_and_disabled_plans() -> None:
+    broad = DmDealAlertPreference(user_id=1, enabled=True, min_discount=35)
+    assert broad.summary_sentence() == (
+        "You'll get DMs for all deals · 35% off or better · up to 25 a day."
+    )
+
+    disabled = DmDealAlertPreference(user_id=1, enabled=False, min_discount=35)
+    assert disabled.summary_sentence().startswith("Deal DMs are off")
 
 
 def test_category_aliases_expand_without_duplicates() -> None:

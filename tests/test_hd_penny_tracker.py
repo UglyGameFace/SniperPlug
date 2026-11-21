@@ -379,6 +379,78 @@ def test_seed_from_hunt_candidates_filters_by_stage_or_depth() -> None:
     asyncio.run(run())
 
 
+def test_seed_round_dollar_price_needs_an_observed_markdown() -> None:
+    """Regression for the 2026-11-21 seed run: passing clearance_context=True
+    unconditionally tracked every .00 hunt price as a FIRST markdown — 82
+    items, mostly full-price round-dollar products. A .00 hunt price earns
+    tracking only when a higher was-price was actually observed."""
+
+    async def run() -> None:
+        db = await fresh_db()
+        result = await seed_from_hunt_candidates(
+            db,
+            [
+                # The real junk seeds of 2026-11-21: .00, no was-price.
+                _hunt_candidate(
+                    product_id="drill",
+                    product_url="https://www.homedepot.com/p/drill",
+                    current_price=399.00,
+                    typical_price=None,
+                ),
+                _hunt_candidate(
+                    product_id="kit",
+                    product_url="https://www.homedepot.com/p/kit",
+                    current_price=1298.00,
+                    typical_price=None,
+                ),
+                _hunt_candidate(
+                    product_id="kit2",
+                    product_url="https://www.homedepot.com/p/kit2",
+                    current_price=949.00,
+                    typical_price=None,
+                ),
+                # .00 with was == price is not an observed markdown either.
+                _hunt_candidate(
+                    product_id="flat",
+                    product_url="https://www.homedepot.com/p/flat",
+                    current_price=499.00,
+                    typical_price=499.00,
+                ),
+                # .00 WITH a real markdown still tracks as FIRST.
+                _hunt_candidate(
+                    product_id="marked",
+                    product_url="https://www.homedepot.com/p/marked",
+                    current_price=45.00,
+                    typical_price=90.00,
+                ),
+                # Ladder endings track on their own, reference or not.
+                _hunt_candidate(
+                    product_id="final",
+                    product_url="https://www.homedepot.com/p/final",
+                    current_price=25.03,
+                    typical_price=None,
+                ),
+                _hunt_candidate(
+                    product_id="mid",
+                    product_url="https://www.homedepot.com/p/mid",
+                    current_price=25.06,
+                    typical_price=None,
+                ),
+            ],
+            guild_id=42,
+            now=T0,
+        )
+        assert result.tracked_new == 3
+        assert result.skipped == 4
+        items = {item.product_id: item for item in await list_hd_penny_items(db)}
+        assert set(items) == {"marked", "final", "mid"}
+        assert items["marked"].stage == PennyStage.FIRST
+        assert items["final"].stage == PennyStage.FINAL
+        assert items["mid"].stage == PennyStage.MID
+
+    asyncio.run(run())
+
+
 def test_seed_from_clearance_seed_uses_url_or_sku() -> None:
     async def run() -> None:
         db = await fresh_db()

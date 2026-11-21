@@ -513,9 +513,21 @@ async def seed_from_hunt_candidates(
             getattr(candidate, "typical_price", None)
             or getattr(candidate, "api_reference_price", None)
         )
-        reading = decode_price_stage(price_cents, clearance_context=True)
+        # A hunt result is not known to be a clearance item just because it
+        # appeared in search. The decoder's contract gives the .00 ending a
+        # FIRST-stage reading only with clearance context, and for a fresh
+        # hunt candidate the only honest context is an observed markdown
+        # against a higher was-price. Passing True unconditionally tracked
+        # every round-dollar full price (a $399 drill, a $1,298 kit) as a
+        # first markdown on 2026-11-21.
+        has_observed_markdown = (
+            reference_cents is not None and reference_cents > price_cents
+        )
+        reading = decode_price_stage(
+            price_cents, clearance_context=has_observed_markdown
+        )
         discount_fraction = None
-        if reference_cents is not None and reference_cents > price_cents:
+        if has_observed_markdown:
             discount_fraction = (reference_cents - price_cents) / reference_cents
         stage_worthy = reading.stage in {
             PennyStage.FIRST,

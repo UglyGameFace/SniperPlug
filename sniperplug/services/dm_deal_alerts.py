@@ -6,18 +6,20 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
+from sniperplug.services.dm_deal_routes import (
+    personal_route_labels,
+    split_dm_route_preferences,
+)
+from sniperplug.services.dm_product_interests import split_product_preferences
 from sniperplug.services.opportunity_watchlist import category_for_title
 
 
 PREFERENCES_TABLE = "user_dm_deal_alert_preferences"
 RECEIPTS_TABLE = "user_dm_deal_alert_receipts"
-VALID_MODES = {"smart", "all", "custom"}
-DEFAULT_MODE = "smart"
 DEFAULT_MIN_DISCOUNT = 35
 DEFAULT_MIN_SCORE = 78
 DEFAULT_MAX_ALERTS_PER_DAY = 25
 UNLIMITED_MAX_ALERTS_PER_DAY = 0
-MAX_FILTER_TERMS = 12
 RECEIPT_RETENTION_DAYS = 90
 _SCHEMA_READY = False
 _SCHEMA_LOCK = asyncio.Lock()
@@ -52,38 +54,26 @@ CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
 class DmDealAlertPreference:
     user_id: int
     enabled: bool = False
-    mode: str = DEFAULT_MODE
     min_discount: int = DEFAULT_MIN_DISCOUNT
     max_price_cents: int | None = None
-    min_score: int = DEFAULT_MIN_SCORE
-    min_savings_cents: int = 0
     categories: tuple[str, ...] = ()
-    keywords: tuple[str, ...] = ()
-    exclude_keywords: tuple[str, ...] = ()
-    walmart_cash_only: bool = False
     max_alerts_per_day: int = DEFAULT_MAX_ALERTS_PER_DAY
     failure_count: int = 0
     last_error: str = ""
 
     def normalized(self) -> "DmDealAlertPreference":
-        mode = str(self.mode or DEFAULT_MODE).strip().lower()
-        if mode not in VALID_MODES:
-            mode = DEFAULT_MODE
         return replace(
             self,
             user_id=int(self.user_id),
-            mode=mode,
             min_discount=max(0, min(95, int(self.min_discount))),
             max_price_cents=(
                 max(1, int(self.max_price_cents))
                 if self.max_price_cents not in (None, 0)
                 else None
             ),
-            min_score=max(0, min(250, int(self.min_score))),
-            min_savings_cents=max(0, int(self.min_savings_cents)),
-            categories=normalize_categories(self.categories),
-            keywords=normalize_terms(self.keywords),
-            exclude_keywords=normalize_terms(self.exclude_keywords),
+            categories=normalize_categories(
+                _translate_legacy_category_tokens(self.categories)
+            ),
             max_alerts_per_day=_normalize_daily_cap(self.max_alerts_per_day),
             failure_count=max(0, int(self.failure_count)),
             last_error=_clean_text(self.last_error, limit=500),
@@ -97,21 +87,101 @@ class DmDealAlertPreference:
             else "no maximum"
         )
         categories = ", ".join(normalized.categories) if normalized.categories else "all categories"
-        keywords = ", ".join(normalized.keywords) if normalized.keywords else "none"
-        excluded = ", ".join(normalized.exclude_keywords) if normalized.exclude_keywords else "none"
         return (
             f"Enabled: **{'yes' if normalized.enabled else 'no'}**",
-            f"Mode: **{normalized.mode}**",
             f"Minimum discount: **{normalized.min_discount}%**",
-            f"Minimum deal score: **{normalized.min_score}/250**",
-            f"Minimum dollar savings: **${normalized.min_savings_cents / 100:,.2f}**",
             f"Maximum price: **{price}**",
             f"Categories: **{categories}**",
-            f"Must contain: **{keywords}**",
-            f"Exclude: **{excluded}**",
-            f"Walmart Cash only: **{'yes' if normalized.walmart_cash_only else 'no'}**",
             f"Daily limit: **{daily_cap_label(normalized.max_alerts_per_day)}**",
         )
+
+    def summary_sentence(self) -> str:
+        """One plain sentence describing exactly what will DM this user."""
+
+        normalized = self.normalized()
+        what = _summary_what(normalized)
+        segments = [what, _summary_quality(normalized)]
+        floor_cents = _explicit_flip_floor_cents(normalized.categories)
+        if floor_cents > 0 and "dm_route:price_glitch" in normalized.categories:
+            segments.append(f"price mistakes worth ${floor_cents / 100:,.0f}+")
+        segments.append(
+            "no daily limit"
+            if normalized.max_alerts_per_day == UNLIMITED_MAX_ALERTS_PER_DAY
+            else f"up to {normalized.max_alerts_per_day} a day"
+        )
+        body = " · ".join(segments)
+        if not normalized.enabled:
+            return f"Deal DMs are off — turn them on and you'll get DMs for {body}."
+        return f"You'll get DMs for {body}."
+
+
+def _translate_legacy_category_tokens(
+    values: Iterable[str] | str | None,
+) -> tuple[str, ...]:
+    """Fold retired category tokens into the single selected-categories list.
+
+    Favorites used to be a separate soft-priority list; on read they become
+    ordinary selected categories. Muted categories are gone entirely, so
+    their tokens drop silently instead of vetoing deals forever.
+    """
+
+    translated: list[str] = []
+    for value in _split_values(values):
+        if value.startswith("muted:"):
+            continue
+        if value.startswith("favorite:"):
+            value = value[len("favorite:") :].strip()
+            if not value:
+                continue
+        translated.append(value)
+    return tuple(translated)
+
+
+def _explicit_flip_floor_cents(categories: Iterable[str]) -> int:
+    """The stored price-mistake profit floor, or 0 when the user never set one."""
+
+    for token in categories:
+        if token.startswith("flip_profit:"):
+            try:
+                return max(0, int(token[len("flip_profit:") :].strip()))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _summary_what(normalized: "DmDealAlertPreference") -> str:
+    plain_names = dict(personal_route_labels())
+    parts: list[str] = []
+    for route in split_dm_route_preferences(normalized.categories):
+        parts.append(plain_names[route].lower())
+    interests, brands = split_product_preferences(normalized.categories)
+    if interests:
+        parts.append("specific products you picked")
+    if brands:
+        parts.append("brands you picked")
+    categories = [token for token in normalized.categories if ":" not in token]
+    if categories:
+        parts.append(
+            "1 category you picked"
+            if len(categories) == 1
+            else f"{len(categories)} categories you picked"
+        )
+    if not parts:
+        return "all deals"
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _summary_quality(normalized: "DmDealAlertPreference") -> str:
+    quality = (
+        "any discount"
+        if normalized.min_discount == 0
+        else f"{normalized.min_discount}% off or better"
+    )
+    if normalized.max_price_cents is not None:
+        quality += f", under ${normalized.max_price_cents / 100:,.0f}"
+    return quality
 
 
 @dataclass(frozen=True)
@@ -122,7 +192,6 @@ class DmDealMatchDecision:
     required_discount: int = 0
     savings_cents: int = 0
     walmart_cash_cents: int = 0
-    priority_override: bool = False
 
 
 async def ensure_dm_deal_alert_tables(db: Any) -> None:
@@ -187,10 +256,8 @@ async def get_dm_deal_alert_preference(db: Any, user_id: int) -> DmDealAlertPref
     conn = db.require_conn()
     cursor = await conn.execute(
         f"""
-        SELECT user_id, enabled, mode, min_discount, max_price_cents,
-               min_score, min_savings_cents, categories_json, keywords_json,
-               exclude_keywords_json, walmart_cash_only, max_alerts_per_day,
-               failure_count, last_error
+        SELECT user_id, enabled, min_discount, max_price_cents,
+               categories_json, max_alerts_per_day, failure_count, last_error
         FROM {PREFERENCES_TABLE}
         WHERE user_id = ?
         """,
@@ -207,10 +274,8 @@ async def list_enabled_dm_deal_alert_preferences(db: Any) -> list[DmDealAlertPre
     conn = db.require_conn()
     cursor = await conn.execute(
         f"""
-        SELECT user_id, enabled, mode, min_discount, max_price_cents,
-               min_score, min_savings_cents, categories_json, keywords_json,
-               exclude_keywords_json, walmart_cash_only, max_alerts_per_day,
-               failure_count, last_error
+        SELECT user_id, enabled, min_discount, max_price_cents,
+               categories_json, max_alerts_per_day, failure_count, last_error
         FROM {PREFERENCES_TABLE}
         WHERE enabled = 1
         ORDER BY updated_at ASC
@@ -253,15 +318,18 @@ async def save_dm_deal_alert_preference(db: Any, preference: DmDealAlertPreferen
         (
             str(normalized.user_id),
             int(normalized.enabled),
-            normalized.mode,
+            # Legacy columns kept for schema compatibility; the features
+            # behind them were removed, so they are written as inert defaults
+            # and never read back.
+            "custom",
             normalized.min_discount,
             normalized.max_price_cents,
-            normalized.min_score,
-            normalized.min_savings_cents,
+            DEFAULT_MIN_SCORE,
+            0,
             json.dumps(list(normalized.categories)),
-            json.dumps(list(normalized.keywords)),
-            json.dumps(list(normalized.exclude_keywords)),
-            int(normalized.walmart_cash_only),
+            "[]",
+            "[]",
+            0,
             normalized.max_alerts_per_day,
             normalized.failure_count,
             normalized.last_error,
@@ -364,123 +432,6 @@ async def clear_dm_delivery_failures(db: Any, *, user_id: int) -> None:
     await conn.commit()
 
 
-def match_dm_deal(preference: DmDealAlertPreference, card: Any) -> DmDealMatchDecision:
-    pref = preference.normalized()
-    if not pref.enabled:
-        return DmDealMatchDecision(False, "DM alerts are disabled")
-
-    title = card_title(card)
-    search_text = card_search_text(card)
-    category = category_for_title(title)
-    category_key = category.key if category is not None else "uncategorized"
-
-    current_cents = _money_to_cents(
-        getattr(card, "api_current_price", None)
-        or getattr(card, "current_price", None)
-    )
-    reference_cents = _money_to_cents(
-        getattr(card, "api_reference_price", None)
-        or getattr(card, "typical_price", None)
-    )
-    discount = _as_float(
-        getattr(card, "api_discount_percent", None)
-        or getattr(card, "discount", None)
-    )
-    score = _as_int(getattr(card, "score", 0))
-    savings_cents = max(0, (reference_cents or 0) - (current_cents or 0))
-    cash_cents = walmart_cash_cents(card)
-
-    if current_cents is None or reference_cents is None or discount is None:
-        return DmDealMatchDecision(False, "exact current/was price proof is incomplete", category_key)
-    if current_cents <= 0 or reference_cents <= current_cents:
-        return DmDealMatchDecision(False, "exact markdown is not positive", category_key)
-    if pref.max_price_cents is not None and current_cents > pref.max_price_cents:
-        return DmDealMatchDecision(False, "price is above your maximum", category_key)
-    if pref.walmart_cash_only and cash_cents <= 0:
-        return DmDealMatchDecision(False, "Walmart Cash proof is required", category_key)
-    if pref.categories and category_key not in pref.categories:
-        if not (cash_cents > 0 and "walmart_cash" in pref.categories):
-            return DmDealMatchDecision(False, "category is not selected", category_key)
-    if pref.keywords and not any(term in search_text for term in pref.keywords):
-        return DmDealMatchDecision(False, "none of your required keywords matched", category_key)
-    if pref.exclude_keywords and any(term in search_text for term in pref.exclude_keywords):
-        return DmDealMatchDecision(False, "an excluded keyword matched", category_key)
-
-    required_discount = pref.min_discount
-    required_score = pref.min_score
-    required_savings = pref.min_savings_cents
-
-    if pref.mode == "smart":
-        smart_discount, smart_savings = smart_requirements(current_cents)
-        required_discount = max(20, pref.min_discount, smart_discount)
-        required_score = max(70, pref.min_score)
-        required_savings = max(pref.min_savings_cents, smart_savings)
-        # Walmart Cash may soften Smart's additional adaptive requirement, but
-        # never below the user's explicit hard floor or the 20% safety floor.
-        if cash_cents > 0 and discount >= 20:
-            required_discount = max(
-                20,
-                pref.min_discount,
-                required_discount - 5,
-            )
-
-    if discount < required_discount:
-        return DmDealMatchDecision(
-            False,
-            f"{discount:.0f}% is below the required {required_discount}%",
-            category_key,
-            required_discount,
-            savings_cents,
-            cash_cents,
-        )
-    if score < required_score and discount < 70:
-        return DmDealMatchDecision(
-            False,
-            f"score {score} is below the required {required_score}",
-            category_key,
-            required_discount,
-            savings_cents,
-            cash_cents,
-        )
-    if savings_cents < required_savings and discount < 70:
-        return DmDealMatchDecision(
-            False,
-            "dollar savings are below your smart minimum",
-            category_key,
-            required_discount,
-            savings_cents,
-            cash_cents,
-        )
-
-    reason = (
-        f"{discount:.0f}% exact markdown • saves ${savings_cents / 100:,.2f} • "
-        f"score {score}/250 • category {category_key}"
-    )
-    if cash_cents > 0:
-        reason += f" • ${cash_cents / 100:,.2f} Walmart Cash"
-    return DmDealMatchDecision(
-        True,
-        reason,
-        category_key,
-        required_discount,
-        savings_cents,
-        cash_cents,
-    )
-
-
-def smart_requirements(current_cents: int) -> tuple[int, int]:
-    dollars = max(0.0, current_cents / 100)
-    if dollars <= 10:
-        return 50, 300
-    if dollars <= 50:
-        return 40, 800
-    if dollars <= 200:
-        return 35, 2000
-    if dollars <= 500:
-        return 30, 4000
-    return 25, 7500
-
-
 def normalize_categories(values: Iterable[str] | str | None) -> tuple[str, ...]:
     raw = _split_values(values)
     expanded: list[str] = []
@@ -492,10 +443,6 @@ def normalize_categories(values: Iterable[str] | str | None) -> tuple[str, ...]:
         else:
             expanded.append(key)
     return _dedupe(expanded)
-
-
-def normalize_terms(values: Iterable[str] | str | None) -> tuple[str, ...]:
-    return _dedupe(_split_values(values))[:MAX_FILTER_TERMS]
 
 
 def daily_cap_label(value: int) -> str:
@@ -560,20 +507,14 @@ def _preference_from_row(row: Any) -> DmDealAlertPreference:
     return DmDealAlertPreference(
         user_id=_as_int(_row_get(row, "user_id", 0)),
         enabled=bool(_as_int(_row_get(row, "enabled", 1))),
-        mode=str(_row_get(row, "mode", 2) or DEFAULT_MODE),
-        min_discount=_as_int(_row_get(row, "min_discount", 3)) or DEFAULT_MIN_DISCOUNT,
-        max_price_cents=_optional_int(_row_get(row, "max_price_cents", 4)),
-        min_score=_as_int(_row_get(row, "min_score", 5)) or DEFAULT_MIN_SCORE,
-        min_savings_cents=_as_int(_row_get(row, "min_savings_cents", 6)),
-        categories=_json_tuple(_row_get(row, "categories_json", 7)),
-        keywords=_json_tuple(_row_get(row, "keywords_json", 8)),
-        exclude_keywords=_json_tuple(_row_get(row, "exclude_keywords_json", 9)),
-        walmart_cash_only=bool(_as_int(_row_get(row, "walmart_cash_only", 10))),
+        min_discount=_as_int(_row_get(row, "min_discount", 2)) or DEFAULT_MIN_DISCOUNT,
+        max_price_cents=_optional_int(_row_get(row, "max_price_cents", 3)),
+        categories=_json_tuple(_row_get(row, "categories_json", 4)),
         max_alerts_per_day=_daily_cap_from_row(
-            _row_get(row, "max_alerts_per_day", 11)
+            _row_get(row, "max_alerts_per_day", 5)
         ),
-        failure_count=_as_int(_row_get(row, "failure_count", 12)),
-        last_error=str(_row_get(row, "last_error", 13) or ""),
+        failure_count=_as_int(_row_get(row, "failure_count", 6)),
+        last_error=str(_row_get(row, "last_error", 7) or ""),
     )
 
 

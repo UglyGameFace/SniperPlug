@@ -6,23 +6,16 @@ from sniperplug.services.dm_deal_alerts import (
     DmDealAlertPreference,
     DmDealMatchDecision,
     card_search_text,
-    smart_requirements,
     walmart_cash_cents,
 )
 from sniperplug.services.dm_deal_badges import personalize_dm_card_title
 from sniperplug.services.jewelry_quality import card_jewelry_rejection_reason
 from sniperplug.services.dm_deal_routes import split_dm_route_preferences, verified_card_route
-from sniperplug.services.routing import route_label
-from sniperplug.services.dm_flip_opportunities import (
-    FlipAssessment,
-    assess_flip_opportunity,
-)
+from sniperplug.services.routing import PRICE_GLITCH_ROUTE, route_label
 from sniperplug.services.dm_personal_categories import (
     category_key_for_card,
-    flip_settings,
-    muted_category_preferences,
+    explicit_flip_min_profit_cents,
     split_category_preferences,
-    split_exclude_terms,
 )
 from sniperplug.services.dm_product_interests import (
     ProductPreferenceMatch,
@@ -35,6 +28,13 @@ from sniperplug.services.user_wishlist import (
 )
 
 
+# Personal DMs keep one internal quality floor. It is not a user setting:
+# the subscriber-facing controls are the discount floor, the maximum price
+# and the daily cap. 78 is the value every stored preference effectively
+# used before the setting was retired.
+DM_INTERNAL_MIN_SCORE = 78
+
+
 def match_dm_deal(
     preference: DmDealAlertPreference,
     card: Any,
@@ -43,31 +43,38 @@ def match_dm_deal(
 ) -> DmDealMatchDecision:
     """Apply exact-proof personal filters without weakening hard user limits.
 
-    Specific Walmart product/brand choices are the most explicit user intent.
-    When at least one is configured, they become the inclusion layer for Walmart
-    and broad category allowlists/mutes do not silently veto the exact product the
-    user chose. Without specific product intent, existing category behavior stays
-    unchanged. Favorites may still affect Smart-mode priority.
+    Inclusion is a single union. A deal DMs when it matches ANY layer the
+    subscriber picked:
 
-    A matching wishlist item (a free-text product name, any retailer) is the
-    same kind of explicit intent: it satisfies the inclusion layer on its own,
-    so a muted or unselected category cannot veto the exact item the user
-    asked for. It never touches a hard guard — exact proof, discount/score/
-    savings floors, max price, keywords, dedupe and daily limits all still
-    apply. A wishlist item may also carry the user's own target price for
-    that exact item; that target is itself a hard guard — above it, the
-    deal is not DM'd at all, however it would otherwise have matched. A
-    wishlist item may likewise carry the user's size for that item; that
-    size is a hard guard of the same kind — the DM fires only when the
-    deal's proven variant size matches, and an unproven size never DMs.
+    * the deal's verified route is one of their selected deal types, or
+    * a Walmart product interest / brand matches (the product layer is
+      Walmart-only; HP/Target delivery retains its existing behavior and is
+      reached through routes, categories or the no-picks default), or
+    * the deal's category is one of their selected categories, or
+    * a wishlist item names this exact product.
 
-    Product interests are OR within their group, brands are OR within their group,
-    and when both groups are configured a Walmart deal must satisfy both groups.
-    HP/Target delivery retains its existing behavior.
+    A subscriber with no picks at all stays eligible for everything. Picks
+    never veto each other: selecting deal types no longer pauses product or
+    category picks.
 
-    Maximum price, Walmart-Cash-only, required/excluded keywords, exact proof,
-    minimum markdown/score/savings, dedupe and daily limits remain hard regardless
-    of category, product intent, wishlist intent or Flip Override.
+    Product interests are OR within their group, brands are OR within their
+    group, and when both groups are configured a Walmart deal must satisfy
+    both groups to count as a product-layer match.
+
+    Hard guards always apply, however a deal matched: exact current/was
+    price proof, a positive markdown, the maximum price, the discount
+    floor, the internal quality floor, and the wishlist target/size a user
+    set on an exact item. A wishlist target or size outranks every
+    inclusion layer.
+
+    When the subscriber set a price-mistake profit floor, a deal that
+    matches ONLY through the price-mistake route must also clear it: its
+    exact spread (was price minus current price) must reach the floor. A
+    deal that also matches another layer is not held to the floor.
+
+    An exact-price lead (no verified was-price) is only ever a DM for a
+    subscriber whose product or brand interest matches that exact card;
+    there is no markdown to rank it by otherwise.
     """
 
     pref = preference.normalized()
@@ -81,15 +88,9 @@ def match_dm_deal(
     category_key = category_key_for_card(card)
     retailer = str(getattr(card, "retailer", "") or "").strip().lower()
     is_walmart = retailer.startswith("walmart")
-    keyword_excludes, legacy_muted = split_exclude_terms(
-        pref.exclude_keywords
-    )
-    selected_categories, favorite_categories = split_category_preferences(
-        pref.categories
-    )
+    selected_categories = split_category_preferences(pref.categories)
     product_interests, product_brands = split_product_preferences(pref.categories)
     selected_routes = split_dm_route_preferences(pref.categories)
-    has_route_intent = bool(selected_routes)
     wishlist_entry = match_wishlist_entry(wishlist_items, search_text)
     wishlist_match = str(wishlist_entry) if wishlist_entry is not None else ""
     wishlist_target_cents = (
@@ -99,13 +100,7 @@ def match_dm_deal(
         wishlist_entry.size_text if wishlist_entry is not None else None
     )
     has_wishlist_match = bool(wishlist_match)
-    has_specific_walmart_intent = bool(
-        not has_route_intent and is_walmart and (product_interests or product_brands)
-    )
-    stored_muted = muted_category_preferences(pref.categories)
-    muted_categories = frozenset((*legacy_muted, *stored_muted))
-    flip_enabled, flip_min_profit_cents = flip_settings(pref.categories)
-    is_favorite = category_key in favorite_categories
+    flip_floor_cents = explicit_flip_min_profit_cents(pref.categories)
 
     current_cents = _money_to_cents(
         getattr(card, "api_current_price", None)
@@ -134,9 +129,9 @@ def match_dm_deal(
             # Exact-price lead with no verified was-price: the extreme lane
             # (<= $10 substantial hardware, or a list-price anomaly) or the
             # page-price lane already qualified the price itself, so there is
-            # no markdown to measure against the discount/score/savings
-            # floors below. The explicit product-interest requirement further
-            # down is what keeps this narrow: category-only subscribers never
+            # no markdown to measure against the discount/score floors
+            # below. The explicit product-interest requirement further down
+            # is what keeps this narrow: category-only subscribers never
             # get unproven-price DMs.
             no_reference_lead = True
             discount = 0.0
@@ -155,7 +150,7 @@ def match_dm_deal(
             category_key,
         )
 
-    # These remain hard even for product intent and Flip Override.
+    # These remain hard even when a deal matches an inclusion layer.
     if pref.max_price_cents is not None and current_cents > pref.max_price_cents:
         return DmDealMatchDecision(False, "price is above your maximum", category_key)
     if wishlist_target_cents is not None and current_cents > wishlist_target_cents:
@@ -186,135 +181,95 @@ def match_dm_deal(
                 ),
                 category_key,
             )
-    if pref.walmart_cash_only and cash_cents <= 0:
-        return DmDealMatchDecision(
-            False,
-            "Walmart Cash proof is required",
-            category_key,
-        )
-    if pref.keywords and not any(term in search_text for term in pref.keywords):
-        return DmDealMatchDecision(
-            False,
-            "none of your required keywords matched",
-            category_key,
-        )
-    if keyword_excludes and any(term in search_text for term in keyword_excludes):
-        return DmDealMatchDecision(
-            False,
-            "an excluded keyword matched",
-            category_key,
-        )
 
-    # A selected deal type is the subscriber's inclusion preference. Old
-    # product/category selections cannot silently block an explicit route.
-    # Still apply every hard price, discount, proof and keyword guard.
-    route = verified_card_route(card) if has_route_intent else None
-    if has_route_intent and route not in selected_routes:
-        return DmDealMatchDecision(
-            False,
-            "deal is not in your selected routes" if route else "verified route metadata unavailable",
-            category_key,
-        )
+    # Inclusion layers. Each is computed independently; any one of them is
+    # enough, and none of them can veto another.
+    route = verified_card_route(card)
+    route_match = route is not None and route in selected_routes
 
-    product_match = ProductPreferenceMatch(True)
-    if is_walmart and not has_route_intent:
+    product_match = ProductPreferenceMatch(False)
+    has_product_intent = bool(product_interests or product_brands)
+    if is_walmart and has_product_intent:
         product_match = match_product_preferences(
             search_text,
             interests=product_interests,
             brands=product_brands,
         )
-        # A wishlist hit is explicit intent too: it satisfies the product
-        # layer even when the curated product/brand picks do not match.
-        if not product_match.matched and not has_wishlist_match:
-            return DmDealMatchDecision(
-                False,
-                product_match.reason,
-                category_key,
-            )
+
+    category_match = category_key in selected_categories or (
+        cash_cents > 0 and "walmart_cash" in selected_categories
+    )
 
     # An exact-price lead is only ever a DM for a subscriber who named the
-    # exact product or brand. Without that explicit intent there is no
-    # markdown to rank it by, so category-only subscribers stay out.
-    if no_reference_lead and not has_specific_walmart_intent:
+    # exact product or brand and matched it. Without that explicit intent
+    # there is no markdown to rank it by, so route/category/wishlist-only
+    # subscribers stay out.
+    if no_reference_lead and not product_match.matched:
         return DmDealMatchDecision(
             False,
             "exact-price leads need an explicit product or brand interest",
             category_key,
         )
 
-    flip = FlipAssessment(False)
-    # Flip assessment needs a trusted reference and discount to weigh; a
-    # lead has neither, so it can never qualify as a flip override.
-    if flip_enabled and not no_reference_lead:
-        flip = assess_flip_opportunity(
-            card,
-            category_key=category_key,
-            current_cents=current_cents,
-            reference_cents=reference_cents,
-            discount=discount,
-            savings_cents=savings_cents,
-            score=score,
-            minimum_profit_cents=flip_min_profit_cents,
-        )
+    matched_layers: list[str] = []
+    if route_match:
+        matched_layers.append("route")
+    if product_match.matched:
+        matched_layers.append("product")
+    if category_match:
+        matched_layers.append("category")
+    if has_wishlist_match:
+        matched_layers.append("wishlist")
 
-    # Broad categories are a fallback inclusion layer. Once a Walmart subscriber
-    # explicitly chooses products/brands — or names an exact wishlist item —
-    # those exact choices win over a stale or overly broad category
-    # allowlist/mute. This prevents old category state from crossing into and
-    # silently blocking the newer specific-product UX.
+    # Product picks are a Walmart-only layer: they include Walmart deals
+    # and are simply silent for other retailers, never a veto there. So
+    # they only count as a "selection" when this card is a Walmart card.
+    has_any_selection = bool(
+        selected_routes
+        or selected_categories
+        or (is_walmart and has_product_intent)
+    )
+    if has_any_selection and not matched_layers:
+        if is_walmart and has_product_intent:
+            reason = product_match.reason
+        elif selected_routes and route is None:
+            reason = "verified route metadata unavailable"
+        elif selected_routes:
+            reason = "deal is not in your selected routes"
+        else:
+            reason = "category is not selected"
+        return DmDealMatchDecision(False, reason, category_key)
+
+    # The price-mistake profit floor only gates deals whose single way in
+    # was the price-mistake route. A lead has no verified spread to weigh,
+    # and it already needed an explicit product match above, so it is never
+    # gated here.
     if (
-        not has_specific_walmart_intent
-        and not has_wishlist_match
-        and not has_route_intent
-        and category_key in muted_categories
-        and not flip.qualified
+        flip_floor_cents > 0
+        and not no_reference_lead
+        and matched_layers == ["route"]
+        and route == PRICE_GLITCH_ROUTE
+        and savings_cents < flip_floor_cents
     ):
         return DmDealMatchDecision(
             False,
-            "category is muted in your personal DMs",
+            (
+                f"price mistake spread ${savings_cents / 100:,.2f} is below "
+                f"your ${flip_floor_cents / 100:,.2f} minimum"
+            ),
             category_key,
         )
-    if (
-        not has_specific_walmart_intent
-        and not has_wishlist_match
-        and not has_route_intent
-        and selected_categories
-        and category_key not in selected_categories
-    ):
-        cash_exception = cash_cents > 0 and "walmart_cash" in selected_categories
-        if not cash_exception and not flip.qualified:
-            return DmDealMatchDecision(
-                False,
-                "category is not selected",
-                category_key,
-            )
-
-    required_discount = pref.min_discount
-    required_score = pref.min_score
-    required_savings = pref.min_savings_cents
 
     if no_reference_lead:
-        # No verified markdown exists to measure: the lane already qualified
-        # the exact price, and the explicit product interest above is the
-        # filter. The cutoffs stay exactly as-is for markdown deals; this
-        # path never applies to them.
+        # No verified markdown exists to measure: the lane already
+        # qualified the exact price, and the explicit product interest
+        # above is the filter. The cutoffs stay exactly as-is for markdown
+        # deals; this path never applies to them.
         required_discount = 0
         required_score = 0
-        required_savings = 0
-    elif pref.mode == "smart" and not flip.qualified:
-        smart_discount, smart_savings = smart_requirements(current_cents)
-        adaptive_discount = max(20, smart_discount)
-        adaptive_savings = smart_savings
-
-        if is_favorite:
-            adaptive_discount = max(20, adaptive_discount - 5)
-            adaptive_savings = max(0, int(round(adaptive_savings * 0.80)))
-        elif cash_cents > 0 and discount >= 20:
-            adaptive_discount = max(20, adaptive_discount - 5)
-
-        required_discount = max(pref.min_discount, adaptive_discount)
-        required_score = max(pref.min_score, 70)
-        required_savings = max(pref.min_savings_cents, adaptive_savings)
+    else:
+        required_discount = pref.min_discount
+        required_score = DM_INTERNAL_MIN_SCORE
 
     if discount < required_discount:
         return DmDealMatchDecision(
@@ -334,18 +289,6 @@ def match_dm_deal(
             savings_cents,
             cash_cents,
         )
-    if savings_cents < required_savings:
-        return DmDealMatchDecision(
-            False,
-            (
-                f"saves ${savings_cents / 100:,.2f}, below the required "
-                f"${required_savings / 100:,.2f}"
-            ),
-            category_key,
-            required_discount,
-            savings_cents,
-            cash_cents,
-        )
 
     if no_reference_lead:
         reason = (
@@ -353,25 +296,21 @@ def match_dm_deal(
             "no verified was-price, no discount claimed • "
             f"category {category_key}"
         )
-    elif flip.qualified:
-        reason = f"{flip.reason} • category {category_key}"
     else:
         reason = (
             f"{discount:.0f}% exact markdown • saves ${savings_cents / 100:,.2f} • "
             f"score {score}/250 • category {category_key}"
         )
-        if is_favorite:
-            reason += " • favorite-category priority"
         if cash_cents > 0:
             reason += f" • ${cash_cents / 100:,.2f} Walmart Cash"
 
-    if has_route_intent and route:
+    if route_match and route:
         reason += f" • route {route_label(route)}"
     if is_walmart and product_match.reason:
         reason += f" • {product_match.reason}"
-    if has_specific_walmart_intent:
+    if product_match.matched:
         reason += " • explicit product intent"
-    if has_wishlist_match and not has_route_intent:
+    if has_wishlist_match:
         if wishlist_target_cents is not None:
             reason += (
                 f" • wishlist: {wishlist_match} • "
@@ -393,7 +332,6 @@ def match_dm_deal(
         required_discount,
         savings_cents,
         cash_cents,
-        priority_override=flip.qualified,
     )
 
 

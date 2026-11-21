@@ -87,17 +87,13 @@ def _preference(
     *,
     user_id: int = 42,
     enabled: bool = True,
-    mode: str = "custom",
     min_discount: int = 20,
-    min_score: int = 50,
     categories: tuple[str, ...] = (),
 ) -> DmDealAlertPreference:
     return DmDealAlertPreference(
         user_id=user_id,
         enabled=enabled,
-        mode=mode,
         min_discount=min_discount,
-        min_score=min_score,
         categories=categories,
     )
 
@@ -213,8 +209,10 @@ def test_match_wishlist_items_needs_the_whole_phrase() -> None:
 # -- matching: wishlist intent inside match_dm_deal ---------------------
 
 
-def test_wishlist_match_bypasses_a_muted_category() -> None:
-    preference = _preference(categories=("muted:apple",))
+def test_wishlist_match_is_its_own_inclusion_layer() -> None:
+    # The only pick is a deal type this card does not have, so without a
+    # wishlist hit nothing matches; the wishlist layer matches on its own.
+    preference = _preference(categories=("dm_route:coupon_stack",))
     card = _card()
 
     assert match_dm_deal(preference, card).matched is False
@@ -242,7 +240,7 @@ def test_wishlist_match_bypasses_a_mismatched_product_interest() -> None:
 
 
 def test_wishlist_match_works_for_a_non_walmart_retailer() -> None:
-    preference = _preference(categories=("muted:apple",))
+    preference = _preference(categories=("dm_route:coupon_stack",))
     card = _card(retailer="target")
     assert match_dm_deal(preference, card).matched is False
     assert match_dm_deal(
@@ -278,16 +276,16 @@ def test_non_matching_wishlist_changes_nothing() -> None:
     assert match_dm_deal(
         preference, _card(), wishlist_items=("rtx 5070",)
     ).matched is True
-    # A muted category still blocks a card no wishlist item matches — and a
-    # matching wishlist item is the only thing that lifts that veto.
-    muted = _preference(categories=("muted:brand_direct_electronics",))
+    # An unselected category still blocks a card no wishlist item matches —
+    # and a matching wishlist item is the only thing that lets it through.
+    other = _preference(categories=("toys_collectibles",))
     buds = _card(title="Samsung Galaxy Buds Pro")
-    assert match_dm_deal(muted, buds).matched is False
+    assert match_dm_deal(other, buds).matched is False
     assert match_dm_deal(
-        muted, buds, wishlist_items=("iphone 11",)
+        other, buds, wishlist_items=("iphone 11",)
     ).matched is False
     assert match_dm_deal(
-        muted, buds, wishlist_items=("galaxy buds",)
+        other, buds, wishlist_items=("galaxy buds",)
     ).matched is True
 
 

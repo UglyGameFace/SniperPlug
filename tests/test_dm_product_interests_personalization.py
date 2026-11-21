@@ -8,10 +8,9 @@ from sniperplug.services.dm_deal_alerts import DmDealAlertPreference
 from sniperplug.services.dm_deal_badges import personalize_dm_card_title
 from sniperplug.services.dm_deal_matching import match_dm_deal
 from sniperplug.services.dm_personal_categories import (
+    compose_category_preferences,
     split_category_preferences,
-    update_favorite_categories,
     update_flip_settings,
-    update_muted_categories,
 )
 from sniperplug.services.dm_product_interests import (
     match_product_preferences,
@@ -61,10 +60,7 @@ def _preference(*, categories: tuple[str, ...]) -> DmDealAlertPreference:
     return DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        mode="all",
         min_discount=20,
-        min_score=0,
-        min_savings_cents=0,
         categories=categories,
     )
 
@@ -87,12 +83,13 @@ def test_interest_aliases_and_tokens_round_trip_without_becoming_categories() ->
         replace_brands=("Anker", "Versace", "YSL"),
     )
     saved_interests, saved_brands = split_product_preferences(stored)
-    selected, favorites = split_category_preferences(stored)
+    selected = split_category_preferences(stored)
 
     assert saved_interests == interests
     assert saved_brands == ("anker", "versace", "ysl")
-    assert selected == ()
-    assert favorites == ("mobile_accessories",)
+    # Interest/brand tokens never become categories; the legacy favorite
+    # token folds into the selection and the muted token is ignored.
+    assert selected == ("mobile_accessories",)
 
 
 def test_obvious_human_product_names_resolve_without_secret_catalog_keys() -> None:
@@ -115,15 +112,18 @@ def test_existing_category_editors_preserve_product_and_brand_tokens() -> None:
         replace_interests=("pokemon_tcg_sealed",),
         replace_brands=("Pokemon",),
     )
-    stored = update_favorite_categories(stored, add="toys")
-    stored = update_muted_categories(stored, add="baby")
     stored = update_flip_settings(stored, enabled=True, minimum_profit_cents=5000)
+    stored = compose_category_preferences(
+        ("gpus",),
+        flip_enabled=True,
+        flip_min_profit_cents=5000,
+        product_tokens=stored,
+    )
 
     interests, brands = split_product_preferences(stored)
     assert interests == ("pokemon_tcg_sealed",)
     assert brands == ("pokemon",)
-    assert "favorite:toys_collectibles" in stored
-    assert "muted:baby_kids" in stored
+    assert split_category_preferences(stored) == ("gpus",)
     assert "flip:enabled" in stored
 
 

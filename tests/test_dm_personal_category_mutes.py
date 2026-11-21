@@ -8,6 +8,7 @@ from sniperplug.cogs.dm_deal_alerts import build_dm_settings_embed
 from sniperplug.cogs.dm_deal_preferences_view import (
     SCREEN_CATEGORIES,
     DmDealPreferencesView,
+    _CategoryPageSelect,
 )
 from sniperplug.services.dm_deal_alerts import DmDealAlertPreference
 from sniperplug.services.dm_deal_matching import match_dm_deal
@@ -15,14 +16,9 @@ from sniperplug.services.dm_personal_categories import (
     all_personal_categories,
     category_key_for_card,
     compose_category_preferences,
-    muted_category_preferences,
     personal_category_pages,
     search_personal_categories,
     split_category_preferences,
-    split_exclude_terms,
-    update_category_mutes,
-    update_favorite_categories,
-    update_muted_categories,
 )
 from sniperplug.services.opportunity_watchlist import OPPORTUNITY_CATEGORIES
 
@@ -64,64 +60,79 @@ def test_baby_word_does_not_blindly_hide_unrelated_collectibles() -> None:
     assert category_key_for_card(card) == "toys_collectibles"
 
 
-def test_personal_baby_mute_blocks_only_that_preference() -> None:
+def test_muted_tokens_no_longer_block_anything() -> None:
     card = _card("Gerber Baby Boys Pajama Set")
-    muted = DmDealAlertPreference(
+    preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
-        mode="all",
         min_discount=30,
-        min_score=50,
         categories=("muted:baby_kids",),
     )
-    unmuted = DmDealAlertPreference(
+
+    decision = match_dm_deal(preference, card)
+
+    assert decision.matched is True
+    assert decision.category_key == "baby_kids"
+    assert split_category_preferences(preference.normalized().categories) == ()
+
+
+def test_favorite_tokens_become_plain_selected_categories() -> None:
+    preference = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        min_discount=30,
+        categories=("favorite:gpus",),
+    )
+
+    assert split_category_preferences(preference.normalized().categories) == ("gpus",)
+
+    gpu_decision = match_dm_deal(preference, _card("NVIDIA RTX 5070 GPU"))
+    other_decision = match_dm_deal(preference, _card("Apple AirPods Pro 2nd Gen"))
+
+    assert gpu_decision.matched is True
+    assert other_decision.matched is False
+
+
+def test_favorites_no_longer_change_the_discount_floor() -> None:
+    card = _card(
+        "NVIDIA RTX 5070 GPU",
+        current=100.0,
+        reference=145.0,
+        discount=31.0,
+        score=120,
+    )
+    plain = DmDealAlertPreference(
+        user_id=1,
+        enabled=True,
+        min_discount=20,
+    )
+    favorite = DmDealAlertPreference(
         user_id=2,
         enabled=True,
-        mode="all",
-        min_discount=30,
-        min_score=50,
+        min_discount=20,
+        categories=("favorite:gpus",),
     )
 
-    muted_decision = match_dm_deal(muted, card)
-    unmuted_decision = match_dm_deal(unmuted, card)
+    plain_decision = match_dm_deal(plain, card)
+    favorite_decision = match_dm_deal(favorite, card)
 
-    assert muted_decision.matched is False
-    assert muted_decision.reason == "category is muted in your personal DMs"
-    assert muted_decision.category_key == "baby_kids"
-    assert unmuted_decision.matched is True
-
-
-def test_legacy_mute_tokens_remain_readable() -> None:
-    muted = update_category_mutes(
-        ("refurbished", "clearance"),
-        add="baby",
-    )
-    keywords, categories = split_exclude_terms(muted)
-    assert keywords == ("refurbished", "clearance")
-    assert categories == ("baby_kids",)
+    assert plain_decision.matched is True
+    assert favorite_decision.matched is True
+    assert plain_decision.required_discount == 20
+    assert favorite_decision.required_discount == 20
+    assert "favorite" not in favorite_decision.reason
 
 
-def test_new_category_mutes_preserve_favorites_allowlist_and_flip_tokens() -> None:
-    original = compose_category_preferences(
+def test_compose_and_split_round_trip_selected_categories() -> None:
+    stored = compose_category_preferences(
         ("apple",),
-        ("gpus",),
-        muted=("baby_kids",),
         flip_enabled=True,
         flip_min_profit_cents=7_500,
     )
-    updated = update_muted_categories(
-        original,
-        add="pets, toys",
-        remove="baby",
-    )
-    selected, favorites = split_category_preferences(updated)
-    muted = muted_category_preferences(updated)
 
-    assert selected == ("apple",)
-    assert favorites == ("gpus",)
-    assert muted == ("pet_supplies", "toys_collectibles")
-    assert "flip:enabled" in updated
-    assert "flip_profit:7500" in updated
+    assert split_category_preferences(stored) == ("apple",)
+    assert "flip:enabled" in stored
+    assert "flip_profit:7500" in stored
 
 
 def test_complete_catalog_is_paginated_not_truncated() -> None:
@@ -136,22 +147,6 @@ def test_complete_catalog_is_paginated_not_truncated() -> None:
     assert all(1 <= len(page) <= 25 for page in pages)
 
 
-def test_menu_persists_every_category_without_keyword_cap() -> None:
-    all_keys = tuple(category.key for category in OPPORTUNITY_CATEGORIES)
-    stored = compose_category_preferences(
-        (),
-        (),
-        muted=all_keys,
-    )
-    normalized = DmDealAlertPreference(
-        user_id=1,
-        categories=stored,
-    ).normalized()
-
-    assert muted_category_preferences(normalized.categories) == all_keys
-    assert len(all_keys) > 12
-
-
 def test_menu_builds_category_screen_from_the_live_catalog() -> None:
     view = DmDealPreferencesView(
         bot=SimpleNamespace(db=None),
@@ -162,9 +157,11 @@ def test_menu_builds_category_screen_from_the_live_catalog() -> None:
     assert sum(len(page) for page in view._pages()) == len(OPPORTUNITY_CATEGORIES)
     view.screen = SCREEN_CATEGORIES
     view._rebuild_items()
-    category_select = view.children[1]
-    assert isinstance(category_select, discord.ui.Select)
-    assert len(category_select.options) <= 25
+    selects = [
+        item for item in view.children if isinstance(item, _CategoryPageSelect)
+    ]
+    assert len(selects) == 1
+    assert len(selects[0].options) <= 25
 
 
 def test_category_search_covers_labels_terms_and_drivers_without_mutation() -> None:
@@ -179,102 +176,7 @@ def test_category_search_covers_labels_terms_and_drivers_without_mutation() -> N
     assert all_personal_categories() == full_before
 
 
-def test_favorite_categories_do_not_become_a_hard_allowlist() -> None:
-    preference = DmDealAlertPreference(
-        user_id=1,
-        enabled=True,
-        mode="all",
-        min_discount=30,
-        min_score=50,
-        categories=("favorite:gpus",),
-    )
-
-    decision = match_dm_deal(
-        preference,
-        _card("Apple AirPods Pro 2nd Gen"),
-    )
-
-    assert decision.matched is True
-    assert decision.category_key == "apple"
-
-
-def test_favorite_tech_gets_small_smart_priority_without_weakening_proof() -> None:
-    card = _card(
-        "NVIDIA RTX 5070 GPU",
-        current=100.0,
-        reference=145.0,
-        discount=31.0,
-        score=120,
-    )
-    normal = DmDealAlertPreference(
-        user_id=1,
-        enabled=True,
-        mode="smart",
-        min_discount=20,
-        min_score=70,
-    )
-    favorite = DmDealAlertPreference(
-        user_id=2,
-        enabled=True,
-        mode="smart",
-        min_discount=20,
-        min_score=70,
-        categories=("favorite:gpus",),
-    )
-
-    normal_decision = match_dm_deal(normal, card)
-    favorite_decision = match_dm_deal(favorite, card)
-
-    assert normal_decision.matched is False
-    assert normal_decision.required_discount == 35
-    assert favorite_decision.matched is True
-    assert favorite_decision.required_discount == 30
-    assert "favorite-category priority" in favorite_decision.reason
-
-
-def test_favorite_never_lowers_explicit_user_floor() -> None:
-    preference = DmDealAlertPreference(
-        user_id=1,
-        enabled=True,
-        mode="smart",
-        min_discount=40,
-        min_score=70,
-        categories=("favorite:gpus",),
-    )
-    decision = match_dm_deal(
-        preference,
-        _card(
-            "NVIDIA RTX 5070 GPU",
-            current=100.0,
-            reference=145.0,
-            discount=31.0,
-        ),
-    )
-
-    assert decision.matched is False
-    assert decision.required_discount == 40
-
-
-def test_favorite_updates_preserve_optional_hard_allowlist() -> None:
-    updated = update_favorite_categories(
-        ("apple",),
-        add="pc, gaming",
-    )
-    selected, favorites = split_category_preferences(updated)
-
-    assert selected == ("apple",)
-    assert "gpus" in favorites
-    assert "cpus" in favorites
-    assert "brand_direct_electronics" in favorites
-
-    restored = update_favorite_categories(updated, remove="pc")
-    selected, favorites = split_category_preferences(restored)
-    assert selected == ("apple",)
-    assert "gpus" not in favorites
-    assert "brand_direct_electronics" in favorites
-
-
-def test_settings_show_human_labels_not_storage_tokens() -> None:
+def test_settings_embed_shows_human_labels_not_storage_tokens() -> None:
     preference = DmDealAlertPreference(
         user_id=1,
         enabled=True,
@@ -283,14 +185,15 @@ def test_settings_show_human_labels_not_storage_tokens() -> None:
             "favorite:smart_home",
             "muted:baby_kids",
         ),
-        exclude_keywords=("refurbished",),
     )
     embed = build_dm_settings_embed(preference)
     description = embed.description or ""
+    field_text = "\n".join(field.value for field in embed.fields)
 
-    assert "Allowed categories: **all categories**" in description
-    assert "Favorite DM categories: **Graphics Cards, Smart Home / Security**" in description
-    assert "Muted DM categories: **Baby / Kids**" in description
-    assert "Exclude words: **refurbished**" in description
     assert "muted:baby_kids" not in description
     assert "favorite:gpus" not in description
+    assert "muted:baby_kids" not in field_text
+    assert "favorite:gpus" not in field_text
+    # The favorites folded into ordinary category picks with human labels.
+    assert "Graphics Cards" in field_text
+    assert "Smart Home / Security" in field_text

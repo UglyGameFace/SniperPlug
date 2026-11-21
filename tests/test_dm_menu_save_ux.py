@@ -58,7 +58,7 @@ def test_save_keeps_menu_open_and_interactive(monkeypatch) -> None:
         user_id=1,
         preference=DmDealAlertPreference(user_id=1),
     )
-    view.favorite_categories.add("gpus")
+    view.selected_categories.add("gpus")
     view.dirty = True
     view._rebuild_items()
 

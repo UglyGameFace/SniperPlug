@@ -27,14 +27,12 @@ class _FakeDatabase:
 
 def _preference(
     *,
-    mode: str = "smart",
     cap: int = 25,
     categories: tuple[str, ...] = (),
 ) -> DmDealAlertPreference:
     return DmDealAlertPreference(
         user_id=42,
         enabled=True,
-        mode=mode,
         max_alerts_per_day=cap,
         categories=categories,
     )
@@ -42,14 +40,11 @@ def _preference(
 
 def _decision(
     category: str,
-    *,
-    priority_override: bool = False,
 ) -> DmDealMatchDecision:
     return DmDealMatchDecision(
         True,
         "test match",
         category_key=category,
-        priority_override=priority_override,
     )
 
 
@@ -75,27 +70,24 @@ def test_unlimited_has_no_family_limit() -> None:
     )
 
 
-def test_diversity_only_applies_to_broad_smart_nonpriority_alerts() -> None:
+def test_diversity_only_applies_to_broad_finite_cap_subscribers() -> None:
     fashion = _decision("premium_apparel")
     assert policy.diversity_applies(_preference(), fashion) is True
 
+    # Legacy favorite tokens read back as ordinary category picks, and any
+    # subscriber with picks is no longer "broad".
     favorite = _preference(categories=("favorite:premium_apparel",))
     assert policy.diversity_applies(favorite, fashion) is False
 
     allowlist = _preference(categories=("premium_apparel", "apple"))
     assert policy.diversity_applies(allowlist, fashion) is False
 
-    assert policy.diversity_applies(
-        _preference(mode="all"),
-        fashion,
-    ) is False
+    routed = _preference(categories=("dm_route:hot_deals",))
+    assert policy.diversity_applies(routed, fashion) is False
+
     assert policy.diversity_applies(
         _preference(cap=UNLIMITED_MAX_ALERTS_PER_DAY),
         fashion,
-    ) is False
-    assert policy.diversity_applies(
-        _preference(),
-        _decision("premium_apparel", priority_override=True),
     ) is False
 
 
@@ -175,7 +167,7 @@ async def test_favorite_fashion_category_bypasses_automatic_diversity(monkeypatc
         return 7
 
     async def fail_family(*args, **kwargs):
-        raise AssertionError("favorite category should bypass automatic diversity")
+        raise AssertionError("a subscriber with category picks should bypass automatic diversity")
 
     monkeypatch.setattr(policy, "dm_alerts_sent_today", total)
     monkeypatch.setattr(policy, "dm_family_alerts_sent_today", fail_family)

@@ -70,30 +70,23 @@ def test_walmart_group_has_all_20_subcommands() -> None:
     assert len(names) == 20
 
 
-def test_my_alerts_keeps_all_20_options() -> None:
+def test_my_alerts_keeps_the_simple_option_set() -> None:
     cog = WalmartCommandCog(bot=None)
     my_alerts = next(
         command for command in cog.app_command.commands if command.name == "my-alerts"
     )
+    # The 2026-11-20 simplification removed mode, score/savings floors,
+    # favorites, mutes, keywords and the separate flip toggle; the menu is
+    # the primary surface and these typed options are the backup.
     assert [param.name for param in my_alerts.parameters] == [
         "action",
-        "mode",
         "min_discount",
         "max_price",
-        "min_score",
-        "min_savings",
         "categories",
-        "favorite_categories",
-        "unfavorite_categories",
         "product_interests",
         "remove_interests",
         "brands",
         "remove_brands",
-        "keywords",
-        "exclude",
-        "mute_categories",
-        "unmute_categories",
-        "flip_alerts",
         "flip_min_profit",
         "daily_cap",
     ]

@@ -1,147 +1,164 @@
 from __future__ import annotations
 
-import inspect
+import asyncio
+from types import SimpleNamespace
 
-import pytest
+import discord
 
+import sniperplug.cogs.dm_deal_preferences_view as menu_module
 from sniperplug.cogs.dm_deal_preferences_view import (
+    SCREEN_COUNT,
+    SCREEN_HOME,
+    SCREEN_QUALITY,
+    SCREEN_WHAT,
     DmDealPreferencesView,
-    _DmDealRulesModal,
-    parse_dm_rule_values,
 )
-from sniperplug.services.dm_deal_alerts import UNLIMITED_MAX_ALERTS_PER_DAY
-
-
-def test_dm_rule_parser_accepts_full_personal_rule_update() -> None:
-    rules = parse_dm_rule_values(
-        threshold_text="35",
-        savings_text="$20.50",
-        score_text="78",
-        max_price_text="499.99",
-        daily_cap_text="25",
-    )
-
-    assert rules.min_discount == 35
-    assert rules.min_savings_cents == 2050
-    assert rules.min_score == 78
-    assert rules.max_price_cents == 49_999
-    assert rules.clear_max_price is False
-    assert rules.daily_cap == 25
-    assert rules.has_updates is True
-
-
-def test_dm_rule_parser_accepts_explicit_unlimited_daily_limit() -> None:
-    for value in ("unlimited", "0", "off", "no limit"):
-        rules = parse_dm_rule_values(
-            threshold_text="",
-            savings_text="",
-            score_text="",
-            max_price_text="",
-            daily_cap_text=value,
-        )
-        assert rules.daily_cap == UNLIMITED_MAX_ALERTS_PER_DAY
-        assert rules.has_updates is True
-
-
-def test_dm_rule_parser_blank_fields_mean_keep_everything() -> None:
-    rules = parse_dm_rule_values(
-        threshold_text="",
-        savings_text="",
-        score_text="",
-        max_price_text="",
-        daily_cap_text="",
-    )
-    assert rules.min_discount is None
-    assert rules.min_savings_cents is None
-    assert rules.min_score is None
-    assert rules.max_price_cents is None
-    assert rules.clear_max_price is False
-    assert rules.daily_cap is None
-    assert rules.has_updates is False
-
-
-def test_dm_rule_parser_can_change_only_threshold() -> None:
-    rules = parse_dm_rule_values(
-        threshold_text="50",
-        savings_text="",
-        score_text="",
-        max_price_text="",
-        daily_cap_text="",
-    )
-    assert rules.min_discount == 50
-    assert rules.min_savings_cents is None
-    assert rules.min_score is None
-    assert rules.max_price_cents is None
-    assert rules.clear_max_price is False
-    assert rules.daily_cap is None
-
-
-def test_dm_rule_parser_uses_explicit_off_to_remove_max_price() -> None:
-    rules = parse_dm_rule_values(
-        threshold_text="",
-        savings_text="",
-        score_text="",
-        max_price_text="off",
-        daily_cap_text="",
-    )
-    assert rules.max_price_cents is None
-    assert rules.clear_max_price is True
-    assert rules.has_updates is True
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "message"),
-    [
-        ("threshold_text", "96", "Smallest discount"),
-        ("savings_text", "-1", "Minimum savings"),
-        ("score_text", "251", "Minimum deal score"),
-        ("max_price_text", "0", "Maximum item price"),
-        ("daily_cap_text", "101", "Daily DM limit"),
-    ],
+from sniperplug.services.dm_deal_alerts import (
+    DmDealAlertPreference,
+    UNLIMITED_MAX_ALERTS_PER_DAY,
 )
-def test_dm_rule_parser_rejects_out_of_range_values(
-    field: str,
-    value: str,
-    message: str,
-) -> None:
-    kwargs = {
-        "threshold_text": "",
-        "savings_text": "",
-        "score_text": "",
-        "max_price_text": "",
-        "daily_cap_text": "",
+
+
+def _view(preference: DmDealAlertPreference | None = None) -> DmDealPreferencesView:
+    return DmDealPreferencesView(
+        bot=SimpleNamespace(db=None),
+        user_id=1,
+        preference=preference or DmDealAlertPreference(user_id=1, enabled=True),
+    )
+
+
+def _buttons(view: DmDealPreferencesView) -> dict[str, discord.ui.Button]:
+    return {
+        item.label: item
+        for item in view.children
+        if isinstance(item, discord.ui.Button) and item.label
     }
-    kwargs[field] = value
-    with pytest.raises(ValueError, match=message):
-        parse_dm_rule_values(**kwargs)
 
 
-def test_dm_rules_modal_does_not_force_every_field() -> None:
-    source = inspect.getsource(_DmDealRulesModal)
-    assert source.count("required=False") == 5
-    assert ".default =" not in source
-    assert "blank keeps" in source.lower()
-    assert "type off to remove" in source.lower()
-    assert "unlimited" in source.lower()
+class _FakeResponse:
+    def __init__(self) -> None:
+        self.embed = None
+        self.view = None
+
+    async def edit_message(self, *, embed, view) -> None:
+        self.embed = embed
+        self.view = view
 
 
-def test_personal_menu_keeps_rules_and_flip_separate_without_wall_of_help_text() -> None:
-    source = inspect.getsource(DmDealPreferencesView)
-    assert "Deal rules" in source
-    assert "DM Deal Threshold" not in source
-    assert "Price mistakes:" in source
-    assert "Only mistakes worth" in source
-    assert "Flip Override" not in source
-    assert "Products & brands" in source
-    assert "Categories" in source
-    assert "Safety boundary" not in source
+def _interaction() -> SimpleNamespace:
+    return SimpleNamespace(response=_FakeResponse())
 
 
-def test_personal_menu_save_persists_normal_dm_rules() -> None:
-    source = inspect.getsource(DmDealPreferencesView._save)
-    assert "mode=self.dm_mode" in source
-    assert "min_discount=self.dm_min_discount" in source
-    assert "min_savings_cents=self.dm_min_savings_cents" in source
-    assert "min_score=self.dm_min_score" in source
-    assert "max_price_cents=self.dm_max_price_cents" in source
-    assert "max_alerts_per_day=self.dm_daily_cap" in source
+def test_home_screen_is_three_questions_and_a_summary() -> None:
+    view = _view(
+        DmDealAlertPreference(
+            user_id=1,
+            enabled=True,
+            min_discount=50,
+            max_alerts_per_day=UNLIMITED_MAX_ALERTS_PER_DAY,
+            categories=("dm_route:price_glitch", "dm_route:hot_deals"),
+        )
+    )
+
+    labels = _buttons(view)
+    assert "What DMs you" in labels
+    assert "How good it has to be" in labels
+    assert "How many a day" in labels
+    embed = view.build_embed()
+    assert embed.description == (
+        "You'll get DMs for price mistakes and big markdowns · "
+        "50% off or better · no daily limit."
+    )
+
+
+def test_what_screen_has_six_plain_route_toggles() -> None:
+    view = _view()
+    view.screen = SCREEN_WHAT
+    view._rebuild_items()
+
+    labels = _buttons(view)
+    for label in (
+        "Price mistakes",
+        "Big markdowns",
+        "Coupon stacks",
+        "Business & bulk",
+        "Might not work for everyone",
+        "Everything else",
+    ):
+        assert label in labels
+    # The profit stepper only appears once price mistakes are picked.
+    assert "Worth $25+" not in labels
+
+
+def test_route_toggle_and_profit_stepper_update_the_draft() -> None:
+    view = _view()
+    view.screen = SCREEN_WHAT
+    view._rebuild_items()
+
+    asyncio.run(_buttons(view)["Price mistakes"].callback(_interaction()))
+    assert view.selected_routes == {"price_glitch"}
+    assert view.dirty is True
+
+    view._rebuild_items()
+    asyncio.run(_buttons(view)["Worth $25+"].callback(_interaction()))
+    assert view.flip_floor_cents == 2500
+
+
+def test_quality_presets_update_discount_and_max_price() -> None:
+    view = _view()
+    view.screen = SCREEN_QUALITY
+    view._rebuild_items()
+
+    asyncio.run(_buttons(view)["70%+"].callback(_interaction()))
+    assert view.dm_min_discount == 70
+    asyncio.run(_buttons(view)["$250"].callback(_interaction()))
+    assert view.dm_max_price_cents == 25_000
+    asyncio.run(_buttons(view)["No limit"].callback(_interaction()))
+    assert view.dm_max_price_cents is None
+    assert view.dirty is True
+
+
+def test_count_presets_update_the_daily_cap() -> None:
+    view = _view()
+    view.screen = SCREEN_COUNT
+    view._rebuild_items()
+
+    asyncio.run(_buttons(view)["10 a day"].callback(_interaction()))
+    assert view.dm_daily_cap == 10
+    asyncio.run(_buttons(view)["No limit"].callback(_interaction()))
+    assert view.dm_daily_cap == UNLIMITED_MAX_ALERTS_PER_DAY
+
+
+def test_save_persists_the_simple_draft(monkeypatch) -> None:
+    async def fake_save(_db, preference):
+        return preference.normalized()
+
+    monkeypatch.setattr(
+        menu_module, "save_dm_deal_alert_preference", fake_save
+    )
+    view = _view()
+    view.selected_routes = {"price_glitch"}
+    view.flip_floor_cents = 2500
+    view.dm_min_discount = 50
+    view.dm_daily_cap = 10
+    view.dirty = True
+
+    asyncio.run(view._save(_interaction()))
+
+    saved = view.preference
+    assert saved.min_discount == 50
+    assert saved.max_alerts_per_day == 10
+    assert "dm_route:price_glitch" in saved.categories
+    assert "flip_profit:2500" in saved.categories
+    assert view.screen == SCREEN_HOME
+    assert view.dirty is False
+
+
+def test_alerts_toggle_is_a_draft_until_saved() -> None:
+    view = _view(DmDealAlertPreference(user_id=1, enabled=False))
+    assert view.enabled is False
+
+    asyncio.run(_buttons(view)["Alerts: OFF"].callback(_interaction()))
+
+    assert view.enabled is True
+    assert view.dirty is True

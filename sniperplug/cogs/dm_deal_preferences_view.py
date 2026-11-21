@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any
 
 import discord
@@ -11,17 +11,18 @@ from sniperplug.services.dm_deal_alerts import (
     daily_cap_label,
     save_dm_deal_alert_preference,
 )
-from sniperplug.services.dm_deal_routes import route_labels, split_dm_route_preferences
+from sniperplug.services.dm_deal_routes import (
+    personal_route_labels,
+    split_dm_route_preferences,
+)
 from sniperplug.services.dm_personal_categories import (
+    DEFAULT_FLIP_MIN_PROFIT_CENTS,
     all_personal_categories,
     category_label,
     compose_category_preferences,
-    compose_exclude_terms,
-    flip_settings,
-    muted_category_preferences,
+    explicit_flip_min_profit_cents,
     personal_category_pages,
     split_category_preferences,
-    split_exclude_terms,
 )
 from sniperplug.services.dm_product_interests import (
     brand_label,
@@ -31,178 +32,49 @@ from sniperplug.services.dm_product_interests import (
     split_product_preferences,
     update_product_preferences,
 )
+from sniperplug.services.routing import PRICE_GLITCH_ROUTE
 
 
 SCREEN_HOME = "home"
-SCREEN_ROUTES = "routes"
+SCREEN_WHAT = "what"
 SCREEN_PRODUCTS = "products"
 SCREEN_CATEGORIES = "categories"
+SCREEN_QUALITY = "quality"
+SCREEN_COUNT = "count"
 
-TAB_FAVORITES = "favorites"
-TAB_MUTED = "muted"
-TAB_ALLOWLIST = "allowlist"
-TAB_LABELS = {
-    TAB_FAVORITES: "⭐ Favorites",
-    TAB_MUTED: "🔕 Muted",
-    TAB_ALLOWLIST: "🎯 Only these categories",
-}
-DM_MODE_ORDER = ("smart", "all", "custom")
-DM_MODE_LABELS = {
-    "smart": "Smart",
-    "all": "All",
-    "custom": "Custom",
-}
-_MAX_PRICE_CLEAR_TERMS = {
-    "off",
-    "none",
-    "clear",
-    "no limit",
-    "no-limit",
-    "nolimit",
-}
-_DAILY_CAP_UNLIMITED_TERMS = {
-    "0",
-    "off",
-    "none",
-    "unlimited",
-    "no limit",
-    "no-limit",
-    "nolimit",
-}
-
-
-@dataclass(frozen=True)
-class DmDealRuleDraft:
-    """Only the personal-DM rule values the user chose to change."""
-
-    min_discount: int | None = None
-    min_savings_cents: int | None = None
-    min_score: int | None = None
-    max_price_cents: int | None = None
-    clear_max_price: bool = False
-    daily_cap: int | None = None
-
-    @property
-    def has_updates(self) -> bool:
-        return any(
-            value is not None
-            for value in (
-                self.min_discount,
-                self.min_savings_cents,
-                self.min_score,
-                self.max_price_cents,
-                self.daily_cap,
-            )
-        ) or self.clear_max_price
-
-
-def parse_dm_rule_values(
-    *,
-    threshold_text: str,
-    savings_text: str,
-    score_text: str,
-    max_price_text: str,
-    daily_cap_text: str,
-) -> DmDealRuleDraft:
-    """Parse only fields the user filled; blank fields mean keep current values."""
-
-    threshold_raw = str(threshold_text or "").strip()
-    threshold: int | None = None
-    if threshold_raw:
-        try:
-            threshold = int(threshold_raw)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "Smallest discount must be a whole number from 0 to 95."
-            ) from exc
-        if not 0 <= threshold <= 95:
-            raise ValueError("Smallest discount must be between 0% and 95%.")
-
-    savings_raw = str(savings_text or "").strip()
-    min_savings_cents: int | None = None
-    if savings_raw:
-        savings = _parse_dollars(savings_raw, field_name="Minimum savings")
-        if not 0 <= savings <= 100_000:
-            raise ValueError("Minimum savings must be between $0 and $100,000.")
-        min_savings_cents = int(round(savings * 100))
-
-    score_raw = str(score_text or "").strip()
-    score: int | None = None
-    if score_raw:
-        try:
-            score = int(score_raw)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "Minimum deal score must be a whole number from 0 to 250."
-            ) from exc
-        if not 0 <= score <= 250:
-            raise ValueError("Minimum deal score must be between 0 and 250.")
-
-    max_price_raw = str(max_price_text or "").strip()
-    max_price_cents: int | None = None
-    clear_max_price = False
-    if max_price_raw:
-        if max_price_raw.lower() in _MAX_PRICE_CLEAR_TERMS:
-            clear_max_price = True
-        else:
-            max_price = _parse_dollars(
-                max_price_raw,
-                field_name="Maximum item price",
-            )
-            if not 0.01 <= max_price <= 100_000:
-                raise ValueError(
-                    "Maximum item price must be between $0.01 and $100,000, "
-                    "or type `off` to remove the limit."
-                )
-            max_price_cents = int(round(max_price * 100))
-
-    daily_cap_raw = str(daily_cap_text or "").strip()
-    daily_cap: int | None = None
-    if daily_cap_raw:
-        if daily_cap_raw.lower() in _DAILY_CAP_UNLIMITED_TERMS:
-            daily_cap = UNLIMITED_MAX_ALERTS_PER_DAY
-        else:
-            try:
-                daily_cap = int(daily_cap_raw)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "Daily DM limit must be 1 to 100, or `unlimited`."
-                ) from exc
-            if not 1 <= daily_cap <= 100:
-                raise ValueError(
-                    "Daily DM limit must be between 1 and 100 alerts, or `unlimited`."
-                )
-
-    return DmDealRuleDraft(
-        min_discount=threshold,
-        min_savings_cents=min_savings_cents,
-        min_score=score,
-        max_price_cents=max_price_cents,
-        clear_max_price=clear_max_price,
-        daily_cap=daily_cap,
-    )
-
-
-def _parse_dollars(value: str, *, field_name: str) -> float:
-    raw = str(value or "").replace("$", "").replace(",", "").strip()
-    try:
-        return float(raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"{field_name} must be a dollar amount such as 20 or 49.99."
-        ) from exc
-
-
-def _mode_help(mode: str) -> str:
-    if mode == "smart":
-        return "raises the bar on pricier items — your own minimums always apply"
-    if mode == "custom":
-        return "uses exactly the minimums you set"
-    return "uses your saved minimums, with no automatic increases"
+DISCOUNT_PRESETS: tuple[tuple[str, int], ...] = (
+    ("Any discount", 0),
+    ("30%+", 30),
+    ("50%+", 50),
+    ("70%+", 70),
+)
+MAX_PRICE_PRESETS: tuple[tuple[str, int | None], ...] = (
+    ("No limit", None),
+    ("$50", 5_000),
+    ("$100", 10_000),
+    ("$250", 25_000),
+    ("$500", 50_000),
+)
+DAILY_CAP_PRESETS: tuple[tuple[str, int], ...] = (
+    ("5 a day", 5),
+    ("10 a day", 10),
+    ("25 a day", 25),
+    ("No limit", UNLIMITED_MAX_ALERTS_PER_DAY),
+)
+PROFIT_FLOOR_PRESETS: tuple[tuple[str, int], ...] = (
+    ("Worth $0+", 0),
+    ("Worth $25+", 2_500),
+    ("Worth $50+", 5_000),
+    ("Worth $100+", 10_000),
+)
 
 
 class DmDealPreferencesView(discord.ui.View):
-    """Guided private editor for one personal-DM subscriber."""
+    """One simple editor for one personal-DM subscriber.
+
+    Three questions, one screen each: what DMs you, how good it has to be,
+    and how many a day. Everything is a draft until Save changes is pressed.
+    """
 
     def __init__(
         self,
@@ -215,30 +87,9 @@ class DmDealPreferencesView(discord.ui.View):
         self.bot = bot
         self.user_id = int(user_id)
         self.preference = preference.normalized()
-
-        selected, favorites = split_category_preferences(self.preference.categories)
-        product_interests, product_brands = split_product_preferences(
-            self.preference.categories
-        )
-        keyword_excludes, legacy_muted = split_exclude_terms(
-            self.preference.exclude_keywords
-        )
-        stored_muted = muted_category_preferences(self.preference.categories)
-        flip_enabled, flip_profit = flip_settings(self.preference.categories)
-
-        self.selected_categories = set(selected)
-        self.favorite_categories = set(favorites)
-        self.muted_categories = set((*legacy_muted, *stored_muted))
-        self.product_interests = set(product_interests)
-        self.product_brands = set(product_brands)
-        self.selected_routes = set(split_dm_route_preferences(self.preference.categories))
-        self.exclude_keywords = tuple(keyword_excludes)
-        self.flip_enabled = bool(flip_enabled)
-        self.flip_min_profit_cents = int(flip_profit)
-        self._sync_dm_rule_draft(self.preference)
+        self._sync_from_preference(self.preference)
 
         self.screen = SCREEN_HOME
-        self.tab = TAB_FAVORITES
         self.search_query = ""
         self.page_index = 0
         self.product_page_index = 0
@@ -246,14 +97,57 @@ class DmDealPreferencesView(discord.ui.View):
         self.dirty = False
         self._rebuild_items()
 
-    def _sync_dm_rule_draft(self, preference: DmDealAlertPreference) -> None:
+    def _sync_from_preference(self, preference: DmDealAlertPreference) -> None:
         normalized = preference.normalized()
-        self.dm_mode = normalized.mode
+        self.enabled = bool(normalized.enabled)
+        self.selected_categories = set(
+            split_category_preferences(normalized.categories)
+        )
+        product_interests, product_brands = split_product_preferences(
+            normalized.categories
+        )
+        self.product_interests = set(product_interests)
+        self.product_brands = set(product_brands)
+        self.selected_routes = set(
+            split_dm_route_preferences(normalized.categories)
+        )
+        self.flip_floor_cents = explicit_flip_min_profit_cents(
+            normalized.categories
+        )
         self.dm_min_discount = int(normalized.min_discount)
-        self.dm_min_savings_cents = int(normalized.min_savings_cents)
-        self.dm_min_score = int(normalized.min_score)
         self.dm_max_price_cents = normalized.max_price_cents
         self.dm_daily_cap = int(normalized.max_alerts_per_day)
+
+    def _draft_categories(self) -> tuple[str, ...]:
+        categories = compose_category_preferences(
+            self.selected_categories,
+            flip_enabled=self.flip_floor_cents > 0,
+            flip_min_profit_cents=(
+                self.flip_floor_cents
+                if self.flip_floor_cents > 0
+                else DEFAULT_FLIP_MIN_PROFIT_CENTS
+            ),
+            routes=tuple(
+                route
+                for route, _ in personal_route_labels()
+                if route in self.selected_routes
+            ),
+        )
+        return update_product_preferences(
+            categories,
+            replace_interests=self.product_interests,
+            replace_brands=self.product_brands,
+        )
+
+    def _draft_preference(self) -> DmDealAlertPreference:
+        return replace(
+            self.preference,
+            enabled=self.enabled,
+            min_discount=self.dm_min_discount,
+            max_price_cents=self.dm_max_price_cents,
+            max_alerts_per_day=self.dm_daily_cap,
+            categories=self._draft_categories(),
+        ).normalized()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if int(interaction.user.id) == self.user_id:
@@ -264,13 +158,19 @@ class DmDealPreferencesView(discord.ui.View):
         )
         return False
 
+    # -- embeds -----------------------------------------------------------
+
     def build_embed(self, *, status: str = "") -> discord.Embed:
-        if self.screen == SCREEN_ROUTES:
-            embed = self._build_routes_embed()
+        if self.screen == SCREEN_WHAT:
+            embed = self._build_what_embed()
         elif self.screen == SCREEN_PRODUCTS:
             embed = self._build_products_embed()
         elif self.screen == SCREEN_CATEGORIES:
             embed = self._build_categories_embed()
+        elif self.screen == SCREEN_QUALITY:
+            embed = self._build_quality_embed()
+        elif self.screen == SCREEN_COUNT:
+            embed = self._build_count_embed()
         else:
             embed = self._build_home_embed()
 
@@ -289,90 +189,69 @@ class DmDealPreferencesView(discord.ui.View):
         )
         return embed
 
-    def _build_routes_embed(self) -> discord.Embed:
-        embed = discord.Embed(
-            title="🚨 Kinds of deals",
-            description=(
-                "Follow whole **kinds of deals** — price mistakes, hot deals "
-                "and more — instead of picking products. If you pick more "
-                "than one, any of them can DM you.\n\n"
-                "If you pick any, they replace your product and category "
-                "picks. Your discount, savings and daily limits still apply. "
-                "Clear them to go back to product and category picks."
-            ),
+    def _build_home_embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="🎯 My alerts",
+            description=self._draft_preference().summary_sentence(),
             color=discord.Color.blurple(),
         )
-        embed.add_field(name="Your kinds of deals", value=self._route_preview(), inline=False)
-        return embed
 
     def _route_preview(self) -> str:
-        labels = dict(route_labels())
+        labels = dict(personal_route_labels())
         return (
-            ", ".join(labels[route] for route in labels if route in self.selected_routes)
+            ", ".join(
+                labels[route] for route in labels if route in self.selected_routes
+            )
             if self.selected_routes
-            else "None — your product and category picks apply"
+            else "None picked"
         )
 
-    def _build_home_embed(self) -> discord.Embed:
-        max_price_text = (
-            f"${self.dm_max_price_cents / 100:,.2f}"
-            if self.dm_max_price_cents is not None
-            else "No limit"
-        )
-        if self.dm_daily_cap == UNLIMITED_MAX_ALERTS_PER_DAY:
-            cap_text = "No daily limit"
-        else:
-            cap_text = f"Up to {self.dm_daily_cap} a day"
+    def _build_what_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="🎯 My alerts",
+            title="🔔 What DMs you",
             description=(
-                f"Deal DMs: **{'ON' if self.preference.enabled else 'OFF'}** · "
-                f"Only deals **{self.dm_min_discount}%** off or better · {cap_text}"
+                "Pick any mix. A deal DMs you when it matches **anything** "
+                "you picked — a kind of deal, a specific product, a brand, "
+                "or a category. Nothing you pick blocks the others."
             ),
             color=discord.Color.blurple(),
         )
         embed.add_field(
-            name="🚨 Kinds of deals",
+            name="Kinds of deals",
             value=f"**{self._route_preview()}**",
             inline=False,
         )
         embed.add_field(
-            name="🎯 Products & brands",
+            name="Products & brands",
             value=(
-                f"Products: **{len(self.product_interests)}** • Brands: **{len(self.product_brands)}**\n"
-                f"{self._product_interest_preview()}"
+                f"Products: **{len(self.product_interests)}** • "
+                f"Brands: **{len(self.product_brands)}**"
             ),
             inline=False,
         )
         embed.add_field(
-            name="🗂️ Categories",
+            name="Categories",
             value=(
-                f"Favorites **{len(self.favorite_categories)}** • "
-                f"Muted **{len(self.muted_categories)}** • "
-                f"Only-these **{len(self.selected_categories) if self.selected_categories else 'off'}**"
+                f"**{len(self.selected_categories)}** picked"
+                if self.selected_categories
+                else "None picked"
             ),
             inline=False,
         )
-        embed.add_field(
-            name="🔔 Deal rules",
-            value=(
-                f"**{self.dm_min_discount}%+** off • "
-                f"${self.dm_min_savings_cents / 100:,.2f}+ savings • "
-                f"score {self.dm_min_score}/250\n"
-                f"Mode **{DM_MODE_LABELS.get(self.dm_mode, self.dm_mode.title())}** • "
-                f"Max price **{max_price_text}** • "
-                f"Daily **{daily_cap_label(self.dm_daily_cap)}**"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="💰 Price mistakes",
-            value=(
-                f"**{'ON' if self.flip_enabled else 'OFF'}** • only mistakes worth "
-                f"**${self.flip_min_profit_cents / 100:,.0f}+**"
-            ),
-            inline=False,
-        )
+        if PRICE_GLITCH_ROUTE in self.selected_routes:
+            embed.add_field(
+                name="Price mistakes",
+                value=(
+                    "Any price mistake, no minimum worth."
+                    if self.flip_floor_cents <= 0
+                    else (
+                        "Only mistakes worth "
+                        f"**${self.flip_floor_cents / 100:,.0f}+** when a "
+                        "price mistake is the only reason for the DM."
+                    )
+                ),
+                inline=False,
+            )
         return embed
 
     def _build_products_embed(self) -> discord.Embed:
@@ -410,41 +289,59 @@ class DmDealPreferencesView(discord.ui.View):
         page_total = max(1, len(pages))
         page_number = min(self.page_index + 1, page_total)
         search_text = self.search_query or "all"
-        tab_help = {
-            TAB_FAVORITES: "Favorites get a small Smart-mode priority boost.",
-            TAB_MUTED: "Muted categories are hidden only when no specific Walmart product/brand is selected.",
-            TAB_ALLOWLIST: "Optional. Leave empty unless you want category-only alerts.",
-        }[self.tab]
         embed = discord.Embed(
-            title="🗂️ Category preferences",
+            title="🗂️ Pick categories",
             description=(
-                "Categories are the broad fallback layer. Use **Products & brands** for precise "
-                "Walmart alerts.\n\n"
-                f"Editing **{TAB_LABELS[self.tab]}** • Page **{page_number}/{page_total}** • "
-                f"Search **{search_text}**\n{tab_help}\n"
+                "Categories are one way to get a DM: a deal in a category "
+                "you picked can DM you. Leave this empty if kinds of deals "
+                "or specific products already cover what you want.\n\n"
+                f"Page **{page_number}/{page_total}** • Search **{search_text}**\n"
                 f"All {len(categories)} live categories remain available."
             ),
             color=discord.Color.blurple(),
         )
         embed.add_field(
-            name="Selected in this category mode",
+            name="Selected categories",
             value=self._selection_preview(),
             inline=False,
         )
         return embed
+
+    def _build_quality_embed(self) -> discord.Embed:
+        max_price_text = (
+            f"${self.dm_max_price_cents / 100:,.2f}"
+            if self.dm_max_price_cents is not None
+            else "No limit"
+        )
+        return discord.Embed(
+            title="🎚️ How good it has to be",
+            description=(
+                f"Smallest discount: **{self.dm_min_discount}%** • "
+                f"Highest price: **{max_price_text}**\n\n"
+                "Tap a preset to change it. Every DM still has to prove its "
+                "current and was prices first."
+            ),
+            color=discord.Color.blurple(),
+        )
+
+    def _build_count_embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="🔢 How many a day",
+            description=(
+                f"Daily limit: **{daily_cap_label(self.dm_daily_cap)}**\n\n"
+                "Tap a preset to change it. The limit counts DMs per day "
+                "and resets at midnight UTC."
+            ),
+            color=discord.Color.blurple(),
+        )
+
+    # -- previews -----------------------------------------------------------
 
     def _pages(self):
         return personal_category_pages(self.search_query)
 
     def _product_pages(self):
         return product_interest_pages()
-
-    def _active_set(self) -> set[str]:
-        if self.tab == TAB_MUTED:
-            return self.muted_categories
-        if self.tab == TAB_ALLOWLIST:
-            return self.selected_categories
-        return self.favorite_categories
 
     def _current_page(self):
         pages = self._pages()
@@ -467,15 +364,11 @@ class DmDealPreferencesView(discord.ui.View):
 
     def _selection_preview(self) -> str:
         selected = sorted(
-            self._active_set(),
+            self.selected_categories,
             key=lambda key: category_label(key).lower(),
         )
         if not selected:
-            return (
-                "None"
-                if self.tab != TAB_ALLOWLIST
-                else "Off — all categories remain eligible"
-            )
+            return "None — no category picks"
         labels = [category_label(key) for key in selected[:10]]
         suffix = f" • +{len(selected) - 10} more" if len(selected) > 10 else ""
         return ", ".join(labels) + suffix
@@ -499,107 +392,152 @@ class DmDealPreferencesView(discord.ui.View):
             f" • +{len(labels) - 8} more" if len(labels) > 8 else ""
         )
 
+    # -- items --------------------------------------------------------------
+
     def _rebuild_items(self) -> None:
         self.clear_items()
-        if self.screen == SCREEN_ROUTES:
-            self._build_route_items()
+        if self.screen == SCREEN_WHAT:
+            self._build_what_items()
         elif self.screen == SCREEN_PRODUCTS:
             self._build_product_items()
         elif self.screen == SCREEN_CATEGORIES:
             self._build_category_items()
+        elif self.screen == SCREEN_QUALITY:
+            self._build_quality_items()
+        elif self.screen == SCREEN_COUNT:
+            self._build_count_items()
         else:
             self._build_home_items()
 
+    def _add_save_close(self, *, row: int) -> None:
+        save = discord.ui.Button(
+            label="Save changes" if self.dirty else "Saved",
+            emoji="✅",
+            style=discord.ButtonStyle.success,
+            row=row,
+            disabled=not self.dirty,
+        )
+        save.callback = self._save
+        self.add_item(save)
+
+        close = discord.ui.Button(
+            label="Discard & close" if self.dirty else "Close",
+            emoji="✖️",
+            style=(
+                discord.ButtonStyle.danger
+                if self.dirty
+                else discord.ButtonStyle.secondary
+            ),
+            row=row,
+        )
+        close.callback = self._close
+        self.add_item(close)
+
+    def _add_back(self, *, row: int, target: str) -> None:
+        back = discord.ui.Button(
+            label="Back",
+            emoji="⬅️",
+            style=discord.ButtonStyle.secondary,
+            row=row,
+        )
+        back.callback = self._show_screen_callback(target)
+        self.add_item(back)
+
     def _build_home_items(self) -> None:
-        routes = discord.ui.Button(
-            label=f"Kinds of deals ({len(self.selected_routes)})",
-            emoji="🚨",
+        what = discord.ui.Button(
+            label="What DMs you",
+            emoji="🔔",
             style=discord.ButtonStyle.primary,
             row=0,
         )
-        routes.callback = self._show_routes
-        self.add_item(routes)
+        what.callback = self._show_screen_callback(SCREEN_WHAT)
+        self.add_item(what)
+
+        quality = discord.ui.Button(
+            label="How good it has to be",
+            emoji="🎚️",
+            style=discord.ButtonStyle.primary,
+            row=0,
+        )
+        quality.callback = self._show_screen_callback(SCREEN_QUALITY)
+        self.add_item(quality)
+
+        count = discord.ui.Button(
+            label="How many a day",
+            emoji="🔢",
+            style=discord.ButtonStyle.primary,
+            row=0,
+        )
+        count.callback = self._show_screen_callback(SCREEN_COUNT)
+        self.add_item(count)
+
+        toggle = discord.ui.Button(
+            label=f"Alerts: {'ON' if self.enabled else 'OFF'}",
+            emoji="🔕" if not self.enabled else "🔔",
+            style=(
+                discord.ButtonStyle.success
+                if self.enabled
+                else discord.ButtonStyle.secondary
+            ),
+            row=1,
+        )
+        toggle.callback = self._toggle_enabled
+        self.add_item(toggle)
+
+        self._add_save_close(row=2)
+
+    def _build_what_items(self) -> None:
+        labels = personal_route_labels()
+        for index, (route, label) in enumerate(labels):
+            button = discord.ui.Button(
+                label=label,
+                emoji="✅" if route in self.selected_routes else None,
+                style=(
+                    discord.ButtonStyle.success
+                    if route in self.selected_routes
+                    else discord.ButtonStyle.secondary
+                ),
+                row=0 if index < 3 else 1,
+            )
+            button.callback = self._route_toggle_callback(route, label)
+            self.add_item(button)
+
+        row = 2
+        if PRICE_GLITCH_ROUTE in self.selected_routes:
+            for label, cents in PROFIT_FLOOR_PRESETS:
+                button = discord.ui.Button(
+                    label=label,
+                    style=(
+                        discord.ButtonStyle.success
+                        if self.flip_floor_cents == cents
+                        else discord.ButtonStyle.secondary
+                    ),
+                    row=row,
+                )
+                button.callback = self._profit_floor_callback(cents, label)
+                self.add_item(button)
+            row += 1
 
         products = discord.ui.Button(
             label=f"Products & brands ({len(self.product_interests)})",
             emoji="🎯",
             style=discord.ButtonStyle.primary,
-            row=0,
+            row=row,
         )
-        products.callback = self._show_products
+        products.callback = self._show_screen_callback(SCREEN_PRODUCTS)
         self.add_item(products)
 
         categories = discord.ui.Button(
-            label="Categories",
+            label=f"Categories ({len(self.selected_categories)})",
             emoji="🗂️",
-            style=discord.ButtonStyle.secondary,
-            row=0,
+            style=discord.ButtonStyle.primary,
+            row=row,
         )
-        categories.callback = self._show_categories
+        categories.callback = self._show_screen_callback(SCREEN_CATEGORIES)
         self.add_item(categories)
 
-        dm_rules = discord.ui.Button(
-            label="Deal rules",
-            emoji="🔔",
-            style=discord.ButtonStyle.secondary,
-            row=1,
-        )
-        dm_rules.callback = self._open_dm_rules
-        self.add_item(dm_rules)
-
-        mode = discord.ui.Button(
-            label="Change mode",
-            emoji="🎚️",
-            style=discord.ButtonStyle.secondary,
-            row=1,
-        )
-        mode.callback = self._cycle_mode
-        self.add_item(mode)
-
-        flip = discord.ui.Button(
-            label=f"Price mistakes: {'ON' if self.flip_enabled else 'OFF'}",
-            emoji="💰",
-            style=(
-                discord.ButtonStyle.success
-                if self.flip_enabled
-                else discord.ButtonStyle.secondary
-            ),
-            row=2,
-        )
-        flip.callback = self._toggle_flip
-        self.add_item(flip)
-
-        profit = discord.ui.Button(
-            label=f"Only mistakes worth ${self.flip_min_profit_cents / 100:,.0f}+",
-            emoji="📈",
-            style=discord.ButtonStyle.secondary,
-            row=2,
-        )
-        profit.callback = self._open_profit
-        self.add_item(profit)
-
-        self._add_save_close(row=3)
-
-    def _build_route_items(self) -> None:
-        self.add_item(_DmRouteSelect(self))
-        clear = discord.ui.Button(
-            label="Clear kinds of deals",
-            emoji="🧹",
-            style=discord.ButtonStyle.secondary,
-            row=1,
-            disabled=not bool(self.selected_routes),
-        )
-        clear.callback = self._clear_routes
-        self.add_item(clear)
-        dashboard = discord.ui.Button(
-            label="Back",
-            emoji="⬅️",
-            style=discord.ButtonStyle.secondary,
-            row=2,
-        )
-        dashboard.callback = self._show_home
-        self.add_item(dashboard)
-        self._add_save_close(row=2)
+        self._add_back(row=row + 1, target=SCREEN_HOME)
+        self._add_save_close(row=row + 1)
 
     def _build_product_items(self) -> None:
         self.add_item(_ProductPageSelect(self))
@@ -670,18 +608,10 @@ class DmDealPreferencesView(discord.ui.View):
         clear_brands.callback = self._clear_brands
         self.add_item(clear_brands)
 
-        dashboard = discord.ui.Button(
-            label="Back",
-            emoji="⬅️",
-            style=discord.ButtonStyle.secondary,
-            row=3,
-        )
-        dashboard.callback = self._show_home
-        self.add_item(dashboard)
+        self._add_back(row=3, target=SCREEN_WHAT)
         self._add_save_close(row=3)
 
     def _build_category_items(self) -> None:
-        self.add_item(_PreferenceTabSelect(self))
         self.add_item(_CategoryPageSelect(self))
 
         pages = self._pages()
@@ -691,7 +621,7 @@ class DmDealPreferencesView(discord.ui.View):
             label="Back",
             emoji="◀️",
             style=discord.ButtonStyle.secondary,
-            row=2,
+            row=1,
             disabled=self.page_index <= 0,
         )
         previous.callback = self._previous_page
@@ -703,7 +633,7 @@ class DmDealPreferencesView(discord.ui.View):
                 f"{max(1, len(pages))}"
             ),
             style=discord.ButtonStyle.secondary,
-            row=2,
+            row=1,
             disabled=True,
         )
         self.add_item(page)
@@ -712,7 +642,7 @@ class DmDealPreferencesView(discord.ui.View):
             label="Next",
             emoji="▶️",
             style=discord.ButtonStyle.secondary,
-            row=2,
+            row=1,
             disabled=(not pages or self.page_index >= last_index),
         )
         next_button.callback = self._next_page
@@ -722,7 +652,7 @@ class DmDealPreferencesView(discord.ui.View):
             label="Search",
             emoji="🔎",
             style=discord.ButtonStyle.secondary,
-            row=3,
+            row=2,
         )
         search.callback = self._open_search
         self.add_item(search)
@@ -731,55 +661,73 @@ class DmDealPreferencesView(discord.ui.View):
             label="All categories",
             emoji="🧹",
             style=discord.ButtonStyle.secondary,
-            row=3,
+            row=2,
             disabled=not bool(self.search_query),
         )
         clear_search.callback = self._clear_search
         self.add_item(clear_search)
 
-        clear_tab = discord.ui.Button(
-            label=f"Clear {TAB_LABELS[self.tab].split(' ', 1)[1]}",
+        clear = discord.ui.Button(
+            label="Clear categories",
             emoji="🗑️",
             style=discord.ButtonStyle.secondary,
-            row=3,
-            disabled=not bool(self._active_set()),
+            row=2,
+            disabled=not bool(self.selected_categories),
         )
-        clear_tab.callback = self._clear_current_tab
-        self.add_item(clear_tab)
+        clear.callback = self._clear_categories
+        self.add_item(clear)
 
-        dashboard = discord.ui.Button(
-            label="Back",
-            emoji="⬅️",
-            style=discord.ButtonStyle.secondary,
-            row=4,
-        )
-        dashboard.callback = self._show_home
-        self.add_item(dashboard)
-        self._add_save_close(row=4)
+        self._add_back(row=3, target=SCREEN_WHAT)
+        self._add_save_close(row=3)
 
-    def _add_save_close(self, *, row: int) -> None:
-        save = discord.ui.Button(
-            label="Save changes" if self.dirty else "Saved",
-            emoji="✅",
-            style=discord.ButtonStyle.success,
-            row=row,
-            disabled=not self.dirty,
-        )
-        save.callback = self._save
-        self.add_item(save)
+    def _build_quality_items(self) -> None:
+        for label, value in DISCOUNT_PRESETS:
+            button = discord.ui.Button(
+                label=label,
+                style=(
+                    discord.ButtonStyle.success
+                    if self.dm_min_discount == value
+                    else discord.ButtonStyle.secondary
+                ),
+                row=0,
+            )
+            button.callback = self._discount_callback(value, label)
+            self.add_item(button)
 
-        close = discord.ui.Button(
-            label="Discard & close" if self.dirty else "Close",
-            emoji="✖️",
-            style=(
-                discord.ButtonStyle.danger
-                if self.dirty
-                else discord.ButtonStyle.secondary
-            ),
-            row=row,
-        )
-        close.callback = self._close
-        self.add_item(close)
+        for label, value in MAX_PRICE_PRESETS:
+            button = discord.ui.Button(
+                label=label,
+                style=(
+                    discord.ButtonStyle.success
+                    if self.dm_max_price_cents == value
+                    else discord.ButtonStyle.secondary
+                ),
+                row=1,
+            )
+            button.callback = self._max_price_callback(value, label)
+            self.add_item(button)
+
+        self._add_back(row=2, target=SCREEN_HOME)
+        self._add_save_close(row=2)
+
+    def _build_count_items(self) -> None:
+        for label, value in DAILY_CAP_PRESETS:
+            button = discord.ui.Button(
+                label=label,
+                style=(
+                    discord.ButtonStyle.success
+                    if self.dm_daily_cap == value
+                    else discord.ButtonStyle.secondary
+                ),
+                row=0,
+            )
+            button.callback = self._daily_cap_callback(value, label)
+            self.add_item(button)
+
+        self._add_back(row=1, target=SCREEN_HOME)
+        self._add_save_close(row=1)
+
+    # -- callbacks ------------------------------------------------------------
 
     async def _refresh(
         self,
@@ -793,26 +741,105 @@ class DmDealPreferencesView(discord.ui.View):
             view=self,
         )
 
-    async def _show_home(self, interaction: discord.Interaction) -> None:
-        self.screen = SCREEN_HOME
-        await self._refresh(interaction)
+    def _show_screen_callback(self, target: str):
+        async def _callback(interaction: discord.Interaction) -> None:
+            self.screen = target
+            await self._refresh(interaction)
 
-    async def _show_routes(self, interaction: discord.Interaction) -> None:
-        self.screen = SCREEN_ROUTES
-        await self._refresh(interaction)
+        return _callback
 
-    async def _clear_routes(self, interaction: discord.Interaction) -> None:
-        self.selected_routes.clear()
+    def _route_toggle_callback(self, route: str, label: str):
+        async def _callback(interaction: discord.Interaction) -> None:
+            if route in self.selected_routes:
+                self.selected_routes.discard(route)
+                status = f"{label} off."
+            else:
+                self.selected_routes.add(route)
+                status = f"{label} on."
+            self.dirty = True
+            await self._refresh(interaction, status=status)
+
+        return _callback
+
+    def _profit_floor_callback(self, cents: int, label: str):
+        async def _callback(interaction: discord.Interaction) -> None:
+            changed = self.flip_floor_cents != cents
+            self.flip_floor_cents = cents
+            if changed:
+                self.dirty = True
+            await self._refresh(
+                interaction,
+                status=(
+                    f"Price mistakes: {label.lower()}."
+                    if changed
+                    else "That minimum is already set."
+                ),
+            )
+
+        return _callback
+
+    def _discount_callback(self, value: int, label: str):
+        async def _callback(interaction: discord.Interaction) -> None:
+            changed = self.dm_min_discount != value
+            self.dm_min_discount = value
+            if changed:
+                self.dirty = True
+            await self._refresh(
+                interaction,
+                status=(
+                    f"Smallest discount: {label}."
+                    if changed
+                    else "That discount is already set."
+                ),
+            )
+
+        return _callback
+
+    def _max_price_callback(self, value: int | None, label: str):
+        async def _callback(interaction: discord.Interaction) -> None:
+            changed = self.dm_max_price_cents != value
+            self.dm_max_price_cents = value
+            if changed:
+                self.dirty = True
+            await self._refresh(
+                interaction,
+                status=(
+                    f"Highest price: {label}."
+                    if changed
+                    else "That price limit is already set."
+                ),
+            )
+
+        return _callback
+
+    def _daily_cap_callback(self, value: int, label: str):
+        async def _callback(interaction: discord.Interaction) -> None:
+            changed = self.dm_daily_cap != value
+            self.dm_daily_cap = value
+            if changed:
+                self.dirty = True
+            await self._refresh(
+                interaction,
+                status=(
+                    f"Daily limit: {label}."
+                    if changed
+                    else "That daily limit is already set."
+                ),
+            )
+
+        return _callback
+
+    async def _toggle_enabled(self, interaction: discord.Interaction) -> None:
+        self.enabled = not self.enabled
         self.dirty = True
-        await self._refresh(interaction, status="Kinds of deals cleared. Your product and category picks apply.")
-
-    async def _show_products(self, interaction: discord.Interaction) -> None:
-        self.screen = SCREEN_PRODUCTS
-        await self._refresh(interaction)
-
-    async def _show_categories(self, interaction: discord.Interaction) -> None:
-        self.screen = SCREEN_CATEGORIES
-        await self._refresh(interaction)
+        await self._refresh(
+            interaction,
+            status=(
+                "🔔 Alerts on. Save changes to apply."
+                if self.enabled
+                else "🔕 Alerts off. Save changes to apply."
+            ),
+        )
 
     async def _previous_product_page(self, interaction: discord.Interaction) -> None:
         self.product_page_index = max(0, self.product_page_index - 1)
@@ -841,44 +868,25 @@ class DmDealPreferencesView(discord.ui.View):
     async def _open_search(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(_CategorySearchModal(self))
 
-    async def _open_dm_rules(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(_DmDealRulesModal(self))
-
     async def _open_brands(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(_BrandFilterModal(self))
-
-    async def _cycle_mode(self, interaction: discord.Interaction) -> None:
-        try:
-            index = DM_MODE_ORDER.index(self.dm_mode)
-        except ValueError:
-            index = -1
-        self.dm_mode = DM_MODE_ORDER[(index + 1) % len(DM_MODE_ORDER)]
-        self.dirty = True
-        await self._refresh(
-            interaction,
-            status=(
-                f"🎚️ Mode changed to **{DM_MODE_LABELS[self.dm_mode]}** — "
-                f"{_mode_help(self.dm_mode)}."
-            ),
-        )
 
     async def _clear_search(self, interaction: discord.Interaction) -> None:
         self.search_query = ""
         self.page_index = 0
         await self._refresh(interaction)
 
-    async def _clear_current_tab(self, interaction: discord.Interaction) -> None:
-        active = self._active_set()
-        changed = bool(active)
+    async def _clear_categories(self, interaction: discord.Interaction) -> None:
+        changed = bool(self.selected_categories)
         if changed:
-            active.clear()
+            self.selected_categories.clear()
             self.dirty = True
         await self._refresh(
             interaction,
             status=(
-                f"🧹 Cleared {TAB_LABELS[self.tab]}."
+                "🧹 Cleared category picks."
                 if changed
-                else f"{TAB_LABELS[self.tab]} is already empty."
+                else "No categories were picked."
             ),
         )
 
@@ -910,52 +918,15 @@ class DmDealPreferencesView(discord.ui.View):
             ),
         )
 
-    async def _toggle_flip(self, interaction: discord.Interaction) -> None:
-        self.flip_enabled = not self.flip_enabled
-        self.dirty = True
-        await self._refresh(
-            interaction,
-            status=(
-                "💰 Price mistakes on."
-                if self.flip_enabled
-                else "💰 Price mistakes off."
-            ),
-        )
-
-    async def _open_profit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(_FlipProfitModal(self))
-
     async def _save(self, interaction: discord.Interaction) -> None:
-        categories = compose_category_preferences(
-            self.selected_categories,
-            self.favorite_categories,
-            muted=self.muted_categories,
-            flip_enabled=self.flip_enabled,
-            flip_min_profit_cents=self.flip_min_profit_cents,
-            routes=tuple(route for route, _ in route_labels() if route in self.selected_routes),
-        )
-        categories = update_product_preferences(
-            categories,
-            replace_interests=self.product_interests,
-            replace_brands=self.product_brands,
-        )
-        excludes = compose_exclude_terms(self.exclude_keywords)
         updated = replace(
-            self.preference,
-            mode=self.dm_mode,
-            min_discount=self.dm_min_discount,
-            min_savings_cents=self.dm_min_savings_cents,
-            min_score=self.dm_min_score,
-            max_price_cents=self.dm_max_price_cents,
-            max_alerts_per_day=self.dm_daily_cap,
-            categories=categories,
-            exclude_keywords=excludes,
+            self._draft_preference(),
             failure_count=0,
             last_error="",
-        ).normalized()
+        )
         saved = await save_dm_deal_alert_preference(self.bot.db, updated)
         self.preference = saved
-        self._sync_dm_rule_draft(saved)
+        self._sync_from_preference(saved)
         self.saved = True
         self.dirty = False
         self.screen = SCREEN_HOME
@@ -982,27 +953,6 @@ class DmDealPreferencesView(discord.ui.View):
             view=self,
         )
         self.stop()
-
-
-class _DmRouteSelect(discord.ui.Select):
-    def __init__(self, owner: DmDealPreferencesView) -> None:
-        self.owner = owner
-        options = [
-            discord.SelectOption(label=label, value=route, default=route in owner.selected_routes)
-            for route, label in route_labels()
-        ]
-        super().__init__(
-            placeholder="Select which kinds of deals to DM",
-            min_values=1,
-            max_values=len(options),
-            options=options,
-            row=0,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        self.owner.selected_routes = set(self.values)
-        self.owner.dirty = True
-        await self.owner._refresh(interaction, status="Kinds of deals updated. Save changes to apply.")
 
 
 class _ProductPageSelect(discord.ui.Select):
@@ -1056,51 +1006,10 @@ class _ProductPageSelect(discord.ui.Select):
         )
 
 
-class _PreferenceTabSelect(discord.ui.Select):
-    def __init__(self, owner: DmDealPreferencesView) -> None:
-        self.owner = owner
-        options = [
-            discord.SelectOption(
-                label="Favorites",
-                value=TAB_FAVORITES,
-                emoji="⭐",
-                description="Prioritize without hiding other categories.",
-                default=owner.tab == TAB_FAVORITES,
-            ),
-            discord.SelectOption(
-                label="Muted",
-                value=TAB_MUTED,
-                emoji="🔕",
-                description="Hide broad categories when no specific product is set.",
-                default=owner.tab == TAB_MUTED,
-            ),
-            discord.SelectOption(
-                label="Only these categories",
-                value=TAB_ALLOWLIST,
-                emoji="🎯",
-                description="Optional broad allowlist. Empty means all categories.",
-                default=owner.tab == TAB_ALLOWLIST,
-            ),
-        ]
-        super().__init__(
-            placeholder="Choose the category setting to edit",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=0,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        self.owner.tab = self.values[0]
-        self.owner.page_index = 0
-        await self.owner._refresh(interaction)
-
-
 class _CategoryPageSelect(discord.ui.Select):
     def __init__(self, owner: DmDealPreferencesView) -> None:
         self.owner = owner
         page = owner._current_page()
-        active = owner._active_set()
         if not page:
             options = [
                 discord.SelectOption(
@@ -1115,7 +1024,7 @@ class _CategoryPageSelect(discord.ui.Select):
                 max_values=1,
                 options=options,
                 disabled=True,
-                row=1,
+                row=0,
             )
             return
 
@@ -1126,37 +1035,25 @@ class _CategoryPageSelect(discord.ui.Select):
                 description=(
                     f"Deals from {category.min_discount_percent:g}% off"
                 )[:100],
-                default=category.key in active,
+                default=category.key in owner.selected_categories,
             )
             for category in page
         ]
         super().__init__(
-            placeholder=f"Select {TAB_LABELS[owner.tab].split(' ', 1)[1].lower()}",
+            placeholder="Select categories",
             min_values=0,
             max_values=len(options),
             options=options,
-            row=1,
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         page_keys = {category.key for category in self.owner._current_page()}
         selected = {value for value in self.values if value != "__none__"}
-        active = self.owner._active_set()
-        before = set(active)
-        active.difference_update(page_keys)
-        active.update(selected)
-
-        opposite_changed = False
-        if self.owner.tab == TAB_FAVORITES:
-            opposite_before = set(self.owner.muted_categories)
-            self.owner.muted_categories.difference_update(selected)
-            opposite_changed = opposite_before != self.owner.muted_categories
-        elif self.owner.tab == TAB_MUTED:
-            opposite_before = set(self.owner.favorite_categories)
-            self.owner.favorite_categories.difference_update(selected)
-            opposite_changed = opposite_before != self.owner.favorite_categories
-
-        changed = before != active or opposite_changed
+        before = set(self.owner.selected_categories)
+        self.owner.selected_categories.difference_update(page_keys)
+        self.owner.selected_categories.update(selected)
+        changed = before != self.owner.selected_categories
         if changed:
             self.owner.dirty = True
         await self.owner._refresh(
@@ -1226,165 +1123,5 @@ class _BrandFilterModal(discord.ui.Modal, title="Optional Walmart brands"):
                 f"🏷️ Brand filters updated. **{len(new_brands)}** selected."
                 if changed
                 else "Brand filters were already the same."
-            ),
-        )
-
-
-class _DmDealRulesModal(
-    discord.ui.Modal,
-    title="Change only the DM rules you want",
-):
-    threshold = discord.ui.TextInput(
-        label="Smallest discount (%) — optional",
-        placeholder="Blank keeps current",
-        required=False,
-        max_length=2,
-    )
-    savings = discord.ui.TextInput(
-        label="Minimum savings ($) — optional",
-        placeholder="Blank keeps current",
-        required=False,
-        max_length=12,
-    )
-    score = discord.ui.TextInput(
-        label="Minimum deal score — optional",
-        placeholder="Blank keeps current",
-        required=False,
-        max_length=3,
-    )
-    max_price = discord.ui.TextInput(
-        label="Maximum item price ($) — optional",
-        placeholder="Blank keeps current • type off for no limit",
-        required=False,
-        max_length=12,
-    )
-    daily_cap = discord.ui.TextInput(
-        label="Daily DM limit — optional",
-        placeholder="Blank keeps current • type unlimited for no cap",
-        required=False,
-        max_length=12,
-    )
-
-    def __init__(self, owner: DmDealPreferencesView) -> None:
-        super().__init__()
-        self.owner = owner
-        self.threshold.placeholder = f"Current: {owner.dm_min_discount}% • blank keeps"
-        self.savings.placeholder = (
-            f"Current: ${owner.dm_min_savings_cents / 100:,.2f} • blank keeps"
-        )
-        self.score.placeholder = f"Current: {owner.dm_min_score}/250 • blank keeps"
-        if owner.dm_max_price_cents is None:
-            self.max_price.placeholder = "Current: no limit • enter an amount to set one"
-        else:
-            self.max_price.placeholder = (
-                f"Current: ${owner.dm_max_price_cents / 100:,.2f} • "
-                "blank keeps • type off to remove"
-            )
-        self.daily_cap.placeholder = (
-            f"Current: {daily_cap_label(owner.dm_daily_cap)} • blank keeps"
-        )
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            rules = parse_dm_rule_values(
-                threshold_text=str(self.threshold.value or ""),
-                savings_text=str(self.savings.value or ""),
-                score_text=str(self.score.value or ""),
-                max_price_text=str(self.max_price.value or ""),
-                daily_cap_text=str(self.daily_cap.value or ""),
-            )
-        except ValueError as error:
-            await interaction.response.send_message(
-                f"⚠️ {error}",
-                ephemeral=True,
-            )
-            return
-
-        changed: list[str] = []
-        if rules.min_discount is not None and rules.min_discount != self.owner.dm_min_discount:
-            self.owner.dm_min_discount = rules.min_discount
-            changed.append(f"threshold **{rules.min_discount}%+**")
-        if (
-            rules.min_savings_cents is not None
-            and rules.min_savings_cents != self.owner.dm_min_savings_cents
-        ):
-            self.owner.dm_min_savings_cents = rules.min_savings_cents
-            changed.append(
-                f"minimum savings **${rules.min_savings_cents / 100:,.2f}**"
-            )
-        if rules.min_score is not None and rules.min_score != self.owner.dm_min_score:
-            self.owner.dm_min_score = rules.min_score
-            changed.append(f"minimum score **{rules.min_score}/250**")
-        if rules.clear_max_price:
-            if self.owner.dm_max_price_cents is not None:
-                self.owner.dm_max_price_cents = None
-                changed.append("maximum price **removed**")
-        elif (
-            rules.max_price_cents is not None
-            and rules.max_price_cents != self.owner.dm_max_price_cents
-        ):
-            self.owner.dm_max_price_cents = rules.max_price_cents
-            changed.append(
-                f"maximum price **${rules.max_price_cents / 100:,.2f}**"
-            )
-        if rules.daily_cap is not None and rules.daily_cap != self.owner.dm_daily_cap:
-            self.owner.dm_daily_cap = rules.daily_cap
-            changed.append(f"daily limit **{daily_cap_label(rules.daily_cap)}**")
-
-        if changed:
-            self.owner.dirty = True
-            status = "🔔 Deal rules updated: " + " • ".join(changed) + "."
-        elif rules.has_updates:
-            status = "Everything entered already matches the current draft."
-        else:
-            status = "No deal-rule changes entered."
-        await self.owner._refresh(interaction, status=status)
-
-
-class _FlipProfitModal(discord.ui.Modal, title="Price mistakes: smallest profit"):
-    amount = discord.ui.TextInput(
-        label="Smallest profit in dollars",
-        placeholder="50",
-        required=True,
-        max_length=12,
-    )
-
-    def __init__(self, owner: DmDealPreferencesView) -> None:
-        super().__init__()
-        self.owner = owner
-        self.amount.default = f"{owner.flip_min_profit_cents / 100:.2f}"
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        raw = (
-            str(self.amount.value or "")
-            .replace("$", "")
-            .replace(",", "")
-            .strip()
-        )
-        try:
-            dollars = float(raw)
-        except ValueError:
-            await interaction.response.send_message(
-                "Enter a dollar amount such as `50` or `125.00`.",
-                ephemeral=True,
-            )
-            return
-        if not 10 <= dollars <= 100_000:
-            await interaction.response.send_message(
-                "Smallest profit must be between $10 and $100,000.",
-                ephemeral=True,
-            )
-            return
-        new_value = int(round(dollars * 100))
-        changed = new_value != self.owner.flip_min_profit_cents
-        if changed:
-            self.owner.flip_min_profit_cents = new_value
-            self.owner.dirty = True
-        await self.owner._refresh(
-            interaction,
-            status=(
-                f"📈 Smallest profit set to **${new_value / 100:,.2f}**."
-                if changed
-                else "That smallest profit is already set."
             ),
         )

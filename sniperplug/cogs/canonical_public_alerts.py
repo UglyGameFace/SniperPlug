@@ -38,6 +38,7 @@ from sniperplug.services.walmart_delivery_recovery import (
     share_walmart_manual_lead,
 )
 from sniperplug.services.walmart_exact_queue_health import load_walmart_exact_queue_health
+from sniperplug.services.walmart_fanout_health import load_fanout_health
 from sniperplug.services.walmart_request_coordinator import walmart_quota_snapshot
 from sniperplug.services.walmart_worker_cycle_health import (
     FAILURE_ALERT_THRESHOLD,
@@ -644,6 +645,7 @@ async def build_global_autoscan_health_embed(
     global_state = await load_global_catalog_state(db)
     queue_health = await load_walmart_exact_queue_health(db)
     worker_health = await load_worker_cycle_health(db)
+    fanout_health = await load_fanout_health(db)
     quota_snapshot = walmart_quota_snapshot()
     extreme_enabled = await extreme_alerts_enabled(db, guild_id)
     extreme_summary = await extreme_price_health_summary(db, guild_id=guild_id)
@@ -876,6 +878,11 @@ async def build_global_autoscan_health_embed(
             + _quota_health_line(quota_snapshot),
             1024,
         ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Why deals were turned away (last 24 hours)",
+        value=trim_field(fanout_health.turnaway_summary(), 1024),
         inline=False,
     )
 

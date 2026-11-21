@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -75,6 +76,11 @@ from sniperplug.services.walmart_fanout_decisions import (
     ensure_walmart_fanout_decision_table,
     prune_walmart_fanout_decisions,
     record_walmart_fanout_decisions,
+)
+from sniperplug.services.walmart_fanout_health import (
+    FanoutCycleTotals,
+    maybe_send_outage_alarm,
+    record_fanout_cycle,
 )
 
 
@@ -290,6 +296,43 @@ async def maybe_prune_global_deal_event_storage_bounded(db: Any) -> tuple[int, i
         return event_rows, decision_rows
 
 
+async def _record_fanout_health_safely(
+    bot: Any,
+    db: Any,
+    result: GlobalDealFanoutResult,
+    *,
+    events_claimed: int,
+    recheck_reasons: Counter[str] | None = None,
+) -> None:
+    """Persist this cycle's fanout health and evaluate the outage alarm.
+
+    Observability only: the record and the alarm are each best-effort
+    inside their own service, and this wrapper adds a second guard so a
+    bookkeeping surprise can never break deal delivery.
+    """
+
+    try:
+        await record_fanout_cycle(
+            db,
+            FanoutCycleTotals(
+                events_loaded=result.candidates_loaded,
+                events_claimed=int(events_claimed or 0),
+                events_processed=result.events_processed,
+                public_posts=result.public_posts,
+                skipped_duplicate=result.public_skipped_duplicate,
+                skipped_not_alertable=result.public_skipped_not_alertable,
+                skipped_disabled=result.public_skipped_disabled,
+                skipped_wrong_retailer=result.public_skipped_wrong_retailer,
+                skipped_live_recheck=result.public_skipped_live_recheck,
+                public_errors=result.public_errors,
+                recheck_reasons=dict(recheck_reasons or {}),
+            ),
+        )
+        await maybe_send_outage_alarm(bot, db)
+    except Exception:  # noqa: BLE001 - health/alarm must never block delivery.
+        log.exception("Fanout health/alarm bookkeeping failed safely")
+
+
 async def fanout_recent_exact_walmart_deals(
     bot: Any,
     *,
@@ -319,11 +362,18 @@ async def fanout_recent_exact_walmart_deals(
             limit=max(1, int(event_limit)),
         )
         if not claimed_events:
-            return GlobalDealFanoutResult(
+            result = GlobalDealFanoutResult(
                 candidates_loaded=ingested.loaded,
                 exact_cards=ingested.exact_cards,
                 new_events=ingested.new_events,
             )
+            await _record_fanout_health_safely(
+                bot,
+                db,
+                result,
+                events_claimed=0,
+            )
+            return result
 
         load_result = await list_live_public_alert_guilds(
             db,
@@ -347,6 +397,14 @@ async def fanout_recent_exact_walmart_deals(
                 for event in claimed_events
                 if event.deal_key not in superseded
             ]
+        )
+        # Per-reason rejection counts for the durable fanout health
+        # record. The budget reason is a defer, not a rejection, so it
+        # is excluded here (those events are rechecked next cycle).
+        recheck_reason_counts: Counter[str] = Counter(
+            reason
+            for reason in live_rechecks.values()
+            if reason and reason != LIVE_RECHECK_BUDGET_REASON
         )
         preferences = await list_enabled_dm_deal_alert_preferences(db)
         # Feedback learning is guild-scoped, so it is applied per guild at
@@ -709,12 +767,20 @@ async def fanout_recent_exact_walmart_deals(
                 "recheck budget exhausted",
                 len(recheck_deferred),
             )
-        return GlobalDealFanoutResult(
+        result = GlobalDealFanoutResult(
             candidates_loaded=ingested.loaded,
             exact_cards=ingested.exact_cards,
             new_events=ingested.new_events,
             **totals,
         )
+        await _record_fanout_health_safely(
+            bot,
+            db,
+            result,
+            events_claimed=len(claimed_events),
+            recheck_reasons=recheck_reason_counts,
+        )
+        return result
 
 
 async def _ingest_verified_queue_events_bulk(

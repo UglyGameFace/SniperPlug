@@ -237,7 +237,7 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, st
             if cache_only:
                 warnings = tuple(result.warnings) + (f"Live SerpApi scan was blocked by quota guard: {quota.reason}",)
                 return HomeDepotLocalScan(sku, zip_code, sku, (), warnings, "SerpApi cache miss • live scan blocked", requested_store_id=store_id, returned_count=len(result.candidates), returned_candidates=tuple(result.candidates), match_mode="blocked", match_note="Blocked: quota guard stopped the live scan and no cached result was available.")
-            search_cost = 0 if result.metadata.get("cache_hit") else 1
+            search_cost = int(result.metadata.get("serpapi_credit", 0 if result.metadata.get("cache_hit") else 1))
             quota_after = serpapi_quota_guard.record(user_id, cost=search_cost)
             return HomeDepotLocalScan(sku, zip_code, sku, (), result.warnings, f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today", requested_store_id=store_id, returned_count=len(result.candidates), returned_candidates=tuple(result.candidates), match_mode="blocked", match_note="Blocked: no exact ID proof and no single-result fallback.")
 
@@ -270,10 +270,10 @@ async def run_home_depot_local_scan(user_id: int, sku: str, zip_code: str, *, st
     if cache_only:
         quota_text = f"SerpApi cache used • live scan blocked: {quota.reason}"
     else:
-        search_cost = 0 if result.metadata.get("cache_hit") else 1
+        search_cost = int(result.metadata.get("serpapi_credit", 0 if result.metadata.get("cache_hit") else 1))
         detail_cost = 0
         if detail_lookup_used:
-            detail_cost = 0 if detail and any("cache hit" in warning.lower() for warning in detail.warnings) else 1
+            detail_cost = 0 if detail and any("cache hit" in warning.lower() or "direct gateway" in warning.lower() for warning in detail.warnings) else 1
         quota_after = serpapi_quota_guard.record(user_id, cost=search_cost + detail_cost)
         quota_text = f"SerpApi used: {quota_after.daily_used}/{quota_after.daily_limit} today"
         if search_cost + detail_cost == 0:

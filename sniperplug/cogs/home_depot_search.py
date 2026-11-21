@@ -158,9 +158,7 @@ class HomeDepotSearchCog(commands.Cog):
 
         try:
             quota = serpapi_quota_guard.check(interaction.user.id, cost=1)
-            if not quota.allowed:
-                await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
-                return
+            quota_blocked = not quota.allowed
 
             result = await provider.scan(
                 ProviderScanRequest(
@@ -172,10 +170,19 @@ class HomeDepotSearchCog(commands.Cog):
                         "store_id": cleaned_store_id,
                         "zip_code": cleaned_zip_code,
                         "requested_by": str(interaction.user.id),
+                        # When the SerpApi quota guard refuses a spend, the
+                        # direct gateway lane may still serve the scan for
+                        # free; the SerpApi fallback is cache-only then.
+                        "quota_blocked": quota_blocked,
                     },
                 )
             )
-            quota_cost = 0 if result.metadata.get("cache_hit") else 1
+            if quota_blocked and not result.candidates:
+                await interaction.followup.send(f"SerpApi scan blocked: {quota.reason}", ephemeral=True)
+                return
+            # Charge only what SerpApi actually spent: the composite lane
+            # reports serpapi_credit (0 for direct success / cache hits).
+            quota_cost = int(result.metadata.get("serpapi_credit", 0 if result.metadata.get("cache_hit") else 1))
             quota_after = serpapi_quota_guard.record(interaction.user.id, cost=quota_cost)
 
             if result.warnings and not result.candidates:

@@ -438,8 +438,7 @@ async def serpapi_hunt_search(hunt: StandingHunt) -> HuntSearchOutcome:
     if health.status != ProviderStatus.READY:
         return HuntSearchOutcome(quota_blocked=True)
     quota = serpapi_quota_guard.check(hunt.user_id, cost=1)
-    if not quota.allowed:
-        return HuntSearchOutcome(quota_blocked=True)
+    quota_blocked = not quota.allowed
     result = await provider.scan(
         ProviderScanRequest(
             source_key="home_depot_serpapi",
@@ -451,10 +450,16 @@ async def serpapi_hunt_search(hunt: StandingHunt) -> HuntSearchOutcome:
                 "zip_code": hunt.zip_code or "",
                 "requested_by": str(hunt.user_id),
                 "standing_hunt_id": str(hunt.hunt_id),
+                # A refused SerpApi spend no longer skips the hunt outright:
+                # the direct gateway lane can serve it for free, and the
+                # SerpApi fallback degrades to cache-only.
+                "quota_blocked": quota_blocked,
             },
         )
     )
-    credits = 0 if result.metadata.get("cache_hit") else 1
+    credits = int(result.metadata.get("serpapi_credit", 0 if result.metadata.get("cache_hit") else 1))
+    if quota_blocked and not result.candidates:
+        return HuntSearchOutcome(quota_blocked=True)
     serpapi_quota_guard.record(hunt.user_id, cost=credits)
     return HuntSearchOutcome(candidates=tuple(result.candidates), credits_used=credits)
 

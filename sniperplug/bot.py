@@ -45,7 +45,8 @@ from sniperplug.cogs.unified_menu import UnifiedMenuCog
 from sniperplug.providers.cached_walmart import CachedWalmartProvider
 from sniperplug.providers.home_depot import HomeDepotProvider
 from sniperplug.providers.registry import provider_registry
-from sniperplug.providers.serpapi_home_depot import SerpApiHomeDepotProvider, configure_home_depot_search_cache
+from sniperplug.providers.home_depot_direct import HomeDepotLaneProvider, configure_home_depot_direct_cache
+from sniperplug.providers.serpapi_home_depot import configure_home_depot_search_cache
 from sniperplug.providers.walmart import WalmartAffiliateConfig
 from sniperplug.providers.walmart_page_recovery import (
     PAGE_RECOVERY_REARM_LIMIT,
@@ -139,6 +140,7 @@ class SniperPlugBot(commands.Bot):
         log.info("Database schema ready backend=%s", getattr(self.db, "backend", "unknown"))
         configure_home_depot_product_detail_cache(self.db)
         configure_home_depot_search_cache(self.db)
+        configure_home_depot_direct_cache(self.db)
         log.info("Home Depot search/detail caches connected backend=%s", getattr(self.db, "backend", "unknown"))
 
         maintenance = await run_storage_maintenance(self.db)
@@ -157,7 +159,7 @@ class SniperPlugBot(commands.Bot):
         )
         provider_registry.register(CachedWalmartProvider(self.db, walmart_provider))
         provider_registry.register(HomeDepotProvider())
-        provider_registry.register(SerpApiHomeDepotProvider())
+        provider_registry.register(HomeDepotLaneProvider())
         log.info(
             "Walmart provider registered: enabled=%s configured=%s publisher_id=%s page_identity_recovery=true",
             walmart_provider.config.enabled,

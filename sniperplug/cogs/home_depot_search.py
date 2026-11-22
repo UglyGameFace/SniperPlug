@@ -400,8 +400,13 @@ class HomeDepotSearchCog(commands.Cog):
         embed, hunts = await build_my_hunts_embed(
             db, guild_id=interaction.guild_id, user_id=interaction.user.id
         )
-        view = HdHuntStopView(db, owner_id=interaction.user.id, hunts=hunts) if hunts else None
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        if hunts:
+            view = HdHuntStopView(db, owner_id=interaction.user.id, hunts=hunts)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        else:
+            # discord.py raises TypeError when a send is handed view=None
+            # explicitly; with no hunts there is nothing to attach.
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def open_penny_watch(self, interaction: discord.Interaction) -> None:
         """``/menu`` → eBay & Home Depot → Home Depot penny watch."""

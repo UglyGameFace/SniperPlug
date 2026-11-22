@@ -342,13 +342,13 @@ _MODAL_FIELDS: dict[str, tuple[_ModalField, ...]] = {
     ),
     "home-depot-search": (
         _ModalField("query", "What to search", "drill, patio set, paint", True),
-        _ModalField("store_id", "Store number (optional — blank uses your saved store)", "1234", False),
-        _ModalField("zip_code", "ZIP code (optional — blank uses your saved ZIP)", "06484", False),
+        _ModalField("store_id", "Store number (blank = your saved store)", "1234", False),
+        _ModalField("zip_code", "ZIP code (blank = your saved ZIP)", "06484", False),
     ),
     "home-depot-penny-hunt": (
         _ModalField("query", "What to hunt", "tools, garden, appliances", True),
-        _ModalField("store_id", "Store number (optional — blank uses your saved store)", "1234", False),
-        _ModalField("zip_code", "ZIP code (optional — blank uses your saved ZIP)", "06484", False),
+        _ModalField("store_id", "Store number (blank = your saved store)", "1234", False),
+        _ModalField("zip_code", "ZIP code (blank = your saved ZIP)", "06484", False),
     ),
     "home-depot-location": (
         _ModalField("zip_code", "ZIP code", "06484", True),
@@ -356,7 +356,7 @@ _MODAL_FIELDS: dict[str, tuple[_ModalField, ...]] = {
     ),
     "hd-stock": (
         _ModalField("sku", "SKU / Internet number", "1001234567", True),
-        _ModalField("zip_code", "ZIP code (optional — blank uses your saved ZIP)", "06484", False),
+        _ModalField("zip_code", "ZIP code (blank = your saved ZIP)", "06484", False),
         _ModalField("store_id", "Store number (optional)", "1234", False),
     ),
     "local-check": (

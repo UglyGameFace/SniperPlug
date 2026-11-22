@@ -318,3 +318,79 @@ async def test_submit_returns_a_usable_id_with_a_production_shaped_cursor() -> N
     finally:
         await conn.close()
         jobs._SCHEMA_READY = False
+
+
+# --- pending picture reads: crash recovery records -------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_read_round_trip_and_settle() -> None:
+    async with _isolated_db() as db:
+        pending_id = await jobs.record_pending_picture_read(
+            db,
+            user_id=USER_ID,
+            channel_id=777,
+            message_id=555,
+            reply_id=556,
+            picture_indexes=[0, 2],
+        )
+        assert pending_id > 0
+        real_now = datetime.now(timezone.utc)
+        rows = await jobs.list_unsettled_picture_reads(db, now=real_now + timedelta(hours=1))
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.id == pending_id
+        assert row.user_id == USER_ID
+        assert row.channel_id == 777
+        assert row.message_id == 555
+        assert row.reply_id == 556
+        assert row.picture_indexes == (0, 2)
+        assert row.settled_at is None
+        assert await jobs.mark_pending_picture_read_settled(db, pending_id) is True
+        assert await jobs.list_unsettled_picture_reads(db, now=real_now + timedelta(hours=1)) == []
+        # Marking twice is a no-op, not an error.
+        assert await jobs.mark_pending_picture_read_settled(db, pending_id) is True
+
+
+@pytest.mark.asyncio
+async def test_pending_read_age_floor_hides_fresh_records() -> None:
+    async with _isolated_db() as db:
+        await jobs.record_pending_picture_read(
+            db, user_id=USER_ID, channel_id=1, message_id=2, reply_id=3,
+            picture_indexes=[0],
+        )
+        # Just recorded: invisible to a recovery pass with a floor.
+        assert await jobs.list_unsettled_picture_reads(
+            db, min_age_seconds=150, now=datetime.now(timezone.utc)
+        ) == []
+        later = datetime.now(timezone.utc) + timedelta(seconds=200)
+        rows = await jobs.list_unsettled_picture_reads(db, min_age_seconds=150, now=later)
+        assert len(rows) == 1
+
+
+# --- orphaned finished jobs -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_orphaned_finished_jobs_only_old_and_unconsumed() -> None:
+    async with _isolated_db() as db:
+        real_now = datetime.now(timezone.utc)
+        done_id = await submit_dm_ocr_job(db, USER_ID, URL)
+        claimed = await claim_next_dm_ocr_job(db, now=real_now)
+        assert claimed is not None and claimed.id == done_id
+        await finish_dm_ocr_job(db, done_id, result_text="some text")
+        failed_id = await submit_dm_ocr_job(db, USER_ID, URL)
+        claimed = await claim_next_dm_ocr_job(db, now=real_now)
+        assert claimed is not None and claimed.id == failed_id
+        await fail_dm_ocr_job(db, failed_id, error="boom")
+        queued_id = await submit_dm_ocr_job(db, USER_ID, URL)
+
+        # Finished seconds ago: a live waiter may still consume them.
+        assert await jobs.list_orphaned_finished_jobs(db, min_age_seconds=600, now=real_now + timedelta(seconds=60)) == []
+        orphans = await jobs.list_orphaned_finished_jobs(
+            db, min_age_seconds=600, now=real_now + timedelta(seconds=700)
+        )
+        assert [job.id for job in orphans] == [done_id, failed_id]
+        assert orphans[0].result_text == "some text"
+        # The still-queued job is never an orphan.
+        assert all(job.id != queued_id for job in orphans)

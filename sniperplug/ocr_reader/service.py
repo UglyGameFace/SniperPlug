@@ -58,6 +58,52 @@ def peak_rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
+# The app is configured for 1024 MB (discloud.config RAM=1024), and a
+# single picture read peaked at 557 MB process RSS on 2026-11-21 —
+# on top of the bot + watchers sharing the process in embedded mode.
+# When the container's live cgroup limit silently sat at 512 MB
+# (the API record and the config both said 1024; only the live spec
+# lagged), every read of a real phone photo OOM-killed the whole
+# bot, silently, mid-read. The reader therefore reads the cgroup
+# limit itself at startup and shouts when it is below the floor a
+# read needs, so a drifted limit is a loud log line at boot instead
+# of a crash loop nobody can see a reason for.
+MIN_SAFE_CONTAINER_LIMIT_MB = 768.0
+
+_CGROUP_LIMIT_PATHS = (
+    "/sys/fs/cgroup/memory.max",  # cgroup v2
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # cgroup v1
+)
+
+
+def parse_cgroup_memory_max(text: str) -> float | None:
+    """Parse one cgroup memory-limit file body into MB (None = no limit)."""
+
+    value = str(text or "").strip()
+    if not value or value == "max":
+        return None
+    try:
+        limit_bytes = int(value)
+    except ValueError:
+        return None
+    # The v1 "no limit" sentinel is a page-aligned near-max int64.
+    if limit_bytes <= 0 or limit_bytes >= (1 << 62):
+        return None
+    return limit_bytes / (1024.0 * 1024.0)
+
+
+def container_memory_limit_mb() -> float | None:
+    """This container's effective memory limit in MB, when knowable."""
+
+    for path in _CGROUP_LIMIT_PATHS:
+        try:
+            with open(path) as handle:
+                return parse_cgroup_memory_max(handle.read())
+        except OSError:
+            continue
+    return None
+
+
 class OcrReaderService:
     def __init__(
         self,
@@ -83,12 +129,26 @@ class OcrReaderService:
         await asyncio.to_thread(self.engine.load)
         await touch_reader_heartbeat(self.db, rss_mb=current_rss_mb())
         heartbeat = asyncio.create_task(self._heartbeat_loop())
+        limit_mb = container_memory_limit_mb()
         log.info(
-            "picture reader ready rss_mb=%.1f poll_s=%s lease_s=%s",
+            "picture reader ready rss_mb=%.1f poll_s=%s lease_s=%s "
+            "container_limit_mb=%s",
             current_rss_mb(),
             self.settings.poll_seconds,
             self.settings.job_lease_seconds,
+            f"{limit_mb:.0f}" if limit_mb is not None else "unknown",
         )
+        if limit_mb is not None and limit_mb < MIN_SAFE_CONTAINER_LIMIT_MB:
+            log.error(
+                "container memory limit is %.0f MB, below the %.0f MB a "
+                "picture read needs on top of this process — reads of "
+                "real phone photos will be OOM-killed mid-read (the "
+                "2026-11-21 crash loop). discloud.config asks for "
+                "RAM=1024; the live container spec has drifted below "
+                "it. Re-apply the app RAM so the cgroup limit matches.",
+                limit_mb,
+                MIN_SAFE_CONTAINER_LIMIT_MB,
+            )
         try:
             while True:
                 try:

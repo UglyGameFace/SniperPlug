@@ -86,6 +86,7 @@ from sniperplug.services.dm_lists import (
     STATUS_EXACT,
     STATUS_UNCHECKED,
     STATUS_UNREADABLE,
+    DmListAddOutcome,
     DmListCandidate,
     DmListRow,
     add_dm_list_items,
@@ -93,6 +94,14 @@ from sniperplug.services.dm_lists import (
     list_dm_list_items,
     remove_dm_list_items,
     update_dm_list_item_check,
+)
+from sniperplug.services.dm_ocr_jobs import (
+    JOB_DONE,
+    consume_dm_ocr_job,
+    list_orphaned_finished_jobs,
+    list_unsettled_picture_reads,
+    mark_pending_picture_read_settled,
+    record_pending_picture_read,
 )
 from sniperplug.services.dm_product_interests import normalize_match_text
 from sniperplug.services.user_wishlist import (
@@ -155,6 +164,25 @@ SETTLE_FAILURE_NOTE = (
     "couldn't finish. Your list is under /menu → My deals → "
     "My list — send the pictures again and I'll read them then."
 )
+
+# Crash recovery for pending picture reads. A settle runs in a
+# background task; when the process died mid-read on 2026-11-21 the
+# task died with it and the reply sat on "Reading your picture…"
+# forever. Every deferred read is therefore recorded in
+# ``dm_list_pending_reads`` before its task starts, and a recovery
+# pass re-runs the settle for any record still unsettled past the
+# age floor — past it, no live waiter can still own the reply (the
+# remote waiter's own timeout is 120 s), so re-running cannot race
+# the original task; a per-process set of live record ids is the
+# second guard. The pass runs once shortly after boot and then on
+# an interval, and it also settles orphaned finished reader jobs
+# (a completed read whose waiter died before consuming it) from
+# their stored text, so the items still land on the user's list.
+PENDING_READ_MIN_AGE_SECONDS = 150.0
+PENDING_READ_RECOVERY_INTERVAL_SECONDS = 120.0
+PENDING_READ_RECOVERY_INITIAL_DELAY_SECONDS = 20.0
+PENDING_READ_RECOVERY_BATCH = 3
+ORPHANED_JOB_MIN_AGE_SECONDS = 600.0
 
 
 def reading_picture_note(count: int) -> str:
@@ -923,8 +951,23 @@ class DmListIntakeCog(commands.Cog):
         # Background tasks settling remote picture reads; kept so the
         # tasks are not garbage-collected mid-flight.
         self._pending_tasks: set[asyncio.Task] = set()
+        # Pending-read record ids whose settle is running in THIS
+        # process; the recovery pass never touches those.
+        self._live_pending_ids: set[int] = set()
+        self._recovery_task: asyncio.Task | None = None
         # user id -> monotonic timestamp of the last text-only help reply.
         self._help_replied_at: dict[int, float] = {}
+
+    async def cog_load(self) -> None:
+        self._recovery_task = asyncio.create_task(
+            self._pending_read_recovery_loop(),
+            name="sniperplug-dm-list-pending-read-recovery",
+        )
+
+    async def cog_unload(self) -> None:
+        if self._recovery_task is not None:
+            self._recovery_task.cancel()
+            self._recovery_task = None
 
     # -- the /menu door ----------------------------------------------
 
@@ -1116,6 +1159,24 @@ class DmListIntakeCog(commands.Cog):
             )
         except (discord.NotFound, discord.HTTPException, discord.Forbidden):
             log.exception("DM list intake could not reply in DM")
+        # Record the pending read BEFORE the settle task starts, so
+        # a process death mid-read leaves a recoverable record, not
+        # a reply that hangs on "Reading your picture…" forever.
+        pending_id: int | None = None
+        if sent is not None:
+            try:
+                pending_id = await record_pending_picture_read(
+                    db,
+                    user_id=author_id,
+                    channel_id=int(getattr(message.channel, "id", 0) or 0),
+                    message_id=int(getattr(message, "id", 0) or 0),
+                    reply_id=int(getattr(sent, "id", 0) or 0),
+                    picture_indexes=[index for _att, index in deferred],
+                )
+                self._live_pending_ids.add(pending_id)
+            except Exception:  # noqa: BLE001 - recovery is a safety net, not a gate.
+                pending_id = None
+                log.exception("DM list: could not record the pending picture read")
         task = asyncio.create_task(
             self._settle_remote_pictures(
                 message=message,
@@ -1129,6 +1190,7 @@ class DmListIntakeCog(commands.Cog):
                 notes=notes,
                 first_outcome=first_outcome,
                 page_price_item_ids=page_price_item_ids,
+                pending_id=pending_id,
             )
         )
         self._pending_tasks.add(task)
@@ -1193,6 +1255,7 @@ class DmListIntakeCog(commands.Cog):
         notes: _IntakeNotes,
         first_outcome: object,
         page_price_item_ids: set[str],
+        pending_id: int | None = None,
     ) -> None:
         """Settle deferred picture reads, then edit the reply to final.
 
@@ -1202,6 +1265,12 @@ class DmListIntakeCog(commands.Cog):
         matter when the picture finishes. A failed, timed-out, or
         reader-less read settles exactly like the no-engine path:
         an unreadable row plus the "isn't switched on yet" note.
+
+        When the settle was recorded as a pending read, finishing
+        here (successfully or with the failure note posted) marks
+        the record settled. A settle that never runs to either end
+        — the process died — leaves the record for the recovery
+        pass, which re-runs this very method against the reply.
         """
 
         try:
@@ -1235,6 +1304,157 @@ class DmListIntakeCog(commands.Cog):
                     log.exception(
                         "DM list: could not post the picture-read failure note"
                     )
+        if pending_id is not None:
+            self._live_pending_ids.discard(pending_id)
+            try:
+                await mark_pending_picture_read_settled(db, pending_id)
+            except Exception:  # noqa: BLE001 - the recovery pass is the backstop.
+                log.exception("DM list: could not mark pending read %s settled", pending_id)
+
+    # -- crash recovery for pending picture reads ---------------------
+
+    async def _pending_read_recovery_loop(self) -> None:
+        await asyncio.sleep(PENDING_READ_RECOVERY_INITIAL_DELAY_SECONDS)
+        while True:
+            try:
+                await self._recover_pending_reads_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a failed pass retries next interval.
+                log.exception("DM list pending-read recovery pass failed")
+            await asyncio.sleep(PENDING_READ_RECOVERY_INTERVAL_SECONDS)
+
+    async def _recover_pending_reads_once(self) -> None:
+        """Re-settle pending reads whose original settle never finished.
+
+        Runs shortly after boot and then on an interval. A record is
+        only eligible past ``PENDING_READ_MIN_AGE_SECONDS`` and when
+        no settle for it is live in this process, so the pass can
+        never race the read it is recovering.
+        """
+
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            return
+        provider = provider_registry.get("walmart")
+        if provider is None or await self._provider_gate(provider) is not None:
+            # Without search, a recovered settle could only guess;
+            # leave the records for a later pass instead.
+            return
+        records = await list_unsettled_picture_reads(
+            db,
+            min_age_seconds=PENDING_READ_MIN_AGE_SECONDS,
+            limit=PENDING_READ_RECOVERY_BATCH,
+        )
+        for record in records:
+            if record.id in self._live_pending_ids:
+                continue
+            try:
+                await self._recover_one_pending_read(db, provider, record)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - one bad record must not block the rest.
+                log.exception(
+                    "DM list: pending-read recovery failed for record %s", record.id
+                )
+        await self._settle_orphaned_jobs(db, provider)
+
+    async def _recover_one_pending_read(self, db, provider, record) -> None:
+        try:
+            channel = await self.bot.fetch_channel(record.channel_id)  # type: ignore[attr-defined]
+            message = await channel.fetch_message(record.message_id)
+            sent = await channel.fetch_message(record.reply_id)
+        except (discord.NotFound, discord.Forbidden):
+            # The conversation or the reply is gone for good: there
+            # is nothing left to resolve, so close the record rather
+            # than retrying a ghost on every pass.
+            log.info(
+                "DM list: pending read %s points at a deleted message; closing it",
+                record.id,
+            )
+            await mark_pending_picture_read_settled(db, record.id)
+            return
+        images = [
+            att
+            for att in list(getattr(message, "attachments", ()) or ())
+            if _is_image_attachment(att)
+        ]
+        deferred = [
+            (images[index], index)
+            for index in record.picture_indexes
+            if 0 <= index < len(images)
+        ]
+        if not deferred:
+            await mark_pending_picture_read_settled(db, record.id)
+            return
+        self._live_pending_ids.add(record.id)
+        # The original intake's link rows were already saved and
+        # shown before the crash; the recovered settle starts from
+        # an empty immediate outcome and settles only the pictures.
+        first_outcome = await add_dm_list_items(db, record.user_id, [])
+        await self._settle_remote_pictures(
+            message=message,
+            sent=sent,
+            author_id=record.user_id,
+            db=db,
+            provider=provider,
+            deferred=deferred,
+            budget=_Budget(MAX_VERIFICATIONS_PER_MESSAGE),
+            searches=_Budget(MAX_SEARCHES_PER_MESSAGE),
+            notes=_IntakeNotes(),
+            first_outcome=first_outcome,
+            page_price_item_ids=set(),
+            pending_id=record.id,
+        )
+
+    async def _settle_orphaned_jobs(self, db, provider) -> None:
+        """Settle finished reader jobs whose waiter died before consuming.
+
+        These have no pending-read record (they predate records, or
+        the waiter died before it could record one), so there is no
+        reply to edit — but the read itself finished, and its items
+        still belong on the user's list. Settle from the stored
+        text through the same candidate pipeline, then consume.
+        """
+
+        jobs = await list_orphaned_finished_jobs(
+            db,
+            min_age_seconds=ORPHANED_JOB_MIN_AGE_SECONDS,
+            limit=PENDING_READ_RECOVERY_BATCH,
+        )
+        for job in jobs:
+            source_ref = f"orphan-job:{job.id}"
+            try:
+                if job.status == JOB_DONE and job.result_text:
+                    candidates = await self._candidates_from_text(
+                        job.result_text,
+                        db=db,
+                        provider=provider,
+                        budget=_Budget(MAX_VERIFICATIONS_PER_MESSAGE),
+                        searches=_Budget(MAX_SEARCHES_PER_MESSAGE),
+                        page_price_item_ids=set(),
+                        source_ref=source_ref,
+                    )
+                else:
+                    candidates = [
+                        DmListCandidate(
+                            name="",
+                            status=STATUS_UNREADABLE,
+                            source="photo",
+                            source_ref=source_ref,
+                        )
+                    ]
+                await add_dm_list_items(db, job.user_id, candidates)
+                await consume_dm_ocr_job(db, job.id)
+                log.info(
+                    "DM list: settled orphaned picture job %s for user %s",
+                    job.id,
+                    job.user_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - leave it for the next pass / stale sweep.
+                log.exception("DM list: orphaned job %s could not settle", job.id)
 
     async def _settle_remote_pictures_inner(
         self,

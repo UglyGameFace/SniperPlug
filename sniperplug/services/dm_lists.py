@@ -121,6 +121,10 @@ class DmListAddOutcome:
     duplicates: int = 0
     cap_reached: bool = False
     total: int = 0
+    # The existing rows the duplicates matched, in candidate order.
+    # Callers render these by name ("already on your list") instead of
+    # leaving the user with a bare duplicate count and nothing shown.
+    duplicate_rows: tuple[DmListRow, ...] = ()
 
 
 async def ensure_dm_list_tables(db: Any) -> None:
@@ -246,9 +250,22 @@ async def add_dm_list_items(
         dm_list_name_key(row.name) for row in existing if dm_list_name_key(row.name)
     }
     known_source_refs = {row.source_ref for row in existing if row.source_ref}
+    rows_by_name_key = {
+        dm_list_name_key(row.name): row
+        for row in existing
+        if dm_list_name_key(row.name)
+    }
+    rows_by_source_ref = {row.source_ref: row for row in existing if row.source_ref}
     total = len(existing)
     added: list[DmListRow] = []
+    duplicate_rows: list[DmListRow] = []
+    duplicate_row_ids: set[int] = set()
     duplicates = 0
+
+    def _note_duplicate(row: DmListRow) -> None:
+        if row.id not in duplicate_row_ids:
+            duplicate_row_ids.add(row.id)
+            duplicate_rows.append(row)
     cap_reached = False
     conn = db.require_conn()
     now = _utc_now_iso()
@@ -295,12 +312,17 @@ async def add_dm_list_items(
                     updated_at=now,
                 )
                 rows_by_item_id[item_id] = upgraded
+                rows_by_name_key[dm_list_name_key(upgraded.name)] = upgraded
                 added.append(upgraded)
                 continue
             duplicates += 1
+            _note_duplicate(prior)
             continue
         if item_id is None and name_key and name_key in known_name_keys:
             duplicates += 1
+            prior = rows_by_name_key.get(name_key)
+            if prior is not None:
+                _note_duplicate(prior)
             continue
         if (
             candidate.status == STATUS_UNREADABLE
@@ -308,6 +330,9 @@ async def add_dm_list_items(
             and source_ref in known_source_refs
         ):
             duplicates += 1
+            prior = rows_by_source_ref.get(source_ref)
+            if prior is not None:
+                _note_duplicate(prior)
             continue
         if total >= MAX_DM_LIST_ITEMS_PER_USER:
             cap_reached = True
@@ -366,8 +391,10 @@ async def add_dm_list_items(
             rows_by_item_id[item_id] = new_row
         if name_key:
             known_name_keys.add(name_key)
+            rows_by_name_key[name_key] = new_row
         if source_ref:
             known_source_refs.add(source_ref)
+            rows_by_source_ref[source_ref] = new_row
         total += 1
         added.append(new_row)
     if added:
@@ -377,6 +404,7 @@ async def add_dm_list_items(
         duplicates=duplicates,
         cap_reached=cap_reached,
         total=total,
+        duplicate_rows=tuple(duplicate_rows),
     )
 
 

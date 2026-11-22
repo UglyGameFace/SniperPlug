@@ -313,6 +313,31 @@ def test_underprice_card_without_detector_evidence_fails_closed() -> None:
     assert "price proof is incomplete" in decision.reason
 
 
+# ------------------------------------------------------- seller name forms
+
+
+def _named(seller: str):
+    return SimpleNamespace(seller_name=seller)
+
+
+def test_same_seller_name_forms() -> None:
+    # Walmart's fetch paths record the first-party seller as both
+    # "Walmart" and "Walmart.com"; the live re-check must treat those
+    # as the same seller in both directions (observed live on item
+    # 599917754, where the mismatch rejected a genuine lead).
+    assert extreme._same_seller_name(_named("Walmart"), _named("Walmart.com"))
+    assert extreme._same_seller_name(_named("Walmart.com"), _named("Walmart"))
+    assert extreme._same_seller_name(_named("Microsoft"), _named("Microsoft"))
+    assert extreme._same_seller_name(_named("  Microsoft "), _named("microsoft"))
+
+
+def test_different_seller_names_still_fail() -> None:
+    assert not extreme._same_seller_name(_named("Walmart"), _named("Microsoft"))
+    assert not extreme._same_seller_name(_named("Walmart.com"), _named("BargainDeals4U"))
+    assert not extreme._same_seller_name(_named(""), _named("Walmart"))
+    assert not extreme._same_seller_name(_named("Walmart"), _named(""))
+
+
 # ---------------------------------------------------------------- fanout
 
 

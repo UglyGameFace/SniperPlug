@@ -51,6 +51,7 @@ from sniperplug.services.walmart_exact_price_enrichment import (
 )
 from sniperplug.services.walmart_extreme_price_signals import (
     ABSOLUTE_EXTREME_MAX_PRICE,
+    WALMART_FIRST_PARTY_SELLERS,
     exact_price_lead_evidence,
     is_accessory_title,
     listed_price_anomaly,
@@ -230,6 +231,34 @@ def _row_get(row: Any, column: str, index: int) -> Any:
 
 
 
+def _normalized_seller_name(candidate: Any) -> str:
+    return " ".join(
+        str(getattr(candidate, "seller_name", "") or "").lower().split()
+    )
+
+
+def _same_seller_name(original: Any, refreshed: Any) -> bool:
+    """True when two fetches name the same seller.
+
+    Walmart's own fetch paths disagree on the first-party seller's
+    string form: the search/detail path records "Walmart" while the
+    items-by-id lookup records "Walmart.com". Strict string equality
+    therefore rejected genuine same-seller offers as
+    ``live_seller_name_changed`` (observed live on item 599917754,
+    2026-11-21). Two names that are both Walmart first-party forms are
+    the same seller; every other pair still needs exact normalized
+    equality, so a real offer swap to a different seller still fails.
+    """
+
+    first = _normalized_seller_name(original)
+    second = _normalized_seller_name(refreshed)
+    if not first or not second:
+        return False
+    if first == second:
+        return True
+    return first in WALMART_FIRST_PARTY_SELLERS and second in WALMART_FIRST_PARTY_SELLERS
+
+
 async def live_extreme_offer_rejection_reason(candidate: Any, *, page_price: bool = False) -> str | None:
     """Refresh the exact Walmart item, offer and price right before public delivery.
 
@@ -266,9 +295,7 @@ async def live_extreme_offer_rejection_reason(candidate: Any, *, page_price: boo
         return "live_fetch_unverified"
     if exact_offer_identity(refreshed) != identity:
         return "live_offer_or_variant_changed"
-    original_seller = " ".join(str(getattr(candidate, "seller_name", "") or "").lower().split())
-    current_seller = " ".join(str(getattr(refreshed, "seller_name", "") or "").lower().split())
-    if not original_seller or not current_seller or original_seller != current_seller:
+    if not _same_seller_name(candidate, refreshed):
         return "live_seller_name_changed"
     if refreshed.can_add_to_cart is not True or is_unavailable_stock(refreshed.stock_status):
         return "live_not_buyable"
@@ -339,9 +366,7 @@ async def live_underprice_rejection_reason(candidate: Any) -> str | None:
         return "live_fetch_unverified"
     if exact_offer_identity(refreshed) != identity:
         return "live_offer_or_variant_changed"
-    original_seller = " ".join(str(getattr(candidate, "seller_name", "") or "").lower().split())
-    current_seller = " ".join(str(getattr(refreshed, "seller_name", "") or "").lower().split())
-    if not original_seller or not current_seller or original_seller != current_seller:
+    if not _same_seller_name(candidate, refreshed):
         return "live_seller_name_changed"
     if refreshed.can_add_to_cart is not True or is_unavailable_stock(refreshed.stock_status):
         return "live_not_buyable"

@@ -21,7 +21,7 @@ import discord
 import pytest
 
 from sniperplug.cogs import home_depot_search
-from sniperplug.cogs.home_depot_search import HdHuntStopView, HomeDepotSearchCog
+from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.cogs.unified_menu import _MODAL_FIELDS, _MenuModal
 
 DISCORD_LABEL_LIMIT = 45
@@ -102,11 +102,28 @@ async def test_my_hunts_with_saved_hunts_attaches_the_stop_view(
     async def fake_build(db, *, guild_id, user_id):
         return discord.Embed(title="My Home Depot hunts"), [hunt]
 
+    # Stand-in for the real stop view: what this test pins is the branch
+    # (saved hunts -> a stop view is built from them and attached), not
+    # discord.py's View machinery. Constructing a real View under a
+    # running loop here left loop-bound state behind that made a later,
+    # unrelated database test fail in CI (2026-11-22 bisect, PR #376).
+    built: list[SimpleNamespace] = []
+
+    class _FakeStopView:
+        def __init__(self, db, owner_id, hunts):
+            self.db = db
+            self.owner_id = owner_id
+            self.hunts = hunts
+            built.append(self)
+
     monkeypatch.setattr(home_depot_search, "build_my_hunts_embed", fake_build)
+    monkeypatch.setattr(home_depot_search, "HdHuntStopView", _FakeStopView)
     interaction = _fake_interaction()
 
     await HomeDepotSearchCog.open_my_hunts(_fake_self(), interaction)
 
     assert len(interaction.followup.calls) == 1
     view = interaction.followup.calls[0].get("view")
-    assert isinstance(view, HdHuntStopView)
+    assert isinstance(view, _FakeStopView)
+    assert view.hunts == [hunt]
+    assert view.owner_id == 42

@@ -20,7 +20,11 @@ import pytest
 import sniperplug.services.dm_ocr_jobs as jobs
 from sniperplug.ocr_reader.config import OcrReaderSettings
 from sniperplug.ocr_reader.engine import RapidOcrEngine, preprocess_image, strip_boxes
-from sniperplug.ocr_reader.service import MAX_JOB_IMAGE_BYTES, OcrReaderService
+from sniperplug.ocr_reader.service import (
+    MAX_JOB_IMAGE_BYTES,
+    OcrReaderService,
+    parse_cgroup_memory_max,
+)
 from sniperplug.services.dm_ocr_jobs import (
     JOB_DONE,
     JOB_FAILED,
@@ -251,3 +255,19 @@ def test_main_requirements_carry_the_reader_wheels() -> None:
     for pin in ("rapidocr-onnxruntime==1.4.4", "onnxruntime==1.32.0", "Pillow==13.0.0"):
         assert pin in reader_reqs
         assert pin in main_reqs
+
+
+# --- container memory limit tripwire -----------------------------------------
+
+
+def test_parse_cgroup_memory_max_v2_bytes() -> None:
+    assert parse_cgroup_memory_max("536870912\n") == 512.0
+    assert parse_cgroup_memory_max("1073741824") == 1024.0
+
+
+def test_parse_cgroup_memory_max_unbounded_forms() -> None:
+    assert parse_cgroup_memory_max("max") is None
+    assert parse_cgroup_memory_max("") is None
+    assert parse_cgroup_memory_max("not-a-number") is None
+    # The cgroup v1 "no limit" sentinel is a page-aligned near-max int64.
+    assert parse_cgroup_memory_max("9223372036854771712") is None

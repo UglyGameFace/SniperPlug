@@ -56,6 +56,10 @@ from sniperplug.services.walmart_extreme_price_signals import (
     listed_price_anomaly,
     primary_product_evidence,
 )
+from sniperplug.services.underprice_lead import (
+    build_underprice_lead_card,
+    underprice_lead_reference,
+)
 from sniperplug.services.stock_status import is_unavailable_stock
 
 # Only <=$10 substantial hardware qualifies without a trusted markdown.
@@ -291,6 +295,72 @@ async def live_extreme_offer_rejection_reason(candidate: Any, *, page_price: boo
         return "live_page_proof_invalid"
     if not page_price and not eligible_exact_extreme_candidate(refreshed):
         return "live_exact_proof_invalid"
+    return None
+
+
+async def live_underprice_rejection_reason(candidate: Any) -> str | None:
+    """Refresh the exact offer right before an underprice lead DM.
+
+    Mirrors ``live_extreme_offer_rejection_reason``: a lead DM tells a
+    subscriber to go look *now*, and price errors die fast, so a stale
+    snapshot is not enough. The refreshed offer must still be the same
+    item/offer/seller, still buyable, within the same price tolerance,
+    and must still satisfy the underprice detector against its own list
+    price. Fetch failures are returned as their own reasons so the
+    caller can hold the cursor and retry while the snapshot is fresh.
+    """
+    identity = exact_offer_identity(candidate)
+    if identity is None:
+        return "original_identity_missing"
+    provider = provider_registry.get("walmart")
+    if provider is None:
+        return "live_provider_unavailable"
+    claim = _QueueClaim(
+        item_id=identity.item_id,
+        title=str(getattr(candidate, "title", "") or ""),
+        product_url=str(getattr(candidate, "product_url", "") or ""),
+        image_url=str(getattr(candidate, "image_url", "") or ""),
+        apparent_current_cents=None,
+        apparent_reference_cents=None,
+        route_hint="underprice_pre_send_recheck",
+        lease_token="",
+        attempt_count=0,
+    )
+    try:
+        refreshed, status, _error = await _fetch_exact_candidate_off_loop(
+            provider, claim, timeout_seconds=6.0
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("Walmart underprice pre-send check failed item=%s", identity.item_id)
+        return "live_fetch_failed"
+    if status != "verified" or refreshed is None:
+        return "live_fetch_unverified"
+    if exact_offer_identity(refreshed) != identity:
+        return "live_offer_or_variant_changed"
+    original_seller = " ".join(str(getattr(candidate, "seller_name", "") or "").lower().split())
+    current_seller = " ".join(str(getattr(refreshed, "seller_name", "") or "").lower().split())
+    if not original_seller or not current_seller or original_seller != current_seller:
+        return "live_seller_name_changed"
+    if refreshed.can_add_to_cart is not True or is_unavailable_stock(refreshed.stock_status):
+        return "live_not_buyable"
+    attrs = getattr(refreshed, "variant_attributes", None) or {}
+    if str(attrs.get("availableOnline") or "").lower() in {"no", "false", "0", "off"}:
+        return "live_not_online"
+    if refreshed.is_member_only or refreshed.is_checkout_price:
+        return "live_checkout_restricted"
+    old = _positive_number(getattr(candidate, "api_current_price", None))
+    new = _positive_number(getattr(refreshed, "api_current_price", None))
+    if old is None or new is None:
+        return "live_price_missing"
+    tolerance = max(
+        LIVE_PRICE_TOLERANCE_CENTS / 100, old * LIVE_PRICE_TOLERANCE_RATIO
+    )
+    if abs(old - new) > tolerance:
+        return "live_price_changed"
+    if underprice_lead_reference(refreshed) is None:
+        return "live_underprice_proof_invalid"
     return None
 
 
@@ -981,6 +1051,39 @@ async def fanout_recent_extreme_walmart_prices(bot: Any) -> dict[str, int]:
                 card = build_page_price_extreme_card(candidate)
             else:
                 card = build_extreme_price_card(candidate)
+            if card is None and status != VERIFIED_PAGE_PRICE_STATUS:
+                # Not a public extreme lead. It may still be a first-party
+                # underprice lead (exact price far below Walmart's own
+                # list price): those are DM-only speculative leads for
+                # price-mistake subscribers and are NEVER posted publicly,
+                # so there is no public opt-in gate on this path — the
+                # subscriber's own DM opt-in is the gate, exactly as for
+                # extreme leads when no guild opted into the public lane.
+                lead_card = build_underprice_lead_card(candidate)
+                if lead_card is not None:
+                    issue = await live_underprice_rejection_reason(candidate)
+                    if issue is not None:
+                        log.info(
+                            "Walmart underprice lead rejected item=%s reason=%s",
+                            item_id, issue,
+                        )
+                        if issue in {
+                            "live_fetch_unverified",
+                            "live_fetch_failed",
+                            "live_provider_unavailable",
+                        }:
+                            # Wait for the next cycle while snapshot
+                            # freshness is valid.
+                            break
+                        next_cursor = (verified_at, item_id)
+                        continue
+                    dm_totals.update(
+                        await _deliver_extreme_card_to_dm_subscribers(
+                            bot, db, lead_card
+                        )
+                    )
+                    next_cursor = (verified_at, item_id)
+                    continue
             if card is not None:
                 issue = await live_extreme_offer_rejection_reason(
                     candidate, page_price=status == VERIFIED_PAGE_PRICE_STATUS

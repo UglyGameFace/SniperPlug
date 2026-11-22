@@ -16,6 +16,7 @@ from sniperplug.services.listing_contradiction import (
     candidate_condition,
     listing_lead_reference_price,
 )
+from sniperplug.services.underprice_lead import underprice_lead_reference
 from sniperplug.services.routing import PRICE_GLITCH_ROUTE, route_label
 from sniperplug.services.dm_personal_categories import (
     category_key_for_card,
@@ -90,6 +91,13 @@ def match_dm_deal(
     score, cap and profit-floor guards all apply unchanged. A listing
     lead without trusted reference evidence stays an exact-price lead
     under the interest rule above.
+
+    A first-party underprice lead (exact price at or below 20% of
+    Walmart's own list price, sold by Walmart itself) is matched the
+    same evidence-backed way: the list price is the reference the
+    implied gap is measured against, on the price-mistake route, with
+    every guard unchanged. It is a list price, never a verified
+    was-price, and the trace says so.
     """
 
     pref = preference.normalized()
@@ -173,6 +181,42 @@ def match_dm_deal(
                 listing_deal.typical_price = listing_reference
             score = score_deal_anomaly(listing_deal).score
 
+    # First-party underprice leads get the same evidence-backed
+    # treatment: the detector re-verified an exact price at or below 20%
+    # of Walmart's own list price (at least $50, at least $30 of gap,
+    # sold by Walmart itself), so there IS a reference to rank the lead
+    # by — the list price. It is ranked exactly like the listing lead
+    # above (implied gap versus the reference, price-mistake route, all
+    # guards unchanged), and the trace says the reference is a list
+    # price, never a verified markdown. A candidate that fails the
+    # detector's checks falls through to the ordinary paths unchanged.
+    underprice_candidate = getattr(card, "underprice_lead_candidate", None)
+    underprice_evidence_backed = False
+    if (
+        not listing_evidence_backed
+        and bool(getattr(card, "underprice_lead", False))
+        and underprice_candidate is not None
+        and hasattr(underprice_candidate, "to_normalized_deal")
+        and current_cents is not None
+        and _money_to_cents(getattr(underprice_candidate, "current_price", None))
+        == current_cents
+    ):
+        underprice_reference = underprice_lead_reference(underprice_candidate)
+        underprice_reference_cents = _money_to_cents(underprice_reference)
+        if (
+            underprice_reference_cents is not None
+            and underprice_reference_cents > current_cents
+        ):
+            underprice_evidence_backed = True
+            reference_cents = underprice_reference_cents
+            discount = (
+                (reference_cents - current_cents) / reference_cents * 100.0
+            )
+            underprice_deal = underprice_candidate.to_normalized_deal()
+            if _money_to_cents(getattr(underprice_deal, "typical_price", None)) is None:
+                underprice_deal.typical_price = underprice_reference
+            score = score_deal_anomaly(underprice_deal).score
+
     savings_cents = max(0, (reference_cents or 0) - (current_cents or 0))
     cash_cents = walmart_cash_cents(card)
 
@@ -243,7 +287,7 @@ def match_dm_deal(
     # Inclusion layers. Each is computed independently; any one of them is
     # enough, and none of them can veto another.
     route = verified_card_route(card)
-    if route is None and listing_evidence_backed:
+    if route is None and (listing_evidence_backed or underprice_evidence_backed):
         # A listing-error lead carries no verified deal route metadata —
         # the card is built by the listing lane, not the markdown lanes.
         # Its classification is the price-mistake route: the detector
@@ -360,6 +404,19 @@ def match_dm_deal(
             f"Exact-price lead • ${current_cents / 100:,.2f} • "
             "no verified was-price, no discount claimed • "
             f"category {category_key}"
+        )
+    elif underprice_evidence_backed:
+        # The gap is implied by Walmart's own list price, not a verified
+        # markdown — the trace says so, and names the route + floor
+        # basis the match stands on.
+        reason = (
+            f"Underprice lead • {discount:.0f}% implied gap vs "
+            f"${reference_cents / 100:,.2f} Walmart list price "
+            "(list price, not a verified markdown) • "
+            f"saves ${savings_cents / 100:,.2f} if the list price is the "
+            f"real usual price • score {score}/250 • "
+            f"category {category_key} • "
+            f"meets your {required_discount}% floor"
         )
     elif listing_evidence_backed:
         # The gap is implied by the trusted reference, not a verified

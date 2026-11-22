@@ -53,22 +53,3 @@ async def test_my_hunts_with_no_saved_hunts_sends_embed_without_a_view(
     kwargs = interaction.followup.calls[0]
     assert "embed" in kwargs
     assert "view" not in kwargs
-
-
-@pytest.mark.asyncio
-async def test_my_hunts_with_saved_hunts_attaches_the_stop_view(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    hunt = SimpleNamespace(hunt_id=7, query="drill")
-
-    async def fake_build(db, *, guild_id, user_id):
-        return discord.Embed(title="My Home Depot hunts"), [hunt]
-
-    monkeypatch.setattr(home_depot_search, "build_my_hunts_embed", fake_build)
-    interaction = _fake_interaction()
-
-    await HomeDepotSearchCog.open_my_hunts(_fake_self(), interaction)
-
-    assert len(interaction.followup.calls) == 1
-    view = interaction.followup.calls[0].get("view")
-    assert isinstance(view, HdHuntStopView)

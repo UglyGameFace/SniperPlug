@@ -11,6 +11,13 @@ from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
 
+from sniperplug.services.movie_screening_coverage import (
+    MovieScreeningCity,
+    coverage_cities_for_source,
+    coverage_city_matches_place,
+    fetch_seeitearly_movie_coverage,
+    movie_slug_for_drop,
+)
 from sniperplug.services.movie_ticket_drops import MovieTicketDrop, normalize_text
 from sniperplug.services.movie_ticket_snowflake_store import snowflake_text
 from sniperplug.services.seeitearly_screenings import (
@@ -28,6 +35,7 @@ SEEITEARLY_CITY_TIMEOUT_SECONDS = 10
 MAX_NEARBY_POSTAL_PLACES = 11
 MAX_CITY_PAGES_PER_LOOKUP = 8
 MAX_CITY_PAGE_CONCURRENCY = 4
+MAX_COVERAGE_FETCH_CONCURRENCY = 4
 LOCATION_CACHE_SECONDS = 30 * 60
 CITY_PAGE_CACHE_SECONDS = 10 * 60
 
@@ -180,24 +188,25 @@ async def filter_movie_drops_for_location(
     drops: list[MovieTicketDrop],
     preference: MovieUserLocationPreference,
 ) -> MovieLocalFilterResult:
-    """Return a conservative local view of manual movie results.
+    """Return a fail-closed, source-aware local movie view.
 
-    Global/reusable promotions remain visible. A screening row requires positive
-    free + local evidence. SeeItEarly can be matched against the free entries in
-    its public city pages; title-only screening rows from other sources remain
-    available through Show All when their current feed lacks distance-safe proof.
+    Reusable national promotions remain visible. Screening rows require positive
+    location evidence. SeeItEarly city pages remain the compatibility fallback,
+    while current movie-detail coverage supplies exact city/state identities and
+    provider hosts. A Gofobo result is local only when the matching nearby city
+    exposes an explicit free-pass link through Gofobo itself.
     """
 
     primary, nearby = await _resolve_zip_places(session, preference)
-    candidate_places = tuple(
+    nearby_in_radius = tuple(
         place for place in nearby if place.distance_miles <= preference.radius_miles
-    )[:MAX_CITY_PAGES_PER_LOOKUP]
-    if not candidate_places:
-        candidate_places = (primary,)
+    )
+    if not nearby_in_radius:
+        nearby_in_radius = (primary,)
 
-    # Do not serialize up to eight independent city requests. At a 10-second
-    # source timeout that could make one Local click take more than a minute.
-    # Four concurrent requests keeps latency bounded without hammering the source.
+    candidate_places = nearby_in_radius[:MAX_CITY_PAGES_PER_LOOKUP]
+
+    # Keep the established city-page proof path concurrent and bounded.
     semaphore = asyncio.Semaphore(MAX_CITY_PAGE_CONCURRENCY)
 
     async def fetch_place(place: MovieZipPlace) -> frozenset[str] | None:
@@ -217,30 +226,95 @@ async def filter_movie_drops_for_location(
         successful_places.append(place)
         local_movie_slugs.update(slugs)
 
+    # One title can appear from multiple sources. Fetch its public coverage once,
+    # then apply source-specific provider proof to each drop.
+    screening_by_slug: dict[str, MovieTicketDrop] = {}
+    for drop in drops:
+        if drop.classification != "local_screening":
+            continue
+        slug = movie_slug_for_drop(drop)
+        if slug and slug not in screening_by_slug:
+            screening_by_slug[slug] = drop
+
+    coverage_semaphore = asyncio.Semaphore(MAX_COVERAGE_FETCH_CONCURRENCY)
+
+    async def fetch_coverage(slug: str, drop: MovieTicketDrop):
+        async with coverage_semaphore:
+            try:
+                return slug, await fetch_seeitearly_movie_coverage(session, drop)
+            except Exception:  # noqa: BLE001 - supplemental coverage must fail closed.
+                return slug, None
+
+    coverage_pairs = await asyncio.gather(
+        *(fetch_coverage(slug, drop) for slug, drop in screening_by_slug.items())
+    )
+    coverage_by_slug = {slug: coverage for slug, coverage in coverage_pairs}
+
     kept: list[MovieTicketDrop] = []
     matched_screenings = 0
     hidden_screenings = 0
+    hidden_coverage: dict[str, tuple[MovieTicketDrop, tuple[MovieScreeningCity, ...]]] = {}
+    coverage_confirmed = False
+
     for drop in drops:
         if drop.classification != "local_screening":
             kept.append(drop)
             continue
-        if drop.source_key == SEEITEARLY_SOURCE_KEY and _drop_movie_slug(drop) in local_movie_slugs:
+
+        slug = movie_slug_for_drop(drop)
+        coverage = coverage_by_slug.get(slug)
+        source_cities: tuple[MovieScreeningCity, ...] = ()
+        if coverage is not None and coverage.document_valid:
+            coverage_confirmed = True
+            source_cities = coverage_cities_for_source(
+                coverage,
+                source_key=drop.source_key,
+            )
+
+        if source_cities:
+            if any(
+                coverage_city_matches_place(
+                    city,
+                    place_city=place.city,
+                    place_state=place.state,
+                )
+                for city in source_cities
+                for place in nearby_in_radius
+            ):
+                kept.append(drop)
+                matched_screenings += 1
+                continue
+
+            hidden_screenings += 1
+            hidden_coverage.setdefault(slug, (drop, source_cities))
+            continue
+
+        # Compatibility fallback for SeeItEarly itself when its movie-detail
+        # page cannot be used. Do not extend this fallback to Gofobo because a
+        # free title from another provider is not proof that Gofobo has a local
+        # pass for the same title.
+        if drop.source_key == SEEITEARLY_SOURCE_KEY and slug in local_movie_slugs:
             kept.append(drop)
             matched_screenings += 1
             continue
+
         hidden_screenings += 1
 
-    note = ""
-    if not successful_places:
-        note = (
-            "No SeeItEarly city page could be confirmed for the nearby postal places, "
-            "so distance-unverified screenings are hidden in Local mode."
-        )
-    elif matched_screenings == 0:
-        note = (
-            "No connected free SeeItEarly screening title matched a confirmed city page "
-            f"within {preference.radius_miles} miles of ZIP {preference.zip_code}."
-        )
+    note = _build_local_coverage_note(
+        hidden_coverage,
+        preference=preference,
+    )
+    if not note:
+        if not successful_places and not coverage_confirmed:
+            note = (
+                "No SeeItEarly city or movie-coverage page could be confirmed for the nearby postal places, "
+                "so distance-unverified screenings are hidden in Local mode."
+            )
+        elif matched_screenings == 0:
+            note = (
+                "No connected free screening title matched confirmed source-specific city coverage "
+                f"within {preference.radius_miles} miles of ZIP {preference.zip_code}."
+            )
 
     return MovieLocalFilterResult(
         drops=tuple(kept),
@@ -249,6 +323,41 @@ async def filter_movie_drops_for_location(
         searched_places=tuple(successful_places),
         note=note,
     )
+
+
+def _build_local_coverage_note(
+    hidden_coverage: dict[str, tuple[MovieTicketDrop, tuple[MovieScreeningCity, ...]]],
+    *,
+    preference: MovieUserLocationPreference,
+) -> str:
+    if not hidden_coverage:
+        return ""
+
+    details: list[str] = []
+    for _slug, (drop, cities) in list(hidden_coverage.items())[:3]:
+        if not cities:
+            continue
+        city_labels = [f"{city.city}, {city.state}" for city in cities]
+        if len(city_labels) == 1:
+            details.append(f"{drop.title}: {city_labels[0]} only")
+            continue
+        if len(city_labels) <= 4:
+            details.append(f"{drop.title}: " + "; ".join(city_labels))
+            continue
+        states = sorted({city.state for city in cities})
+        sample = "; ".join(city_labels[:3])
+        details.append(
+            f"{drop.title}: {len(city_labels)} confirmed cities across {', '.join(states[:8])}"
+            f" (e.g. {sample})"
+        )
+
+    if not details:
+        return ""
+    return (
+        f"Confirmed screening-city coverage exists, but none of these source-specific locations is within "
+        f"{preference.radius_miles} miles of ZIP {preference.zip_code}. "
+        + " • ".join(details)
+    )[:1200]
 
 
 async def validate_movie_zip_live(
@@ -523,11 +632,9 @@ async def _fetch_seeitearly_city_movie_slugs(
 
 
 def _drop_movie_slug(drop: MovieTicketDrop) -> str:
-    parsed = urlparse(str(drop.offer_url or ""))
-    parts = [part for part in (parsed.path or "").split("/") if part]
-    if len(parts) >= 2 and parts[-2].lower() == "movies":
-        return _normalize_slug(parts[-1])
-    return _normalize_slug(normalize_text(drop.title).replace(" ", "-"))
+    # Kept for compatibility with existing tests/callers; coverage uses the same
+    # title/SeeItEarly canonicalization contract.
+    return movie_slug_for_drop(drop)
 
 
 def _city_slug(place: MovieZipPlace) -> str:

@@ -15,6 +15,7 @@ import asyncio
 import aiosqlite
 
 from sniperplug.cogs import home_depot_local as hd_local
+from sniperplug.cogs import home_depot_search as hd_search
 from sniperplug.cogs.home_depot_local import HomeDepotLocalCog
 from sniperplug.cogs.home_depot_search import HomeDepotSearchCog
 from sniperplug.providers.base import (
@@ -120,15 +121,22 @@ class FakeBot:
         self.db = db
 
 
+async def _no_stores(zip_code, max_results=8):
+    return ()
+
+
 def _setup(db):
     provider = FakeProvider()
     provider_registry.register(provider, replace=True)
     return provider, HomeDepotSearchCog(FakeBot(db))
 
 
-def test_broad_hunt_with_saved_zip_passes_guard_and_registers_standing_hunt() -> None:
+def test_broad_hunt_with_saved_zip_passes_guard_and_registers_standing_hunt(monkeypatch) -> None:
     async def run() -> None:
         db = await fresh_db()
+        # No stores found near the ZIP: the run keeps the pre-picker
+        # ZIP-only behavior this test pins.
+        monkeypatch.setattr(hd_search, "find_home_depot_stores", _no_stores)
         await save_hd_user_location(db, user_id=111, zip_code="06484")
         provider, cog = _setup(db)
         interaction = FakeInteraction(db)
@@ -167,9 +175,10 @@ def test_broad_hunt_without_any_zip_still_blocked_for_other_user() -> None:
     asyncio.run(run())
 
 
-def test_typed_zip_overrides_saved_and_becomes_new_saved() -> None:
+def test_typed_zip_overrides_saved_and_becomes_new_saved(monkeypatch) -> None:
     async def run() -> None:
         db = await fresh_db()
+        monkeypatch.setattr(hd_search, "find_home_depot_stores", _no_stores)
         await save_hd_user_location(db, user_id=111, zip_code="06484", store_id="1234")
         provider, cog = _setup(db)
         interaction = FakeInteraction(db)

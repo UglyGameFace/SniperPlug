@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 import discord
 from discord import app_commands
@@ -27,6 +28,10 @@ from sniperplug.services.hd_user_location import (
     normalize_hd_store_id,
     normalize_hd_zip,
     save_hd_user_location,
+)
+from sniperplug.services.home_depot_store_finder import (
+    HomeDepotStoreChoice,
+    find_home_depot_stores,
 )
 from sniperplug.services.penny_score import score_penny_candidate
 from sniperplug.services.quota_guard import serpapi_quota_guard
@@ -145,11 +150,117 @@ class HomeDepotSearchCog(commands.Cog):
             )
             return
 
+        # Felix (2026-11-22): a ZIP with no store used to run ZIP-only,
+        # and the only way to name a store was typing a store number he
+        # doesn't know. When the store finder knows stores near the ZIP,
+        # offer them as a tap-to-pick list first: picking one saves it
+        # as his store and runs the search, and the ZIP-only button
+        # keeps today's behavior. No SerpApi credit is spent until a
+        # choice is made — the scan below is the only spender.
+        if cleaned_zip_code and not cleaned_store_id:
+            stores = await find_home_depot_stores(cleaned_zip_code, max_results=8)
+            if stores:
+                await interaction.followup.send(
+                    embed=build_hd_store_pick_embed(
+                        zip_code=cleaned_zip_code,
+                        stores=stores,
+                        heading="🏚️ Home Depot Penny Hunt" if penny_mode else "🏚️ Home Depot Search",
+                        detail=f"Searching: **{cleaned_query}**",
+                    ),
+                    view=HdStorePickView(
+                        owner_id=interaction.user.id,
+                        zip_code=cleaned_zip_code,
+                        stores=stores,
+                        on_pick=lambda pick_interaction, choice: self._continue_search_with_store(
+                            pick_interaction,
+                            choice,
+                            query=cleaned_query,
+                            zip_code=cleaned_zip_code,
+                            page=page,
+                            penny_mode=penny_mode,
+                        ),
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+        await self._execute_search(
+            interaction,
+            query=cleaned_query,
+            store_id=cleaned_store_id,
+            zip_code=cleaned_zip_code,
+            page=page,
+            penny_mode=penny_mode,
+            location_note_text=location_note_text,
+        )
+
+    async def _continue_search_with_store(
+        self,
+        interaction: discord.Interaction,
+        choice: HomeDepotStoreChoice | None,
+        *,
+        query: str,
+        zip_code: str,
+        page: int,
+        penny_mode: bool,
+    ) -> None:
+        """Picker continuation for a search/hunt: save the pick, then scan."""
+
+        store_id = choice.store_id if choice is not None else ""
+        note = None
+        if choice is not None:
+            db = getattr(self.bot, "db", None)
+            if db is not None:
+                try:
+                    preference = await save_hd_user_location(
+                        db,
+                        user_id=interaction.user.id,
+                        zip_code=zip_code,
+                        store_id=store_id,
+                    )
+                    note = (
+                        f"Saved as your Home Depot location: **{preference.label}**. "
+                        "Blank ZIP/store fields will use it from now on."
+                    )
+                except Exception:
+                    note = None
+        await self._execute_search(
+            interaction,
+            query=query,
+            store_id=store_id,
+            zip_code=zip_code,
+            page=page,
+            penny_mode=penny_mode,
+            location_note_text=note,
+        )
+
+    async def _execute_search(
+        self,
+        interaction: discord.Interaction,
+        *,
+        query: str,
+        store_id: str,
+        zip_code: str,
+        page: int,
+        penny_mode: bool,
+        location_note_text: str | None,
+    ) -> None:
+        """The scan itself, once the ZIP/store question is settled."""
+
+        provider = provider_registry.get("home_depot_serpapi")
+        if provider is None:
+            await interaction.followup.send(
+                "Home Depot SerpApi provider is not registered yet.", ephemeral=True
+            )
+            return
+        has_local_anchor = bool(store_id or zip_code)
+        broad_warning = _broad_query_warning(query)
+
         lock_key = ScanLockKey(
             guild_id=interaction.guild_id,
             user_id=interaction.user.id,
             action="home_depot_penny_hunt" if penny_mode else "home_depot_search",
-            query=cleaned_query,
+            query=query,
             page=int(page),
         )
         if not await scan_operation_locks.acquire(lock_key):
@@ -163,12 +274,12 @@ class HomeDepotSearchCog(commands.Cog):
             result = await provider.scan(
                 ProviderScanRequest(
                     source_key="home_depot_serpapi",
-                    query=cleaned_query,
+                    query=query,
                     page=page,
                     max_results=24,
                     metadata={
-                        "store_id": cleaned_store_id,
-                        "zip_code": cleaned_zip_code,
+                        "store_id": store_id,
+                        "zip_code": zip_code,
                         "requested_by": str(interaction.user.id),
                         # When the SerpApi quota guard refuses a spend, the
                         # direct gateway lane may still serve the scan for
@@ -195,20 +306,20 @@ class HomeDepotSearchCog(commands.Cog):
                 track_note = await self._track_penny_hunt_results(
                     result.candidates,
                     guild_id=interaction.guild_id,
-                    store_id=cleaned_store_id,
-                    zip_code=cleaned_zip_code,
+                    store_id=store_id,
+                    zip_code=zip_code,
                 )
                 hunt_note = await self._register_standing_hunt(
                     interaction,
-                    query=cleaned_query,
-                    store_id=cleaned_store_id,
-                    zip_code=cleaned_zip_code,
+                    query=query,
+                    store_id=store_id,
+                    zip_code=zip_code,
                 )
             summary = discord.Embed(
                 title="🏚️ Home Depot Penny Hunt" if penny_mode else "🏚️ Home Depot Search",
                 description=(
-                    f"Searching: **{cleaned_query}**\n"
-                    f"Store: `{cleaned_store_id or 'n/a'}` • ZIP: `{cleaned_zip_code or 'n/a'}` • Page: `{page}`\n"
+                    f"Searching: **{query}**\n"
+                    f"Store: `{store_id or 'n/a'}` • ZIP: `{zip_code or 'n/a'}` • Page: `{page}`\n"
                     f"SerpApi charged: **{quota_cost} credit(s)** • "
                     f"Usage: **{quota_after.monthly_used}/{quota_after.monthly_limit} monthly safe budget** • "
                     f"**{quota_after.daily_used}/{quota_after.daily_limit} today**\n"
@@ -240,7 +351,7 @@ class HomeDepotSearchCog(commands.Cog):
                     value="Each product card includes its own **App/Web** and **Browser Search** links so users do not have to match numbered buttons at the bottom.",
                     inline=False,
                 )
-            if cleaned_zip_code and not cleaned_store_id:
+            if zip_code and not store_id:
                 summary.add_field(
                     name="ZIP used as local anchor",
                     value="No store ID needed. SniperPlug used the ZIP for local Home Depot search context; store-specific proof is still stronger when available.",
@@ -367,6 +478,37 @@ class HomeDepotSearchCog(commands.Cog):
                 ephemeral=True,
             )
             return
+        # Felix (2026-11-22): with a ZIP and no typed store number, offer
+        # the stores near the ZIP as a tap-to-pick list instead of making
+        # him know a store number. The typed-store path below stays as
+        # the fallback for when the finder knows no stores.
+        cleaned_zip = (zip_code or "").strip()
+        if cleaned_zip and not (store_id or "").strip():
+            try:
+                normalized_zip = normalize_hd_zip(cleaned_zip)
+            except ValueError as error:
+                await interaction.followup.send(str(error), ephemeral=True)
+                return
+            stores = await find_home_depot_stores(normalized_zip, max_results=8)
+            if stores:
+                await interaction.followup.send(
+                    embed=build_hd_store_pick_embed(
+                        zip_code=normalized_zip,
+                        stores=stores,
+                        heading="My Home Depot store",
+                        detail="Save the store your Home Depot hunts, searches, and stock checks should use.",
+                    ),
+                    view=HdStorePickView(
+                        owner_id=interaction.user.id,
+                        zip_code=normalized_zip,
+                        stores=stores,
+                        on_pick=lambda pick_interaction, choice: self._continue_set_location(
+                            pick_interaction, choice, zip_code=normalized_zip
+                        ),
+                    ),
+                    ephemeral=True,
+                )
+                return
         try:
             preference = await save_hd_user_location(
                 db,
@@ -378,11 +520,38 @@ class HomeDepotSearchCog(commands.Cog):
             await interaction.followup.send(str(error), ephemeral=True)
             return
         await interaction.followup.send(
-            f"📍 Saved your Home Depot location: **{preference.label}**. "
-            "Home Depot hunts, searches, and stock checks will use it whenever "
-            "you leave the ZIP/store fields blank — you don't have to type it "
-            "again. Type a different ZIP on any run to override it (that run's "
-            "ZIP becomes the new saved one).",
+            _hd_location_saved_text(preference),
+            ephemeral=True,
+        )
+
+    async def _continue_set_location(
+        self,
+        interaction: discord.Interaction,
+        choice: HomeDepotStoreChoice | None,
+        *,
+        zip_code: str,
+    ) -> None:
+        """Picker continuation for My Home Depot store: save the pick."""
+
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            await interaction.followup.send(
+                "I can't save your Home Depot location right now — try again in a little while.",
+                ephemeral=True,
+            )
+            return
+        try:
+            preference = await save_hd_user_location(
+                db,
+                user_id=interaction.user.id,
+                zip_code=zip_code,
+                store_id=choice.store_id if choice is not None else None,
+            )
+        except ValueError as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+            return
+        await interaction.followup.send(
+            _hd_location_saved_text(preference),
             ephemeral=True,
         )
 
@@ -561,6 +730,134 @@ async def build_my_hunts_embed(db, *, guild_id: int | None, user_id: int):
             inline=False,
         )
     return embed, hunts
+
+
+def _hd_location_saved_text(preference: HdUserLocation) -> str:
+    return (
+        f"📍 Saved your Home Depot location: **{preference.label}**. "
+        "Home Depot hunts, searches, and stock checks will use it whenever "
+        "you leave the ZIP/store fields blank — you don't have to type it "
+        "again. Type a different ZIP on any run to override it (that run's "
+        "ZIP becomes the new saved one)."
+    )
+
+
+def build_hd_store_pick_embed(
+    *,
+    zip_code: str,
+    stores: tuple[HomeDepotStoreChoice, ...],
+    heading: str,
+    detail: str,
+) -> discord.Embed:
+    embed = discord.Embed(
+        title="🏚️ Pick your Home Depot store",
+        description=(
+            f"{heading}\n{detail}\nZIP: `{zip_code}`\n\n"
+            "These are the Home Depot stores near that ZIP. Pick yours "
+            "below — it becomes your saved store, so you won't be asked "
+            "again. Or tap **Just use the ZIP** to go ahead without "
+            "picking a store."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Nearby stores",
+        value="\n".join(f"• **{store.short_label}**" for store in stores[:8]),
+        inline=False,
+    )
+    return embed
+
+
+class HdStorePickSelect(discord.ui.Select):
+    """The nearby-store list for one ZIP (see HdStorePickView)."""
+
+    def __init__(
+        self,
+        view: "HdStorePickView",
+        stores: tuple[HomeDepotStoreChoice, ...],
+    ) -> None:
+        self._pick_view = view
+        self.stores_by_id = {store.store_id: store for store in stores}
+        options = [
+            discord.SelectOption(
+                label=store.short_label[:100],
+                value=store.store_id,
+                description=f"Use store #{store.store_id} and save it as my store"[:100],
+            )
+            for store in stores[:25]
+        ]
+        super().__init__(
+            placeholder="Pick your Home Depot store…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        store = self.stores_by_id.get(self.values[0]) if self.values else None
+        await self._pick_view._choose(interaction, store)
+
+
+class HdStorePickView(discord.ui.View):
+    """ZIP → nearby stores as a tap-to-pick list (Felix, 2026-11-22).
+
+    ``on_pick`` receives the picker's own interaction and the chosen
+    store — or ``None`` when the user taps the ZIP-only button, which
+    keeps the pre-picker behavior of running with just the ZIP.
+    """
+
+    def __init__(
+        self,
+        *,
+        owner_id: int,
+        zip_code: str,
+        stores: tuple[HomeDepotStoreChoice, ...],
+        on_pick: Callable[
+            [discord.Interaction, HomeDepotStoreChoice | None], Awaitable[None]
+        ],
+    ) -> None:
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+        self.zip_code = zip_code
+        self.stores = stores
+        self.on_pick = on_pick
+        self.add_item(HdStorePickSelect(self, stores))
+
+    @discord.ui.button(
+        label="Just use the ZIP — no store pick",
+        style=discord.ButtonStyle.secondary,
+        row=1,
+    )
+    async def zip_only(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await self._choose(interaction, None)
+
+    async def _choose(
+        self, interaction: discord.Interaction, choice: HomeDepotStoreChoice | None
+    ) -> None:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "This store picker belongs to the user who started it.",
+                ephemeral=True,
+            )
+            return
+        # Stop the view and strip it from the message before running the
+        # continuation, so a second tap can't run the scan twice.
+        self.stop()
+        await interaction.response.defer(ephemeral=True)
+        picked = (
+            f"🏚️ Store picked: **{choice.short_label}** — one moment…"
+            if choice is not None
+            else "🏚️ Running with the ZIP only — one moment…"
+        )
+        try:
+            await interaction.edit_original_response(
+                content=picked, embed=None, view=None
+            )
+        except Exception:
+            pass
+        await self.on_pick(interaction, choice)
 
 
 class HdHuntStopSelect(discord.ui.Select):

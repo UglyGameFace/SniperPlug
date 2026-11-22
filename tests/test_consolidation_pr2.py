@@ -403,9 +403,25 @@ async def _announcement_bot(tmp_path: Path, *, pin_fails: bool = False):
             channel_id=555,
         )
     except Exception:
-        # A setup failure must not leak the connection: its worker thread
-        # otherwise keeps the whole test process alive until the job
-        # timeout (the 2026-11-22 CI hang after this test flaked).
+        # BISECT DIAGNOSTIC (not for merge): name the statement that was
+        # still in progress when the commit failed.
+        import gc as _gc
+        import sqlite3 as _sqlite3
+
+        real_conn = getattr(db.conn, "_connection", None)
+        print("DIAG real_conn:", real_conn)
+        for obj in _gc.get_objects():
+            if isinstance(obj, _sqlite3.Cursor) and obj.connection is real_conn:
+                try:
+                    pending = obj.fetchall()
+                except Exception as exc:  # noqa: BLE001
+                    pending = f"<fetchall failed: {exc}>"
+                print(
+                    "DIAG live cursor on failing conn: description=",
+                    obj.description,
+                    "pending_rows=",
+                    pending,
+                )
         await db.close()
         raise
     channel = _FakeTextChannel(555, pin_fails=pin_fails)

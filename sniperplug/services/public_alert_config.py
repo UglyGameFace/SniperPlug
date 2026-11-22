@@ -64,15 +64,23 @@ async def _migrate_existing_walmart_alerts_to_retailer(
         "SELECT 1 FROM sniperplug_data_migrations WHERE migration_key = ? LIMIT 1",
         (migration_key,),
     )
-    if await marker.fetchone() is not None:
+    marker_applied = await marker.fetchone() is not None
+    # Close the read cursors explicitly: a cursor left mid-statement makes
+    # the commit below fail with "cannot commit transaction - SQL
+    # statements in progress" whenever the cursor's final step has not
+    # been collected yet (seen as a flaky CI failure on 2026-11-22).
+    await marker.close()
+    if marker_applied:
         return 0
 
     cursor = await conn.execute(
         "SELECT guild_id, retailers_json FROM guild_public_alert_settings WHERE enabled = 1"
     )
+    guild_rows = await cursor.fetchall()
+    await cursor.close()
     updated = 0
     normalized_new = normalize_retailer_key(retailer)
-    for row in await cursor.fetchall():
+    for row in guild_rows:
         try:
             retailers = [
                 key

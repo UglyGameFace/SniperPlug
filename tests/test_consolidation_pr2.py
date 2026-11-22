@@ -394,13 +394,20 @@ async def _announcement_bot(tmp_path: Path, *, pin_fails: bool = False):
     db = Database(str(tmp_path / "announce.sqlite3"))
     await db.connect()
     await db.init()
-    await set_public_alert_config(
-        db,
-        guild_id=111,
-        enabled=True,
-        retailers=("walmart",),
-        channel_id=555,
-    )
+    try:
+        await set_public_alert_config(
+            db,
+            guild_id=111,
+            enabled=True,
+            retailers=("walmart",),
+            channel_id=555,
+        )
+    except Exception:
+        # A setup failure must not leak the connection: its worker thread
+        # otherwise keeps the whole test process alive until the job
+        # timeout (the 2026-11-22 CI hang after this test flaked).
+        await db.close()
+        raise
     channel = _FakeTextChannel(555, pin_fails=pin_fails)
     configured = _FakeGuild(111, {555: channel})
     unconfigured = _FakeGuild(222, {})

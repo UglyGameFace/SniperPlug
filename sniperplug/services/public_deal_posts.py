@@ -12,7 +12,7 @@ from sniperplug.services.deal_feedback import build_deal_feedback_view, build_fe
 from sniperplug.services.deal_threshold_settings import DEFAULT_STARTING_DEAL_PERCENT
 from sniperplug.services.embed_delivery import sanitize_embed
 from sniperplug.services.public_alert_config import get_public_alert_config, set_public_alert_channel_id
-from sniperplug.services.public_posting import normalize_retailer_key
+from sniperplug.services.public_posting import channel_is_obfuscated, normalize_retailer_key
 from sniperplug.services.public_deal_quality import (
     is_public_deal_candidate,
     prepare_public_deal_candidate,
@@ -432,10 +432,25 @@ async def resolve_public_alert_channel(
 
 async def find_named_public_channel(guild: Any) -> Any | None:
     text_channels = list(getattr(guild, "text_channels", []) or [])
+    # Since 2026-11-16 Discord obfuscates channels the bot cannot view
+    # (name "___hidden___" + CHANNEL_OBFUSCATED flag). They are excluded
+    # explicitly: they cannot match a fallback name and are not sendable.
+    visible_channels = [channel for channel in text_channels if not channel_is_obfuscated(channel)]
+    hidden_count = len(text_channels) - len(visible_channels)
     for name in PUBLIC_CHANNEL_NAME_FALLBACKS:
-        for channel in text_channels:
+        for channel in visible_channels:
             if getattr(channel, "name", "") == name:
                 return channel
+    if hidden_count:
+        log.info(
+            "Public channel name lookup in guild %s found no channel named %s among viewable "
+            "channels; %s channel(s) are hidden from the bot (Discord channel obfuscation, "
+            "live 2026-11-16) and were excluded. If the public deals channel is one of the "
+            "hidden ones, grant the bot View Channel on it.",
+            getattr(guild, "id", "?"),
+            "/".join(PUBLIC_CHANNEL_NAME_FALLBACKS),
+            hidden_count,
+        )
     return None
 
 

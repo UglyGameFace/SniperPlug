@@ -12,7 +12,7 @@ from sniperplug.services.public_alert_config import (
     set_public_alert_config,
     decode_channel_id,
 )
-from sniperplug.services.public_posting import normalize_retailer_key
+from sniperplug.services.public_posting import channel_is_obfuscated, normalize_retailer_key
 from sniperplug.services.routing import DEFAULT_ROUTE
 
 
@@ -286,14 +286,27 @@ async def repair_public_alert_setup(
         reason = "no saved or unambiguous sendable public deal channel was found."
         if missing:
             reason = f"saved channel exists, but bot is missing: {', '.join(missing)}."
+        failure_notes = [
+            "This is a real first-install/permission issue, not an update issue.",
+            "Run Scan now (Walmart menu) once inside the channel SniperPlug should post in, or fix the channel permissions.",
+        ]
+        hidden_count = sum(
+            1
+            for item in list(getattr(guild, "text_channels", []) or [])
+            if channel_is_obfuscated(item)
+        )
+        if hidden_count:
+            failure_notes.append(
+                f"{hidden_count} channel(s) in this server are hidden from the bot "
+                "(Discord channel obfuscation since 2026-11-16), so a deal channel the bot "
+                "cannot View Channel on cannot be found by name. Grant View Channel on the "
+                "deal channel if it is one of the hidden ones."
+            )
         return SetupRepairResult(
             guild_id=guild_id,
             human_action_required=True,
             reason=reason,
-            notes=[
-                "This is a real first-install/permission issue, not an update issue.",
-                "Run Scan now (Walmart menu) once inside the channel SniperPlug should post in, or fix the channel permissions.",
-            ],
+            notes=failure_notes,
             config=config,
         )
 
@@ -394,11 +407,18 @@ def discover_unambiguous_deal_channel(
     """
 
     member = getattr(guild, "me", None)
-    text_channels = [
+    all_text_channels = [
         channel
         for channel in list(getattr(guild, "text_channels", []) or [])
         if isinstance(channel, discord.TextChannel)
     ]
+    # Since 2026-11-16 Discord obfuscates channels the bot cannot view:
+    # their name arrives as "___hidden___" with the CHANNEL_OBFUSCATED flag.
+    # They can never match a deal-channel name and are not sendable, so they
+    # are excluded explicitly (and counted for the diagnostic below) instead
+    # of silently looking like ordinary non-matching channels.
+    text_channels = [channel for channel in all_text_channels if not channel_is_obfuscated(channel)]
+    hidden_count = len(all_text_channels) - len(text_channels)
 
     for aliases in AUTO_DISCOVERY_CHANNEL_NAMES:
         alias_set = {normalize_channel_name(alias) for alias in aliases}
@@ -413,6 +433,19 @@ def discover_unambiguous_deal_channel(
         if len(matches) > 1:
             return None, matches
 
+    if hidden_count:
+        # Distinguish "no channel with a deal name exists" from "a channel
+        # may exist but Discord is hiding it from the bot": with obfuscated
+        # channels present, a name-based search cannot rule out that the
+        # deal channel is one of the hidden ones.
+        log.info(
+            "Deal channel discovery in guild %s found no sendable channel: no viewable channel "
+            "matches a known deal-channel name, and %s channel(s) are hidden from the bot "
+            "(Discord channel obfuscation, live 2026-11-16) and were excluded. If the deal "
+            "channel is one of the hidden ones, grant the bot View Channel on it.",
+            getattr(guild, "id", "?"),
+            hidden_count,
+        )
     return None, []
 
 

@@ -1,6 +1,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+
+# Discord channel obfuscation (live for all bots 2026-11-16): channels the
+# bot cannot View Channel on arrive over the Gateway with their name replaced
+# by this sentinel and the CHANNEL_OBFUSCATED flag set, and are omitted
+# entirely from HTTP channel lists. Name-based channel discovery must skip
+# them explicitly instead of silently treating them as ordinary channels.
+OBFUSCATED_CHANNEL_NAME = "___hidden___"
+CHANNEL_OBFUSCATED_FLAG = 1 << 17
+
+
+def channel_is_obfuscated(channel: Any) -> bool:
+    """True when Discord is hiding this channel's real metadata from the bot.
+
+    Defensive by design: plain fakes/objects without a name or flags simply
+    report False, so existing callers and tests are unaffected.
+    """
+
+    if channel is None:
+        return False
+    if str(getattr(channel, "name", "") or "") == OBFUSCATED_CHANNEL_NAME:
+        return True
+    flags = getattr(channel, "flags", None)
+    value = getattr(flags, "value", flags)
+    try:
+        return bool(int(value) & CHANNEL_OBFUSCATED_FLAG)
+    except (TypeError, ValueError):
+        return False
 
 
 SUPPORTED_PUBLIC_RETAILERS = {

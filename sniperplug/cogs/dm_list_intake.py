@@ -104,6 +104,7 @@ from sniperplug.services.dm_ocr_jobs import (
     record_pending_picture_read,
 )
 from sniperplug.services.dm_product_interests import normalize_match_text
+from sniperplug.services.error_logging import make_error_id, record_exception_event
 from sniperplug.services.user_wishlist import (
     MAX_WISHLIST_ITEMS_PER_USER,
     add_user_wishlist_item,
@@ -260,9 +261,12 @@ def _sale_segment(row: DmListRow) -> str:
     return " · not on sale right now"
 
 
-def dm_list_row_line(row: DmListRow, *, page_price: bool = False) -> str:
+def dm_list_row_line(
+    row: DmListRow, *, page_price: bool = False, already_on_list: bool = False
+) -> str:
     """One embed line for a list row, with its honest status."""
 
+    suffix = " · already on your list" if already_on_list else ""
     if row.status == STATUS_EXACT:
         line = f"✅ {_linked_name(row)}"
         price = _money_cents(row.price_cents)
@@ -271,18 +275,18 @@ def dm_list_row_line(row: DmListRow, *, page_price: bool = False) -> str:
             if page_price:
                 line += " (page price)"
             line += _sale_segment(row)
-        return line + " · exact match"
+        return line + " · exact match" + suffix
     if row.status == STATUS_CLOSEST:
         return (
             f"🔎 {_linked_name(row)} · closest match — "
-            "price not checked yet"
+            "price not checked yet" + suffix
         )
     if row.status == STATUS_UNCHECKED:
         return (
             f"🔎 {_linked_name(row)} · couldn't check it just "
-            "now — tap **Check prices now**"
+            "now — tap **Check prices now**" + suffix
         )
-    return "📷 A picture I couldn't read"
+    return "📷 A picture I couldn't read" + suffix
 
 
 def build_dm_list_embed(
@@ -291,12 +295,15 @@ def build_dm_list_embed(
     title: str,
     notes: Iterable[str] = (),
     page_price_item_ids: frozenset[str] = frozenset(),
+    duplicate_ids: frozenset[int] = frozenset(),
 ) -> discord.Embed:
     """The list as an embed: one line per row, then the plain notes."""
 
     lines = [
         dm_list_row_line(
-            row, page_price=bool(row.item_id and row.item_id in page_price_item_ids)
+            row,
+            page_price=bool(row.item_id and row.item_id in page_price_item_ids),
+            already_on_list=row.id in duplicate_ids,
         )
         for row in rows
     ]
@@ -508,6 +515,35 @@ async def wishlist_add_summary(
     return "\n".join(lines), len(added)
 
 
+def _display_rows(
+    *outcomes: object,
+) -> tuple[list[DmListRow], frozenset[int]]:
+    """Rows a settled reply must SHOW: newly added plus duplicates.
+
+    Duplicates were previously counted but never rendered — an
+    all-duplicate settle showed a bare "N of those were already on
+    your list" with no item named and every action button disabled,
+    because the view was built from the (empty) added rows alone.
+    Duplicate rows are real saved rows, so the view built from them
+    can wishlist, re-check, and remove them like any other row.
+    """
+
+    rows: list[DmListRow] = []
+    seen: set[int] = set()
+    duplicate_ids: set[int] = set()
+    for outcome in outcomes:
+        for row in getattr(outcome, "duplicate_rows", ()) or ():
+            duplicate_ids.add(int(row.id))
+        merged = list(getattr(outcome, "added", ()) or ()) + list(
+            getattr(outcome, "duplicate_rows", ()) or ()
+        )
+        for row in merged:
+            if int(row.id) not in seen:
+                seen.add(int(row.id))
+                rows.append(row)
+    return rows, frozenset(duplicate_ids)
+
+
 class DmListView(discord.ui.View):
     """The tappable list: pick rows, wishlist them, re-check, close.
 
@@ -526,14 +562,21 @@ class DmListView(discord.ui.View):
         title: str = "Added to your list",
         notes: Iterable[str] = (),
         page_price_item_ids: frozenset[str] = frozenset(),
+        duplicate_ids: frozenset[int] = frozenset(),
     ) -> None:
-        super().__init__(timeout=1800)
+        # No timeout: a list message stays tappable for as long as
+        # this process lives, and DmListPersistentView (registered at
+        # cog load) answers taps on messages whose view died with a
+        # restart. A 30-minute timeout used to strand Felix's list
+        # messages with buttons that looked live but did nothing.
+        super().__init__(timeout=None)
         self.bot = bot
         self.owner_id = int(owner_id)
         self.rows: list[DmListRow] = list(rows)
         self.title = title
         self.notes: list[str] = list(notes)
         self.page_price_item_ids = page_price_item_ids
+        self.duplicate_ids = frozenset(duplicate_ids)
         self.check_note = ""
         self.selected_ids: list[int] = []
         self._clear_armed = False
@@ -632,6 +675,7 @@ class DmListView(discord.ui.View):
             title=self.title,
             notes=notes,
             page_price_item_ids=self.page_price_item_ids,
+            duplicate_ids=self.duplicate_ids,
         )
 
     def _status_tally(self) -> str:
@@ -656,12 +700,62 @@ class DmListView(discord.ui.View):
     async def _guard_owner(self, interaction: discord.Interaction) -> bool:
         if int(getattr(interaction.user, "id", 0) or 0) == self.owner_id:
             return True
+        log.info(
+            "DM list: tap refused — user %s is not the owner %s of this list",
+            getattr(interaction.user, "id", None),
+            self.owner_id,
+        )
         await interaction.response.send_message(
             "This is someone else's list — DM me your own pictures or "
             "links to start yours.",
             ephemeral=True,
         )
         return False
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,  # type: ignore[type-arg]
+    ) -> None:
+        """A failed tap must leave a trace, not silence.
+
+        Tonight's dead buttons produced no log line and no
+        error_events row anywhere, so the failure could only be
+        found by reading code. Record both, and tell the tapper.
+        """
+
+        log.exception(
+            "DM list: button tap failed item=%s user=%s",
+            getattr(item, "custom_id", None),
+            getattr(interaction.user, "id", None),
+            exc_info=error,
+        )
+        db = getattr(self.bot, "db", None)
+        if db is not None:
+            asyncio.create_task(
+                record_exception_event(
+                    db,
+                    source="dm_list_interaction",
+                    error=error,
+                    error_id=make_error_id("DMLIST"),
+                    context={
+                        "custom_id": str(getattr(item, "custom_id", "") or ""),
+                        "user_id": str(
+                            getattr(interaction.user, "id", "") or ""
+                        ),
+                    },
+                )
+            )
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "That tap hit a snag — it's logged, so it can be "
+                    "found and fixed. Try again in a moment.",
+                    ephemeral=True,
+                )
+        except Exception:  # noqa: BLE001 - the trace above is the point.
+            log.exception("DM list: could not answer the failed tap")
 
     async def _enable_alerts_note(self, interaction: discord.Interaction) -> str:
         """Mirror /wishlist add: first add turns DM alerts on, by probe.
@@ -741,6 +835,11 @@ class DmListView(discord.ui.View):
         if not await self._guard_owner(interaction):
             return
         if not self.selected_ids:
+            log.info(
+                "DM list: add-selected tapped with nothing picked user=%s rows=%s",
+                getattr(interaction.user, "id", None),
+                len(self.rows),
+            )
             await interaction.response.send_message(
                 "Pick at least one item in the list first, then tap this.",
                 ephemeral=True,
@@ -754,6 +853,11 @@ class DmListView(discord.ui.View):
             return
         rows = [row for row in self.rows if row.wishlistable]
         if not rows:
+            log.info(
+                "DM list: add-all tapped with no wishlistable rows user=%s rows=%s",
+                getattr(interaction.user, "id", None),
+                len(self.rows),
+            )
             await interaction.response.send_message(
                 "None of these have a product name I can add yet — tap "
                 "**Check prices now** to try pinning them first.",
@@ -849,6 +953,11 @@ class DmListView(discord.ui.View):
         if not await self._guard_owner(interaction):
             return
         if not self.selected_ids:
+            log.info(
+                "DM list: remove-picked tapped with nothing picked user=%s rows=%s",
+                getattr(interaction.user, "id", None),
+                len(self.rows),
+            )
             await interaction.response.send_message(
                 "Pick at least one item in the list first, then tap this.",
                 ephemeral=True,
@@ -873,6 +982,7 @@ class DmListView(discord.ui.View):
             title=self.title,
             notes=self.notes,
             page_price_item_ids=self.page_price_item_ids,
+            duplicate_ids=self.duplicate_ids - removed_ids,
         )
         new_view.check_note = (
             f"🗑️ Removed {removed} item(s) from your list."
@@ -931,6 +1041,201 @@ class DmListView(discord.ui.View):
         self.stop()
 
 
+class DmListPersistentView(discord.ui.View):
+    """Restart-proof fallback for DM list buttons.
+
+    Registered once at cog load with the same custom_ids as
+    DmListView. Discord routes a tap to the live per-message view
+    when one exists; when it doesn't — the bot restarted, or the
+    message predates this process — the tap lands here instead of
+    dying as an unanswered interaction with no trace anywhere
+    (Felix, 2026-11-21: buttons on a settled list reply did
+    nothing and nothing was logged).
+
+    The fallback holds no per-message list state: it reloads the
+    tapper's OWN saved list from the database and delegates to a
+    transient DmListView built from it, so it can never act on
+    someone else's rows. Selections are remembered per message id
+    so pick-then-tap still works across the two interactions.
+    """
+
+    def __init__(self, bot: commands.Bot) -> None:
+        super().__init__(timeout=None)
+        self.bot = bot
+        self._selections: dict[int, list[int]] = {}
+        self._clear_armed: set[int] = set()
+
+        self.select = discord.ui.Select(
+            placeholder="Pick items for your wishlist…",
+            min_values=0,
+            max_values=25,
+            options=[],
+            custom_id="dm_list:select",
+        )
+        self.select.callback = self._on_select  # type: ignore[method-assign]
+        self.add_item(self.select)
+
+        buttons = (
+            ("Add selected to my wishlist", discord.ButtonStyle.primary, "dm_list:add_selected", self._on_add_selected),
+            ("Add all matches to my wishlist", discord.ButtonStyle.secondary, "dm_list:add_all", self._on_add_all),
+            ("Check prices now", discord.ButtonStyle.secondary, "dm_list:check", self._on_check),
+            ("Remove picked", discord.ButtonStyle.secondary, "dm_list:remove_picked", self._on_remove_picked),
+            ("Clear whole list", discord.ButtonStyle.secondary, "dm_list:clear", self._on_clear),
+            ("Close", discord.ButtonStyle.danger, "dm_list:close", self._on_close),
+        )
+        for label, style, custom_id, callback in buttons:
+            button = discord.ui.Button(label=label, style=style, custom_id=custom_id)
+            button.callback = callback  # type: ignore[method-assign]
+            self.add_item(button)
+
+    # -- plumbing ------------------------------------------------------
+
+    @staticmethod
+    def _message_id(interaction: discord.Interaction) -> int:
+        message = getattr(interaction, "message", None)
+        return int(getattr(message, "id", 0) or 0)
+
+    async def _hydrate(
+        self, interaction: discord.Interaction, action: str
+    ) -> DmListView | None:
+        """A DmListView over the tapper's own current list, or None
+        after answering the tap with why it can't run."""
+
+        user_id = int(getattr(interaction.user, "id", 0) or 0)
+        channel = getattr(interaction, "channel", None)
+        if getattr(channel, "type", None) == discord.ChannelType.private:
+            recipient = getattr(channel, "recipient", None)
+            if (
+                recipient is not None
+                and int(getattr(recipient, "id", 0) or 0) != user_id
+            ):
+                await interaction.response.send_message(
+                    "This list message isn't in your own DM with me — "
+                    "open your list with /menu → My deals → My list.",
+                    ephemeral=True,
+                )
+                return None
+        db = getattr(self.bot, "db", None)
+        if db is None:
+            await interaction.response.send_message(
+                "I can't reach your list right now — try again in a "
+                "little while.",
+                ephemeral=True,
+            )
+            return None
+        rows = await list_dm_list_items(db, user_id)
+        log.info(
+            "DM list: persistent fallback answered %s tap user=%s message=%s rows=%s",
+            action,
+            user_id,
+            self._message_id(interaction),
+            len(rows),
+        )
+        view = DmListView(self.bot, user_id, rows, title="Your list")
+        view.selected_ids = list(
+            self._selections.get(self._message_id(interaction), [])
+        )
+        return view
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,  # type: ignore[type-arg]
+    ) -> None:
+        log.exception(
+            "DM list: persistent fallback tap failed item=%s user=%s",
+            getattr(item, "custom_id", None),
+            getattr(interaction.user, "id", None),
+            exc_info=error,
+        )
+        db = getattr(self.bot, "db", None)
+        if db is not None:
+            asyncio.create_task(
+                record_exception_event(
+                    db,
+                    source="dm_list_interaction_fallback",
+                    error=error,
+                    error_id=make_error_id("DMLIST"),
+                    context={
+                        "custom_id": str(getattr(item, "custom_id", "") or ""),
+                        "user_id": str(
+                            getattr(interaction.user, "id", "") or ""
+                        ),
+                    },
+                )
+            )
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "That tap hit a snag — it's logged, so it can be "
+                    "found and fixed. Try again in a moment.",
+                    ephemeral=True,
+                )
+        except Exception:  # noqa: BLE001 - the trace above is the point.
+            log.exception("DM list: could not answer the failed fallback tap")
+
+    # -- callbacks -----------------------------------------------------
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        self._selections[self._message_id(interaction)] = [
+            int(value) for value in self.select.values if str(value).isdigit()
+        ]
+        log.info(
+            "DM list: persistent fallback recorded a pick user=%s message=%s picked=%s",
+            getattr(interaction.user, "id", None),
+            self._message_id(interaction),
+            len(self._selections[self._message_id(interaction)]),
+        )
+        await interaction.response.defer()
+
+    async def _on_add_selected(self, interaction: discord.Interaction) -> None:
+        view = await self._hydrate(interaction, "add_selected")
+        if view is not None:
+            await view._on_add_selected(interaction)
+
+    async def _on_add_all(self, interaction: discord.Interaction) -> None:
+        view = await self._hydrate(interaction, "add_all")
+        if view is not None:
+            await view._on_add_all(interaction)
+
+    async def _on_check(self, interaction: discord.Interaction) -> None:
+        view = await self._hydrate(interaction, "check")
+        if view is not None:
+            await view._on_check(interaction)
+
+    async def _on_remove_picked(self, interaction: discord.Interaction) -> None:
+        view = await self._hydrate(interaction, "remove_picked")
+        if view is not None:
+            await view._on_remove_picked(interaction)
+
+    async def _on_clear(self, interaction: discord.Interaction) -> None:
+        view = await self._hydrate(interaction, "clear")
+        if view is None:
+            return
+        message_id = self._message_id(interaction)
+        if message_id in self._clear_armed:
+            # Second tap: the armed state lived here, not on the
+            # (unregistered) transient view, so arm the transient
+            # and let its own handler do the clear.
+            self._clear_armed.discard(message_id)
+            view._clear_armed = True
+        else:
+            self._clear_armed.add(message_id)
+        await view._on_clear_list(interaction)
+
+    async def _on_close(self, interaction: discord.Interaction) -> None:
+        log.info(
+            "DM list: persistent fallback answered close tap user=%s message=%s",
+            getattr(interaction.user, "id", None),
+            self._message_id(interaction),
+        )
+        try:
+            await interaction.response.edit_message(view=None)
+        except Exception:  # noqa: BLE001 - closing is best-effort.
+            log.exception("DM list: fallback close edit failed")
+
+
 class DmListIntakeCog(commands.Cog):
     """DM intake listener + the /menu My list page handler."""
 
@@ -959,6 +1264,15 @@ class DmListIntakeCog(commands.Cog):
         self._help_replied_at: dict[int, float] = {}
 
     async def cog_load(self) -> None:
+        add_view = getattr(self.bot, "add_view", None)
+        if callable(add_view):
+            try:
+                add_view(DmListPersistentView(self.bot))
+                log.info("DM list: persistent button fallback registered")
+            except Exception:  # noqa: BLE001 - live views still work without it.
+                log.exception(
+                    "DM list: could not register the persistent button fallback"
+                )
         self._recovery_task = asyncio.create_task(
             self._pending_read_recovery_loop(),
             name="sniperplug-dm-list-pending-read-recovery",
@@ -1144,13 +1458,15 @@ class DmListIntakeCog(commands.Cog):
             notes.add("verify_budget", VERIFY_BUDGET_NOTE)
         first_outcome = await add_dm_list_items(db, author_id, candidates)
         notes.add("reading_picture", reading_picture_note(len(deferred)))
+        interim_rows, interim_duplicate_ids = _display_rows(first_outcome)
         view = DmListView(
             self.bot,
             author_id,
-            first_outcome.added,
+            interim_rows,
             title="Added to your list",
             notes=notes.lines,
             page_price_item_ids=frozenset(page_price_item_ids),
+            duplicate_ids=interim_duplicate_ids,
         )
         sent = None
         try:
@@ -1219,9 +1535,16 @@ class DmListIntakeCog(commands.Cog):
             )
         if outcome.cap_reached:
             notes.add("list_full", LIST_FULL_NOTE)
-        if not outcome.added:
+        rows, duplicate_ids = _display_rows(outcome)
+        if not rows:
+            # Nothing to show: say so honestly, in words, instead of
+            # an empty embed or a tally naming nothing.
             text = " ".join(notes.lines) or (
-                "Those are already on your list — see it under "
+                "I couldn't find any products in what you sent, so "
+                "nothing was added. Your list is under "
+                "/menu → My deals → My list."
+                if not candidates
+                else "Those are already on your list — see it under "
                 "/menu → My deals → My list."
             )
             await self._reply(message, text)
@@ -1229,10 +1552,11 @@ class DmListIntakeCog(commands.Cog):
         view = DmListView(
             self.bot,
             author_id,
-            outcome.added,
+            rows,
             title="Added to your list",
             notes=notes.lines,
             page_price_item_ids=frozenset(page_price_item_ids),
+            duplicate_ids=duplicate_ids,
         )
         try:
             await message.reply(
@@ -1526,11 +1850,19 @@ class DmListIntakeCog(commands.Cog):
             )
         if getattr(first_outcome, "cap_reached", False) or outcome.cap_reached:
             notes.add("list_full", LIST_FULL_NOTE)
+        if not pic_candidates and not read_failed:
+            # The picture read fine but held no product lines: the
+            # settled reply must say that, not show an empty list.
+            notes.add(
+                "nothing_found",
+                "I read the picture, but I couldn't find any products "
+                "in it to add.",
+            )
         if sent is None:
             return
         reading_note = reading_picture_note(len(deferred))
         final_notes = [line for line in notes.lines if line != reading_note]
-        rows = list(getattr(first_outcome, "added", ()) or ()) + list(outcome.added)
+        rows, duplicate_ids = _display_rows(first_outcome, outcome)
         view = DmListView(
             self.bot,
             author_id,
@@ -1538,6 +1870,7 @@ class DmListIntakeCog(commands.Cog):
             title="Added to your list",
             notes=final_notes,
             page_price_item_ids=frozenset(page_price_item_ids),
+            duplicate_ids=duplicate_ids,
         )
         try:
             await sent.edit(embed=view.current_embed(), view=view)  # type: ignore[attr-defined]

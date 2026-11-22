@@ -10,6 +10,7 @@ built as a valid PNG with the standard library. No binary fixtures.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import struct
@@ -27,6 +28,7 @@ import sniperplug.services.user_wishlist as wishlist
 from sniperplug.cogs.dm_list_intake import (
     DmListIntakeCog,
     DmListIntakeConfig,
+    DmListPersistentView,
     DmListView,
     wishlist_add_summary,
 )
@@ -373,7 +375,18 @@ async def test_resent_link_is_a_duplicate_not_a_second_row(monkeypatch) -> None:
         await cog.on_message(FakeMessage(IPHONE_URL))
         second = FakeMessage(IPHONE_URL, message_id=556)
         await cog.on_message(second)
-        assert "already on your list" in second.replies[0]["content"]
+        # The duplicate is SHOWN, named and marked — not a bare tally —
+        # and the reply carries a working view over the real row.
+        reply = second.replies[0]
+        embed = reply["embed"]
+        assert "Apple iPhone 11, 64GB, Green" in embed.description
+        assert "already on your list" in embed.description
+        view = reply["view"]
+        assert view.select is not None
+        assert len(view.select.options) == 1
+        assert view.add_all_button.disabled is False
+        assert view.check_button.disabled is False
+        assert view.clear_button.disabled is False
         assert len(await list_dm_list_items(db, USER_ID)) == 1
 
 
@@ -925,3 +938,108 @@ async def test_search_picks_the_hit_that_matches_the_line(monkeypatch) -> None:
         rows = await list_dm_list_items(db, USER_ID)
         assert [row.item_id for row in rows] == ["222222222"]
         assert rows[0].status == STATUS_EXACT
+
+
+# --- duplicate rendering + button liveness (2026-11-21) ----------------------
+
+
+def test_duplicate_row_line_marks_already_on_list() -> None:
+    from sniperplug.cogs.dm_list_intake import dm_list_row_line
+    from sniperplug.services.dm_lists import DmListRow
+
+    row = DmListRow(
+        id=7,
+        user_id=USER_ID,
+        name="Idahoan Buttery Homestyle Mashed Potatoes",
+        status=STATUS_EXACT,
+        item_id="123456789",
+        price_cents=759,
+    )
+    line = dm_list_row_line(row, already_on_list=True)
+    assert "Idahoan Buttery Homestyle" in line
+    assert "$7.59" in line
+    assert line.endswith("already on your list")
+    assert "already on your list" not in dm_list_row_line(row)
+
+
+def test_list_view_never_times_out() -> None:
+    view = DmListView(FakeBot(), USER_ID, [])
+    assert view.timeout is None
+
+
+@pytest.mark.asyncio
+async def test_failed_tap_is_recorded_in_error_events(monkeypatch) -> None:
+    async with _isolated_db() as db:
+        rows = await _seed_rows(db)
+        view = DmListView(FakeBot(db), USER_ID, rows)
+        interaction = FakeInteraction()
+        await view.on_error(
+            interaction, RuntimeError("tap boom"), view.close_button
+        )
+        # The apology reached the tapper…
+        assert interaction.response.sent
+        assert "logged" in interaction.response.sent[0][0]
+        # …and the failure left a trace in error_events.
+        conn = db.require_conn()
+        events = []
+        for _ in range(50):
+            try:
+                cursor = await conn.execute(
+                    "SELECT source, message FROM error_events "
+                    "ORDER BY created_at DESC LIMIT 5"
+                )
+                events = await cursor.fetchall()
+            except Exception:
+                events = []
+            if events:
+                break
+            await asyncio.sleep(0.02)
+        assert events
+        assert events[0][0] == "dm_list_interaction"
+        assert "tap boom" in (events[0][1] or "")
+
+
+@pytest.mark.asyncio
+async def test_persistent_fallback_answers_add_all_from_the_saved_list(
+    monkeypatch,
+) -> None:
+    async with _isolated_db() as db:
+        await _seed_rows(db)
+        fallback = DmListPersistentView(FakeBot(db))
+        assert fallback.is_persistent()
+        interaction = FakeInteraction()
+        interaction.message = SimpleNamespace(id=4242)
+        await fallback._on_add_all(interaction)
+        assert interaction.followup.sent
+        content = interaction.followup.sent[0][0]
+        assert "Apple iPhone 11, 64GB, Green" in content
+        assert await list_user_wishlist(db, USER_ID) == (
+            "Apple iPhone 11, 64GB, Green",
+        )
+
+
+@pytest.mark.asyncio
+async def test_persistent_fallback_pick_then_add_selected(monkeypatch) -> None:
+    async with _isolated_db() as db:
+        rows = await _seed_rows(db)
+        fallback = DmListPersistentView(FakeBot(db))
+        pick = FakeInteraction()
+        pick.message = SimpleNamespace(id=5151)
+        fallback.select._values = [str(rows[0].id)]
+        await fallback._on_select(pick)
+        assert pick.response.deferred
+        tap = FakeInteraction()
+        tap.message = SimpleNamespace(id=5151)
+        await fallback._on_add_selected(tap)
+        assert tap.followup.sent
+        assert "Apple iPhone 11, 64GB, Green" in tap.followup.sent[0][0]
+
+
+@pytest.mark.asyncio
+async def test_persistent_fallback_close_detaches_the_buttons() -> None:
+    fallback = DmListPersistentView(FakeBot())
+    interaction = FakeInteraction()
+    interaction.message = SimpleNamespace(id=6161)
+    await fallback._on_close(interaction)
+    assert interaction.response.edited
+    assert interaction.response.edited[0]["view"] is None

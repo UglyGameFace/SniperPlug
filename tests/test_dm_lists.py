@@ -199,6 +199,9 @@ async def test_dedupe_by_item_id_then_by_name() -> None:
         )
         assert again.added == ()
         assert again.duplicates == 1
+        # The duplicate's existing row comes back so the reply can
+        # name it instead of reporting a bare count.
+        assert [row.name for row in again.duplicate_rows] == ["Apple iPhone 11"]
         # A name-only row (closest, no ID) dedupes on the normalized name.
         closest = DmListCandidate(
             name="Ninja AF101 Air Fryer", status=STATUS_CLOSEST, source="photo"
@@ -212,6 +215,7 @@ async def test_dedupe_by_item_id_then_by_name() -> None:
         )
         assert second.added == ()
         assert second.duplicates == 1
+        assert [row.name for row in second.duplicate_rows] == ["Ninja AF101 Air Fryer"]
         assert len(await list_dm_list_items(db, USER_ID)) == 2
 
 

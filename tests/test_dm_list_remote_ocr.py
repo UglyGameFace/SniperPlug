@@ -496,3 +496,59 @@ async def test_settle_failure_replaces_the_reading_note(monkeypatch) -> None:
         assert edit["content"] == intake.SETTLE_FAILURE_NOTE
         assert edit["embed"] is None
         assert edit["view"] is None
+
+
+@pytest.mark.asyncio
+async def test_resent_picture_settles_naming_the_duplicates(monkeypatch) -> None:
+    """Felix, 2026-11-21: the same picture sent twice settled to a
+    bare "1 of those were already on your list" naming nothing, with
+    every button disabled. The settled edit must name each found
+    item, mark it already-on-list, and carry a live view."""
+
+    async with _isolated_db() as db:
+        remote = FakeRemoteOcr(text=CART_OCR_TEXT)
+        cog, _verify, _provider = _cog(monkeypatch, db, remote=remote)
+        first = FakeMessage("", attachments=[FakeAttachment()], message_id=555)
+        await cog.on_message(first)
+        await _settle(cog)
+        assert len(await list_dm_list_items(db, USER_ID)) == 2
+
+        second = FakeMessage("", attachments=[FakeAttachment()], message_id=556)
+        await cog.on_message(second)
+        await _settle(cog)
+        assert len(await list_dm_list_items(db, USER_ID)) == 2  # no new rows
+        assert len(second.sent.edits) == 1
+        edit = second.sent.edits[0]
+        final = edit["embed"].description
+        assert "Apple iPhone 11, 64GB, Green" in final
+        assert "Ninja AF101 Air Fryer, 4 Quart" in final
+        assert "already on your list" in final
+        view = edit["view"]
+        assert view.select is not None
+        assert len(view.select.options) == 2
+        assert view.add_selected_button.disabled is False
+        assert view.add_all_button.disabled is False
+        assert view.check_button.disabled is False
+        assert view.remove_button.disabled is False
+        assert view.clear_button.disabled is False
+
+
+@pytest.mark.asyncio
+async def test_picture_with_no_products_settles_with_an_honest_line(
+    monkeypatch,
+) -> None:
+    """A picture that reads but holds no products must still settle
+    to a visible, honest line — never an empty embed or bare tally."""
+
+    async with _isolated_db() as db:
+        remote = FakeRemoteOcr(text="Subtotal\nTax\nThank you for shopping\n")
+        cog, _verify, _provider = _cog(monkeypatch, db, remote=remote)
+        message = FakeMessage("", attachments=[FakeAttachment()])
+        await cog.on_message(message)
+        await _settle(cog)
+        assert len(message.sent.edits) == 1
+        final = message.sent.edits[0]["embed"].description
+        assert "couldn't read" in final
+        rows = await list_dm_list_items(db, USER_ID)
+        assert len(rows) == 1
+        assert rows[0].status == STATUS_UNREADABLE

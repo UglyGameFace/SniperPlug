@@ -35,6 +35,40 @@ ANNOUNCEMENT_TEXT = (
 )
 
 
+# Optional permissions for THIS announcement path only. Pinning was split
+# out of Manage Messages into its own Pin Messages permission in Feb 2026,
+# so a bot granted Manage Messages before the split can post but not pin.
+# This is deliberately NOT part of setup_self_heal.REQUIRED_CHANNEL_PERMS:
+# deal channels must keep working in servers that grant deal posting
+# without pinning, and a failed pin here is already fail-safe.
+OPTIONAL_ANNOUNCEMENT_PERMS = {
+    "pin_messages": "Pin Messages",
+}
+
+
+def missing_optional_announcement_permissions(channel: Any, member: Any) -> list[str]:
+    """Optional announcement permissions the bot lacks in ``channel``.
+
+    Returns [] when the check cannot be performed (no member, no
+    permissions_for) so the pin attempt proceeds exactly as before.
+    """
+
+    if member is None:
+        return []
+    permissions_for = getattr(channel, "permissions_for", None)
+    if permissions_for is None:
+        return []
+    try:
+        perms = permissions_for(member)
+    except Exception:
+        return []
+    return [
+        label
+        for attr, label in OPTIONAL_ANNOUNCEMENT_PERMS.items()
+        if not getattr(perms, attr, True)
+    ]
+
+
 async def _ensure_marker_table(db: Any) -> None:
     conn = db.require_conn()
     await conn.execute(
@@ -117,6 +151,18 @@ async def maybe_post_consolidation_announcement(bot: Any) -> int:
             )
             continue
         posted += 1
+        missing_optional = missing_optional_announcement_permissions(
+            channel, getattr(guild, "me", None)
+        )
+        if missing_optional:
+            log.warning(
+                "Consolidation announcement: bot is missing %s in guild %s; the post landed, "
+                "but pinning needs the Pin Messages permission (split from Manage Messages "
+                "in Feb 2026). The pin will still be attempted; staff can pin it by hand if "
+                "it fails.",
+                ", ".join(missing_optional),
+                getattr(guild, "id", "?"),
+            )
         try:
             await message.pin()
         except Exception:

@@ -125,8 +125,17 @@ async def maybe_post_hp_deal_cards(
                 retailer=retailer,
                 source_label=source_label,
             )
-            view = await build_deal_feedback_view(db, guild_id=int(guild_id), target=target)
-            message = await channel.send(embed=sanitize_embed(card.embed), view=view)
+            layout_view = getattr(card, "layout_view", None)
+            if layout_view is not None:
+                # Components V2 pilot (SNIPERPLUG_COMPONENTS_V2_CARDS on):
+                # a V2 message cannot also carry an embed or a classic
+                # View, so the feedback buttons are not attached in this
+                # mode yet. With the flag off, layout_view is None and the
+                # embed path below is byte-for-byte the old behaviour.
+                message = await channel.send(view=layout_view)
+            else:
+                view = await build_deal_feedback_view(db, guild_id=int(guild_id), target=target)
+                message = await channel.send(embed=sanitize_embed(card.embed), view=view)
         except Exception as error:
             await release_public_deal_reservation(db, guild_id=int(guild_id), deal_key=deal_key)
             notes.append(f"HP public post failed: {clean_error_text(error)}")

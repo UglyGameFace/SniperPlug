@@ -46,6 +46,14 @@ Fail-closed requirements, all of them:
   everyday $2.94, DM'd 2026-11-23 as a "97% gap"), and the item is not
   low-ticket office/school stationery, whose list prices are fictional
   relative to a $1–$15 everyday price;
+* the item is not a gift card or prepaid credit (a gift card's "price"
+  is a buyer-chosen denomination, so a large returned list is the
+  denomination menu, not value evidence), not food or grocery, and not
+  a cleaning or household chemical — those categories carry the same
+  fictional-list pattern (taco seasoning at $0.48 against a $1,149.99
+  list, Clorox bleach at $6.26 against $113.99, both in the saved
+  2026-11-23 fire set) and stay reachable only through the
+  verified-markdown and observed-price-drop lanes;
 * the offer is cart-buyable, in stock, and not a member-only or
   checkout-only price.
 """
@@ -55,6 +63,10 @@ from typing import Any
 from sniperplug.services.stock_status import is_unavailable_stock
 from sniperplug.services.walmart_extreme_price_signals import (
     CHEAP_CONSUMABLE,
+    CLEANING_CHEMICAL_GOODS,
+    FOOD_GROCERY_CATEGORY,
+    FOOD_GROCERY_GOODS,
+    GIFT_CARD_GOODS,
     LOW_TICKET_SUPPLIES,
     MSRP_INFLATED_GOODS,
     is_accessory_title,
@@ -137,6 +149,14 @@ def underprice_lead_reference(candidate: Any) -> float | None:
     if MSRP_INFLATED_GOODS.search(title) or MSRP_INFLATED_GOODS.search(category):
         return None
     if LOW_TICKET_SUPPLIES.search(title) or LOW_TICKET_SUPPLIES.search(category):
+        return None
+    if GIFT_CARD_GOODS.search(title) or GIFT_CARD_GOODS.search(category):
+        return None
+    if FOOD_GROCERY_GOODS.search(title) or FOOD_GROCERY_CATEGORY.search(category):
+        return None
+    if CLEANING_CHEMICAL_GOODS.search(title) or CLEANING_CHEMICAL_GOODS.search(
+        category
+    ):
         return None
     if getattr(candidate, "can_add_to_cart", None) is not True:
         return None

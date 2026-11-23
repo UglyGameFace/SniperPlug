@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 STORE_SEARCH_URL = "https://www.homedepot.com/l/search/"
 SERPAPI_URL = "https://serpapi.com/search.json"
-STORE_LINK_RE = re.compile(r"/l/([^\"'<>]+?)/(\d{3,6})(?:[?\"'<>/]|$)")
+STORE_LINK_RE = re.compile(r"/l/([^\"'<>]+)/(\d{3,6})(?:[?\"'<>/]|$)")
 SPACE_RE = re.compile(r"\s+")
 
 
@@ -65,17 +65,43 @@ def _home_depot_site_stores(zip_code: str, *, max_results: int) -> tuple[HomeDep
     return tuple(_choices_from_html(body, max_results=max_results))
 
 
+def _zip_coordinates(zip_code: str) -> tuple[str, str] | None:
+    """ZIP centroid via the free zippopotam.us directory (no key)."""
+    try:
+        with urllib.request.urlopen(
+            f"https://api.zippopotam.us/us/{urllib.parse.quote(zip_code)}", timeout=8
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    places = payload.get("places")
+    if not isinstance(places, list) or not places or not isinstance(places[0], dict):
+        return None
+    lat = _clean(places[0].get("latitude"))
+    lng = _clean(places[0].get("longitude"))
+    if not lat or not lng:
+        return None
+    return lat, lng
+
+
 def _serpapi_maps_stores(zip_code: str, *, max_results: int) -> tuple[HomeDepotStoreChoice, ...]:
     key = os.getenv("SERPAPI_API_KEY", "").strip()
     if not key:
         return ()
+    coords = _zip_coordinates(zip_code)
     params = {
         "engine": "google_maps",
-        "q": f"Home Depot near {zip_code}",
+        # With coordinates, a plain query is what returns local results;
+        # "near <zip>" without coordinates returned zero results live.
+        "q": "Home Depot" if coords else f"Home Depot near {zip_code}",
         "type": "search",
         "api_key": key,
         "hl": "en",
     }
+    if coords:
+        params["ll"] = f"@{coords[0]},{coords[1]},12z"
     try:
         with urllib.request.urlopen(f"{SERPAPI_URL}?{urllib.parse.urlencode(params)}", timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))

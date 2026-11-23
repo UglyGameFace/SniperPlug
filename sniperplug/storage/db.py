@@ -388,7 +388,18 @@ class Database:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = await aiosqlite.connect(db_path.as_posix())
         self.conn.row_factory = aiosqlite.Row
-        await self.conn.execute("PRAGMA journal_mode=WAL;")
+        # PRAGMA journal_mode RETURNS a row ("wal"), so its cursor must be
+        # fully consumed: an unconsumed statement stays active on the
+        # connection, and the first real COMMIT after it fails with
+        # "cannot commit transaction - SQL statements in progress"
+        # whenever the cursor object has not been garbage-collected yet.
+        # That GC race made the consolidation announcement test fail
+        # intermittently in CI (root-caused 2026-11-23): this discarded
+        # cursor stayed open until the public-alert migration's marker
+        # insert tried the first transactional commit. Consuming the
+        # result completes the statement deterministically.
+        journal_cursor = await self.conn.execute("PRAGMA journal_mode=WAL;")
+        await journal_cursor.fetchall()
         await self.conn.execute("PRAGMA foreign_keys=ON;")
         await self.conn.commit()
 

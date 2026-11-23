@@ -18,6 +18,8 @@ from sniperplug.services.public_deal_quality import public_deal_rejection_reason
 from sniperplug.services.walmart_extreme_price_signals import (
     exact_price_lead_evidence,
     is_priority_extreme_discovery,
+    is_trusted_price_error,
+    listed_price_anomaly,
 )
 from tests.test_walmart_extreme_price_alerts_295 import candidate
 
@@ -82,20 +84,65 @@ def test_material_proof_uses_metal_fields_not_color_or_marketing():
     assert jewelry_quality_rejection_reason("USB Headset") is None
 
 
-def test_listed_price_anomaly_creates_extreme_headset_lead():
+def test_listed_price_anomaly_no_longer_creates_extreme_headset_lead():
+    """Deliberate reversal (Felix, 2026-11-23, round 4): this shape was a
+    test-covered extreme lead until today. The H390's $29.56 is its
+    everyday price; the $240 Walmart list is inflated, and a list price
+    alone must not make a headset a public extreme lead."""
     headset = candidate(title="Logitech H390 Wired USB Headset, Black", price=29.56)
     headset.variant_attributes["msrp"] = "240.00"
     assert not is_priority_extreme_discovery(
         headset, current_price=29.56, trusted_reference=None
     )
     assert exact_price_lead_evidence(headset) is None
-    # A $29.56 Walmart-sold headset against a $240 list clears the
-    # listed-price anomaly guards (<=20% of list, list >= $100, savings
-    # >= $75), so it is an extreme lead even though the MSRP alone is not
-    # a trusted reference and earns no discovery priority.
+    assert listed_price_anomaly(headset) is None
+    assert (
+        extreme.extreme_rejection_reason(headset)
+        == "price_mismatch_or_over_limit"
+    )
+    assert extreme.build_extreme_price_card(headset) is None
+
+
+def test_listed_price_anomaly_rejects_category_only_headset():
+    """A headset named only by its category leaf dies the same way."""
+    base = candidate(title="Logitech H390 Wired USB Audio, Black", price=29.56)
+    headset = replace(
+        base,
+        variant_attributes={
+            **base.variant_attributes,
+            "msrp": "240.00",
+            "categoryPath": "Electronics/Audio/Headsets",
+        },
+    )
+    assert listed_price_anomaly(headset) is None
+
+
+def test_headset_with_trusted_reference_still_shows_publicly():
+    """Guaranteed-evidence control (Felix's clarification, round 4):
+    only the list-price-only door closed. A headset carrying an
+    exact-detail trusted reference — a verified was-price — still
+    qualifies in the public extreme lane."""
+    base = candidate(title="Logitech H390 Wired USB Headset, Black", price=9.0)
+    headset = replace(
+        base,
+        api_reference_price=240.0,
+        typical_price=240.0,
+        variant_attributes={
+            **base.variant_attributes,
+            "referencePriceTrusted": "yes",
+            "trustedReferencePrice": "240.00",
+        },
+    )
+    assert is_trusted_price_error(
+        headset, current_price=9.0, trusted_reference=240.0
+    )
+    assert (
+        exact_price_lead_evidence(headset, trusted_reference=240.0)
+        == "high_value_hardware"
+    )
+    assert extreme.extreme_rejection_reason(headset) is None
     card = extreme.build_extreme_price_card(headset)
-    assert card is not None
-    assert card.embed.title.startswith("Extreme exact-price find")
+    assert card is not None and extreme.valid_extreme_price_card(card)
 
 
 @pytest.mark.parametrize("kind,expected", [

@@ -271,6 +271,121 @@ def test_office_category_alone_rejected() -> None:
     assert underprice_lead_reference(candidate) is None
 
 
+# ------------------------------------------------- round 2: fake-list classes
+# Real shapes from the saved 2026-11-23 fire set (live bridge DB replay):
+# after the $99.99/stationery fix the lane still fired on 20 saved rows,
+# 15 of them gift cards, food/grocery or cleaning chemicals against
+# inflated non-placeholder lists. Felix ordered those classes killed.
+
+
+def _saved_fire_candidate(title, price, listed, category):
+    candidate = _bf2042_candidate(
+        title=title, current_price=price, api_current_price=price
+    )
+    return _with_attrs(
+        candidate,
+        referenceContextPrice=str(listed),
+        categoryPath=category,
+    )
+
+
+def test_gift_card_denomination_menu_is_not_an_underprice_lead() -> None:
+    # Item 1035672794: a $5 denomination option against the largest
+    # denomination returned as the "list".
+    candidate = _saved_fire_candidate(
+        "Wonderful Mom Walmart Gift Card",
+        5.0,
+        500.01,
+        "Home Page/Gifts & Registry/Gift Cards/Shop Gift Cards by Format/"
+        "Plastic Gift Cards/Walmart Plastic Gift Cards/"
+        "All Walmart Plastic Gift Cards",
+    )
+    assert underprice_lead_reference(candidate) is None
+    assert build_underprice_lead_card(candidate) is None
+
+
+def test_egift_card_rejected_on_title_and_category() -> None:
+    candidate = _saved_fire_candidate(
+        "Basic Blue Walmart eGift Card [Email Delivery]",
+        5.0,
+        50.0,
+        "Home Page/Gifts & Registry/Gift Cards/Shop by Occasion/"
+        "Graduation Gift Cards",
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_soup_with_absurd_list_is_not_an_underprice_lead() -> None:
+    # Item 10321692: everyday $1.96 soup against a $402.99 list.
+    candidate = _saved_fire_candidate(
+        "Campbell's Condensed Golden Mushroom Soup, 10.5 oz Can",
+        1.96,
+        402.99,
+        "Home Page/Food/Pantry/Soup/Condensed Soup",
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_seasoning_with_absurd_list_is_not_an_underprice_lead() -> None:
+    # Item 379517847: $0.48 seasoning against a $1,149.99 list — the
+    # category screen alone kills it, no price ceiling needed.
+    candidate = _saved_fire_candidate(
+        "Great Value Taco Seasoning Mix, Original, 1 oz",
+        0.48,
+        1149.99,
+        "Home Page/Food/Pantry/Tex Mex",
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_pet_food_is_food_even_under_a_pets_category() -> None:
+    # Item 637083809: categoryPath sits under Pets, not Food.
+    candidate = _saved_fire_candidate(
+        "Freshpet Healthy & Natural Grain Free Small Dogs/Breeds Dog Food, "
+        "Fresh Chicken Recipe, 1lb",
+        6.87,
+        89.88,
+        "Home Page/Pets/Pets Subscription",
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_bleach_is_not_an_underprice_lead() -> None:
+    # Item 883632494: everyday $6.26 bleach against a $113.99 list.
+    candidate = _saved_fire_candidate(
+        "Clorox No Splash Bleach, 77 fl oz",
+        6.26,
+        113.99,
+        "Home Page/Household Essentials/Laundry/Bleach/Clorox Bleach",
+    )
+    assert underprice_lead_reference(candidate) is None
+    assert build_underprice_lead_card(candidate) is None
+
+
+def test_drain_cleaner_is_not_an_underprice_lead() -> None:
+    candidate = _saved_fire_candidate(
+        "Drano Max Gel Drain Clog Remover, 80 oz, 1 Count",
+        9.47,
+        108.21,
+        "Home Page/Household Essentials/Cleaning Supplies/Drain Cleaners/"
+        "Drain Cleaners",
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_food_processor_appliance_is_not_food() -> None:
+    # The food category screen is segment-anchored: a kitchen appliance
+    # under Kitchen & Dining must not be mistaken for grocery.
+    candidate = _saved_fire_candidate(
+        "Ninja Professional Food Processor, 1000W, Black",
+        19.99,
+        199.99,
+        "Home Page/Kitchen & Dining/Small Kitchen Appliances/"
+        "Food Processors",
+    )
+    assert underprice_lead_reference(candidate) == 199.99
+
+
 # ---------------------------------------------------------------- card
 
 

@@ -234,6 +234,51 @@ LOW_TICKET_SUPPLIES = re.compile(
     r"glue\s+sticks?|erasers?|staplers?|staples)\b",
     re.IGNORECASE,
 )
+# Gift cards and prepaid credit: a gift card's "price" is a denomination
+# the buyer picks from a menu, not a merchandising price, and Walmart
+# returns a large denomination as the list/MSRP — a $5 option against a
+# "$500.01 list" is the menu, not a price error. Observed live
+# 2026-11-23: three Walmart gift cards at $5.00 against lists of $50.00
+# and $500.01 in the underprice lane's saved fire set. Matched against
+# title and categoryPath. Real gift-card markdowns remain reachable
+# through the verified-markdown and observed-price-drop lanes.
+GIFT_CARD_GOODS = re.compile(
+    r"\b(?:gift\s*cards?|e-?gift\s*cards?|prepaid\s+(?:cards?|credit))\b",
+    re.IGNORECASE,
+)
+# Food and grocery: staple foods sell at $0.50–$16 every day, and
+# Walmart's returned list for them is routinely absurd — observed live
+# 2026-11-23 in the underprice lane's saved fire set: taco seasoning at
+# $0.48 against a $1,149.99 "list", Campbell's soup at $1.96 against
+# $402.99, a frozen pot pie at $1.00 against $77.11. The title pattern
+# covers staple product types (including pet food, whose categoryPath
+# sits under Pets, not Food); the category pattern is anchored to whole
+# path segments so a food *processor* (a kitchen appliance under
+# Kitchen & Dining) is not mistaken for food. These goods remain
+# eligible through the observed-price-drop and verified-markdown lanes.
+FOOD_GROCERY_GOODS = re.compile(
+    r"\b(?:(?:dog|cat|pet)\s*food|soups?|seasoning(?:\s*mix)?|macaroni|"
+    r"pot\s*pie|frozen\s*(?:meals?|dinners?|entrees?|pizza))\b",
+    re.IGNORECASE,
+)
+FOOD_GROCERY_CATEGORY = re.compile(
+    r"(?:^|/)\s*(?:food|grocery|groceries|pantry)\s*(?:/|$)",
+    re.IGNORECASE,
+)
+# Cleaning and household chemicals: bleach, drain openers and bulk
+# cleaners carry the same fictional-list pattern — observed live
+# 2026-11-23: four Clorox bleach listings at $3.98–$6.26 against lists
+# of $51.46–$113.99, Drano at $9.47 against $108.21. Matched against
+# title and categoryPath (the Household Essentials department is
+# consumables by construction). "Vacuum cleaner" style appliances are
+# deliberately not matched: no bare "cleaner" term. Real markdowns on
+# these goods remain reachable through the real-evidence lanes.
+CLEANING_CHEMICAL_GOODS = re.compile(
+    r"\b(?:bleach|drain\s*(?:clean\w*|clog|opener)|cleaning\s*supplies|"
+    r"household\s*essentials|all[-\s]*purpose\s*cleaner|degreaser|"
+    r"disinfect\w*)\b",
+    re.IGNORECASE,
+)
 CHEAP_CONSUMABLE = re.compile(
     r"\b(?:detergent|soap|paper\s*towels?|toilet\s*paper|tissue|wipes|diapers?|"
     r"snacks?|candy|soda|bottled\s*water|shampoo|conditioner|toothpaste|"
@@ -365,6 +410,12 @@ def listed_price_anomaly(
         and MSRP_INFLATED_GOODS.search(category) is None
         and LOW_TICKET_SUPPLIES.search(title) is None
         and LOW_TICKET_SUPPLIES.search(category) is None
+        and GIFT_CARD_GOODS.search(title) is None
+        and GIFT_CARD_GOODS.search(category) is None
+        and FOOD_GROCERY_GOODS.search(title) is None
+        and FOOD_GROCERY_CATEGORY.search(category) is None
+        and CLEANING_CHEMICAL_GOODS.search(title) is None
+        and CLEANING_CHEMICAL_GOODS.search(category) is None
     ):
         return listed
     return None

@@ -420,3 +420,117 @@ def test_fetch_detail_prefers_direct_and_never_needs_serpapi(monkeypatch):
     assert detail is not None
     assert detail.price == 0.03
     assert any("direct gateway" in warning.lower() for warning in detail.warnings)
+
+
+# --- Schema-drift guards (2026-11-22) -------------------------------------
+# Home Depot revised the gateway schema: the search operation lost its
+# pagination/channel/ZIP arguments and several fields, and the gateway
+# now rejects variable declarations the document does not use. These
+# tests pin the rebuilt documents and the variables the client sends.
+
+import itertools as _itertools
+import re as _re
+
+from sniperplug.services.hd_direct_client import PRODUCT_QUERY, SEARCH_QUERY
+
+
+def _declared_variables(document: str) -> set[str]:
+    header = document.split("{", 1)[0]
+    return set(_re.findall(r"\$(\w+)\s*:", header))
+
+
+def test_search_document_has_no_removed_search_arguments():
+    for removed in ("startIndex", "pageSize", "additionalSearchParams", "sponsoredEnabled"):
+        assert removed not in SEARCH_QUERY
+
+
+def test_documents_declare_no_unused_variables():
+    for document in (SEARCH_QUERY, PRODUCT_QUERY):
+        for name in _declared_variables(document):
+            assert document.count(f"${name}") >= 2, f"${name} declared but never used"
+
+
+def test_product_document_dropped_its_orphan_variables():
+    for orphan in ("configId", "skipPaintDetails", "skipInstallServices", "skipKPF", "skipSubscribeAndSave", "skipFavoriteCount"):
+        assert f"${orphan}" not in PRODUCT_QUERY
+
+
+def _capturing_attempt(captured: list):
+    def fake_attempt(major, attempt_index, opname, body, referer):
+        captured.append((opname, body))
+        if opname == "productClientOnlyProduct":
+            return 200, {"data": {"product": {}}}
+        return _ok_payload()
+
+    return fake_attempt
+
+
+def test_search_model_variables_are_all_declared(monkeypatch, _fresh_breaker):
+    captured: list = []
+    monkeypatch.setattr(hd_direct_client, "_execute_attempt", _capturing_attempt(captured))
+    asyncio.run(hd_direct_client.search_model("drill", zip_code="06606", store_id=None))
+    assert captured and captured[0][0] == "searchModel"
+    sent = set(captured[0][1]["variables"])
+    assert sent <= _declared_variables(SEARCH_QUERY)
+    assert "keyword" in sent
+
+
+def test_product_detail_variables_are_all_declared(monkeypatch, _fresh_breaker):
+    captured: list = []
+    monkeypatch.setattr(hd_direct_client, "_execute_attempt", _capturing_attempt(captured))
+    asyncio.run(hd_direct_client.product_detail("325479354", store_id=None, zip_code="06606"))
+    assert captured and captured[0][0] == "productClientOnlyProduct"
+    sent = set(captured[0][1]["variables"])
+    assert sent <= _declared_variables(PRODUCT_QUERY)
+    assert "itemId" in sent
+
+
+# --- Proxy routing ---------------------------------------------------------
+
+
+class _FakeGatewayResponse:
+    status_code = 200
+    text = '{"data": {"searchModel": {"products": []}}}'
+
+
+class _FakeSession:
+    instances: list = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        _FakeSession.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def post(self, url, **kwargs):
+        return _FakeGatewayResponse()
+
+
+def test_execute_attempt_rotates_configured_proxies(monkeypatch):
+    _FakeSession.instances = []
+    monkeypatch.setattr("curl_cffi.requests.Session", _FakeSession)
+    monkeypatch.setattr(hd_direct_client, "_proxy_counter", _itertools.count())
+    monkeypatch.setenv(
+        hd_direct_client._PROXY_ENV,
+        "http://user:pass@1.1.1.1:1000, http://user:pass@2.2.2.2:2000",
+    )
+    major = sweep_majors()[0]
+    hd_direct_client._execute_attempt(major, 0, "searchModel", {}, "https://www.homedepot.com/s/x")
+    hd_direct_client._execute_attempt(major, 0, "searchModel", {}, "https://www.homedepot.com/s/x")
+    assert len(_FakeSession.instances) == 2
+    assert _FakeSession.instances[0].kwargs["proxies"]["https"] == "http://user:pass@1.1.1.1:1000"
+    assert _FakeSession.instances[1].kwargs["proxies"]["https"] == "http://user:pass@2.2.2.2:2000"
+
+
+def test_execute_attempt_without_proxy_config_sends_no_proxies(monkeypatch):
+    _FakeSession.instances = []
+    monkeypatch.setattr("curl_cffi.requests.Session", _FakeSession)
+    monkeypatch.delenv(hd_direct_client._PROXY_ENV, raising=False)
+    major = sweep_majors()[0]
+    hd_direct_client._execute_attempt(major, 0, "searchModel", {}, "https://www.homedepot.com/s/x")
+    assert len(_FakeSession.instances) == 1
+    assert "proxies" not in _FakeSession.instances[0].kwargs

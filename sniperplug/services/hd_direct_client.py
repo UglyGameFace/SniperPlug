@@ -15,6 +15,7 @@ while SerpApi carries traffic.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -136,80 +137,42 @@ def lane_status() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# GraphQL documents (verbatim from production open-source clients, Nov 2026)
+# GraphQL documents. The search document was rebuilt 2026-11-22 against
+# the live gateway after Home Depot revised the schema (the Nov 2026
+# document's search arguments and several fields no longer exist, and
+# the gateway now rejects unused variable declarations). Both documents
+# carry only what the providers actually parse; the rebuilt shapes were
+# verified live through the lane before shipping.
 # ---------------------------------------------------------------------------
 
 SEARCH_QUERY = """
 query searchModel(
   $storeId: String,
-  $startIndex: Int,
-  $pageSize: Int,
-  $enableBrManagementFlag: Boolean,
   $keyword: String,
-  $additionalSearchParams: AdditionalParams,
-  $isBrandPricingPolicyCompliant: Boolean,
-  $sponsoredEnabled: Boolean,
-  $channel: Channel,
-  $skipVisualNav: Boolean = false,
-  $skipDimensions: Boolean = false,
-  $skipRefinementGroups: Boolean = false,
-  $skipSubscribeAndSave: Boolean = false,
-  $skipCollections: Boolean = false,
-  $skipPromotions: Boolean = false,
-  $filter: ProductFilter,
-  $sortBy: ProductSort
+  $isBrandPricingPolicyCompliant: Boolean
 ) {
   searchModel(
-    keyword: $keyword,
-    storeId: $storeId,
-    startIndex: $startIndex,
-    pageSize: $pageSize,
-    enableBrManagementFlag: $enableBrManagementFlag,
-    additionalSearchParams: $additionalSearchParams,
-    isBrandPricingPolicyCompliant: $isBrandPricingPolicyCompliant,
-    sponsoredEnabled: $sponsoredEnabled,
-    channel: $channel
+    keyword: $keyword
   ) {
     keyword
-    audience { id }
-    metadata {
-      contentType
-      title
-      searchRedirectUrl
-      breadcrumb
-      canonicalUrl
-      totalProducts
-      analytics { searchReport { totalProducts } }
-    }
     searchReport { totalProducts }
-    dimensions @skip(if: $skipDimensions) { label values { label } }
     products {
       itemId
-      identifiers { productType canonicalUrl productLabel brandName modelNumber storeSkuNumber }
+      identifiers { canonicalUrl productLabel brandName modelNumber storeSkuNumber }
       pricing(storeId: $storeId, isBrandPricingPolicyCompliant: $isBrandPricingPolicyCompliant) {
-        value original alternate { unit { value units } } specialBuy { value }
-        promotion { dollarOff percentageOff type startDate endDate }
-        clearance { value dollarOff percentageOff unitsClearancePrice }
+        value original
       }
       media { images { url type subType sizes } }
-      details { name value }
-      ratingsAndReviews { averageRating totalReviews }
-      fulfillment(storeId: $storeId, quantity: 1) {
+      badges { name }
+      availabilityType { type discontinued }
+      fulfillment(storeId: $storeId) {
         anchorStoreStatusType
         fulfillmentOptions {
           fulfillable type
           services { type locations { locationId isAnchor inventory { quantity isInStock isOutOfStock } } }
         }
       }
-      badges { name }
-      info { productSubType }
-      availabilityType { type discontinued }
-      subscription @skip(if: $skipSubscribeAndSave) { discountPercentage subscriptionEnabled defaultfrequency }
-      promotions @skip(if: $skipPromotions) { promotionTagType imageBadgeLink tagline }
     }
-    refinementGroups @skip(if: $skipRefinementGroups) { label values { label } }
-    visualNav @skip(if: $skipVisualNav) { categoryThumbnail }
-    collections @skip(if: $skipCollections) { name imageUrl link }
   }
 }
 """
@@ -222,14 +185,8 @@ query productClientOnlyProduct(
   $storeId: String,
   $isBrandPricingPolicyCompliant: Boolean,
   $skipSpecificationGroup: Boolean = false,
-  $configId: String,
-  $skipPaintDetails: Boolean = true,
   $zipCode: String,
   $quantity: Int,
-  $skipInstallServices: Boolean = true,
-  $skipKPF: Boolean = false,
-  $skipSubscribeAndSave: Boolean = false,
-  $skipFavoriteCount: Boolean = false
 ) {
   product(itemId: $itemId, dataSource: $dataSource, loyaltyMembershipInput: $loyaltyMembershipInput) {
     itemId
@@ -257,6 +214,30 @@ query productClientOnlyProduct(
 # ---------------------------------------------------------------------------
 
 
+_PROXY_ENV = "SNIPERPLUG_HD_DIRECT_PROXY_URLS"
+_proxy_counter = itertools.count()
+
+
+def _proxy_urls() -> tuple[str, ...]:
+    """Configured egress proxies for the direct lane (comma-separated).
+
+    The gateway refuses most datacenter addresses (HTTP 206); routing
+    through residential addresses is what makes the lane answer. Blank
+    or unset means the container's own address, as before.
+    """
+    raw = (os.getenv(_PROXY_ENV) or "").strip()
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _proxy_for_attempt(attempt_index: int) -> str | None:
+    urls = _proxy_urls()
+    if not urls:
+        return None
+    return urls[(next(_proxy_counter) + attempt_index) % len(urls)]
+
+
 def _execute_attempt(
     major: int,
     attempt_index: int,
@@ -277,7 +258,11 @@ def _execute_attempt(
     for host in GATEWAY_HOSTS:
         url = f"https://{host}/federation-gateway/graphql?opname={opname}"
         try:
-            with cffi_requests.Session(impersonate=identity.impersonate) as session:
+            session_kwargs: dict[str, Any] = {"impersonate": identity.impersonate}
+            proxy_url = _proxy_for_attempt(attempt_index)
+            if proxy_url:
+                session_kwargs["proxies"] = {"http": proxy_url, "https": proxy_url}
+            with cffi_requests.Session(**session_kwargs) as session:
                 response = session.post(
                     url,
                     headers=headers,
@@ -370,24 +355,13 @@ async def search_model(
 ) -> dict[str, Any]:
     page = max(1, int(page or 1))
     page_size = max(1, min(24, int(page_size or 24)))
+    # The gateway's current schema takes no pagination, channel or
+    # delivery-ZIP search arguments: it returns its default first page
+    # (24 products). page/page_size stay in the signature for callers;
+    # store context still flows through the pricing/fulfillment fields.
     variables: dict[str, Any] = {
         "keyword": keyword,
-        "startIndex": (page - 1) * page_size,
-        "pageSize": page_size,
-        "channel": "DESKTOP",
         "isBrandPricingPolicyCompliant": False,
-        "sponsoredEnabled": True,
-        "enableBrManagementFlag": False,
-        "skipVisualNav": True,
-        "skipDimensions": True,
-        "skipRefinementGroups": True,
-        "skipSubscribeAndSave": True,
-        "skipCollections": True,
-        "skipPromotions": True,
-        "additionalSearchParams": {
-            "deliveryZip": (zip_code or "").strip(),
-            "multiStoreIds": [],
-        },
     }
     if store_id:
         variables["storeId"] = str(store_id)
@@ -405,11 +379,6 @@ async def product_detail(
         "itemId": str(item_id),
         "isBrandPricingPolicyCompliant": True,
         "skipSpecificationGroup": True,
-        "skipPaintDetails": True,
-        "skipInstallServices": True,
-        "skipKPF": True,
-        "skipSubscribeAndSave": True,
-        "skipFavoriteCount": True,
     }
     if store_id:
         variables["storeId"] = str(store_id)

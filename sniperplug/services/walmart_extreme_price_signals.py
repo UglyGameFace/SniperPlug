@@ -210,6 +210,30 @@ LISTED_REFERENCE_KEYS = (
     "listPrice",
     "walmartListedReferencePrice",
 )
+# Walmart's API returns $99.99 as the list/MSRP for items that have no
+# real list price at all — a fallback value, not merchandising data.
+# Observed live 2026-11-23 on unrelated cheap goods whose product pages
+# show no was-price at all: Pen+Gear ballpoint pens at their everyday
+# $2.94 (item 428327170), Equate antacid at $4.94, a pet waterer at
+# $6.48, cookie mix at $2.97 — all carrying the identical "list" of
+# $99.99. A $99.99 list therefore proves nothing about value and must
+# never be the sole evidence for an underprice / listed-anomaly lead.
+# Genuinely-$99.99 items are unaffected in the lanes that matter: they
+# still qualify through trusted was-price references and observed
+# price drops, which never read this function.
+PLACEHOLDER_LIST_PRICES = frozenset({99.99})
+# Low-ticket office / school supplies: consumable stationery whose
+# Walmart list prices are routinely fictional relative to a $1–$15
+# everyday price. Matched against title and categoryPath. These goods
+# remain eligible through observed-price-drop and verified-markdown
+# lanes, which use real evidence.
+LOW_TICKET_SUPPLIES = re.compile(
+    r"\b(?:office\s+supplies|school\s+supplies|stationery|"
+    r"writing\s+(?:instruments?|utensils?)|ballpoint|"
+    r"pens?|pencils?|markers?|highlighters?|crayons?|"
+    r"glue\s+sticks?|erasers?|staplers?|staples)\b",
+    re.IGNORECASE,
+)
 CHEAP_CONSUMABLE = re.compile(
     r"\b(?:detergent|soap|paper\s*towels?|toilet\s*paper|tissue|wipes|diapers?|"
     r"snacks?|candy|soda|bottled\s*water|shampoo|conditioner|toothpaste|"
@@ -263,7 +287,7 @@ def walmart_listed_reference(candidate: Any) -> float | None:
     attrs = getattr(candidate, "variant_attributes", None) or {}
     for key in LISTED_REFERENCE_KEYS:
         value = _positive_float(attrs.get(key))
-        if value is not None:
+        if value is not None and value not in PLACEHOLDER_LIST_PRICES:
             return value
     return None
 
@@ -339,6 +363,8 @@ def listed_price_anomaly(
         and listed - current >= LISTED_ANOMALY_MIN_SAVINGS
         and MSRP_INFLATED_GOODS.search(title) is None
         and MSRP_INFLATED_GOODS.search(category) is None
+        and LOW_TICKET_SUPPLIES.search(title) is None
+        and LOW_TICKET_SUPPLIES.search(category) is None
     ):
         return listed
     return None

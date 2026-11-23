@@ -184,6 +184,93 @@ def test_no_list_reference_rejected() -> None:
     assert underprice_lead_reference(candidate) is None
 
 
+# ------------------------------------------------------- $99.99 fallback
+
+
+def _pen_candidate(**overrides) -> SourceCandidate:
+    """The exact live shape behind Felix's 2026-11-23 screenshot:
+    Pen+Gear pens (item 428327170) at their everyday $2.94, with
+    Walmart's API returning a $99.99 'list' the product page never
+    shows (no was-price; the 5-pack is $14.70 = 5 x $2.94)."""
+
+    base = dict(
+        title=(
+            "Pen+Gear Retractable Ballpoint Pens, Medium Point, 1.0 mm, "
+            "Black Ink, 8 Count"
+        ),
+        current_price=2.94,
+        api_current_price=2.94,
+    )
+    base.update(overrides)
+    candidate = _bf2042_candidate(**base)
+    return _with_attrs(
+        candidate,
+        referenceContextPrice="99.99",
+        categoryPath=(
+            "Home Page/Office Supplies/Office Supplies & School "
+            "Supplies by Brand/Pen+Gear/Pen+Gear Writing Utensils"
+        ),
+    )
+
+
+def test_pen_gear_pens_are_not_an_underprice_lead() -> None:
+    assert underprice_lead_reference(_pen_candidate()) is None
+    assert build_underprice_lead_card(_pen_candidate()) is None
+
+
+def test_placeholder_9999_list_rejected_for_any_product() -> None:
+    # The sentinel alone must kill it, even for the Battlefield shape
+    # that legitimately fires at a real $69.99 / $61.59 list.
+    candidate = _with_attrs(
+        _bf2042_candidate(), referenceContextPrice="99.99"
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_placeholder_value_skipped_for_a_real_list_behind_it() -> None:
+    from sniperplug.services.walmart_extreme_price_signals import (
+        walmart_listed_reference,
+    )
+
+    candidate = _with_attrs(
+        _bf2042_candidate(),
+        msrp="99.99",
+        referenceContextPrice="",
+        listPrice="129.99",
+    )
+    assert walmart_listed_reference(candidate) == 129.99
+    only_placeholder = _with_attrs(
+        _bf2042_candidate(),
+        msrp="99.99",
+        referenceContextPrice="",
+        listPrice="",
+    )
+    assert walmart_listed_reference(only_placeholder) is None
+
+
+def test_office_supplies_rejected_even_with_a_non_placeholder_list() -> None:
+    # Stationery screen on its own: a $59.99 list is not the sentinel,
+    # so only the low-ticket-supplies rule can reject this.
+    candidate = _with_attrs(
+        _pen_candidate(), referenceContextPrice="59.99"
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_office_category_alone_rejected() -> None:
+    candidate = _bf2042_candidate(
+        title="Desktop Manual Tape Dispenser, 1 in Core, Black",
+        current_price=5.99,
+        api_current_price=5.99,
+    )
+    candidate = _with_attrs(
+        candidate,
+        referenceContextPrice="59.99",
+        categoryPath="Home Page/Office Supplies/Desk Accessories",
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
 # ---------------------------------------------------------------- card
 
 

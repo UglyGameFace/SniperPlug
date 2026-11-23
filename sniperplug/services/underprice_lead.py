@@ -41,6 +41,11 @@ Fail-closed requirements, all of them:
   beauty, decor — the shared MSRP-inflation screen). Software and
   digital goods are *allowed* here precisely because the delivery is a
   labelled private lead, not a public claim;
+* the list price is not Walmart's $99.99 fallback value (returned for
+  items with no real list price at all — e.g. Pen+Gear pens at their
+  everyday $2.94, DM'd 2026-11-23 as a "97% gap"), and the item is not
+  low-ticket office/school stationery, whose list prices are fictional
+  relative to a $1–$15 everyday price;
 * the offer is cart-buyable, in stock, and not a member-only or
   checkout-only price.
 """
@@ -50,6 +55,7 @@ from typing import Any
 from sniperplug.services.stock_status import is_unavailable_stock
 from sniperplug.services.walmart_extreme_price_signals import (
     CHEAP_CONSUMABLE,
+    LOW_TICKET_SUPPLIES,
     MSRP_INFLATED_GOODS,
     is_accessory_title,
     is_price_error_ratio,
@@ -129,6 +135,8 @@ def underprice_lead_reference(candidate: Any) -> float | None:
         return None
     category = str(attrs.get("categoryPath") or attrs.get("category") or "")
     if MSRP_INFLATED_GOODS.search(title) or MSRP_INFLATED_GOODS.search(category):
+        return None
+    if LOW_TICKET_SUPPLIES.search(title) or LOW_TICKET_SUPPLIES.search(category):
         return None
     if getattr(candidate, "can_add_to_cart", None) is not True:
         return None

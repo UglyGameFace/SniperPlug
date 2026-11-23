@@ -279,6 +279,92 @@ CLEANING_CHEMICAL_GOODS = re.compile(
     r"disinfect\w*)\b",
     re.IGNORECASE,
 )
+# Electronics accessories: the shared ACCESSORY pattern (applied to
+# titles via is_accessory_title) already covers cases, chargers,
+# cables, mounts and parts, but the durable-type lists deliberately
+# treat headsets, headphones and earbuds as primary products — so a
+# headset against an inflated list walked straight past every screen
+# in the list-price-only lanes. Observed live 2026-11-23: a Logitech
+# H390 headset at its everyday $29.56 against a $240 "list". In the
+# list-price-only lanes that exemption ends. Titles are screened with
+# the same trailing-"with" bundle guard as is_accessory_title, so a
+# console sold *with* a headset is still a console; categories are
+# screened on the leaf only, because an accessory ancestry ("Cell
+# Phones & Accessories") must not condemn the phones filed under it —
+# the leaf is what names the product. Primary hardware (consoles,
+# phones, laptops, TVs) is untouched, and accessories remain
+# reachable through the verified-markdown and price-drop lanes.
+ELECTRONICS_ACCESSORY_GOODS = re.compile(
+    r"\b(?:headsets?|headphones?|earbuds?|earphones?|microphones?|"
+    r"(?:phone|tablet|laptop|carrying|protective)\s*cases?|"
+    r"charging\s*(?:docks?|stations?|stands?|pads?))\b",
+    re.IGNORECASE,
+)
+ELECTRONICS_ACCESSORY_CATEGORY_LEAF = re.compile(
+    r"\b(?:accessories|headsets?|headphones?|earbuds?|earphones?|"
+    r"microphones?|cases?|chargers?|cables?|mounts?|"
+    r"screen\s*protectors?)\b",
+    re.IGNORECASE,
+)
+
+
+def is_electronics_accessory_title(title: str) -> bool:
+    """True when a title names an electronics accessory as the product.
+
+    Mirrors is_accessory_title's bundle rule: an accessory named only
+    in a trailing "with ..." clause is an included extra, not the
+    product itself.
+    """
+    if not title or not title.strip():
+        return False
+    if ELECTRONICS_ACCESSORY_GOODS.search(title) is None:
+        return False
+    with_match = re.search(r"\bwith\b", title, re.IGNORECASE)
+    if with_match is None:
+        return True
+    prefix = title[: with_match.start()].strip()
+    suffix = title[with_match.start():]
+    if (
+        prefix
+        and ELECTRONICS_ACCESSORY_GOODS.search(prefix) is None
+        and ELECTRONICS_ACCESSORY_GOODS.search(suffix) is not None
+    ):
+        return False
+    return True
+
+
+def is_electronics_accessory_category(category: str) -> bool:
+    """True when the category *leaf* names an electronics accessory."""
+    if not category or not str(category).strip():
+        return False
+    leaf = re.split(r"[/|>]", str(category))[-1].strip()
+    return ELECTRONICS_ACCESSORY_CATEGORY_LEAF.search(leaf) is not None
+
+
+# Health and personal-care consumables: ointments, eye care, first
+# aid and medicated consumables carry the same fictional-list pattern
+# as food and cleaning chemicals — observed live 2026-11-23: GenTeal
+# eye ointment at $11.26 against a $1,149.99 "list". Vitamins and
+# supplements are already screened by CHEAP_CONSUMABLE below; this
+# screen covers the rest of the consumable health shelf, on title and
+# on the consumable-specific category segments (durable medical
+# devices such as blood-pressure monitors sit under different
+# segments and are not matched). Real markdowns on these goods remain
+# reachable through the verified-markdown and price-drop lanes.
+HEALTH_CONSUMABLE_GOODS = re.compile(
+    r"\b(?:ointments?|eye\s*drops?|dry\s*eye|nasal\s*spray|"
+    r"cough\s*drops?|lozenges?|bandages?|antiseptic|hydrocortisone|"
+    r"anti[-\s]*itch|antifungal|saline\s*(?:solution|spray)|"
+    r"contact\s*lens\s*(?:solution|cleaner)|first[-\s]*aid|"
+    r"medicated\s*(?:pads?|wipes?|cream|ointment|shampoo))\b",
+    re.IGNORECASE,
+)
+HEALTH_CONSUMABLE_CATEGORY = re.compile(
+    r"\b(?:eye\s*care|vitamins?|dietary\s*supplements?|first\s*aid|"
+    r"pain\s*relief|cold\s*(?:and|&)\s*flu|digestive\s*health|"
+    r"personal\s*care|feminine\s*care|incontinence)\b",
+    re.IGNORECASE,
+)
 CHEAP_CONSUMABLE = re.compile(
     r"\b(?:detergent|soap|paper\s*towels?|toilet\s*paper|tissue|wipes|diapers?|"
     r"snacks?|candy|soda|bottled\s*water|shampoo|conditioner|toothpaste|"
@@ -416,6 +502,10 @@ def listed_price_anomaly(
         and FOOD_GROCERY_CATEGORY.search(category) is None
         and CLEANING_CHEMICAL_GOODS.search(title) is None
         and CLEANING_CHEMICAL_GOODS.search(category) is None
+        and not is_electronics_accessory_title(title)
+        and not is_electronics_accessory_category(category)
+        and HEALTH_CONSUMABLE_GOODS.search(title) is None
+        and HEALTH_CONSUMABLE_CATEGORY.search(category) is None
     ):
         return listed
     return None

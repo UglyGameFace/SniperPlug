@@ -205,6 +205,30 @@ def test_listed_price_anomaly_covers_new_hardware_terms():
     assert extreme.extreme_rejection_reason(ssd) is None
 
 
+def test_listed_price_anomaly_console_bundle_with_headset_still_fires():
+    """Round 4 bundle guard: a console sold *with* a headset is a console,
+    not an audio accessory — the headset screen must not condemn it."""
+    base = candidate(title="PlayStation 5 Console with Headset", price=49.0)
+    bundle = replace(
+        base,
+        variant_attributes={**base.variant_attributes, "msrp": "599.00"},
+    )
+    assert listed_price_anomaly(bundle) == 599.0
+    assert extreme.extreme_rejection_reason(bundle) is None
+
+
+def test_listed_price_anomaly_vr_headset_is_primary_hardware():
+    """Round 4 VR exception: a VR headset is a primary device, not an
+    audio accessory — its listed-price anomaly still qualifies."""
+    base = candidate(title="Meta Quest 3 VR Headset 128GB", price=49.0)
+    quest = replace(
+        base,
+        variant_attributes={**base.variant_attributes, "msrp": "599.00"},
+    )
+    assert listed_price_anomaly(quest) == 599.0
+    assert extreme.extreme_rejection_reason(quest) is None
+
+
 def test_espresso_coffee_beans_are_not_hardware():
     """The espresso term is scoped to machines/makers, not coffee itself."""
     beans = candidate(title="Lavazza Espresso Coffee Beans 2 lb Bag", price=1.0)

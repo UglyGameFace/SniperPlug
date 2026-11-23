@@ -341,6 +341,59 @@ def is_electronics_accessory_category(category: str) -> bool:
     return ELECTRONICS_ACCESSORY_CATEGORY_LEAF.search(leaf) is not None
 
 
+# Audio-headset class only (round 4, 2026-11-23): headsets, headphones,
+# earbuds and earphones as the product itself. Deliberately narrower
+# than ELECTRONICS_ACCESSORY_GOODS — Felix named the headset class for
+# the public listed-price lane, not accessories in general. Two guards
+# keep primary hardware safe: the trailing-"with" bundle rule (a
+# console sold *with* a headset is still a console), and the VR
+# exception (a VR headset — Meta Quest, PlayStation VR — is a primary
+# device whose name happens to contain "headset"; it stays eligible
+# through the device-family hardware evidence, exactly as before).
+AUDIO_HEADSET_TERMS = re.compile(
+    r"\b(?:headsets?|headphones?|earbuds?|earphones?)\b",
+    re.IGNORECASE,
+)
+AUDIO_HEADSET_CATEGORY_LEAF = re.compile(
+    r"\b(?:headsets?|headphones?|earbuds?|earphones?)\b",
+    re.IGNORECASE,
+)
+VR_HEADSET_TITLE = re.compile(
+    r"\b(?:vr\s*\d+|vr\s+headsets?|virtual\s*reality|meta\s*quest|oculus|psvr)\b",
+    re.IGNORECASE,
+)
+
+
+def is_audio_headset_title(title: str) -> bool:
+    """True when a title names an audio headset-class product itself."""
+    if not title or not title.strip():
+        return False
+    if VR_HEADSET_TITLE.search(title):
+        return False
+    if AUDIO_HEADSET_TERMS.search(title) is None:
+        return False
+    with_match = re.search(r"\bwith\b", title, re.IGNORECASE)
+    if with_match is None:
+        return True
+    prefix = title[: with_match.start()].strip()
+    suffix = title[with_match.start():]
+    if (
+        prefix
+        and AUDIO_HEADSET_TERMS.search(prefix) is None
+        and AUDIO_HEADSET_TERMS.search(suffix) is not None
+    ):
+        return False
+    return True
+
+
+def is_audio_headset_category(category: str) -> bool:
+    """True when the category *leaf* names an audio headset class."""
+    if not category or not str(category).strip():
+        return False
+    leaf = re.split(r"[/|>]", str(category))[-1].strip()
+    return AUDIO_HEADSET_CATEGORY_LEAF.search(leaf) is not None
+
+
 # Health and personal-care consumables: ointments, eye care, first
 # aid and medicated consumables carry the same fictional-list pattern
 # as food and cleaning chemicals — observed live 2026-11-23: GenTeal
@@ -442,6 +495,12 @@ def listed_price_anomaly(
     * current exact price is <= 20% of a Walmart-returned list price >= $50;
     * not an accessory/part, not digital credit/software/subscription, not a
       cheap consumable;
+    * not an electronics accessory (round 4, 2026-11-23): the hardware
+      branch below must not rescue a headset-class item on a list price
+      alone — the H390 at its everyday $29.56 against a $240 "list" was
+      the deliberate headset lead Felix ordered reversed. Headsets with
+      verified evidence (trusted was-price, observed drop) use other
+      lanes and are unaffected;
     * either recognizably substantial hardware (any seller), or sold by
       Walmart itself with a list price >= $100, savings >= $75, and not in a
       department where MSRP inflation is endemic (apparel, jewelry, shoes,
@@ -473,11 +532,22 @@ def listed_price_anomaly(
         str(attrs.get(k) or "") for k in ("productType", "product_type")
     )
     fulfillment = str(getattr(candidate, "fulfillment_type", "") or "")
+    category = str(attrs.get("categoryPath") or attrs.get("category") or "")
     if (
         not title
         or is_accessory_title(title)
         or NON_HARDWARE_PUBLIC_LEADS.search(" ".join((title, source_type, fulfillment)))
         or CHEAP_CONSUMABLE.search(title)
+        # Round 4: screen the audio-headset class BEFORE the hardware
+        # branch, so "headset" in PUBLIC_HIGH_VALUE_HARDWARE can no
+        # longer rescue an inflated list price. The predicate is
+        # headset-only by design (see is_audio_headset_title): the
+        # wider electronics-accessory class already fails this function
+        # elsewhere, and a VR headset is a primary device, not an audio
+        # accessory.
+        or is_audio_headset_title(title)
+        or is_audio_headset_category(category)
+        or AUDIO_HEADSET_TERMS.search(source_type)
     ):
         return None
     # Substantial hardware (TVs, consoles, laptops, power tools...) at <=20% of
@@ -487,7 +557,6 @@ def listed_price_anomaly(
     # Everything else needs Walmart itself as seller, a substantial list price
     # and absolute savings, and must not be a department where MSRP inflation
     # is endemic (apparel, jewelry, shoes, beauty, decor/textiles, tableware).
-    category = str(attrs.get("categoryPath") or attrs.get("category") or "")
     if (
         is_walmart_first_party(candidate)
         and listed >= LISTED_ANOMALY_MIN_REFERENCE

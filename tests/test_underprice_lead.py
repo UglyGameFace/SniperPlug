@@ -386,6 +386,149 @@ def test_food_processor_appliance_is_not_food() -> None:
     assert underprice_lead_reference(candidate) == 199.99
 
 
+# --------------------------------------- round 3: accessories + health
+# The last two bogus rows in the saved 2026-11-23 fire set: an
+# electronics accessory (the durable-type lists treat headsets as
+# primary products, so the H390 walked past every screen) and a health
+# consumable, both against inflated lists. Felix ordered both classes
+# killed in the list-price-only lane; primary hardware — consoles,
+# phones, laptops, TVs, and the Battlefield game — must stay.
+
+
+def test_headset_with_inflated_list_is_not_an_underprice_lead() -> None:
+    # Item 43841325, exact saved shape: everyday $29.56 street price
+    # against a $240 "list".
+    candidate = _saved_fire_candidate(
+        "Logitech H390 Wired USB Headset, Stereo Headphones with "
+        "Noise-Cancelling Microphone, USB, In-Line Controls, Black "
+        "(981-000310)",
+        29.56,
+        240.0,
+        "Home Page/Electronics/Computers, Laptops and Tablets/"
+        "Computer Accessories/Audio & Video Components/"
+        "All PC Microphones",
+    )
+    assert underprice_lead_reference(candidate) is None
+    assert build_underprice_lead_card(candidate) is None
+
+
+def test_accessory_category_leaf_alone_rejected() -> None:
+    # No accessory noun in the title: the category leaf ("All PC
+    # Microphones") names the accessory.
+    candidate = _saved_fire_candidate(
+        "Logitech H390 Wired USB Audio, Black (981-000310)",
+        29.56,
+        240.0,
+        "Home Page/Electronics/Computers, Laptops and Tablets/"
+        "Computer Accessories/Audio & Video Components/"
+        "All PC Microphones",
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_eye_ointment_with_absurd_list_is_not_an_underprice_lead() -> None:
+    # Item 817546825, exact saved shape: $11.26 against a $1,149.99 list.
+    candidate = _saved_fire_candidate(
+        "GenTeal Tears Lubricant Night-Time Dry Eye Ointment for "
+        "Severe Dryness, 3.5 g",
+        11.26,
+        1149.99,
+        "Home Page/Health and Medicine/Eye Care/Itchy Eyes",
+    )
+    assert underprice_lead_reference(candidate) is None
+    assert build_underprice_lead_card(candidate) is None
+
+
+def test_health_consumable_category_alone_rejected() -> None:
+    candidate = _saved_fire_candidate(
+        "Equate Lubricant Drops, 0.5 fl oz",
+        4.94,
+        120.0,
+        "Home Page/Health and Medicine/Eye Care/Contact Lens Care",
+    )
+    assert underprice_lead_reference(candidate) is None
+
+
+def test_prepaid_phone_still_fires() -> None:
+    # Item 18608023851, exact saved shape: a plausibly real prepaid
+    # discount. The category ancestry is not the leaf, and a phone is
+    # primary hardware, not an accessory.
+    candidate = _saved_fire_candidate(
+        "Straight Talk Motorola Moto G Power 2026, 5G, 128GB, Brown - "
+        "Prepaid Smartphone [Locked to Straight Talk]",
+        29.88,
+        179.0,
+        "Home Page/Cell Phones/Shop Phones by Operating System/"
+        "Android/Prepaid Android phones",
+    )
+    assert underprice_lead_reference(candidate) == 179.0
+
+
+def test_postpaid_phone_still_fires() -> None:
+    # Item 20401621494, exact saved shape.
+    candidate = _saved_fire_candidate(
+        "T-Mobile Postpaid Moto G Play 2026 64GB Pantone Tapestry",
+        2.0,
+        219.0,
+        "Home Page/Cell Phones/Phones With Plans/Postpaid Phones/"
+        "All Postpaid Phones",
+    )
+    assert underprice_lead_reference(candidate) == 219.0
+
+
+def test_console_still_fires() -> None:
+    candidate = _saved_fire_candidate(
+        "Sony PlayStation 5 Console (Disc Edition)",
+        49.99,
+        499.99,
+        "Home Page/Video Games/PlayStation/PlayStation 5/"
+        "PlayStation 5 Consoles",
+    )
+    assert underprice_lead_reference(candidate) == 499.99
+
+
+def test_console_bundle_with_headset_still_fires() -> None:
+    # An accessory named only in a trailing "with ..." clause is an
+    # included extra, not the product: the bundle is a console lead.
+    candidate = _saved_fire_candidate(
+        "Xbox Series X Console with Headset Bundle",
+        49.99,
+        499.99,
+        "Home Page/Video Games/Xbox/Xbox Series X|S/"
+        "Xbox Series X|S Consoles",
+    )
+    assert underprice_lead_reference(candidate) == 499.99
+
+
+def test_eye_ointment_also_dead_in_listed_price_anomaly() -> None:
+    # The same health screen guards the page-price lane's
+    # non-hardware branch (rounds 1-2 placement).
+    from sniperplug.services.walmart_extreme_price_signals import (
+        listed_price_anomaly,
+    )
+
+    candidate = _saved_fire_candidate(
+        "GenTeal Tears Lubricant Night-Time Dry Eye Ointment for "
+        "Severe Dryness, 3.5 g",
+        11.26,
+        1149.99,
+        "Home Page/Health and Medicine/Eye Care/Itchy Eyes",
+    )
+    assert listed_price_anomaly(candidate) is None
+
+
+def test_laptop_still_fires() -> None:
+    candidate = _saved_fire_candidate(
+        "HP Pavilion 15.6 inch Laptop, Intel Core i7, 16GB RAM, "
+        "512GB SSD",
+        89.99,
+        899.99,
+        "Home Page/Electronics/Computers, Laptops and Tablets/"
+        "Laptops/HP Laptops",
+    )
+    assert underprice_lead_reference(candidate) == 899.99
+
+
 # ---------------------------------------------------------------- card
 
 

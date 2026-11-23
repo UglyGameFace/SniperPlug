@@ -54,6 +54,15 @@ Fail-closed requirements, all of them:
   list, Clorox bleach at $6.26 against $113.99, both in the saved
   2026-11-23 fire set) and stay reachable only through the
   verified-markdown and observed-price-drop lanes;
+* the item is not an electronics accessory and not a health or
+  personal-care consumable — the durable-type lists treat headsets
+  as primary products, but in this list-price-only lane they are
+  screened like the accessories they are (a Logitech H390 at its
+  everyday $29.56 against a $240 list), and health consumables carry
+  the same fictional lists as food and cleaning chemicals (GenTeal
+  eye ointment at $11.26 against a $1,149.99 list; both in the saved
+  2026-11-23 fire set). Consoles, phones, laptops and TVs are
+  primary hardware and are not touched by the accessory screen;
 * the offer is cart-buyable, in stock, and not a member-only or
   checkout-only price.
 """
@@ -67,9 +76,13 @@ from sniperplug.services.walmart_extreme_price_signals import (
     FOOD_GROCERY_CATEGORY,
     FOOD_GROCERY_GOODS,
     GIFT_CARD_GOODS,
+    HEALTH_CONSUMABLE_CATEGORY,
+    HEALTH_CONSUMABLE_GOODS,
     LOW_TICKET_SUPPLIES,
     MSRP_INFLATED_GOODS,
     is_accessory_title,
+    is_electronics_accessory_category,
+    is_electronics_accessory_title,
     is_price_error_ratio,
     is_walmart_first_party,
     walmart_listed_reference,
@@ -155,6 +168,14 @@ def underprice_lead_reference(candidate: Any) -> float | None:
     if FOOD_GROCERY_GOODS.search(title) or FOOD_GROCERY_CATEGORY.search(category):
         return None
     if CLEANING_CHEMICAL_GOODS.search(title) or CLEANING_CHEMICAL_GOODS.search(
+        category
+    ):
+        return None
+    if is_electronics_accessory_title(title) or is_electronics_accessory_category(
+        category
+    ):
+        return None
+    if HEALTH_CONSUMABLE_GOODS.search(title) or HEALTH_CONSUMABLE_CATEGORY.search(
         category
     ):
         return None
